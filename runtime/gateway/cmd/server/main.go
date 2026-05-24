@@ -14,6 +14,7 @@ import (
 	"ovara.runtime.gateway/internal/handlers"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/policy"
+	"ovara.runtime.gateway/internal/receipts"
 )
 
 func main() {
@@ -40,16 +41,19 @@ func main() {
 		defer decisionLogger.Close()
 	}
 
+	receiptsStore := receipts.NewInMemoryStore()
 	eval := evaluator.New(policyStore)
-	h := handlers.New(eval, decisionLogger, cfg)
+	h := handlers.New(eval, decisionLogger, cfg, receiptsStore)
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalService := approval.NewService(approvalStore)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
+	receiptHandler := handlers.NewReceiptHandler(receiptsStore)
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	approvalHandler.RegisterRoutes(mux)
+	receiptHandler.RegisterRoutes(mux)
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway listening on %s", addr)

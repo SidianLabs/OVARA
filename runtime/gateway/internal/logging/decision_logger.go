@@ -17,9 +17,12 @@ type DecisionLogger struct {
 }
 
 type DecisionLogEntry struct {
-	Timestamp   time.Time           `json:"timestamp"`
-	Request     *models.ActionRequest `json:"request"`
+	Timestamp   time.Time `json:"timestamp"`
+	Request     *models.ActionRequest   `json:"request"`
 	Response    *models.DecisionResponse `json:"response"`
+	DecisionID  string    `json:"decision_id,omitempty"`
+	ReceiptID   string    `json:"receipt_id,omitempty"`
+	ApprovalID  string    `json:"approval_id,omitempty"`
 }
 
 func NewDecisionLogger(logFile string) (*DecisionLogger, error) {
@@ -38,9 +41,16 @@ func (l *DecisionLogger) Log(req *models.ActionRequest, resp *models.DecisionRes
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	entry := DecisionLogEntry{
-		Timestamp: time.Now().UTC(),
-		Request:   req,
-		Response:  resp,
+		Timestamp:  time.Now().UTC(),
+		Request:    req,
+		Response:   resp,
+		DecisionID: resp.DecisionID,
+	}
+	if resp.ReceiptStub != nil {
+		entry.ReceiptID = resp.ReceiptStub.ReceiptID
+	}
+	if resp.ApprovalID != "" {
+		entry.ApprovalID = resp.ApprovalID
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
