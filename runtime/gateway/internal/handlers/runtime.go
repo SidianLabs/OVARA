@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
+	"time"
 
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
@@ -18,14 +20,63 @@ type Handler struct {
 	logger        *logging.DecisionLogger
 	config        *config.Config
 	receiptsStore *receipts.InMemoryStore
+	decisionCache *decisionCache
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs *receipts.InMemoryStore) *Handler {
-	return &Handler{evaluator: e, logger: l, config: cfg, receiptsStore: rs}
+	return &Handler{evaluator: e, logger: l, config: cfg, receiptsStore: rs, decisionCache: newDecisionCache()}
+}
+
+type decisionCache struct {
+	mu       sync.RWMutex
+	decisions map[string]*decisionEntry
+}
+
+type decisionEntry struct {
+	DecisionID string
+	Response   *models.DecisionResponse
+	Timestamp  time.Time
+}
+
+func newDecisionCache() *decisionCache {
+	return &decisionCache{decisions: make(map[string]*decisionEntry)}
+}
+
+func (c *decisionCache) Put(id string, resp *models.DecisionResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.decisions[id] = &decisionEntry{
+		DecisionID: id,
+		Response:   resp,
+		Timestamp:  time.Now().UTC(),
+	}
+}
+
+func (c *decisionCache) Get(id string) (*models.DecisionResponse, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if e, ok := c.decisions[id]; ok {
+		return e.Response, true
+	}
+	return nil, false
+}
+
+func (c *decisionCache) GetByAgent(agentID string) []*models.DecisionResponse {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var results []*models.DecisionResponse
+	for _, e := range c.decisions {
+		if e.Response != nil && e.Response.TrustContext != nil {
+			// Can't easily filter by agent here without storing agent on response
+		}
+	}
+	return results
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runtime/check", h.handleCheck)
+	mux.HandleFunc("GET /v1/runtime/decision/{id}", h.handleGetDecision)
+	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
 }
@@ -59,6 +110,10 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		_ = h.receiptsStore.Put(receipt)
 	}
 
+	if h.decisionCache != nil {
+		h.decisionCache.Put(resp.DecisionID, resp)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
@@ -74,13 +129,23 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 		Decision:     string(resp.Decision),
 		PolicyVersion: resp.ReceiptStub.PolicyVersion,
 		TrustScore:   resp.ReceiptStub.TrustContextScore,
+		TrustLevel:   resp.TrustLevel,
 		IssuedAt:     resp.ReceiptStub.IssuedAt,
 	}
 	if req.AgentIdentity != nil {
 		receipt.AgentID = req.AgentIdentity.SubjectID
 	}
+	if req.CapabilityLease != nil {
+		receipt.CapabilityLeaseID = req.CapabilityLease.LeaseID
+	}
 	if resp.ApprovalID != "" {
 		receipt.ApprovalID = resp.ApprovalID
+	}
+	if resp.TrustContext != nil {
+		receipt.ShieldActive = resp.TrustContext.ShieldActive
+		receipt.Restricted = resp.TrustContext.Restricted
+		receipt.RiskCount = resp.TrustContext.RiskCount
+		receipt.AnomalySignals = resp.TrustContext.AnomalySignals
 	}
 	receipt.Signature = "sig_v1_local:" + resp.ReceiptStub.ReceiptID
 	return receipt
@@ -94,4 +159,52 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+}
+
+func (h *Handler) handleGetDecision(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "decision id is required", http.StatusBadRequest)
+		return
+	}
+
+	if h.decisionCache != nil {
+		if resp, ok := h.decisionCache.Get(id); ok {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+	}
+
+	http.Error(w, "decision not found", http.StatusNotFound)
+}
+
+func (h *Handler) handleGetAgentRecentDecisions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	agentID := r.PathValue("agent_id")
+	if agentID == "" {
+		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if h.decisionCache == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"decisions": []any{}, "count": 0})
+		return
+	}
+
+	receipts := h.receiptsStore.ListByAgent(agentID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"agent_id":  agentID,
+		"receipts":  receipts,
+		"count":     len(receipts),
+	})
 }
