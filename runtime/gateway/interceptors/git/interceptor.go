@@ -159,10 +159,10 @@ func ParseArgs(args []string) (gitCmd string, rest []string) {
 	if args[0] == "git" && len(args) > 1 {
 		gitIdx = 1
 	}
-	if len(args) > gitIdx+1 {
-		return args[gitIdx+1], args[gitIdx+2:]
+	if len(args) > gitIdx {
+		return args[gitIdx], args[gitIdx+1:]
 	}
-	return args[gitIdx], nil
+	return "", nil
 }
 
 func GetCurrentRepo() string {
