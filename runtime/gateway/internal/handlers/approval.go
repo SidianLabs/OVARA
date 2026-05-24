@@ -174,14 +174,12 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canResume, err := h.service.ResumeAction(id)
+	result, err := h.service.ResumeAction(id)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("cannot resume: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{
-		"resumed": canResume,
-	})
+	json.NewEncoder(w).Encode(result)
 }

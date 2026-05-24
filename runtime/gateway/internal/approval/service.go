@@ -70,13 +70,27 @@ func (s *Service) ListPending() []*ApprovalRequest {
 	return s.store.ListByStatus(StatusPending)
 }
 
-func (s *Service) ResumeAction(approvalID string) (bool, error) {
+func (s *Service) ResumeAction(approvalID string) (*ResumeResult, error) {
 	approval, err := s.store.Get(approvalID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if approval.Status != StatusApproved {
-		return false, fmt.Errorf("approval not approved: %s", approval.Status)
+		return nil, fmt.Errorf("approval not approved: %s", approval.Status)
 	}
-	return true, nil
+	return &ResumeResult{
+		Approved:  true,
+		ApprovalID: approvalID,
+		DecisionID: approval.DecisionID,
+		ActionType: string(approval.ActionType),
+		Resource:   approval.Resource,
+	}, nil
+}
+
+type ResumeResult struct {
+	Approved   bool   `json:"approved"`
+	ApprovalID string `json:"approval_id"`
+	DecisionID string `json:"decision_id"`
+	ActionType string `json:"action_type"`
+	Resource   string `json:"resource"`
 }

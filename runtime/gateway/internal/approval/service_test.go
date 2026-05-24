@@ -141,12 +141,15 @@ func TestService_ResumeAction_Approved(t *testing.T) {
 	approval, _ := svc.CreateApproval(req)
 	svc.Approve(approval.ApprovalID, "admin")
 
-	canResume, err := svc.ResumeAction(approval.ApprovalID)
+	result, err := svc.ResumeAction(approval.ApprovalID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !canResume {
-		t.Error("expected canResume to be true for approved action")
+	if !result.Approved {
+		t.Error("expected result.Approved to be true for approved action")
+	}
+	if result.DecisionID != "dec_resume" {
+		t.Errorf("decision_id = %v, want dec_resume", result.DecisionID)
 	}
 }
 
