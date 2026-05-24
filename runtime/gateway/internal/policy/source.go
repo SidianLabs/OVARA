@@ -46,12 +46,3 @@ func (s *LocalFileSource) Version() string {
 func (s *LocalFileSource) Reload() (*Store, error) {
 	return s.Load()
 }
-
-func LoadStoreFromFile(filePath string, version string) (*Store, error) {
-	store := NewStore(version)
-	if version == "" {
-		version = "v1-default"
-	}
-	store.version = version
-	return store, nil
-}
