@@ -226,6 +226,28 @@ curl -X POST http://localhost:8080/v1/shield/unrestrict/agent-003
 # Response: {"agent_id":"agent-003","restricted":false}
 ```
 
+## Decision Lookup
+
+```bash
+# Look up a specific decision by ID
+curl http://localhost:8080/v1/runtime/decision/dec_abc123
+
+# Response (if found in decision cache)
+# {"decision_id":"dec_abc123","decision":"escalate",
+#  "trust_score":0.45,"trust_level":"medium",
+#  "trust_context":{...},...}
+```
+
+## Agent Decision History
+
+```bash
+# Get receipts for a specific agent
+curl http://localhost:8080/v1/runtime/agent/agent-001/recent
+
+# Response
+# {"agent_id":"agent-001","receipts":[...],"count":5}
+```
+
 ## Local-Only Limitations (v1)
 
 - **In-memory state**: Shield restrictions, risk counts, and receipts reset on server restart
