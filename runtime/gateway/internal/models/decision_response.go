@@ -13,14 +13,17 @@ const (
 type ReasonCode string
 
 const (
-	ReasonAllowed          ReasonCode = "allowed"
-	ReasonDenied           ReasonCode = "denied"
-	ReasonEscalate         ReasonCode = "escalate"
-	ReasonCapabilityExpiry ReasonCode = "capability_expired"
-	ReasonActionNotAllowed ReasonCode = "action_not_allowed"
-	ReasonResourceNotCovered ReasonCode = "resource_not_covered"
-	ReasonMissingIdentity  ReasonCode = "missing_identity"
-	ReasonProductionDenied ReasonCode = "production_denied"
+	ReasonAllowed               ReasonCode = "allowed"
+	ReasonDenied                ReasonCode = "denied"
+	ReasonEscalate              ReasonCode = "escalate"
+	ReasonCapabilityExpiry      ReasonCode = "capability_expired"
+	ReasonCapabilityNotAllowed  ReasonCode = "capability_not_allowed"
+	ReasonCapabilityScope       ReasonCode = "capability_scope_mismatch"
+	ReasonActionNotAllowed      ReasonCode = "action_not_allowed"
+	ReasonResourceNotCovered    ReasonCode = "resource_not_covered"
+	ReasonMissingIdentity       ReasonCode = "missing_identity"
+	ReasonIdentityInvalid      ReasonCode = "identity_invalid"
+	ReasonProductionDenied      ReasonCode = "production_denied"
 )
 
 type DecisionResponse struct {

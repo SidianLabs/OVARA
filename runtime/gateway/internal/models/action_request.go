@@ -35,27 +35,40 @@ type ActionRequest struct {
 	Resource        string           `json:"resource"`
 	AgentIdentity   *AgentIdentity   `json:"agent_identity,omitempty"`
 	CapabilityLease *CapabilityLease `json:"capability_lease,omitempty"`
+	DelegationChain *DelegationChain `json:"delegation_chain,omitempty"`
 	Environment     Environment      `json:"environment"`
 	Metadata        json.RawMessage  `json:"metadata,omitempty"`
 }
 
 type AgentIdentity struct {
-	Issuer     string `json:"issuer"`
-	SubjectID  string `json:"subject_id"`
-	Owner      string `json:"owner,omitempty"`
+	Issuer    string `json:"issuer"`
+	SubjectID string `json:"subject_id"`
+	Owner     string `json:"owner,omitempty"`
 	Lifecycle  string `json:"lifecycle,omitempty"`
-	VerifyKey  string `json:"verify_key,omitempty"`
+	VerifyKey string `json:"verify_key,omitempty"`
 }
 
 type CapabilityLease struct {
-	LeaseID        string    `json:"lease_id"`
-	Issuer         string    `json:"issuer"`
-	Subject        string    `json:"subject"`
-	AllowedActions []string  `json:"allowed_actions"`
-	ResourceScope  string    `json:"resource_scope"`
-	Expiry         time.Time `json:"expiry"`
-	DelegationDepth int      `json:"delegation_depth"`
-	RevocationHandle string `json:"revocation_handle,omitempty"`
+	LeaseID         string    `json:"lease_id"`
+	Issuer          string    `json:"issuer"`
+	Subject         string    `json:"subject"`
+	AllowedActions  []string  `json:"allowed_actions"`
+	ResourceScope   string    `json:"resource_scope"`
+	Expiry          time.Time `json:"expiry"`
+	DelegationDepth int       `json:"delegation_depth"`
+	RevocationHandle string   `json:"revocation_handle,omitempty"`
+}
+
+type DelegationChain struct {
+	Authorities []Authority `json:"authorities"`
+	ChainHash   string      `json:"chain_hash,omitempty"`
+	Depth       int         `json:"depth"`
+}
+
+type Authority struct {
+	Issuer    string `json:"issuer"`
+	SubjectID string `json:"subject_id"`
+	DelegatedAt time.Time `json:"delegated_at,omitempty"`
 }
 
 func (r ActionRequest) Validate() []string {
