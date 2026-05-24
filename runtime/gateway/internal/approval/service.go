@@ -79,18 +79,28 @@ func (s *Service) ResumeAction(approvalID string) (*ResumeResult, error) {
 		return nil, fmt.Errorf("approval not approved: %s", approval.Status)
 	}
 	return &ResumeResult{
-		Approved:  true,
-		ApprovalID: approvalID,
-		DecisionID: approval.DecisionID,
-		ActionType: string(approval.ActionType),
-		Resource:   approval.Resource,
+		Approved:     true,
+		ApprovalID:    approvalID,
+		DecisionID:    approval.DecisionID,
+		ActionType:    string(approval.ActionType),
+		Resource:      approval.Resource,
+		TrustScore:    approval.TrustScore,
+		TrustLevel:    string(approval.TrustLevel),
+		AnomalyCodes:  approval.AnomalyCodes,
+		ShieldActive:  approval.ShieldActive,
+		Restricted:    approval.Restricted,
 	}, nil
 }
 
 type ResumeResult struct {
-	Approved   bool   `json:"approved"`
-	ApprovalID string `json:"approval_id"`
-	DecisionID string `json:"decision_id"`
-	ActionType string `json:"action_type"`
-	Resource   string `json:"resource"`
+	Approved     bool     `json:"approved"`
+	ApprovalID   string   `json:"approval_id"`
+	DecisionID   string   `json:"decision_id"`
+	ActionType   string   `json:"action_type"`
+	Resource     string   `json:"resource"`
+	TrustScore   float64  `json:"trust_score,omitempty"`
+	TrustLevel   string   `json:"trust_level,omitempty"`
+	AnomalyCodes []string `json:"anomaly_codes,omitempty"`
+	ShieldActive bool     `json:"shield_active,omitempty"`
+	Restricted   bool     `json:"restricted,omitempty"`
 }

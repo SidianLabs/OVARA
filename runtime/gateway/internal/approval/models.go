@@ -16,17 +16,22 @@ const (
 )
 
 type ApprovalRequest struct {
-	ApprovalID  string    `json:"approval_id"`
-	DecisionID  string    `json:"decision_id"`
-	ActionType  models.ActionType `json:"action_type"`
-	Resource    string    `json:"resource"`
-	Environment models.Environment `json:"environment"`
-	Status      Status    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
-	ResolvedBy  string    `json:"resolved_by,omitempty"`
-	AgentID     string    `json:"agent_id,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
+	ApprovalID    string    `json:"approval_id"`
+	DecisionID    string    `json:"decision_id"`
+	ActionType    models.ActionType `json:"action_type"`
+	Resource      string    `json:"resource"`
+	Environment   models.Environment `json:"environment"`
+	Status        Status    `json:"status"`
+	CreatedAt     time.Time `json:"created_at"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy    string    `json:"resolved_by,omitempty"`
+	AgentID       string    `json:"agent_id,omitempty"`
+	Reason        string    `json:"reason,omitempty"`
+	TrustScore    float64   `json:"trust_score,omitempty"`
+	TrustLevel    models.TrustLevel `json:"trust_level,omitempty"`
+	AnomalyCodes  []string  `json:"anomaly_codes,omitempty"`
+	ShieldActive  bool      `json:"shield_active,omitempty"`
+	Restricted    bool      `json:"restricted,omitempty"`
 }
 
 func (a *ApprovalRequest) MarshalJSON() ([]byte, error) {
@@ -64,22 +69,32 @@ func (a *ApprovalRequest) IsResolved() bool {
 }
 
 type CreateRequest struct {
-	DecisionID  string            `json:"decision_id"`
-	ActionType  models.ActionType `json:"action_type"`
-	Resource    string            `json:"resource"`
-	Environment models.Environment `json:"environment"`
-	AgentID     string            `json:"agent_id,omitempty"`
+	DecisionID   string            `json:"decision_id"`
+	ActionType   models.ActionType `json:"action_type"`
+	Resource     string            `json:"resource"`
+	Environment  models.Environment `json:"environment"`
+	AgentID      string            `json:"agent_id,omitempty"`
+	TrustScore   float64           `json:"trust_score,omitempty"`
+	TrustLevel   models.TrustLevel `json:"trust_level,omitempty"`
+	AnomalyCodes []string          `json:"anomaly_codes,omitempty"`
+	ShieldActive bool              `json:"shield_active,omitempty"`
+	Restricted   bool              `json:"restricted,omitempty"`
 }
 
 func (c *CreateRequest) ToApproval(approvalID string) *ApprovalRequest {
 	return &ApprovalRequest{
-		ApprovalID:  approvalID,
-		DecisionID:  c.DecisionID,
-		ActionType:  c.ActionType,
-		Resource:    c.Resource,
-		Environment: c.Environment,
-		Status:      StatusPending,
-		CreatedAt:   time.Now().UTC(),
-		AgentID:     c.AgentID,
+		ApprovalID:   approvalID,
+		DecisionID:   c.DecisionID,
+		ActionType:   c.ActionType,
+		Resource:     c.Resource,
+		Environment:  c.Environment,
+		Status:       StatusPending,
+		CreatedAt:    time.Now().UTC(),
+		AgentID:      c.AgentID,
+		TrustScore:   c.TrustScore,
+		TrustLevel:   c.TrustLevel,
+		AnomalyCodes: c.AnomalyCodes,
+		ShieldActive: c.ShieldActive,
+		Restricted:   c.Restricted,
 	}
 }

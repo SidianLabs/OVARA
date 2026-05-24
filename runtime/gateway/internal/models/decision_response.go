@@ -93,6 +93,11 @@ type Receipt struct {
 	Decision           string    `json:"decision"`
 	PolicyVersion      string    `json:"policy_version"`
 	TrustScore         float64   `json:"trust_score"`
+	TrustLevel         TrustLevel `json:"trust_level,omitempty"`
+	AnomalySignals     []AnomalySignal `json:"anomaly_signals,omitempty"`
+	ShieldActive       bool      `json:"shield_active,omitempty"`
+	Restricted         bool      `json:"restricted,omitempty"`
+	RiskCount          int       `json:"risk_count,omitempty"`
 	ApprovalID         string    `json:"approval_id,omitempty"`
 	ApprovalDecision   string    `json:"approval_decision,omitempty"`
 	IssuedAt          time.Time `json:"issued_at"`
