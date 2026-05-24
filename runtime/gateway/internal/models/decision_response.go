@@ -24,6 +24,15 @@ const (
 	ReasonMissingIdentity       ReasonCode = "missing_identity"
 	ReasonIdentityInvalid      ReasonCode = "identity_invalid"
 	ReasonProductionDenied      ReasonCode = "production_denied"
+	ReasonTrustLow              ReasonCode = "trust_low"
+	ReasonTrustMedium          ReasonCode = "trust_medium"
+	ReasonAnomalyDetected      ReasonCode = "anomaly_detected"
+	ReasonContainmentActive    ReasonCode = "containment_active"
+	ReasonRepeatedRisk         ReasonCode = "repeated_risk"
+	ReasonRiskyShellPattern    ReasonCode = "risky_shell_pattern"
+	ReasonRiskyGitPattern      ReasonCode = "risky_git_pattern"
+	ReasonProductionTarget      ReasonCode = "production_target"
+	ReasonWeakLeaseScope        ReasonCode = "weak_lease_scope"
 )
 
 type DecisionResponse struct {
@@ -31,9 +40,36 @@ type DecisionResponse struct {
 	Decision         Decision     `json:"decision"`
 	ReasonCodes      []ReasonCode `json:"reason_codes"`
 	TrustScore       float64      `json:"trust_score,omitempty"`
+	TrustLevel       TrustLevel   `json:"trust_level,omitempty"`
 	RequiresApproval bool         `json:"requires_approval"`
 	ApprovalID       string       `json:"approval_id,omitempty"`
 	ReceiptStub      *ReceiptStub `json:"receipt_stub,omitempty"`
+	TrustContext     *TrustContext `json:"trust_context,omitempty"`
+}
+
+type TrustLevel string
+
+const (
+	TrustLevelHigh   TrustLevel = "high"
+	TrustLevelMedium TrustLevel = "medium"
+	TrustLevelLow    TrustLevel = "low"
+	TrustLevelNone   TrustLevel = "none"
+)
+
+type TrustContext struct {
+	Score         float64         `json:"score"`
+	Level         TrustLevel      `json:"level"`
+	AnomalySignals []AnomalySignal `json:"anomaly_signals,omitempty"`
+	ShieldActive  bool            `json:"shield_active,omitempty"`
+	Restricted    bool            `json:"restricted,omitempty"`
+	RiskCount     int             `json:"risk_count,omitempty"`
+	EvaluationTime time.Time      `json:"evaluation_time"`
+}
+
+type AnomalySignal struct {
+	Code    string `json:"code"`
+	Pattern string `json:"pattern,omitempty"`
+	Severity string `json:"severity"`
 }
 
 type ReceiptStub struct {
