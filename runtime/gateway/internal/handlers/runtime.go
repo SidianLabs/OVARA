@@ -27,9 +27,17 @@ func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, 
 	return &Handler{evaluator: e, logger: l, config: cfg, receiptsStore: rs, decisionCache: newDecisionCache()}
 }
 
+const (
+	defaultMaxCacheSize = 10000
+	defaultCacheTTL      = 10 * time.Minute
+)
+
 type decisionCache struct {
 	mu       sync.RWMutex
 	decisions map[string]*decisionEntry
+	maxSize   int
+	ttl       time.Duration
+	order     []string
 }
 
 type decisionEntry struct {
@@ -39,26 +47,76 @@ type decisionEntry struct {
 }
 
 func newDecisionCache() *decisionCache {
-	return &decisionCache{decisions: make(map[string]*decisionEntry)}
+	return &decisionCache{
+		decisions: make(map[string]*decisionEntry),
+		maxSize:   defaultMaxCacheSize,
+		ttl:       defaultCacheTTL,
+		order:     make([]string, 0, defaultMaxCacheSize),
+	}
 }
 
 func (c *decisionCache) Put(id string, resp *models.DecisionResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := time.Now().UTC()
+	if existing, ok := c.decisions[id]; ok {
+		existing.Response = resp
+		existing.Timestamp = now
+		return
+	}
+	if len(c.decisions) >= c.maxSize {
+		c.evictOldest()
+	}
 	c.decisions[id] = &decisionEntry{
 		DecisionID: id,
 		Response:   resp,
-		Timestamp:  time.Now().UTC(),
+		Timestamp:  now,
 	}
+	c.order = append(c.order, id)
+}
+
+func (c *decisionCache) evictOldest() {
+	if len(c.order) == 0 {
+		return
+	}
+	oldest := c.order[0]
+	c.order = c.order[1:]
+	delete(c.decisions, oldest)
 }
 
 func (c *decisionCache) Get(id string) (*models.DecisionResponse, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if e, ok := c.decisions[id]; ok {
+		if time.Since(e.Timestamp) > c.ttl {
+			return nil, false
+		}
 		return e.Response, true
 	}
 	return nil, false
+}
+
+func (c *decisionCache) cleanup() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now().UTC()
+	var validIDs []string
+	for _, id := range c.order {
+		if e, ok := c.decisions[id]; ok {
+			if now.Sub(e.Timestamp) <= c.ttl {
+				validIDs = append(validIDs, id)
+			} else {
+				delete(c.decisions, id)
+			}
+		}
+	}
+	c.order = validIDs
+}
+
+func (c *decisionCache) Stats() (int, int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.decisions), c.maxSize
 }
 
 func (c *decisionCache) GetByAgent(agentID string) []*models.DecisionResponse {
@@ -67,7 +125,6 @@ func (c *decisionCache) GetByAgent(agentID string) []*models.DecisionResponse {
 	var results []*models.DecisionResponse
 	for _, e := range c.decisions {
 		if e.Response != nil && e.Response.TrustContext != nil {
-			// Can't easily filter by agent here without storing agent on response
 		}
 	}
 	return results
@@ -77,6 +134,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runtime/check", h.handleCheck)
 	mux.HandleFunc("GET /v1/runtime/decision/{id}", h.handleGetDecision)
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
+	mux.HandleFunc("GET /v1/runtime/status", h.handleGetStatus)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
 }
@@ -206,5 +264,30 @@ func (h *Handler) handleGetAgentRecentDecisions(w http.ResponseWriter, r *http.R
 		"agent_id":  agentID,
 		"receipts":  receipts,
 		"count":     len(receipts),
+	})
+}
+
+func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	cacheCount, cacheMax := 0, 0
+	if h.decisionCache != nil {
+		cacheCount, cacheMax = h.decisionCache.Stats()
+	}
+
+	allReceipts := h.receiptsStore.ListAll()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"gateway_id":       h.config.GatewayID,
+		"gateway_name":    h.config.GatewayName,
+		"gateway_version": h.config.GatewayVersion,
+		"enrollment_status": "local",
+		"decision_cache_count": cacheCount,
+		"decision_cache_max":   cacheMax,
+		"receipt_count":    len(allReceipts),
 	})
 }
