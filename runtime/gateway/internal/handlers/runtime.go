@@ -19,17 +19,36 @@ type Handler struct {
 	evaluator     *evaluator.Evaluator
 	logger        *logging.DecisionLogger
 	config        *config.Config
-	receiptsStore *receipts.InMemoryStore
+	receiptsStore receipts.Store
 	decisionCache *decisionCache
 }
 
-func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs *receipts.InMemoryStore) *Handler {
-	return &Handler{evaluator: e, logger: l, config: cfg, receiptsStore: rs, decisionCache: newDecisionCache()}
+func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
+	return &Handler{
+		evaluator:     e,
+		logger:        l,
+		config:        cfg,
+		receiptsStore: rs,
+		decisionCache: newDecisionCache(),
+	}
+}
+
+type HandlerWithStores struct {
+	*Handler
+	approvalStore interface {
+		ListByStatus(status string) []*approvalRequest
+	}
+	shieldStats func() (restricted, total int)
+}
+
+type approvalRequest struct {
+	ApprovalID string
+	Status     string
 }
 
 const (
 	defaultMaxCacheSize = 10000
-	defaultCacheTTL      = 10 * time.Minute
+	defaultCacheTTL     = 10 * time.Minute
 )
 
 type decisionCache struct {
@@ -96,6 +115,16 @@ func (c *decisionCache) Get(id string) (*models.DecisionResponse, bool) {
 	return nil, false
 }
 
+func (c *decisionCache) StartCleanup(interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			c.cleanup()
+		}
+	}()
+}
+
 func (c *decisionCache) cleanup() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -117,17 +146,6 @@ func (c *decisionCache) Stats() (int, int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.decisions), c.maxSize
-}
-
-func (c *decisionCache) GetByAgent(agentID string) []*models.DecisionResponse {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	var results []*models.DecisionResponse
-	for _, e := range c.decisions {
-		if e.Response != nil && e.Response.TrustContext != nil {
-		}
-	}
-	return results
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -261,9 +279,9 @@ func (h *Handler) handleGetAgentRecentDecisions(w http.ResponseWriter, r *http.R
 	receipts := h.receiptsStore.ListByAgent(agentID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"agent_id":  agentID,
-		"receipts":  receipts,
-		"count":     len(receipts),
+		"agent_id": agentID,
+		"receipts": receipts,
+		"count":    len(receipts),
 	})
 }
 
@@ -278,16 +296,25 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		cacheCount, cacheMax = h.decisionCache.Stats()
 	}
 
-	allReceipts := h.receiptsStore.ListAll()
+	receiptCount := 0
+	if h.receiptsStore != nil {
+		receiptCount = len(h.receiptsStore.ListAll())
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"gateway_id":       h.config.GatewayID,
-		"gateway_name":    h.config.GatewayName,
-		"gateway_version": h.config.GatewayVersion,
-		"enrollment_status": "local",
+		"gateway_id":           h.config.GatewayID,
+		"gateway_name":         h.config.GatewayName,
+		"gateway_version":      h.config.GatewayVersion,
+		"enrollment_status":    "local",
 		"decision_cache_count": cacheCount,
 		"decision_cache_max":   cacheMax,
-		"receipt_count":    len(allReceipts),
+		"receipt_count":        receiptCount,
 	})
+}
+
+func (h *Handler) StartCacheCleanup(interval time.Duration) {
+	if h.decisionCache != nil {
+		h.decisionCache.StartCleanup(interval)
+	}
 }

@@ -151,3 +151,23 @@ type ShieldStats struct {
 	LastDecision   string
 	LastDecisionAt time.Time
 }
+
+type ShieldStoreStats struct {
+	TotalAgents     int
+	RestrictedCount int
+	TotalRiskEvents int
+}
+
+func (s *ShieldStore) GetAllStats() ShieldStoreStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var totalRisk int
+	for _, count := range s.riskCounts {
+		totalRisk += count
+	}
+	return ShieldStoreStats{
+		TotalAgents:     len(s.riskCounts),
+		RestrictedCount: len(s.restrictions),
+		TotalRiskEvents: totalRisk,
+	}
+}

@@ -8,16 +8,23 @@ import (
 )
 
 type Config struct {
-	ServerPort           string `json:"server_port"`
-	PolicyVersion        string `json:"policy_version"`
-	PolicyFile           string `json:"policy_file"`
-	LogLevel             string `json:"log_level"`
-	FailClosed           bool   `json:"fail_closed"`
-	DecisionLogFile      string `json:"decision_log_file"`
-	GatewayID            string `json:"gateway_id"`
-	GatewayName          string `json:"gateway_name"`
-	GatewayVersion       string `json:"gateway_version"`
-	PolicyRefreshInterval int    `json:"policy_refresh_interval"`
+	ServerPort            string `json:"server_port"`
+	PolicyVersion         string `json:"policy_version"`
+	PolicyFile            string `json:"policy_file"`
+	LogLevel              string `json:"log_level"`
+	FailClosed            bool   `json:"fail_closed"`
+	DecisionLogFile       string `json:"decision_log_file"`
+	GatewayID             string `json:"gateway_id"`
+	GatewayName           string `json:"gateway_name"`
+	GatewayVersion        string `json:"gateway_version"`
+	PolicyRefreshInterval  int    `json:"policy_refresh_interval"`
+	ReceiptsFile          string `json:"receipts_file"`
+	ReceiptsMaxSize       int    `json:"receipts_max_size"`
+	ReceiptsMaxAgeMinutes  int    `json:"receipts_max_age_minutes"`
+	ApprovalsFile         string `json:"approvals_file"`
+	ReceiptLogEnabled     bool   `json:"receipt_log_enabled"`
+	DecisionCacheMaxSize  int    `json:"decision_cache_max_size"`
+	DecisionCacheTTLMin   int    `json:"decision_cache_ttl_minutes"`
 }
 
 type Enrollment struct {
@@ -46,14 +53,22 @@ func (e *Enrollment) IsEnrolled() bool {
 
 func Default() *Config {
 	return &Config{
-		ServerPort:      "8080",
-		PolicyVersion:  "v1-local",
-		LogLevel:        "info",
-		FailClosed:      false,
-		DecisionLogFile: "var/log/decisions.jsonl",
-		GatewayID:       newGatewayID(),
-		GatewayName:     "local-gateway",
-		GatewayVersion:  "0.7.0",
+		ServerPort:            "8080",
+		PolicyVersion:         "v1-local",
+		LogLevel:              "info",
+		FailClosed:            false,
+		DecisionLogFile:       "var/log/decisions.jsonl",
+		GatewayID:              newGatewayID(),
+		GatewayName:           "local-gateway",
+		GatewayVersion:        "0.8.0",
+		PolicyRefreshInterval:  0,
+		ReceiptsFile:           "var/data/receipts.json",
+		ReceiptsMaxSize:        10000,
+		ReceiptsMaxAgeMinutes:  60,
+		ApprovalsFile:         "var/data/approvals.json",
+		ReceiptLogEnabled:      true,
+		DecisionCacheMaxSize:   10000,
+		DecisionCacheTTLMin:    10,
 	}
 }
 

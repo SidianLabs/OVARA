@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/config"
@@ -62,7 +63,7 @@ func main() {
 									if err := watcher.Reload(); err != nil {
 										log.Printf("policy reload failed: %v", err)
 									} else {
-										log.Printf("policy reloaded")
+										log.Printf("policy reloaded from %s", cfg.PolicyFile)
 									}
 								}
 							}
@@ -84,15 +85,46 @@ func main() {
 		defer decisionLogger.Close()
 	}
 
-	receiptsStore := receipts.NewInMemoryStore()
+	var receiptsStore receipts.Store
+	if cfg.ReceiptsFile != "" {
+		var maxAge time.Duration
+		if cfg.ReceiptsMaxAgeMinutes > 0 {
+			maxAge = time.Duration(cfg.ReceiptsMaxAgeMinutes) * time.Minute
+		}
+		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, maxAge)
+		if err != nil {
+			log.Printf("warning: failed to create file-backed receipt store: %v, falling back to in-memory", err)
+			receiptsStore = receipts.NewInMemoryStore()
+		} else {
+			receiptsStore = store
+			log.Printf("receipts persisted to %s (max=%d, max_age=%dm)", cfg.ReceiptsFile, cfg.ReceiptsMaxSize, cfg.ReceiptsMaxAgeMinutes)
+		}
+	} else {
+		receiptsStore = receipts.NewInMemoryStore()
+		log.Printf("receipts in-memory (no persistence configured)")
+	}
 
 	shieldStore := trust.NewShieldStore()
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
+
+	var approvalStore approval.Store
+	if cfg.ApprovalsFile != "" {
+		store, err := approval.NewFileBackedStore(cfg.ApprovalsFile)
+		if err != nil {
+			log.Printf("warning: failed to create file-backed approval store: %v, falling back to in-memory", err)
+			approvalStore = approval.NewInMemoryStore()
+		} else {
+			approvalStore = store
+			log.Printf("approvals persisted to %s", cfg.ApprovalsFile)
+		}
+	} else {
+		approvalStore = approval.NewInMemoryStore()
+		log.Printf("approvals in-memory (no persistence configured)")
+	}
+
 	h := handlers.New(eval, decisionLogger, cfg, receiptsStore)
 
 	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
-
-	approvalStore := approval.NewInMemoryStore()
 	approvalService := approval.NewService(approvalStore)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	receiptHandler := handlers.NewReceiptHandler(receiptsStore)
@@ -104,7 +136,16 @@ func main() {
 	trustHandler.RegisterRoutes(mux)
 
 	addr := ":" + cfg.ServerPort
-	log.Printf("ovara runtime gateway listening on %s", addr)
+	log.Printf("ovara runtime gateway v%s listening on %s", cfg.GatewayVersion, addr)
+	log.Printf("gateway_id=%s gateway_name=%s enrollment=local", cfg.GatewayID, cfg.GatewayName)
+
+	if cacheTTL := time.Duration(cfg.DecisionCacheTTLMin) * time.Minute; cacheTTL > 0 {
+		h.StartCacheCleanup(cacheTTL)
+		log.Printf("decision cache cleanup enabled (ttl=%v)", cacheTTL)
+	} else {
+		h.StartCacheCleanup(5 * time.Minute)
+		log.Printf("decision cache cleanup using default 5m interval")
+	}
 
 	go func() {
 		sigChan := make(chan os.Signal, 1)

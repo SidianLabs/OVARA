@@ -10,10 +10,10 @@ import (
 )
 
 type ReceiptHandler struct {
-	store *receipts.InMemoryStore
+	store receipts.Store
 }
 
-func NewReceiptHandler(store *receipts.InMemoryStore) *ReceiptHandler {
+func NewReceiptHandler(store receipts.Store) *ReceiptHandler {
 	return &ReceiptHandler{store: store}
 }
 
