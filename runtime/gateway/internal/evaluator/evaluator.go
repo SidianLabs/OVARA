@@ -12,15 +12,29 @@ import (
 	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
+	"ovara.runtime.gateway/internal/trust"
 )
 
 type Evaluator struct {
 	policyStore *policy.Store
-	validator  *identity.Validator
+	validator   *identity.Validator
+	shieldStore *trust.ShieldStore
 }
 
 func New(p *policy.Store) *Evaluator {
-	return &Evaluator{policyStore: p, validator: identity.NewValidator()}
+	return &Evaluator{
+		policyStore: p,
+		validator:   identity.NewValidator(),
+		shieldStore: trust.NewShieldStore(),
+	}
+}
+
+func NewWithShield(p *policy.Store, ss *trust.ShieldStore) *Evaluator {
+	return &Evaluator{
+		policyStore: p,
+		validator:   identity.NewValidator(),
+		shieldStore: ss,
+	}
 }
 
 type EvalResult struct {
@@ -35,7 +49,7 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 	if errs := req.Validate(); len(errs) > 0 {
 		return &models.DecisionResponse{
 			Decision:    models.DecisionDeny,
-			ReasonCodes:  []models.ReasonCode{models.ReasonActionNotAllowed},
+			ReasonCodes: []models.ReasonCode{models.ReasonActionNotAllowed},
 		}, nil
 	}
 
@@ -48,12 +62,22 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 	trustScore := 0.5
 	policyVersion := e.policyStore.Version()
 
-	identityResult := e.validator.ValidateAgentIdentity(req.AgentIdentity)
-	if !identityResult.Valid {
-		for range identityResult.Reasons {
-			reasons = append(reasons, models.ReasonIdentityInvalid)
+	trustResult := trust.NewEvaluator(e.shieldStore).Evaluate(req)
+
+	if trustResult.Restricted {
+		reasons = append(reasons, models.ReasonContainmentActive)
+		decision = models.DecisionEscalate
+		requiresApproval = true
+	}
+
+	if decision == "" {
+		identityResult := e.validator.ValidateAgentIdentity(req.AgentIdentity)
+		if !identityResult.Valid {
+			for range identityResult.Reasons {
+				reasons = append(reasons, models.ReasonIdentityInvalid)
+			}
+			decision = models.DecisionDeny
 		}
-		decision = models.DecisionDeny
 	}
 
 	if decision == "" && req.CapabilityLease != nil {
@@ -102,15 +126,39 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 		}
 	}
 
+	trustScore = trustResult.Score
+	if trustResult.ShouldEscalate() && decision == models.DecisionAllow {
+		reasons = append(reasons, models.ReasonEscalate)
+		trust.AddAnomalyReasons(trustResult, reasons)
+		decision = models.DecisionEscalate
+		requiresApproval = true
+	}
+
+	if req.AgentIdentity != nil && decision != "" {
+		e.shieldStore.RecordDecision(req.AgentIdentity.SubjectID, string(decision))
+	}
+
 	receiptStub := e.buildReceiptStub(req, decision, policyVersion, trustScore)
+
+	trustCtx := &models.TrustContext{
+		Score:          trustScore,
+		Level:          trustResult.Level,
+		AnomalySignals: trustResult.AnomalySignals,
+		ShieldActive:   trustResult.ShieldActive,
+		Restricted:     trustResult.Restricted,
+		RiskCount:      trustResult.RiskCount,
+		EvaluationTime: time.Now().UTC(),
+	}
 
 	return &models.DecisionResponse{
 		DecisionID:       generateID(),
 		Decision:         decision,
 		ReasonCodes:      reasons,
 		TrustScore:       trustScore,
+		TrustLevel:      trustResult.Level,
 		RequiresApproval: requiresApproval,
 		ReceiptStub:      receiptStub,
+		TrustContext:     trustCtx,
 	}, nil
 }
 

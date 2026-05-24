@@ -15,6 +15,7 @@ import (
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipts"
+	"ovara.runtime.gateway/internal/trust"
 )
 
 func main() {
@@ -42,8 +43,12 @@ func main() {
 	}
 
 	receiptsStore := receipts.NewInMemoryStore()
-	eval := evaluator.New(policyStore)
+
+	shieldStore := trust.NewShieldStore()
+	eval := evaluator.NewWithShield(policyStore, shieldStore)
 	h := handlers.New(eval, decisionLogger, cfg, receiptsStore)
+
+	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalService := approval.NewService(approvalStore)
@@ -54,6 +59,7 @@ func main() {
 	h.RegisterRoutes(mux)
 	approvalHandler.RegisterRoutes(mux)
 	receiptHandler.RegisterRoutes(mux)
+	trustHandler.RegisterRoutes(mux)
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway listening on %s", addr)
