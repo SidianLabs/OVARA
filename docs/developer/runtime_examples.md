@@ -291,6 +291,54 @@ The gateway uses a `PolicySource` interface to load policy rules. Local implemen
 
 Future versions can implement remote policy sources for distributed policy distribution.
 
+### File-Based Policy Loading
+
+LocalFileSource loads policy rules from a JSON file. Configure via:
+
+```bash
+OVARA_POLICY_FILE=/path/to/policy.json OVARA_POLICY_REFRESH_INTERVAL=10 go run cmd/server/main.go
+```
+
+Or in config:
+
+```yaml
+PolicyFile: "/path/to/policy.json"
+PolicyRefreshInterval: 10  # seconds
+```
+
+#### JSON Schema for Policy Files
+
+```json
+{
+  "version": "v1",
+  "rules": [
+    {"action_type": "shell", "environment": "production", "escalate": true},
+    {"action_type": "github.merge", "environment": "*", "escalate": true}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `version` | string | Policy schema version (currently "v1") |
+| `rules` | array | List of policy rules |
+| `action_type` | string | Action type pattern (e.g., "shell", "github.merge", "*") |
+| `environment` | string | Environment pattern ("production", "dev", "*") |
+| `escalate` | boolean | If true, matching actions trigger escalate decision |
+
+#### PolicyRefreshInterval Configuration
+
+| Value | Behavior |
+|-------|----------|
+| `0` | Disabled — no file watching |
+| `> 0` | Enabled — server watches file for changes |
+
+When `PolicyRefreshInterval > 0`:
+- Server monitors the policy file for modifications
+- On file write, policy is reloaded automatically
+- No server restart required
+- Value is in seconds between check intervals
+
 ## Local-Only Limitations (v1)
 
 - **In-memory state**: Shield restrictions, risk counts, and receipts reset on server restart
