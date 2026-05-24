@@ -134,7 +134,34 @@ All fields are optional. Defaults are used if not specified.
 
 - `allow` — action is permitted and executed
 - `deny` — action is blocked; command does not run
-- `escalate` — action requires human approval before execution; command does not run
+- `escalate` — action is blocked pending human approval; command does not run. Use the approval service to approve or deny.
+
+## Approval Workflow
+
+When an action returns `escalate`, create an approval request and await human decision:
+
+```bash
+# Create approval
+curl -X POST http://localhost:8080/v1/approval/create \
+  -H "Content-Type: application/json" \
+  -d '{"decision_id":"dec_abc123","action_type":"shell","resource":"shell:git push","environment":"dev"}'
+
+# List pending approvals
+curl http://localhost:8080/v1/approval/pending
+
+# Approve an action
+curl -X POST http://localhost:8080/v1/approval/{approval_id}/approve \
+  -H "Content-Type: application/json" \
+  -d '{"resolved_by":"admin@example.com"}'
+
+# Resume an approved action
+curl -X POST http://localhost:8080/v1/approval/{approval_id}/resume
+```
+
+Approval states:
+- `pending` — awaiting human review
+- `approved` — action is authorized; use resume endpoint to proceed
+- `denied` — action is blocked permanently
 
 ## Policy Behavior
 
@@ -167,7 +194,14 @@ Decisions are written to the configured `decision_log_file` as JSON lines. Each 
 - end-to-end interceptor tests
 - UUID-based decision ID generation
 
-## Non-Phase-1/2
+## Phase 3 Scope
+
+- local approval service with in-memory store
+- approval request model tied to decision
+- approve/deny/resume endpoints for escalated actions
+- approval workflow tests
+
+## Non-Phase-1/2/3
 
 - advanced policy language
 - machine identity federation
