@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -118,6 +119,30 @@ func (s *ShieldStore) GetStats(agentID string) ShieldStats {
 		LastDecision:   s.lastDecision[agentID],
 		LastDecisionAt: s.lastDecisionTime[agentID],
 	}
+}
+
+func (s *ShieldStore) AutoRestrictAfterRepeatedRisk(agentID string, threshold int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if count := s.riskCounts[agentID]; count >= threshold && s.restrictions[agentID] == nil {
+		s.restrictions[agentID] = &Restriction{
+			AgentID:    agentID,
+			Restricted: true,
+			Reason:     fmt.Sprintf("auto_restricted_after_%d_risk_events", count),
+			Since:      time.Now(),
+		}
+		return true
+	}
+	return false
+}
+
+func (s *ShieldStore) ShouldAutoRestrict(agentID string, threshold int) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.restrictions[agentID] != nil {
+		return false
+	}
+	return s.riskCounts[agentID] >= threshold
 }
 
 type ShieldStats struct {
