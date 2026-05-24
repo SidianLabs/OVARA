@@ -16,6 +16,8 @@ import (
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipts"
 	"ovara.runtime.gateway/internal/trust"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func main() {
@@ -30,6 +32,42 @@ func main() {
 	}
 
 	policyStore := policy.NewStore(cfg.PolicyVersion)
+	var watcher *policy.Watcher
+
+	if cfg.PolicyFile != "" {
+		policySource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion)
+		store, err := policySource.Load()
+		if err != nil {
+			log.Printf("warning: failed to load policy from file: %v", err)
+		} else {
+			policyStore = store
+			policyStore.SetFilePath(cfg.PolicyFile)
+
+			if cfg.PolicyRefreshInterval > 0 {
+				w, err := policy.NewWatcher(policySource)
+				if err != nil {
+					log.Printf("warning: failed to create policy watcher: %v", err)
+				} else {
+					watcher = w
+					if err := watcher.Watch(cfg.PolicyFile); err != nil {
+						log.Printf("warning: failed to watch policy file: %v", err)
+					} else {
+						go func() {
+							for event := range watcher.Events() {
+								if event.Has(fsnotify.Write) {
+									if _, err := watcher.Reload(); err != nil {
+										log.Printf("policy reload failed: %v", err)
+									} else {
+										log.Printf("policy reloaded")
+									}
+								}
+							}
+						}()
+					}
+				}
+			}
+		}
+	}
 
 	var decisionLogger *logging.DecisionLogger
 	if cfg.DecisionLogFile != "" {
