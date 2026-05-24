@@ -11,8 +11,9 @@ type Rule struct {
 }
 
 type Store struct {
-	version string
-	rules   []Rule
+	version  string
+	rules    []Rule
+	filePath string
 }
 
 func NewStore(version string) *Store {
@@ -21,6 +22,17 @@ func NewStore(version string) *Store {
 
 func (s *Store) Version() string {
 	return s.version
+}
+
+func (s *Store) SetFilePath(path string) {
+	s.filePath = path
+}
+
+func (s *Store) Reload() (*Store, error) {
+	if s.filePath == "" {
+		return nil, fmt.Errorf("no file path set")
+	}
+	return LoadStoreFromFile(s.filePath, s.version)
 }
 
 func (s *Store) RulesForAction(actionType string) []Rule {

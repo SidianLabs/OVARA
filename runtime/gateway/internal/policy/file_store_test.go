@@ -3,6 +3,9 @@ package policy
 import (
 	"os"
 	"testing"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestLoadStoreFromFile_ValidJSON(t *testing.T) {
@@ -54,5 +57,47 @@ func TestLoadStoreFromFile_FileNotFound(t *testing.T) {
 	_, err := LoadStoreFromFile("/nonexistent/policy.json", "")
 	if err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestWatcher_EventsOnFileChange(t *testing.T) {
+	tmpDir := t.TempDir()
+	policyFile := tmpDir + "/policy.json"
+
+	initialPolicy := `{"version": "v1-initial", "rules": []}`
+	if err := os.WriteFile(policyFile, []byte(initialPolicy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	source := NewLocalFileSource(policyFile, "")
+	watcher, err := NewWatcher(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer watcher.Close()
+
+	if err := watcher.Watch(policyFile); err != nil {
+		t.Fatal(err)
+	}
+
+	updatedPolicy := `{"version": "v2-updated", "rules": [{"action_type": "shell", "environment": "*", "escalate": true}]}`
+	if err := os.WriteFile(policyFile, []byte(updatedPolicy), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case event := <-watcher.Events():
+		if event.Has(fsnotify.Write) {
+			reloaded, err := watcher.Reload()
+			if err != nil {
+				t.Fatalf("reload failed: %v", err)
+			}
+			if reloaded.Version() != "v2-updated" {
+				t.Errorf("expected v2-updated, got %s", reloaded.Version())
+			}
+			return
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for fsnotify event")
 	}
 }
