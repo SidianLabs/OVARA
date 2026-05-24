@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/handlers"
@@ -42,8 +43,13 @@ func main() {
 	eval := evaluator.New(policyStore)
 	h := handlers.New(eval, decisionLogger, cfg)
 
+	approvalStore := approval.NewInMemoryStore()
+	approvalService := approval.NewService(approvalStore)
+	approvalHandler := handlers.NewApprovalHandler(approvalService)
+
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
+	approvalHandler.RegisterRoutes(mux)
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway listening on %s", addr)
