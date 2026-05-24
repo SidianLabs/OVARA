@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
 )
@@ -138,15 +140,7 @@ func (e *Evaluator) buildReceiptStub(req *models.ActionRequest, decision models.
 }
 
 func generateID() string {
-	return fmt.Sprintf("dec_%s", generateShortID())
-}
-
-func generateShortID() string {
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = byte(time.Now().UnixNano() >> uint(i*8) & 0xff)
-	}
-	return hex.EncodeToString(b)[:16]
+	return fmt.Sprintf("dec_%s", uuid.New().String()[:16])
 }
 
 func actionDigest(req *models.ActionRequest) string {
