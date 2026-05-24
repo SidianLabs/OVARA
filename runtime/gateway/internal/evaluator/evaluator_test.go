@@ -68,6 +68,10 @@ func TestEvaluator_AllowAction(t *testing.T) {
 		ActionType:  models.ActionTypeGitPull,
 		Resource:    "repo:acme/api",
 		Environment: models.EnvironmentLocal,
+		AgentIdentity: &models.AgentIdentity{
+			Issuer:    "ovara",
+			SubjectID: "agent-001",
+		},
 	}
 
 	resp, err := ev.Evaluate(req)
@@ -88,6 +92,10 @@ func TestEvaluator_EscalateAction(t *testing.T) {
 		ActionType:  models.ActionTypeShell,
 		Resource:    "repo:acme/api",
 		Environment: models.EnvironmentLocal,
+		AgentIdentity: &models.AgentIdentity{
+			Issuer:    "ovara",
+			SubjectID: "agent-001",
+		},
 	}
 
 	resp, err := ev.Evaluate(req)
@@ -110,6 +118,10 @@ func TestEvaluator_ProductionEscalates(t *testing.T) {
 		ActionType:  models.ActionTypeGitPull,
 		Resource:    "repo:acme/api",
 		Environment: models.EnvironmentProduction,
+		AgentIdentity: &models.AgentIdentity{
+			Issuer:    "ovara",
+			SubjectID: "agent-001",
+		},
 	}
 
 	resp, err := ev.Evaluate(req)

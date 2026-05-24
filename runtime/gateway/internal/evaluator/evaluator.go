@@ -4,20 +4,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
 )
 
 type Evaluator struct {
 	policyStore *policy.Store
+	validator  *identity.Validator
 }
 
 func New(p *policy.Store) *Evaluator {
-	return &Evaluator{policyStore: p}
+	return &Evaluator{policyStore: p, validator: identity.NewValidator()}
 }
 
 type EvalResult struct {
@@ -45,13 +48,39 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 	trustScore := 0.5
 	policyVersion := e.policyStore.Version()
 
-	if req.CapabilityLease != nil {
-		if req.CapabilityLease.Expiry.Before(time.Now()) {
-			reasons = append(reasons, models.ReasonCapabilityExpiry)
+	identityResult := e.validator.ValidateAgentIdentity(req.AgentIdentity)
+	if !identityResult.Valid {
+		for range identityResult.Reasons {
+			reasons = append(reasons, models.ReasonIdentityInvalid)
+		}
+		decision = models.DecisionDeny
+	}
+
+	if decision == "" && req.CapabilityLease != nil {
+		leaseResult := e.validator.ValidateCapabilityLease(req.CapabilityLease)
+		if !leaseResult.Valid {
+			for _, reason := range leaseResult.Reasons {
+				if strings.Contains(reason, "expiry") {
+					reasons = append(reasons, models.ReasonCapabilityExpiry)
+				} else {
+					reasons = append(reasons, models.ReasonCapabilityNotAllowed)
+				}
+			}
 			decision = models.DecisionDeny
-		} else if !e.capabilityAllowsAction(req.CapabilityLease, string(req.ActionType), req.Resource) {
-			reasons = append(reasons, models.ReasonActionNotAllowed)
-			decision = models.DecisionDeny
+		}
+
+		if decision == "" {
+			scopeResult := e.validator.ValidateCapabilityLeaseScope(req.CapabilityLease, string(req.ActionType), req.Resource)
+			if !scopeResult.Valid {
+				for _, reason := range scopeResult.Reasons {
+					if strings.Contains(reason, "scope") {
+						reasons = append(reasons, models.ReasonCapabilityScope)
+					} else {
+						reasons = append(reasons, models.ReasonCapabilityNotAllowed)
+					}
+				}
+				decision = models.DecisionDeny
+			}
 		}
 	}
 
@@ -83,17 +112,6 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 		RequiresApproval: requiresApproval,
 		ReceiptStub:      receiptStub,
 	}, nil
-}
-
-func (e *Evaluator) capabilityAllowsAction(lease *models.CapabilityLease, actionType, resource string) bool {
-	for _, a := range lease.AllowedActions {
-		if a == actionType || a == "*" {
-			if lease.ResourceScope == "*" || lease.ResourceScope == resource {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) (bool, models.ReasonCode) {
@@ -149,6 +167,9 @@ func actionDigest(req *models.ActionRequest) string {
 	h.Write([]byte(req.Resource))
 	if req.AgentIdentity != nil {
 		h.Write([]byte(req.AgentIdentity.SubjectID))
+	}
+	if req.CapabilityLease != nil {
+		h.Write([]byte(req.CapabilityLease.LeaseID))
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
 }
