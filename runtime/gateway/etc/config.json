@@ -1,0 +1,7 @@
+{
+  "server_port": "8080",
+  "policy_version": "v1-local",
+  "log_level": "info",
+  "fail_closed": false,
+  "decision_log_file": "var/log/decisions.jsonl"
+}
