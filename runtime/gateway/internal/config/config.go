@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	ServerPort      string `json:"server_port"`
-	PolicyVersion   string `json:"policy_version"`
-	PolicyFile      string `json:"policy_file"`
-	LogLevel        string `json:"log_level"`
-	FailClosed      bool   `json:"fail_closed"`
-	DecisionLogFile string `json:"decision_log_file"`
-	GatewayID       string `json:"gateway_id"`
-	GatewayName     string `json:"gateway_name"`
-	GatewayVersion   string `json:"gateway_version"`
+	ServerPort           string `json:"server_port"`
+	PolicyVersion        string `json:"policy_version"`
+	PolicyFile           string `json:"policy_file"`
+	LogLevel             string `json:"log_level"`
+	FailClosed           bool   `json:"fail_closed"`
+	DecisionLogFile      string `json:"decision_log_file"`
+	GatewayID            string `json:"gateway_id"`
+	GatewayName          string `json:"gateway_name"`
+	GatewayVersion       string `json:"gateway_version"`
+	PolicyRefreshInterval int    `json:"policy_refresh_interval"`
 }
 
 type Enrollment struct {
