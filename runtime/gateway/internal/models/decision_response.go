@@ -29,6 +29,7 @@ type DecisionResponse struct {
 	ReasonCodes      []ReasonCode `json:"reason_codes"`
 	TrustScore       float64      `json:"trust_score,omitempty"`
 	RequiresApproval bool         `json:"requires_approval"`
+	ApprovalID       string       `json:"approval_id,omitempty"`
 	ReceiptStub      *ReceiptStub `json:"receipt_stub,omitempty"`
 }
 
@@ -40,4 +41,21 @@ type ReceiptStub struct {
 	PolicyVersion     string    `json:"policy_version"`
 	TrustContextScore float64   `json:"trust_context_score,omitempty"`
 	IssuedAt          time.Time `json:"issued_at"`
+}
+
+type Receipt struct {
+	ReceiptID          string    `json:"receipt_id"`
+	DecisionID         string    `json:"decision_id"`
+	ActionDigest       string    `json:"action_digest"`
+	ActionType         string    `json:"action_type"`
+	Resource           string    `json:"resource"`
+	AgentID            string    `json:"agent_id,omitempty"`
+	CapabilityLeaseID  string    `json:"capability_lease_id,omitempty"`
+	Decision           string    `json:"decision"`
+	PolicyVersion      string    `json:"policy_version"`
+	TrustScore         float64   `json:"trust_score"`
+	ApprovalID         string    `json:"approval_id,omitempty"`
+	ApprovalDecision   string    `json:"approval_decision,omitempty"`
+	IssuedAt          time.Time `json:"issued_at"`
+	Signature          string    `json:"signature"`
 }
