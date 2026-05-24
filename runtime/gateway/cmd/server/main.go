@@ -35,7 +35,7 @@ func main() {
 	var watcher *policy.Watcher
 
 	if cfg.PolicyFile != "" {
-		policySource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion)
+		policySource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
 		store, err := policySource.Load()
 		if err != nil {
 			log.Printf("warning: failed to load policy from file: %v", err)
@@ -55,7 +55,7 @@ func main() {
 						go func() {
 							for event := range watcher.Events() {
 								if event.Has(fsnotify.Write) {
-									if _, err := watcher.Reload(); err != nil {
+									if err := watcher.Reload(); err != nil {
 										log.Printf("policy reload failed: %v", err)
 									} else {
 										log.Printf("policy reloaded")
@@ -101,6 +101,18 @@ func main() {
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway listening on %s", addr)
+
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		<-sigChan
+		log.Println("shutting down...")
+		if watcher != nil {
+			watcher.Close()
+		}
+		os.Exit(0)
+	}()
+
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)

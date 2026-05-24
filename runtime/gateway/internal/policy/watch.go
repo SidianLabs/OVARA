@@ -29,6 +29,6 @@ func (w *Watcher) Close() error {
 	return w.watcher.Close()
 }
 
-func (w *Watcher) Reload() (*Store, error) {
+func (w *Watcher) Reload() error {
 	return w.source.Reload()
 }

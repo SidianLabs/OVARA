@@ -1,6 +1,9 @@
 package policy
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 type Rule struct {
 	ActionType  string
@@ -28,11 +31,17 @@ func (s *Store) SetFilePath(path string) {
 	s.filePath = path
 }
 
-func (s *Store) Reload() (*Store, error) {
+func (s *Store) Reload() error {
 	if s.filePath == "" {
-		return nil, fmt.Errorf("no file path set")
+		return errors.New("no file path set")
 	}
-	return LoadStoreFromFile(s.filePath, s.version)
+	newStore, err := LoadStoreFromFile(s.filePath, s.version)
+	if err != nil {
+		return err
+	}
+	s.rules = newStore.rules
+	s.version = newStore.version
+	return nil
 }
 
 func (s *Store) RulesForAction(actionType string) []Rule {

@@ -69,7 +69,13 @@ func TestWatcher_EventsOnFileChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	source := NewLocalFileSource(policyFile, "")
+	store, err := LoadStoreFromFile(policyFile, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetFilePath(policyFile)
+
+	source := NewLocalFileSource(policyFile, "", store)
 	watcher, err := NewWatcher(source)
 	if err != nil {
 		t.Fatal(err)
@@ -88,12 +94,11 @@ func TestWatcher_EventsOnFileChange(t *testing.T) {
 	select {
 	case event := <-watcher.Events():
 		if event.Has(fsnotify.Write) {
-			reloaded, err := watcher.Reload()
-			if err != nil {
+			if err := watcher.Reload(); err != nil {
 				t.Fatalf("reload failed: %v", err)
 			}
-			if reloaded.Version() != "v2-updated" {
-				t.Errorf("expected v2-updated, got %s", reloaded.Version())
+			if store.Version() != "v2-updated" {
+				t.Errorf("expected v2-updated, got %s", store.Version())
 			}
 			return
 		}
