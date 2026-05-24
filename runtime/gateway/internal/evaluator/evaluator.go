@@ -136,6 +136,9 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 
 	if req.AgentIdentity != nil && decision != "" {
 		e.shieldStore.RecordDecision(req.AgentIdentity.SubjectID, string(decision))
+		if e.shieldStore.ShouldAutoRestrict(req.AgentIdentity.SubjectID, 3) {
+			e.shieldStore.AutoRestrictAfterRepeatedRisk(req.AgentIdentity.SubjectID, 3)
+		}
 	}
 
 	receiptStub := e.buildReceiptStub(req, decision, policyVersion, trustScore)
