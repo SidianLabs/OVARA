@@ -248,6 +248,49 @@ curl http://localhost:8080/v1/runtime/agent/agent-001/recent
 # {"agent_id":"agent-001","receipts":[...],"count":5}
 ```
 
+## Gateway Status Summary
+
+```bash
+# Get gateway status with decision cache and receipt stats
+curl http://localhost:8080/v1/runtime/status
+
+# Response
+# {"gateway_id":"gw_12345","gateway_name":"local-gateway",
+#  "gateway_version":"0.7.0","enrollment_status":"local",
+#  "decision_cache_count":150,"decision_cache_max":10000,
+#  "receipt_count":42}
+```
+
+## Auto-Restriction Behavior
+
+When an agent accumulates 3 or more risk events (deny or escalate decisions) within the decision cache window, the gateway automatically restricts that agent:
+
+```bash
+# After 3+ risky decisions, agent is auto-restricted
+# Subsequent requests from that agent will:
+# - Have decision changed to escalate if was allow
+# - Include reason_codes containing "containment_active"
+# - Trust score will be reduced by 0.4
+
+# Example: Third risky decision triggers auto-restriction
+curl -X POST http://localhost:8080/v1/runtime/check ... # first - no restriction
+curl -X POST http://localhost:8080/v1/runtime/check ... # second - no restriction
+curl -X POST http://localhost:8080/v1/runtime/check ... # third - agent becomes restricted
+```
+
+The auto-restriction threshold is 3 by default. Once restricted, the agent must be manually unrestricted via:
+```bash
+curl -X POST http://localhost:8080/v1/shield/unrestrict/agent-001
+```
+
+## Policy Source Model
+
+The gateway uses a `PolicySource` interface to load policy rules. Local implementations available:
+- **InMemorySource**: Uses default rules (shell, github actions escalate)
+- **LocalFileSource**: Loads rules from a local JSON file
+
+Future versions can implement remote policy sources for distributed policy distribution.
+
 ## Local-Only Limitations (v1)
 
 - **In-memory state**: Shield restrictions, risk counts, and receipts reset on server restart
