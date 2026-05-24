@@ -50,5 +50,6 @@ func LoadStoreFromFile(filePath string, versionHint string) (*Store, error) {
 	}
 
 	store := &Store{version: version, rules: rules}
+	store.SetFilePath(filePath)
 	return store, nil
 }

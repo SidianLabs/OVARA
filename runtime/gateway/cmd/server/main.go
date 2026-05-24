@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"ovara.runtime.gateway/internal/approval"
@@ -33,6 +34,7 @@ func main() {
 
 	policyStore := policy.NewStore(cfg.PolicyVersion)
 	var watcher *policy.Watcher
+	var wg sync.WaitGroup
 
 	if cfg.PolicyFile != "" {
 		policySource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
@@ -52,7 +54,9 @@ func main() {
 					if err := watcher.Watch(cfg.PolicyFile); err != nil {
 						log.Printf("warning: failed to watch policy file: %v", err)
 					} else {
+						wg.Add(1)
 						go func() {
+							defer wg.Done()
 							for event := range watcher.Events() {
 								if event.Has(fsnotify.Write) {
 									if err := watcher.Reload(); err != nil {
@@ -110,6 +114,7 @@ func main() {
 		if watcher != nil {
 			watcher.Close()
 		}
+		wg.Wait()
 		os.Exit(0)
 	}()
 

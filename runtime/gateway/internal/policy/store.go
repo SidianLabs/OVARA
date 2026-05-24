@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"sync"
 )
 
 type Rule struct {
@@ -14,6 +15,7 @@ type Rule struct {
 }
 
 type Store struct {
+	mu       sync.RWMutex
 	version  string
 	rules    []Rule
 	filePath string
@@ -24,14 +26,20 @@ func NewStore(version string) *Store {
 }
 
 func (s *Store) Version() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.version
 }
 
 func (s *Store) SetFilePath(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.filePath = path
 }
 
 func (s *Store) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.filePath == "" {
 		return errors.New("no file path set")
 	}
@@ -45,6 +53,8 @@ func (s *Store) Reload() error {
 }
 
 func (s *Store) RulesForAction(actionType string) []Rule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var matching []Rule
 	for _, r := range s.rules {
 		if r.ActionType == actionType || r.ActionType == "*" {
@@ -55,6 +65,8 @@ func (s *Store) RulesForAction(actionType string) []Rule {
 }
 
 func (s *Store) RulesForEnvironment(env string) []Rule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var matching []Rule
 	for _, r := range s.rules {
 		if r.Environment == env || r.Environment == "*" {
@@ -65,6 +77,8 @@ func (s *Store) RulesForEnvironment(env string) []Rule {
 }
 
 func (s *Store) AddRule(r Rule) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.rules = append(s.rules, r)
 }
 
