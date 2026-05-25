@@ -136,3 +136,86 @@ const (
 - Build and test after each milestone
 - Run full test suite at end
 - Verify enriched status output via curl
+---
+
+## Implementation Results
+
+### Enrollment Package Created
+
+**Files**:
+- `runtime/gateway/internal/enrollment/identity.go` - GatewayIdentity, EnrollmentState types
+- `runtime/gateway/internal/enrollment/service.go` - Service interface and LocalEnrollmentService
+- `runtime/gateway/internal/enrollment/service_test.go` - 7 tests, all passing
+
+**Service Interface**:
+```go
+type Service interface {
+    GetIdentity() *GatewayIdentity
+    GetStatus() *EnrollmentStatus
+    Initialize(env string) error
+    Heartbeat() error
+    IsEnrolled() bool
+}
+```
+
+**GatewayIdentity Fields**:
+- ID, Name, Version, Environment
+- RegisteredAt, LastSeenAt
+- EnrollmentState (local/enrolled/pending)
+- Tags (metadata)
+
+### Status Endpoint Enhanced
+
+**New fields**:
+- enrollment_state (local/enrolled/pending)
+- environment
+- registered_at
+- last_seen_at
+
+**Example response**:
+```json
+{
+  "gateway_id": "gw_906000",
+  "gateway_name": "local-gateway",
+  "gateway_version": "0.9.0",
+  "enrollment_state": "local",
+  "environment": "local",
+  "registered_at": "2026-05-25T05:29:36.396892Z",
+  "last_seen_at": "2026-05-25T05:29:36.396892Z",
+  "policy_version": "v1-enroll-test",
+  "policy_source": "in-memory",
+  "hot_reload": "disabled",
+  "storage_mode": "file-backed",
+  "decision_cache_count": 0,
+  "decision_cache_max": 10000,
+  "receipt_count": 0
+}
+```
+
+### Gateway Log Output
+
+```
+2026/05/25 10:59:36 gateway_id=gw_906000 enrollment_state=local environment=local
+2026/05/25 10:59:36 ovara runtime gateway v0.9.0 listening on :8080
+```
+
+---
+
+## Git Log
+
+```
+f20e277 feat(gateway): add local enrollment identity model
+```
+
+## What's Stubbed vs Real
+
+**Real**:
+- EnrollmentService with local persistence
+- GatewayIdentity model with ID, name, version, environment, state
+- Status endpoint with enrollment_state, registered_at, last_seen_at
+
+**Stubbed for future**:
+- Control plane enrollment (not implemented - would require remote service)
+- Tags/metadata (present but not used in decisions)
+- Heartbeat not called periodically (only on startup)
+- "enrolled" and "pending" states not used (always "local")
