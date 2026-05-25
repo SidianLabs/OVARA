@@ -1,0 +1,13 @@
+{
+  "version": "v1-permissive",
+  "rules": [
+    {"action_type": "*", "environment": "production", "escalate": true},
+    {"action_type": "shell", "environment": "production", "escalate": true},
+    {"action_type": "shell", "environment": "dev", "escalate": true},
+    {"action_type": "shell", "environment": "local", "allow": true},
+    {"action_type": "github.merge", "environment": "*", "escalate": true},
+    {"action_type": "github.delete_branch", "environment": "*", "escalate": true},
+    {"action_type": "ci.deploy", "environment": "*", "escalate": true},
+    {"action_type": "git.force_push", "environment": "*", "escalate": true}
+  ]
+}

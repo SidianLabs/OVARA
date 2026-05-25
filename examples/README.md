@@ -43,7 +43,7 @@ This directory contains scripts for exercising the OVARA Runtime Gateway flows.
 Starts the gateway with sensible defaults. Must be run from repo root.
 
 ### `demo_safe_shell.sh`
-Exercises safe shell commands that get allowed. Pass optional agent ID as first arg.
+Exercises shell commands. By default, ALL shell commands escalate (require approval) in the default policy. This script is useful for verifying the escalation flow works correctly.
 
 ### `demo_risky_shell.sh`
 Exercises risky shell patterns that trigger escalate decisions. Demonstrates:
@@ -78,6 +78,9 @@ Sample policy file for testing hot reload. Configure with:
 ```bash
 OVARA_POLICY_FILE=./examples/sample_policy.json OVARA_POLICY_REFRESH_INTERVAL=10 ./start_gateway.sh
 ```
+
+### `sample_policy_local.json`
+A "local dev" policy profile. Note: The current policy engine does not support Allow rules for shell actions - all shell commands escalate by default policy. This file is provided for future use when Allow rules are implemented.
 
 ### `sample_config.yaml`
 Sample gateway configuration file.
