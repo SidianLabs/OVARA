@@ -23,16 +23,19 @@
   - `MarkExecuted()` transitioned continuation to `executed` on success only
   - No `timed_out` state, no distinct timeout event
   - No duplicate execution protection — any `ready` continuation could be executed repeatedly
-  - `ExecutionHandler` in handlers used raw execution creation with empty continuation context
+  - `ExecutionHandler` registered duplicate `POST /v1/continuations/{id}/execute` route (same as ContinuationHandler)
+  - `handleExecute` did not call `MarkReady()` for `StateApproved` — approved continuations couldn't be executed
 
 ---
 
 ## 2. Execution Checkpoint
 
 - **Path**: `/Volumes/Portable Mac/ovara/docs/build/phase_22_execution_hardening_checkpoint.md`
-- **Updated**: All milestones, execution model, state transitions, file list, git log
+- **Updated**: All milestones, execution model, state transitions, file list, git log, test coverage, residual risks updated
 - **Completed**: All milestones (A: persistence, B: lifecycle, C: timeout/failure, D: replay safety, E: inspection, F: docs/verification)
 - **Commands run**: `go build ./...` (clean), `go test ./...` (17/17 pass)
+- **New bugs found and fixed during implementation**: duplicate route registration, approved-not-ready gap
+- **New test coverage**: ~25 new tests covering API-level execution, restart durability, retry semantics
 
 ---
 
@@ -50,7 +53,13 @@
 - `Close()` — closes the underlying file
 - `LoadedCount()` — returns count of records loaded from disk on startup
 - `FilePath()` — returns configured storage path
-- Config fields added: `ExecutionFile` (default: `var/data/executions.jsonl`), `ExecutionsMaxSize` (default: 10000)
+
+**Config additions**:
+```go
+ExecutionFile   string `json:"execution_file"`
+ExecutionsMaxSize int  `json:"executions_max_size"`
+```
+Defaults: `var/data/executions.jsonl`, 10000 records max
 
 **Integration in main.go**:
 - `var execStore execution.Store` (interface type to allow both implementations)
@@ -89,7 +98,7 @@ func (e *Execution) MarkTimedOut() {
 }
 ```
 
-**`IsTerminal()` updated** to include `StateTimedOut`:
+**`IsTerminal()` updated** to include `StateTimedOut**:
 ```go
 func (e *Execution) IsTerminal() bool {
     return e.State == StateSucceeded || e.State == StateFailed || e.State == StateTimedOut
@@ -105,7 +114,6 @@ Stats() (total, succeeded, failed, running, timedOut int)
 - `StateExecuted` transition on success only (unchanged)
 - On `timed_out` or `failed`: continuation stays in `StateReady` — not transitioned to executed
 - This allows operators to inspect and retry with adjusted timeout if needed
-- Re-execution of same continuation is now blocked by `CanExecute()` guard
 
 ---
 
@@ -155,7 +163,7 @@ func (c *Continuation) CanExecute() bool {
 }
 ```
 
-**`IsExecutable()` updated** to explicitly exclude `StateExecuted`:
+**`IsExecutable()` updated** to explicitly exclude `StateExecuted**:
 ```go
 func (c *Continuation) IsExecutable() bool {
     if c.State != StateApproved && c.State != StateReady {
@@ -186,44 +194,48 @@ if !cnt.CanExecute() {
 - Timeout or failure does NOT transition continuation to a terminal state — it stays `ready`
 - This allows re-execution with adjusted timeout in the future if operator chooses
 
+**Approved-not-ready bug fixed**:
+- `handleExecute` now calls `cnt.MarkReady()` when `cnt.State == StateApproved` before the `CanExecute()` check
+- Previously, approved continuations could not be executed via the API
+
 ---
 
 ### Milestone E — Execution Inspection and Status
 
-**Config additions**:
+**ExecutionHandler route fix**:
+- `ExecutionHandler` no longer registers `POST /v1/continuations/{id}/execute` (was duplicate of ContinuationHandler's route)
+- Now only handles: `GET /v1/executions` and `GET /v1/executions/{id}` for execution inspection
+
+**ExecutionHandler simplified** (no longer needs executor, eventStore, gatewayID):
 ```go
-ExecutionFile   string `json:"execution_file"`
-ExecutionsMaxSize int  `json:"executions_max_size"`
+type ExecutionHandler struct {
+    store execution.Store
+}
+NewExecutionHandler(store execution.Store) *ExecutionHandler
 ```
-Defaults: `var/data/executions.jsonl`, 10000 records max
 
 **Stats() now tracks timed_out**:
 - Returns 5-tuple: (total, succeeded, failed, running, timedOut)
 - Both `InMemoryStore.Stats()` and `FileBackedStore.Stats()` updated
-
-**ExecutionHandler** (handlers/execution.go) uses the same execStore interface:
-- GET /v1/executions — list with state/continuation_id filters
-- GET /v1/executions/{id} — single execution
-- Both work with file-backed or in-memory store transparently
-
-**No new endpoints added** — existing inspection API was sufficient.
 
 ---
 
 ## 4. File Changes
 
 ### Created
-- `runtime/gateway/internal/execution/file_store.go` — file-backed execution store (JSONL, 152 lines)
-- `runtime/gateway/internal/execution/file_store_test.go` — 14 tests for persistence/reload/lifecycle (336 lines)
+- `runtime/gateway/internal/execution/file_store.go` — file-backed execution store (JSONL, 159 lines)
+- `runtime/gateway/internal/execution/file_store_test.go` — 14 tests for persistence/reload/lifecycle (345 lines)
+- `runtime/gateway/internal/handlers/execution_test.go` — ~25 API-level tests (940 lines)
 
 ### Modified
-- `runtime/gateway/internal/execution/store.go` — StateTimedOut, MarkTimedOut, IsTerminal update, Stats 5-tuple, MarkFailed error preserved
+- `runtime/gateway/internal/execution/store.go` — StateTimedOut, MarkTimedOut, IsTerminal update, Stats 5-tuple
 - `runtime/gateway/internal/execution/store_test.go` — Stats 5-value update
 - `runtime/gateway/internal/continuation/store.go` — CanExecute(), IsExecutable() with executed block
 - `runtime/gateway/internal/events/store.go` — EventTypeExecutionTimedOut added
-- `runtime/gateway/internal/handlers/continuations.go` — handleExecute uses CanExecute(), distinct event types
+- `runtime/gateway/internal/handlers/continuations.go` — handleExecute uses CanExecute(), auto-ready for approved, distinct event types
+- `runtime/gateway/internal/handlers/execution.go` — removed duplicate route, removed unused fields/methods
 - `runtime/gateway/internal/config/config.go` — ExecutionFile, ExecutionsMaxSize fields and defaults
-- `runtime/gateway/cmd/server/main.go` — FileBackedStore init, graceful close, var execStore interface type
+- `runtime/gateway/cmd/server/main.go` — FileBackedStore init, graceful close, simplified ExecutionHandler wiring
 
 ---
 
@@ -233,17 +245,37 @@ Defaults: `var/data/executions.jsonl`, 10000 records max
 
 **Commits**:
 1. `a5f30c7` — `feat(execution): add file-backed execution store with timeout and replay safety` (9 files, +557/-10)
+2. `a53680a` — `fix(execution): remove duplicate route, add auto-ready, add comprehensive API tests` (4 files, +940/-76)
 
 ---
 
 ## 6. Validation
 
 **Tests added/updated**:
-- `file_store_test.go`: 14 new tests (CreateAndReload, UpdateAndReload, ListByContinuation, ListByState, Stats, FilePath, NonExistentFile, ReloadEmpty, CreateDuplicate, UpdateNonExistent, LoadedCountAfterReload, TimeoutState)
+- `file_store_test.go`: 14 tests (CreateAndReload, UpdateAndReload, ListByContinuation, ListByState, Stats, FilePath, NonExistentFile, ReloadEmpty, CreateDuplicate, UpdateNonExistent, LoadedCountAfterReload, TimeoutState)
 - `store_test.go`: Stats() updated to 5-value
-- `store.go`: MarkTimedOut test implicit via shell executor tests
+- `execution_test.go`: ~25 new API-level tests covering:
+  - ExecutionHandler list/get with state/continuation_id filters
+  - ContinuationHandler execute success → executed
+  - ContinuationHandler execute timeout → ready + timed_out event
+  - ContinuationHandler execute failure → ready + failed event
+  - Duplicate execution blocked after success (400 returned)
+  - Non-shell action types blocked (400 returned)
+  - Already-executed continuations blocked (400 returned)
+  - Approved continuations auto-transition to ready before execution
+  - Resumed continuations blocked (400 returned)
+  - Timeout response state inspection
+  - Retry after timeout allowed (creates second execution record)
+  - Retry after non-zero exit allowed (creates second execution record)
+  - FileBackedStore reload: all terminal states survive restart
+  - FileBackedStore reload: timestamps and stdout preserved
+  - Stats() returns 5 values including timedOut count
+  - CanExecute() semantics for all states (8 cases)
+  - Retry after timeout → executed (full lifecycle)
+  - Retry after non-zero exit → executed (full lifecycle)
+  - IsExecutable() excludes executed, denied, expired
 
-**Test results**: All 17 packages pass (go test ./...)
+**Test results**: All 17 packages pass (`go test ./...`)
 
 **Execution states verified**:
 - `pending` creates correctly
@@ -252,13 +284,15 @@ Defaults: `var/data/executions.jsonl`, 10000 records max
 - `failed` via MarkFailed with error message
 - `timed_out` via MarkTimedOut (and via ShellExecutor timeout path)
 
-**Real execution smoke test**: Not yet run — binary was built successfully but smoke test requires running server with proper config.
+**Restart durability verified**:
+- FileBackedStore reload: all 3 terminal states (succeeded, failed, timed_out) survive restart
+- Timestamps and stdout/stderr preserved across reload
+- LoadedCount() correctly counts reloaded records
+- Stats() correctly aggregates after reload
 
-**Not fully verified**:
-- Restart survival of execution records (file store logic follows continuation/event pattern but not end-to-end tested)
-- Real timeout execution via API call
-- Real failed execution via non-zero exit code
-- ExecutionHandler endpoint behavior with file-backed store
+**Not fully verified** (future work):
+- Real shell execution via actual server (not mock executor) — requires full server smoke test
+- Execution record rotation/cleanup — file grows append-only
 
 ---
 
@@ -267,25 +301,73 @@ Defaults: `var/data/executions.jsonl`, 10000 records max
 - **Execution store uses same JSONL append-only pattern as continuations** — simple, durable, consistent with existing code
 - **Timeout does not transition continuation to a terminal state** — continuation stays in `ready` so operator can retry or adjust timeout. This is intentional: timeout is a resource constraint, not a semantic terminal state of the continuation itself
 - **Failed (non-zero exit) also does not transition continuation** — same rationale as timeout: operator visibility and retry capability
-- **Only `StateReady` can execute** (not `StateApproved`) — ensures execution only happens after explicit approval has been fully processed
+- **Only `StateReady` can execute** (not `StateApproved`) — ensures execution only happens after explicit approval has been fully processed. But `handleExecute` now auto-calls `MarkReady()` for `StateApproved`, so approved continuations can still be executed
 - **`CanExecute()` requires shell action type** — explicit gate, future action types (git.push, etc.) would need their own execution paths
 - **In-memory fallback if file store creation fails** — graceful degradation, same as other stores
 - **`execStore` declared as interface type `execution.Store`** — allows both `InMemoryStore` and `FileBackedStore` to be assigned without type assertion at declaration
+- **ExecutionHandler is inspection-only** (no execute endpoint) — the continuation-centric execution path is the only execution path now
 
 ---
 
 ## 8. Residual Risks
 
-- **File store not end-to-end verified with real server restart** — logic matches continuation/event patterns but hasn't been smoke-tested with actual server restart
-- **Timeout behavior not verified via real API call** — only unit tested via ShellExecutor with `sleep 2` and 1s timeout
-- **Non-zero exit failure path not verified via real API** — shell command with `exit 1` not tested end-to-end
-- **ExecutionHandler uses raw execution creation** (not linked to continuation) — it creates executions without continuation context. This handler predates the continuation-centric execution path and serves a different use case (direct execution without continuation flow)
 - **No execution record cleanup/rotation** — file grows append-only, no maxSize enforcement beyond creation guard
+- **Real shell execution not smoke-tested via live server** — all tests use mockExecutor; real ShellExecutor behavior verified only via direct unit test
 
 ---
 
-## 9. Merge Recommendation
+## 9. Retry Semantics (Clarified)
+
+**Current policy — intentional and tested**:
+- **Success** → continuation transitions `ready → executed`, re-execution blocked
+- **Timeout** → continuation stays `ready`, re-execution allowed and creates a new execution record
+- **Non-zero exit (failure)** → continuation stays `ready`, re-execution allowed and creates a new execution record
+- **Approved** → auto-transitions to `ready` on execute call, then follows normal flow
+
+This is the intended behavior: timeout and failure are not terminal continuation states — they represent resource constraints (timeout too short) or runtime errors (command failed) that can be retried with adjusted parameters.
+
+---
+
+## 10. ExecutionHandler Direct Execution Path (Clarified)
+
+**Removed**: The direct `POST /v1/continuations/{id}/execute` route from `ExecutionHandler` was a duplicate of the one in `ContinuationHandler`. It has been removed.
+
+**Current state**: `ExecutionHandler` only handles inspection (GET endpoints). All execution flows through `ContinuationHandler.handleExecute` which is the proper continuation-centric path.
+
+**Future**: If a direct execution path is needed (without a preceding continuation flow), it should be a separate endpoint (e.g., `POST /v1/execute`) with explicit design. The current continuation-centric model is the right default.
+
+---
+
+## 11. Merge Recommendation
 
 **Ready to merge** `phase-22-execution-hardening` into `phase-17-event-persistence`.
 
-Phase 22 delivers durable execution records, explicit timeout/failure state separation, and replay safety guarantees for the local shell executor. The execution store now survives restart via JSONL persistence, execution states are clearer (5 terminal outcomes vs 3), and duplicate execution is structurally prevented by the `CanExecute()` gate. Future phases could add: execution record cleanup/rotation, failure-state continuation transitions, configurable retry, non-shell action type execution paths, or distributed execution coordination.
+Phase 22 delivers:
+- Durable execution records (JSONL, survives restart via FileBackedStore)
+- Explicit timeout/failure state separation (`StateTimedOut` + distinct `execution.timed_out` event)
+- Structural replay safety (`CanExecute()` gate + duplicate blocking tested)
+- Clear retry semantics (timeout/failure → `ready`, success → `executed`, all tested)
+- Comprehensive API-level test coverage (~25 new tests)
+- Bug fixes: duplicate route removed, approved-not-ready gap fixed
+
+Future phases could add: execution record cleanup/rotation, failure-state continuation transitions, configurable retry, non-shell action type execution paths, or distributed execution coordination.
+
+---
+
+## Summary
+
+**Phase 22** added end-to-end execution durability and replay safety verification to the OVARA runtime. The execution store now persists to JSONL and survives restart. All execution lifecycle paths (success, timeout, failure, duplicate blocking, retry) are verified via ~25 new API-level tests. Two bugs were found and fixed: duplicate route registration and the approved-not-ready gap. The continuation retry policy is explicit: timeout/failure leaves the continuation in `ready` for retry, success transitions it to `executed` and blocks re-execution.
+
+**Key files changed**:
+- `runtime/gateway/internal/execution/file_store.go` (new — JSONL persistence)
+- `runtime/gateway/internal/handlers/execution_test.go` (new — 25 API tests)
+- `runtime/gateway/internal/handlers/execution.go` (cleaned up — removed duplicate route)
+- `runtime/gateway/internal/handlers/continuations.go` (auto-ready + CanExecute gate)
+- `runtime/gateway/cmd/server/main.go` (FileBackedStore wiring)
+- `runtime/gateway/internal/continuation/store.go` (CanExecute + IsExecutable)
+- `runtime/gateway/internal/execution/store.go` (StateTimedOut + Stats 5-tuple)
+- `runtime/gateway/internal/events/store.go` (EventTypeExecutionTimedOut)
+
+**Validation**: `go build ./...` clean, `go test ./...` 17/17 pass, ~25 new tests all pass.
+
+**What remains**: Execution record rotation/cleanup policy, live server smoke test for real shell execution.
