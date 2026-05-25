@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/handlers"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/policy"
@@ -32,6 +34,25 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+
+	env := os.Getenv("OVARA_ENVIRONMENT")
+	if env == "" {
+		env = "local"
+	}
+
+	var enrollmentFile string
+	if cfg.ReceiptsFile != "" {
+		enrollmentFile = cfg.ReceiptsFile
+		enrollmentFile = enrollmentFile[:len(enrollmentFile)-len(filepath.Base(enrollmentFile))] + "enrollment.json"
+	}
+	enrollmentSvc := enrollment.NewLocalService(enrollmentFile)
+	if err := enrollmentSvc.Initialize(env); err != nil {
+		log.Printf("warning: failed to initialize enrollment: %v", err)
+	}
+	log.Printf("gateway_id=%s enrollment_state=%s environment=%s",
+		enrollmentSvc.GetIdentity().ID,
+		enrollmentSvc.GetIdentity().EnrollmentState,
+		enrollmentSvc.GetIdentity().Environment)
 
 	policyStore := policy.NewStore(cfg.PolicyVersion)
 	var watcher *policy.Watcher
@@ -123,6 +144,7 @@ func main() {
 	}
 
 	h := handlers.New(eval, decisionLogger, cfg, receiptsStore)
+	h.SetEnrollment(enrollmentSvc)
 
 	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
 	approvalService := approval.NewService(approvalStore)
@@ -137,7 +159,10 @@ func main() {
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway v%s listening on %s", cfg.GatewayVersion, addr)
-	log.Printf("gateway_id=%s gateway_name=%s enrollment=local", cfg.GatewayID, cfg.GatewayName)
+	log.Printf("gateway_id=%s enrollment_state=%s environment=%s",
+		enrollmentSvc.GetIdentity().ID,
+		enrollmentSvc.GetIdentity().EnrollmentState,
+		enrollmentSvc.GetIdentity().Environment)
 
 	if cacheTTL := time.Duration(cfg.DecisionCacheTTLMin) * time.Minute; cacheTTL > 0 {
 		h.StartCacheCleanup(cacheTTL)

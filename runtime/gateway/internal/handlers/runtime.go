@@ -10,17 +10,19 @@ import (
 
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/receipts"
 )
 
 type Handler struct {
-	evaluator     *evaluator.Evaluator
-	logger        *logging.DecisionLogger
-	config        *config.Config
-	receiptsStore receipts.Store
-	decisionCache *decisionCache
+	evaluator      *evaluator.Evaluator
+	logger         *logging.DecisionLogger
+	config         *config.Config
+	receiptsStore  receipts.Store
+	decisionCache  *decisionCache
+	enrollmentSvc  enrollment.Service
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -31,6 +33,10 @@ func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, 
 		receiptsStore: rs,
 		decisionCache: newDecisionCache(),
 	}
+}
+
+func (h *Handler) SetEnrollment(svc enrollment.Service) {
+	h.enrollmentSvc = svc
 }
 
 type HandlerWithStores struct {
@@ -317,10 +323,7 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := map[string]any{
-		"gateway_id":           h.config.GatewayID,
-		"gateway_name":         h.config.GatewayName,
 		"gateway_version":      h.config.GatewayVersion,
-		"enrollment_status":    "local",
 		"policy_version":       policyVersion,
 		"policy_source":        policySource,
 		"policy_refresh_secs":   h.config.PolicyRefreshInterval,
@@ -334,6 +337,21 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		status["hot_reload"] = "enabled"
 	} else {
 		status["hot_reload"] = "disabled"
+	}
+
+	if h.enrollmentSvc != nil {
+		identity := h.enrollmentSvc.GetIdentity()
+		status["gateway_id"] = identity.ID
+		status["gateway_name"] = identity.Name
+		status["enrollment_state"] = identity.EnrollmentState
+		status["environment"] = identity.Environment
+		status["registered_at"] = identity.RegisteredAt
+		status["last_seen_at"] = identity.LastSeenAt
+		status["gateway_version"] = identity.Version
+	} else {
+		status["gateway_id"] = h.config.GatewayID
+		status["gateway_name"] = h.config.GatewayName
+		status["enrollment_state"] = "local"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
