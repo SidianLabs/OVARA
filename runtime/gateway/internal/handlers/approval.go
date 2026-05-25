@@ -7,15 +7,26 @@ import (
 
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/metrics"
 )
 
 type ApprovalHandler struct {
-	service *approval.Service
+	service    *approval.Service
+	eventStore events.Store
+	gatewayID  string
 }
 
 func NewApprovalHandler(s *approval.Service) *ApprovalHandler {
 	return &ApprovalHandler{service: s}
+}
+
+func (h *ApprovalHandler) SetEventStore(store events.Store) {
+	h.eventStore = store
+}
+
+func (h *ApprovalHandler) SetGatewayID(id string) {
+	h.gatewayID = id
 }
 
 func (h *ApprovalHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -57,6 +68,21 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	metrics.RecordApproval()
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeApprovalCreated).
+			WithGatewayID(h.gatewayID).
+			WithDecisionID(req.DecisionID).
+			WithApprovalID(created.ApprovalID).
+			WithAgentID(req.AgentID).
+			WithPayload(map[string]any{
+				"action_type": created.ActionType,
+				"resource":    created.Resource,
+				"trust_score": created.TrustScore,
+				"status":      string(created.Status),
+			})
+		h.eventStore.Append(evt)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -113,6 +139,19 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeApprovalResolved).
+			WithGatewayID(h.gatewayID).
+			WithApprovalID(id).
+			WithDecisionID(updated.DecisionID).
+			WithPayload(map[string]any{
+				"action":      "approved",
+				"resolved_by": body.ResolvedBy,
+				"trust_score": updated.TrustScore,
+			})
+		h.eventStore.Append(evt)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(updated)
 }
@@ -145,6 +184,19 @@ func (h *ApprovalHandler) handleDeny(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		api.JSONInternalError(w, "failed to deny: "+err.Error())
 		return
+	}
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeApprovalResolved).
+			WithGatewayID(h.gatewayID).
+			WithApprovalID(id).
+			WithDecisionID(updated.DecisionID).
+			WithPayload(map[string]any{
+				"action":      "denied",
+				"resolved_by": body.ResolvedBy,
+				"reason":      body.Reason,
+			})
+		h.eventStore.Append(evt)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

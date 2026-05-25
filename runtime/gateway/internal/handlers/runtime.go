@@ -12,6 +12,7 @@ import (
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
@@ -26,6 +27,7 @@ type Handler struct {
 	decisionCache  *decisionCache
 	enrollmentSvc  enrollment.Service
 	approvalSvc    *approval.Service
+	eventStore     events.Store
 	shieldStats    func() (restricted, total int)
 }
 
@@ -49,6 +51,14 @@ func (h *Handler) SetApprovalStats(svc *approval.Service) {
 
 func (h *Handler) SetShieldStats(fn func() (restricted, total int)) {
 	h.shieldStats = fn
+}
+
+func (h *Handler) SetEventStore(store events.Store) {
+	h.eventStore = store
+}
+
+func (h *Handler) SetApprovalService(svc *approval.Service) {
+	h.approvalSvc = svc
 }
 
 type HandlerWithStores struct {
@@ -207,6 +217,46 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if h.receiptsStore != nil && resp.ReceiptStub != nil {
 		receipt := h.buildReceipt(resp, &req)
 		_ = h.receiptsStore.Put(receipt)
+
+		if h.eventStore != nil {
+			var agentID string
+			if req.AgentIdentity != nil {
+				agentID = req.AgentIdentity.SubjectID
+			}
+			gwID := ""
+			if h.enrollmentSvc != nil && h.enrollmentSvc.GetIdentity() != nil {
+				gwID = h.enrollmentSvc.GetIdentity().ID
+			}
+
+			evt := events.NewEvent(events.EventTypeDecisionEvaluated).
+				WithGatewayID(gwID).
+				WithAgentID(agentID).
+				WithDecisionID(resp.DecisionID).
+				WithReceiptID(resp.ReceiptStub.ReceiptID).
+				WithPayload(map[string]any{
+					"action_type":  string(req.ActionType),
+					"resource":      req.Resource,
+					"decision":      string(resp.Decision),
+					"trust_score":   resp.TrustScore,
+					"trust_level":   resp.TrustLevel,
+					"requires_approval": resp.RequiresApproval,
+					"latency_ms":    latencyMs,
+				})
+			h.eventStore.Append(evt)
+
+			receiptEvt := events.NewEvent(events.EventTypeReceiptIssued).
+				WithGatewayID(gwID).
+				WithAgentID(agentID).
+				WithDecisionID(resp.DecisionID).
+				WithReceiptID(resp.ReceiptStub.ReceiptID).
+				WithPayload(map[string]any{
+					"action_type":   string(req.ActionType),
+					"resource":       req.Resource,
+					"decision":       string(resp.Decision),
+					"policy_version": resp.ReceiptStub.PolicyVersion,
+				})
+			h.eventStore.Append(receiptEvt)
+		}
 	}
 
 	if h.decisionCache != nil {

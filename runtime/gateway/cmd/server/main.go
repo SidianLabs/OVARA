@@ -14,6 +14,7 @@ import (
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/handlers"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
@@ -72,6 +73,7 @@ func main() {
 	policyStore := policy.NewStore(cfg.PolicyVersion)
 	var watcher *policy.Watcher
 	var wg sync.WaitGroup
+	eventStore := events.NewInMemoryStore(10000)
 
 	if cfg.PolicyFile != "" {
 		initialSource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
@@ -102,6 +104,15 @@ func main() {
 									} else {
 										log.Printf("policy reloaded from %s", cfg.PolicyFile)
 										metrics.RecordPolicyReload(true, "")
+										if eventStore != nil {
+											evt := events.NewEvent(events.EventTypePolicyReloaded).
+												WithGatewayID(enrollmentSvc.GetIdentity().ID).
+												WithPayload(map[string]any{
+													"success": true,
+													"source":  cfg.PolicyFile,
+												})
+											eventStore.Append(evt)
+										}
 									}
 								}
 							}
@@ -168,14 +179,20 @@ func main() {
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	receiptHandler := handlers.NewReceiptHandler(receiptsStore)
 
-	h.SetApprovalStats(approvalService)
+	h.SetApprovalService(approvalService)
 	h.SetShieldStats(shieldStore.Stats)
+	h.SetEventStore(eventStore)
+	approvalHandler.SetEventStore(eventStore)
+	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+
+	eventHandler := handlers.NewEventHandler(eventStore)
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	approvalHandler.RegisterRoutes(mux)
 	receiptHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)
+	eventHandler.RegisterRoutes(mux)
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway v%s listening on %s", cfg.GatewayVersion, addr)
