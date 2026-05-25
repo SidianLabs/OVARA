@@ -263,6 +263,58 @@ curl http://localhost:8080/v1/runtime/status
 #  "receipt_count":42}
 ```
 
+## Runtime Metrics
+
+```bash
+# Get runtime metrics (decision counts, latency, heartbeat, policy reload status)
+curl http://localhost:8080/v1/runtime/metrics
+
+# Response
+# {"decision_counts":{"allow":5,"escalate":3,"deny":2},
+#  "action_counts":{"shell":6,"git.push":2,"github.merge":2},
+#  "total_decisions":10,"avg_latency_ms":2,"last_latency_ms":1,
+#  "last_decision_at":"2026-05-25T12:00:00Z",
+#  "approval_counts":3,"heartbeat_count":24,"last_heartbeat_at":"...",
+#  "policy_version":"v1","policy_source":"file:./examples/sample_policy.json",
+#  "policy_reload_ok":true,"policy_reload_last":"2026-05-25T11:55:00Z",
+#  "policy_reload_err":""}
+```
+
+| Field | Description |
+|-------|-------------|
+| `decision_counts` | Decisions by outcome: allow, deny, escalate |
+| `action_counts` | Decisions by action type (shell, git.push, etc.) |
+| `total_decisions` | Cumulative decision count since startup |
+| `avg_latency_ms` | Average decision latency in milliseconds |
+| `last_latency_ms` | Most recent decision latency |
+| `last_decision_at` | Timestamp of last decision |
+| `approval_counts` | Total approvals created |
+| `heartbeat_count` | Total heartbeats sent |
+| `last_heartbeat_at` | Timestamp of last heartbeat |
+| `policy_version` | Current policy version |
+| `policy_source` | `in-memory` or `file:<path>` |
+| `policy_reload_ok` | `true` if last reload succeeded |
+| `policy_reload_last` | Timestamp of last reload attempt |
+| `policy_reload_err` | Error message if last reload failed |
+
+**Observing latency and decision volume:**
+
+```bash
+# Make a few requests then check metrics
+curl -X POST http://localhost:8080/v1/runtime/check -H "Content-Type: application/json" \
+  -d '{"action_type":"shell","resource":"shell:pwd","environment":"local","agent_identity":{"issuer":"ovara","subject_id":"test"}}'
+
+curl http://localhost:8080/v1/runtime/metrics | jq '{total_decisions, avg_latency_ms, last_latency_ms, decision_counts}'
+```
+
+**Detecting policy reload failures:**
+
+```bash
+# Check if policy reload is healthy
+curl http://localhost:8080/v1/runtime/metrics | jq '{policy_reload_ok, policy_reload_last, policy_reload_err}'
+# If policy_reload_ok is false, check policy_reload_err for the error message
+```
+
 ## Auto-Restriction Behavior
 
 When an agent accumulates 3 or more risk events (deny or escalate decisions) within the decision cache window, the gateway automatically restricts that agent:
@@ -591,6 +643,21 @@ curl -X POST http://localhost:8080/v1/approval/create \
 
 # List pending approvals
 curl http://localhost:8080/v1/approval/pending | jq .
+```
+
+### 8. Verify Runtime Metrics
+
+```bash
+# Check that metrics endpoint is accessible and populated
+curl -s http://localhost:8080/v1/runtime/metrics | jq '{total_decisions, heartbeat_count, policy_reload_ok}'
+
+# Make a decision and verify it shows up in metrics
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"shell","resource":"shell:echo hello","environment":"local","agent_identity":{"issuer":"ovara","subject_id":"metrics-test"}}' | jq .decision
+
+curl -s http://localhost:8080/v1/runtime/metrics | jq '{total_decisions, decision_counts}'
+# total_decisions should be 1 higher than before
 ```
 
 ### What to Check If Something Goes Wrong
