@@ -194,3 +194,59 @@ func TestLocalService_StartHeartbeat_Stop(t *testing.T) {
 		t.Error("LastSeenAt should not change after stop (no heartbeat firing)")
 	}
 }
+
+func TestLocalService_IdentityPersistsAcrossRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "enrollment.json")
+
+	svc1 := NewLocalService(filePath)
+	err := svc1.Initialize("prod")
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	originalID := svc1.GetIdentity().ID
+	originalName := svc1.GetIdentity().Name
+	originalVersion := svc1.GetIdentity().Version
+
+	svc2 := NewLocalService(filePath)
+	err = svc2.Initialize("staging")
+	if err != nil {
+		t.Fatalf("Initialize on restart failed: %v", err)
+	}
+
+	reloaded := svc2.GetIdentity()
+	if reloaded.ID != originalID {
+		t.Errorf("reloaded gateway_id = %v, want %v", reloaded.ID, originalID)
+	}
+	if reloaded.Name != originalName {
+		t.Errorf("reloaded gateway_name = %v, want %v", reloaded.Name, originalName)
+	}
+	if reloaded.Version != originalVersion {
+		t.Errorf("reloaded gateway_version = %v, want %v", reloaded.Version, originalVersion)
+	}
+	if reloaded.EnrollmentState != EnrollmentStateLocal {
+		t.Errorf("reloaded enrollment_state = %v, want local", reloaded.EnrollmentState)
+	}
+}
+
+func TestLocalService_WithGatewayNameOption(t *testing.T) {
+	svc := NewLocalService("", WithGatewayName("test-gateway"))
+	err := svc.Initialize("dev")
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	if svc.GetIdentity().Name != "test-gateway" {
+		t.Errorf("gateway name = %v, want test-gateway", svc.GetIdentity().Name)
+	}
+}
+
+func TestLocalService_WithGatewayVersionOption(t *testing.T) {
+	svc := NewLocalService("", WithGatewayVersion("1.2.3"))
+	err := svc.Initialize("dev")
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+	if svc.GetIdentity().Version != "1.2.3" {
+		t.Errorf("gateway version = %v, want 1.2.3", svc.GetIdentity().Version)
+	}
+}
