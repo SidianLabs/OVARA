@@ -262,8 +262,21 @@ func main() {
 	} else {
 		log.Printf("execution store in-memory (no persistence configured)")
 	}
-	shellExec := execution.NewShellExecutor(60)
+	shellExec := execution.NewShellExecutorWithLimits(
+		60,
+		cfg.ExecutionStdoutLimitBytes,
+		cfg.ExecutionStderrLimitBytes,
+	)
+	if cfg.ExecutionWorkingDir != "" {
+		shellExec.WorkingDir = cfg.ExecutionWorkingDir
+	}
+	if len(cfg.ExecutionAllowedEnvVars) > 0 {
+		shellExec.AllowedEnvVars = cfg.ExecutionAllowedEnvVars
+	}
+	log.Printf("shell executor configured (stdout_limit=%d, stderr_limit=%d, workdir=%q, allowed_env=%v)",
+		cfg.ExecutionStdoutLimitBytes, cfg.ExecutionStderrLimitBytes, cfg.ExecutionWorkingDir, cfg.ExecutionAllowedEnvVars)
 	execHandler := handlers.NewExecutionHandler(execStore)
+	execHandler.SetExecutor(shellExec)
 	execHandler.RegisterRoutes(mux)
 
 	continuationHandler.SetExecutionStore(execStore)

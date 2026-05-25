@@ -201,3 +201,132 @@ func TestShellExecutor(t *testing.T) {
 		t.Error("stdout should not be empty")
 	}
 }
+
+func TestShellExecutor_StdoutTruncation(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(10, 20, 256*1024)
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:printf 'A%.0s' {1..100}", 10)
+	err := exec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded", exe.State)
+	}
+	if !exe.StdoutTruncated {
+		t.Error("stdout should be truncated")
+	}
+	if len(exe.Stdout) > 20 {
+		t.Errorf("stdout len = %d, want <= 20 (limit)", len(exe.Stdout))
+	}
+	if exe.StdoutLimitBytes != 20 {
+		t.Errorf("stdout_limit_bytes = %d, want 20", exe.StdoutLimitBytes)
+	}
+}
+
+func TestShellExecutor_StderrTruncation(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(10, 1024*1024, 20)
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:printf 'B%.0s' 1>&2 {1..100}", 10)
+	err := exec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded", exe.State)
+	}
+	if !exe.StderrTruncated {
+		t.Error("stderr should be truncated")
+	}
+	if len(exe.Stderr) > 20 {
+		t.Errorf("stderr len = %d, want <= 20 (limit)", len(exe.Stderr))
+	}
+	if exe.StderrLimitBytes != 20 {
+		t.Errorf("stderr_limit_bytes = %d, want 20", exe.StderrLimitBytes)
+	}
+}
+
+func TestShellExecutor_NotTruncatedWhenUnderLimit(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(10, 1024*1024, 256*1024)
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo hello", 10)
+	err := exec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded", exe.State)
+	}
+	if exe.StdoutTruncated {
+		t.Error("stdout should not be truncated (output is small)")
+	}
+	if exe.StderrTruncated {
+		t.Error("stderr should not be truncated")
+	}
+}
+
+func TestShellExecutor_WorkingDir(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(10, 1024*1024, 256*1024)
+	exec.WorkingDir = "/tmp"
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:pwd", 10)
+	err := exec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded", exe.State)
+	}
+	if exe.Stdout != "/tmp\n" {
+		t.Errorf("stdout = %q, want %q", exe.Stdout, "/tmp\n")
+	}
+}
+
+func TestShellExecutor_AllowedEnvVars(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(10, 1024*1024, 256*1024)
+	exec.AllowedEnvVars = []string{"PATH", "HOME"}
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo $HOME", 10)
+	err := exec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded", exe.State)
+	}
+	if exe.Stdout == "" {
+		t.Error("stdout should not be empty (HOME should be set)")
+	}
+}
+
+func TestShellExecutor_ExitCodePreservedOnFailure(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(10, 1024*1024, 256*1024)
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:exit 42", 10)
+	err := exec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if exe.State != StateFailed {
+		t.Errorf("state = %s, want failed", exe.State)
+	}
+	if exe.ExitCode != 42 {
+		t.Errorf("exit_code = %d, want 42", exe.ExitCode)
+	}
+}
+
+func TestShellExecutor_TimeoutSetsTruncationFlags(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(1, 1024*1024, 256*1024)
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:sleep 5", 1)
+	err := exec.Execute(ctx, exe)
+	if err == nil {
+		t.Fatal("expected error for timeout")
+	}
+	if exe.State != StateTimedOut {
+		t.Errorf("state = %s, want timed_out", exe.State)
+	}
+	if exe.StdoutLimitBytes != 1024*1024 {
+		t.Errorf("stdout_limit_bytes = %d, want 1048576", exe.StdoutLimitBytes)
+	}
+}

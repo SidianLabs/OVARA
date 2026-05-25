@@ -10,11 +10,16 @@ import (
 )
 
 type ExecutionHandler struct {
-	store execution.Store
+	store    execution.Store
+	executor *execution.ShellExecutor
 }
 
 func NewExecutionHandler(store execution.Store) *ExecutionHandler {
 	return &ExecutionHandler{store: store}
+}
+
+func (h *ExecutionHandler) SetExecutor(exec *execution.ShellExecutor) {
+	h.executor = exec
 }
 
 func (h *ExecutionHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -90,6 +95,18 @@ func (h *ExecutionHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		response["persistence_mode"] = "in_memory"
+	}
+
+	if h.executor != nil {
+		response["executor_stdout_limit_bytes"] = h.executor.StdoutLimitBytes
+		response["executor_stderr_limit_bytes"] = h.executor.StderrLimitBytes
+		response["executor_default_timeout_secs"] = int(h.executor.DefaultTimeout.Seconds())
+		if h.executor.WorkingDir != "" {
+			response["executor_working_dir"] = h.executor.WorkingDir
+		}
+		if len(h.executor.AllowedEnvVars) > 0 {
+			response["executor_allowed_env_vars"] = h.executor.AllowedEnvVars
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

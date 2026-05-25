@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ const (
 )
 
 type Execution struct {
-	ExecutionID    string    `json:"execution_id"`
+	ExecutionID     string    `json:"execution_id"`
 	ContinuationID string    `json:"continuation_id"`
 	DecisionID     string    `json:"decision_id,omitempty"`
 	ApprovalID     string    `json:"approval_id,omitempty"`
@@ -35,6 +36,10 @@ type Execution struct {
 	ExitCode       int       `json:"exit_code,omitempty"`
 	Stdout         string    `json:"stdout,omitempty"`
 	Stderr         string    `json:"stderr,omitempty"`
+	StdoutTruncated bool     `json:"stdout_truncated,omitempty"`
+	StderrTruncated bool     `json:"stderr_truncated,omitempty"`
+	StdoutLimitBytes int     `json:"stdout_limit_bytes,omitempty"`
+	StderrLimitBytes int     `json:"stderr_limit_bytes,omitempty"`
 	Error          string    `json:"error,omitempty"`
 	TimeoutSeconds int       `json:"timeout_seconds"`
 }
@@ -90,7 +95,11 @@ type Executor interface {
 }
 
 type ShellExecutor struct {
-	DefaultTimeout time.Duration
+	DefaultTimeout    time.Duration
+	StdoutLimitBytes int
+	StderrLimitBytes int
+	WorkingDir       string
+	AllowedEnvVars   []string
 }
 
 func NewShellExecutor(timeoutSec int) *ShellExecutor {
@@ -98,7 +107,26 @@ func NewShellExecutor(timeoutSec int) *ShellExecutor {
 		timeoutSec = 60
 	}
 	return &ShellExecutor{
-		DefaultTimeout: time.Duration(timeoutSec) * time.Second,
+		DefaultTimeout:    time.Duration(timeoutSec) * time.Second,
+		StdoutLimitBytes: 1024 * 1024,   // 1 MB default
+		StderrLimitBytes: 256 * 1024,    // 256 KB default
+	}
+}
+
+func NewShellExecutorWithLimits(timeoutSec, stdoutLimit, stderrLimit int) *ShellExecutor {
+	if timeoutSec <= 0 {
+		timeoutSec = 60
+	}
+	if stdoutLimit <= 0 {
+		stdoutLimit = 1024 * 1024
+	}
+	if stderrLimit <= 0 {
+		stderrLimit = 256 * 1024
+	}
+	return &ShellExecutor{
+		DefaultTimeout:    time.Duration(timeoutSec) * time.Second,
+		StdoutLimitBytes: stdoutLimit,
+		StderrLimitBytes: stderrLimit,
 	}
 }
 
@@ -118,10 +146,19 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var stdout, stderr bytes.Buffer
+	stdoutBuf := &limitedWriter{buf: new(bytes.Buffer), limit: se.StdoutLimitBytes}
+	stderrBuf := &limitedWriter{buf: new(bytes.Buffer), limit: se.StderrLimitBytes}
+
 	cmd := exec.CommandContext(execCtx, "sh", "-c", shellCmd)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = stdoutBuf
+	cmd.Stderr = stderrBuf
+
+	if se.WorkingDir != "" {
+		cmd.Dir = se.WorkingDir
+	}
+	if len(se.AllowedEnvVars) > 0 {
+		cmd.Env = filterEnv(se.AllowedEnvVars)
+	}
 
 	err = cmd.Run()
 	exitCode := 0
@@ -131,14 +168,67 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 		}
 		if execCtx.Err() == context.DeadlineExceeded {
 			e.MarkTimedOut()
+			e.Stdout = stdoutBuf.buf.String()
+			e.Stderr = stderrBuf.buf.String()
+			e.StdoutTruncated = stdoutBuf.truncated
+			e.StderrTruncated = stderrBuf.truncated
+			e.StdoutLimitBytes = se.StdoutLimitBytes
+			e.StderrLimitBytes = se.StderrLimitBytes
 			return err
 		}
-		e.MarkFailed(stderr.String(), exitCode)
+		e.MarkFailed(stderrBuf.buf.String(), exitCode)
+		e.Stdout = stdoutBuf.buf.String()
+		e.Stderr = stderrBuf.buf.String()
+		e.StdoutTruncated = stdoutBuf.truncated
+		e.StderrTruncated = stderrBuf.truncated
+		e.StdoutLimitBytes = se.StdoutLimitBytes
+		e.StderrLimitBytes = se.StderrLimitBytes
 		return nil
 	}
 
-	e.MarkSucceeded(exitCode, stdout.String(), stderr.String())
+	e.MarkSucceeded(exitCode, stdoutBuf.buf.String(), stderrBuf.buf.String())
+	e.StdoutTruncated = stdoutBuf.truncated
+	e.StderrTruncated = stderrBuf.truncated
+	e.StdoutLimitBytes = se.StdoutLimitBytes
+	e.StderrLimitBytes = se.StderrLimitBytes
 	return nil
+}
+
+type limitedWriter struct {
+	buf       *bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (lw *limitedWriter) Write(p []byte) (n int, err error) {
+	if lw.buf.Len()+len(p) > lw.limit {
+		remaining := lw.limit - lw.buf.Len()
+		if remaining > 0 {
+			lw.buf.Write(p[:remaining])
+		}
+		lw.truncated = true
+		return len(p), nil
+	}
+	return lw.buf.Write(p)
+}
+
+func filterEnv(allowed []string) []string {
+	env := []string{}
+	for _, key := range allowed {
+		if val, ok := getEnv(key); ok {
+			env = append(env, key+"="+val)
+		}
+	}
+	return env
+}
+
+func getEnv(key string) (string, bool) {
+	for _, e := range os.Environ() {
+		if len(e) > len(key) && e[:len(key)+1] == key+"=" {
+			return e[len(key)+1:], true
+		}
+	}
+	return "", false
 }
 
 func ParseShellResource(resource string) (string, error) {

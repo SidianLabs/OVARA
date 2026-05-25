@@ -37,6 +37,10 @@ type Config struct {
 	ExecutionRetentionDays      int    `json:"execution_retention_days"`
 	ExecutionMaxRecords         int    `json:"execution_max_records"`
 	ExecutionSweepIntervalSec   int    `json:"execution_sweep_interval_secs"`
+	ExecutionStdoutLimitBytes   int    `json:"execution_stdout_limit_bytes"`
+	ExecutionStderrLimitBytes   int    `json:"execution_stderr_limit_bytes"`
+	ExecutionWorkingDir         string `json:"execution_working_dir"`
+	ExecutionAllowedEnvVars     []string `json:"execution_allowed_env_vars"`
 }
 
 type Enrollment struct {
@@ -93,6 +97,9 @@ func Default() *Config {
 		ExecutionRetentionDays:    7,
 		ExecutionMaxRecords:       10000,
 		ExecutionSweepIntervalSec: 300,
+		ExecutionStdoutLimitBytes: 1024 * 1024,  // 1 MB
+		ExecutionStderrLimitBytes: 256 * 1024,   // 256 KB
+		ExecutionAllowedEnvVars:   []string{},
 	}
 }
 

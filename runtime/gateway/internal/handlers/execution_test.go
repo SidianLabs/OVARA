@@ -207,6 +207,51 @@ func TestContinuationHandler_Execute_Success(t *testing.T) {
 	}
 }
 
+func TestContinuationHandler_Execute_Truncation(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	cnt := continuation.NewContinuation("dec_1", "shell", "shell:printf 'X%.0s' {1..100}")
+	cnt.MarkApproved("admin")
+	contStore.Create(cnt)
+
+	realExec := execution.NewShellExecutorWithLimits(10, 20, 1024*1024)
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetExecutor(realExec)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/"+cnt.ContinuationID+"/execute", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	execs := execStore.ListAll()
+	if len(execs) != 1 {
+		t.Fatalf("executions count = %d, want 1", len(execs))
+	}
+	if execs[0].State != execution.StateSucceeded {
+		t.Errorf("state = %s, want succeeded", execs[0].State)
+	}
+	if !execs[0].StdoutTruncated {
+		t.Error("stdout_truncated = false, want true")
+	}
+	if len(execs[0].Stdout) > 20 {
+		t.Errorf("stdout len = %d, want <= 20", len(execs[0].Stdout))
+	}
+	if execs[0].StdoutLimitBytes != 20 {
+		t.Errorf("stdout_limit_bytes = %d, want 20", execs[0].StdoutLimitBytes)
+	}
+}
+
 func TestContinuationHandler_Execute_TimedOut(t *testing.T) {
 	contStore := continuation.NewInMemoryStore()
 	execStore := execution.NewInMemoryStore()
