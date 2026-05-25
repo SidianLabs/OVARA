@@ -112,6 +112,9 @@ func LoadStoreFromConfig(cfg map[string]any) (*Store, error) {
 			if env, ok := ruleMap["environment"].(string); ok {
 				rule.Environment = env
 			}
+			if allow, ok := ruleMap["allow"].(bool); ok {
+				rule.Allow = allow
+			}
 			if deny, ok := ruleMap["deny"].(bool); ok {
 				rule.Deny = deny
 			}

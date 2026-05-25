@@ -14,7 +14,11 @@ type ReasonCode string
 
 const (
 	ReasonAllowed               ReasonCode = "allowed"
-	ReasonDenied                ReasonCode = "denied"
+	ReasonPolicyAllow           ReasonCode = "policy_allow"
+	ReasonPolicyDeny            ReasonCode = "policy_deny"
+	ReasonPolicyEscalate        ReasonCode = "policy_escalate"
+	ReasonTrustEscalate         ReasonCode = "trust_escalate"
+	ReasonDeny                  ReasonCode = "denied"
 	ReasonEscalate              ReasonCode = "escalate"
 	ReasonCapabilityExpiry      ReasonCode = "capability_expired"
 	ReasonCapabilityNotAllowed  ReasonCode = "capability_not_allowed"

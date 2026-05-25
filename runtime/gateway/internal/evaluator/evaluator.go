@@ -109,27 +109,32 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 	}
 
 	if decision == "" {
-		allowed, reason := e.evaluateRules(actionRules, envRules, req)
-		if !allowed {
-			reasons = append(reasons, reason)
+		outcome := e.evaluateRules(actionRules, envRules, req)
+		if outcome.Denied {
+			reasons = append(reasons, outcome.Reason)
 			decision = models.DecisionDeny
-		} else {
-			escalate := e.shouldEscalate(actionRules, envRules, req)
-			if escalate {
-				reasons = append(reasons, models.ReasonEscalate)
-				requiresApproval = true
-				decision = models.DecisionEscalate
-			} else {
-				reasons = append(reasons, models.ReasonAllowed)
-				decision = models.DecisionAllow
+		} else if outcome.Escalate {
+			reasons = append(reasons, outcome.Reason)
+			if trustResult.ShouldEscalate() {
+				reasons = append(reasons, models.ReasonTrustEscalate)
 			}
+			for _, sig := range trustResult.AnomalySignals {
+				reasons = append(reasons, models.ReasonCode(sig.Code))
+			}
+			requiresApproval = true
+			decision = models.DecisionEscalate
+		} else {
+			reasons = append(reasons, outcome.Reason)
+			decision = models.DecisionAllow
 		}
 	}
 
 	trustScore = trustResult.Score
 	if trustResult.ShouldEscalate() && decision == models.DecisionAllow {
-		reasons = append(reasons, models.ReasonEscalate)
-		trust.AddAnomalyReasons(trustResult, reasons)
+		reasons = append(reasons, models.ReasonTrustEscalate)
+		for _, sig := range trustResult.AnomalySignals {
+			reasons = append(reasons, models.ReasonCode(sig.Code))
+		}
 		decision = models.DecisionEscalate
 		requiresApproval = true
 	}
@@ -165,34 +170,54 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 	}, nil
 }
 
-func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) (bool, models.ReasonCode) {
+type RuleOutcome struct {
+	Allowed  bool
+	Denied   bool
+	Escalate bool
+	Reason   models.ReasonCode
+}
+
+func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
 	for _, r := range actionRules {
 		if r.Deny {
-			return false, models.ReasonActionNotAllowed
+			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny}
 		}
 	}
 	for _, r := range envRules {
 		if r.Deny {
 			if req.Environment == models.EnvironmentProduction {
-				return false, models.ReasonProductionDenied
+				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
 			}
-			return false, models.ReasonDenied
+			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny}
 		}
 	}
-	return true, ""
-}
 
-func (e *Evaluator) shouldEscalate(actionRules, envRules []policy.Rule, req *models.ActionRequest) bool {
 	for _, r := range actionRules {
-		if r.ActionType != "*" && r.Escalate {
-			return true
+		if r.Escalate && r.ActionType != "*" {
+			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
 		}
 	}
 	for _, r := range envRules {
-		if r.Environment != "*" && r.Escalate {
-			return true
+		if r.Escalate && r.Environment != "*" {
+			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
 		}
 	}
+
+	for _, r := range actionRules {
+		if r.Allow && r.ActionType != "*" {
+			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow}
+		}
+	}
+	for _, r := range envRules {
+		if r.Allow && r.Environment != "*" {
+			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow}
+		}
+	}
+
+	return RuleOutcome{Allowed: true, Reason: models.ReasonAllowed}
+}
+
+func (e *Evaluator) shouldEscalate(actionRules, envRules []policy.Rule, req *models.ActionRequest) bool {
 	return false
 }
 
