@@ -7,14 +7,16 @@ import (
 
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/metrics"
 )
 
 type ApprovalHandler struct {
-	service    *approval.Service
-	eventStore events.Store
-	gatewayID  string
+	service           *approval.Service
+	eventStore         events.Store
+	gatewayID          string
+	continuationStore  continuation.Store
 }
 
 func NewApprovalHandler(s *approval.Service) *ApprovalHandler {
@@ -27,6 +29,10 @@ func (h *ApprovalHandler) SetEventStore(store events.Store) {
 
 func (h *ApprovalHandler) SetGatewayID(id string) {
 	h.gatewayID = id
+}
+
+func (h *ApprovalHandler) SetContinuationStore(store continuation.Store) {
+	h.continuationStore = store
 }
 
 func (h *ApprovalHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -68,6 +74,20 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	metrics.RecordApproval()
+
+	cnt := continuation.NewContinuation(req.DecisionID, string(req.ActionType), req.Resource).
+		WithAgentID(req.AgentID).
+		WithEnvironment(string(req.Environment)).
+		WithTrustContext(req.TrustScore, string(req.TrustLevel), req.AnomalyCodes, req.ShieldActive, req.Restricted).
+		WithApprovalID(created.ApprovalID)
+
+	if req.ActionType == "shell" || req.ActionType == "git.push" {
+		cnt.WithMetadata("escalation_reason", "policy_escalate")
+	}
+
+	if h.continuationStore != nil {
+		_ = h.continuationStore.Create(cnt)
+	}
 
 	if h.eventStore != nil {
 		evt := events.NewEvent(events.EventTypeApprovalCreated).
@@ -139,6 +159,14 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if h.continuationStore != nil {
+		list := h.continuationStore.ListByApprovalID(id)
+		for _, cnt := range list {
+			cnt.MarkApproved(body.ResolvedBy)
+			_ = h.continuationStore.Update(cnt)
+		}
+	}
+
 	if h.eventStore != nil {
 		evt := events.NewEvent(events.EventTypeApprovalResolved).
 			WithGatewayID(h.gatewayID).
@@ -184,6 +212,14 @@ func (h *ApprovalHandler) handleDeny(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		api.JSONInternalError(w, "failed to deny: "+err.Error())
 		return
+	}
+
+	if h.continuationStore != nil {
+		list := h.continuationStore.ListByApprovalID(id)
+		for _, cnt := range list {
+			cnt.MarkDenied(body.ResolvedBy, body.Reason)
+			_ = h.continuationStore.Update(cnt)
+		}
 	}
 
 	if h.eventStore != nil {
@@ -238,6 +274,14 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.continuationStore != nil {
+		list := h.continuationStore.ListByApprovalID(id)
+		for _, cnt := range list {
+			cnt.MarkResumed()
+			_ = h.continuationStore.Update(cnt)
+		}
+	}
+
 	if h.eventStore != nil {
 		evt := events.NewEvent(events.EventTypeApprovalResumed).
 			WithGatewayID(h.gatewayID).
@@ -251,6 +295,30 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		h.eventStore.Append(evt)
 	}
 
+	resp := map[string]any{
+		"resumed":            true,
+		"approval_id":        id,
+		"decision_id":        result.DecisionID,
+		"action_type":       result.ActionType,
+		"resource":          result.Resource,
+		"trust_score":       result.TrustScore,
+		"trust_level":       result.TrustLevel,
+		"anomaly_codes":     result.AnomalyCodes,
+		"shield_active":      result.ShieldActive,
+		"restricted":        result.Restricted,
+	}
+
+	if h.continuationStore != nil {
+		list := h.continuationStore.ListByApprovalID(id)
+		if len(list) > 0 {
+			cnt := list[0]
+			resp["continuation_id"] = cnt.ContinuationID
+			resp["policy_version"] = cnt.PolicyVersion
+			resp["capability_ref"] = cnt.CapabilityRef
+			resp["metadata"] = cnt.Metadata
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	json.NewEncoder(w).Encode(resp)
 }

@@ -12,6 +12,7 @@ import (
 
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/config"
+	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/events"
@@ -194,6 +195,8 @@ func main() {
 		log.Printf("approvals in-memory (no persistence configured)")
 	}
 
+	continuationStore := continuation.NewInMemoryStore()
+
 	h := handlers.New(eval, decisionLogger, cfg, receiptsStore)
 	h.SetEnrollment(enrollmentSvc)
 
@@ -205,8 +208,10 @@ func main() {
 	h.SetApprovalService(approvalService)
 	h.SetShieldStats(shieldStore.Stats)
 	h.SetEventStore(eventStore)
+	h.SetContinuationStore(continuationStore)
 	approvalHandler.SetEventStore(eventStore)
 	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	approvalHandler.SetContinuationStore(continuationStore)
 
 	trustHandler.SetEventStore(eventStore)
 	trustHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
@@ -219,6 +224,9 @@ func main() {
 	receiptHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)
 	eventHandler.RegisterRoutes(mux)
+
+	continuationHandler := handlers.NewContinuationHandler(continuationStore)
+	continuationHandler.RegisterRoutes(mux)
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway v%s listening on %s", cfg.GatewayVersion, addr)

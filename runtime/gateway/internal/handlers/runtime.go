@@ -10,6 +10,7 @@ import (
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/config"
+	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/events"
@@ -20,15 +21,16 @@ import (
 )
 
 type Handler struct {
-	evaluator      *evaluator.Evaluator
-	logger         *logging.DecisionLogger
-	config         *config.Config
-	receiptsStore  receipts.Store
-	decisionCache  *decisionCache
-	enrollmentSvc  enrollment.Service
-	approvalSvc    *approval.Service
-	eventStore     events.Store
-	shieldStats    func() (restricted, total int)
+	evaluator          *evaluator.Evaluator
+	logger             *logging.DecisionLogger
+	config             *config.Config
+	receiptsStore      receipts.Store
+	decisionCache      *decisionCache
+	enrollmentSvc      enrollment.Service
+	approvalSvc        *approval.Service
+	eventStore         events.Store
+	continuationStore  continuation.Store
+	shieldStats        func() (restricted, total int)
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -59,6 +61,10 @@ func (h *Handler) SetEventStore(store events.Store) {
 
 func (h *Handler) SetApprovalService(svc *approval.Service) {
 	h.approvalSvc = svc
+}
+
+func (h *Handler) SetContinuationStore(store continuation.Store) {
+	h.continuationStore = store
 }
 
 type HandlerWithStores struct {
