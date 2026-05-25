@@ -14,17 +14,37 @@ type Service interface {
 	Initialize(env string) error
 	Heartbeat() error
 	IsEnrolled() bool
+	StartHeartbeat(interval time.Duration) func()
 }
 
 type localService struct {
-	mu       sync.RWMutex
-	identity *GatewayIdentity
-	filePath string
+	mu            sync.RWMutex
+	identity      *GatewayIdentity
+	filePath      string
+	stopCh        chan struct{}
+	defaultName   string
+	defaultVersion string
 }
 
-func NewLocalService(filePath string) *localService {
-	return &localService{
+func NewLocalService(filePath string, opts ...func(*localService)) *localService {
+	svc := &localService{
 		filePath: filePath,
+	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
+}
+
+func WithGatewayName(name string) func(*localService) {
+	return func(s *localService) {
+		s.defaultName = name
+	}
+}
+
+func WithGatewayVersion(version string) func(*localService) {
+	return func(s *localService) {
+		s.defaultVersion = version
 	}
 }
 
@@ -72,15 +92,23 @@ func (s *localService) Initialize(env string) error {
 			}
 		}
 
+		name := s.defaultName
+		if name == "" {
+			name = "local-gateway"
+		}
+		version := s.defaultVersion
+		if version == "" {
+			version = "0.9.0"
+		}
 		s.identity = &GatewayIdentity{
-			ID:            newGatewayID(),
-			Name:          "local-gateway",
-			Version:       "0.9.0",
-			Environment:   env,
-			RegisteredAt:  now,
-			LastSeenAt:    now,
+			ID:              newGatewayID(),
+			Name:            name,
+			Version:         version,
+			Environment:     env,
+			RegisteredAt:    now,
+			LastSeenAt:      now,
 			EnrollmentState: EnrollmentStateLocal,
-			Tags:          make(map[string]string),
+			Tags:            make(map[string]string),
 		}
 	} else {
 		s.identity.LastSeenAt = now
@@ -128,6 +156,34 @@ func (s *localService) IsEnrolled() bool {
 		return false
 	}
 	return s.identity.EnrollmentState == EnrollmentStateEnrolled
+}
+
+func (s *localService) StartHeartbeat(interval time.Duration) func() {
+	s.mu.Lock()
+	s.stopCh = make(chan struct{})
+	s.mu.Unlock()
+
+	ticker := time.NewTicker(interval)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				s.Heartbeat()
+			case <-s.stopCh:
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.stopCh != nil {
+			close(s.stopCh)
+			s.stopCh = nil
+		}
+	}
 }
 
 func (s *localService) dir() string {

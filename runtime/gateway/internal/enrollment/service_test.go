@@ -3,6 +3,7 @@ package enrollment
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLocalService_Initialize(t *testing.T) {
@@ -144,5 +145,52 @@ func TestGatewayIdentity_GetStatus(t *testing.T) {
 	}
 	if !status.IsHealthy {
 		t.Error("status.IsHealthy should be true")
+	}
+}
+
+func TestLocalService_StartHeartbeat(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "enrollment.json")
+
+	svc := NewLocalService(filePath)
+	err := svc.Initialize("local")
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	initialLastSeen := svc.GetIdentity().LastSeenAt
+
+	stop := svc.StartHeartbeat(50 * time.Millisecond)
+	time.Sleep(120 * time.Millisecond)
+	stop()
+
+	updatedLastSeen := svc.GetIdentity().LastSeenAt
+	if !updatedLastSeen.After(initialLastSeen) {
+		t.Error("heartbeat should have updated LastSeenAt")
+	}
+}
+
+func TestLocalService_StartHeartbeat_Stop(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "enrollment.json")
+
+	svc := NewLocalService(filePath)
+	err := svc.Initialize("local")
+	if err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	stop := svc.StartHeartbeat(20 * time.Millisecond)
+	time.Sleep(55 * time.Millisecond)
+	stop()
+
+	time.Sleep(70 * time.Millisecond)
+	lastSeen := svc.GetIdentity().LastSeenAt
+
+	time.Sleep(50 * time.Millisecond)
+	afterSilence := svc.GetIdentity().LastSeenAt
+
+	if !lastSeen.Equal(afterSilence) {
+		t.Error("LastSeenAt should not change after stop (no heartbeat firing)")
 	}
 }

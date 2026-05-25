@@ -25,6 +25,8 @@ type Config struct {
 	ReceiptLogEnabled     bool   `json:"receipt_log_enabled"`
 	DecisionCacheMaxSize  int    `json:"decision_cache_max_size"`
 	DecisionCacheTTLMin   int    `json:"decision_cache_ttl_minutes"`
+	EnrollmentFile        string `json:"enrollment_file"`
+	HeartbeatIntervalSec  int    `json:"heartbeat_interval_secs"`
 }
 
 type Enrollment struct {
@@ -69,6 +71,8 @@ func Default() *Config {
 		ReceiptLogEnabled:      true,
 		DecisionCacheMaxSize:   10000,
 		DecisionCacheTTLMin:    10,
+		EnrollmentFile:         "var/data/enrollment.json",
+		HeartbeatIntervalSec:    30,
 	}
 }
 
