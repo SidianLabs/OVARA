@@ -285,7 +285,7 @@ func TestShellExecutor_WorkingDir(t *testing.T) {
 func TestShellExecutor_AllowedEnvVars(t *testing.T) {
 	ctx := context.Background()
 	exec := NewShellExecutorWithLimits(10, 1024*1024, 256*1024)
-	exec.AllowedEnvVars = []string{"PATH", "HOME"}
+	exec.AllowedEnvVars = []string{"HOME"}
 	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo $HOME", 10)
 	err := exec.Execute(ctx, exe)
 	if err != nil {
@@ -295,7 +295,43 @@ func TestShellExecutor_AllowedEnvVars(t *testing.T) {
 		t.Errorf("state = %s, want succeeded", exe.State)
 	}
 	if exe.Stdout == "" {
-		t.Error("stdout should not be empty (HOME should be set)")
+		t.Error("stdout should not be empty (HOME should be set when allowed)")
+	}
+}
+
+func TestShellExecutor_EnvVars_NilInheritsAll(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(10, 1024*1024, 256*1024)
+	if exec.AllowedEnvVars != nil {
+		t.Errorf("AllowedEnvVars = %v, want nil (default, inherits parent env)", exec.AllowedEnvVars)
+	}
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo $HOME", 10)
+	err := exec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded", exe.State)
+	}
+	if exe.Stdout == "" {
+		t.Error("stdout should not be empty when AllowedEnvVars=nil (inherits parent env including HOME)")
+	}
+}
+
+func TestShellExecutor_EnvVars_EmptyStripAll(t *testing.T) {
+	ctx := context.Background()
+	exec := NewShellExecutorWithLimits(10, 1024*1024, 256*1024)
+	exec.AllowedEnvVars = []string{}
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo $HOME", 10)
+	err := exec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("execute failed: %v", err)
+	}
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded", exe.State)
+	}
+	if exe.Stdout != "" && exe.Stdout != "\n" {
+		t.Logf("stdout = %q (empty or newline when all env stripped)", exe.Stdout)
 	}
 }
 

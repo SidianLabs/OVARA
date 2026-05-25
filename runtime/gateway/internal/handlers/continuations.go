@@ -311,6 +311,14 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		"action_type":   cnt.ActionType,
 		"resource":      cnt.Resource,
 	}
+	if exe.StdoutTruncated {
+		resp["stdout_truncated"] = true
+		resp["stdout_limit_bytes"] = exe.StdoutLimitBytes
+	}
+	if exe.StderrTruncated {
+		resp["stderr_truncated"] = true
+		resp["stderr_limit_bytes"] = exe.StderrLimitBytes
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

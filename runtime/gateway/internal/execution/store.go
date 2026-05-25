@@ -156,7 +156,7 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 	if se.WorkingDir != "" {
 		cmd.Dir = se.WorkingDir
 	}
-	if len(se.AllowedEnvVars) > 0 {
+	if se.AllowedEnvVars != nil {
 		cmd.Env = filterEnv(se.AllowedEnvVars)
 	}
 
