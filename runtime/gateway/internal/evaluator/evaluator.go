@@ -193,17 +193,6 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 	}
 
 	for _, r := range actionRules {
-		if r.Escalate && r.ActionType != "*" {
-			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
-		}
-	}
-	for _, r := range envRules {
-		if r.Escalate && r.Environment != "*" {
-			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
-		}
-	}
-
-	for _, r := range actionRules {
 		if r.Allow && r.ActionType != "*" {
 			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow}
 		}
@@ -211,6 +200,17 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 	for _, r := range envRules {
 		if r.Allow && r.Environment != "*" {
 			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow}
+		}
+	}
+
+	for _, r := range actionRules {
+		if r.Escalate && r.ActionType != "*" {
+			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
+		}
+	}
+	for _, r := range envRules {
+		if r.Escalate && r.Environment != "*" {
+			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
 		}
 	}
 
