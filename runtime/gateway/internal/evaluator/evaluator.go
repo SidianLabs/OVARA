@@ -162,16 +162,65 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 		EvaluationTime: time.Now().UTC(),
 	}
 
+	summary := buildEvaluationSummary(decision, reasons)
+
 	return &models.DecisionResponse{
-		DecisionID:       generateID(),
-		Decision:         decision,
-		ReasonCodes:      reasons,
-		TrustScore:       trustScore,
-		TrustLevel:      trustResult.Level,
-		RequiresApproval: requiresApproval,
-		ReceiptStub:      receiptStub,
-		TrustContext:     trustCtx,
+		DecisionID:        generateID(),
+		Decision:          decision,
+		ReasonCodes:       reasons,
+		TrustScore:        trustScore,
+		TrustLevel:        trustResult.Level,
+		RequiresApproval:  requiresApproval,
+		ReceiptStub:       receiptStub,
+		TrustContext:      trustCtx,
+		EvaluationSummary: summary,
 	}, nil
+}
+
+func buildEvaluationSummary(decision models.Decision, reasons []models.ReasonCode) string {
+	has := func(code models.ReasonCode) bool {
+		for _, r := range reasons {
+			if r == code {
+				return true
+			}
+		}
+		return false
+	}
+
+	switch decision {
+	case models.DecisionAllow:
+		if has(models.ReasonPolicyAllow) {
+			return "allowed by explicit policy rule"
+		}
+		return "allowed by default (no matching deny/escalate rule)"
+	case models.DecisionDeny:
+		if has(models.ReasonProductionDenied) {
+			return "denied by production policy rule"
+		}
+		if has(models.ReasonPolicyDeny) {
+			return "denied by explicit policy rule"
+		}
+		if has(models.ReasonIdentityInvalid) {
+			return "denied: invalid or missing agent identity"
+		}
+		if has(models.ReasonCapabilityNotAllowed) || has(models.ReasonCapabilityExpiry) {
+			return "denied: capability validation failed"
+		}
+		return "denied by policy"
+	case models.DecisionEscalate:
+		if has(models.ReasonContainmentActive) {
+			return "escalated: agent is restricted or contained"
+		}
+		if has(models.ReasonTrustEscalate) {
+			return "escalated: low trust score or anomaly detected"
+		}
+		if has(models.ReasonPolicyEscalate) {
+			return "escalated by explicit policy rule"
+		}
+		return "escalated: requires approval"
+	default:
+		return "evaluation incomplete"
+	}
 }
 
 type RuleOutcome struct {

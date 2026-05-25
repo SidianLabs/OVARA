@@ -511,3 +511,75 @@ func TestEvaluator_PolicyExplicitAllowVoucher(t *testing.T) {
 		t.Errorf("expected reason_codes to contain policy_allow, got %v", resp.ReasonCodes)
 	}
 }
+
+func TestEvaluator_EvaluationSummary(t *testing.T) {
+	cfg := map[string]any{
+		"policy_version": "test-summary",
+		"rules": []any{
+			map[string]any{
+				"action_type": "shell",
+				"environment": "local",
+				"allow":       true,
+			},
+			map[string]any{
+				"action_type": "shell",
+				"environment": "production",
+				"deny":        true,
+			},
+			map[string]any{
+				"action_type": "shell",
+				"environment": "dev",
+				"escalate":    true,
+			},
+		},
+	}
+	store, err := policy.LoadStoreFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("failed to load store: %v", err)
+	}
+	ev := New(store)
+
+	tests := []struct {
+		name      string
+		env       models.Environment
+		wantSummary string
+	}{
+		{
+			name:         "allow_summary_for_explicit_allow",
+			env:          models.EnvironmentLocal,
+			wantSummary:   "allowed by explicit policy rule",
+		},
+		{
+			name:         "deny_summary_for_production",
+			env:          models.EnvironmentProduction,
+			wantSummary:   "denied by production policy rule",
+		},
+		{
+			name:         "escalate_summary_for_dev",
+			env:          models.EnvironmentDev,
+			wantSummary:   "escalated by explicit policy rule",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &models.ActionRequest{
+				ActionType:  models.ActionTypeShell,
+				Resource:    "shell:test",
+				Environment: tt.env,
+				AgentIdentity: &models.AgentIdentity{
+					Issuer:    "test",
+					SubjectID: "agent-summary",
+				},
+			}
+
+			resp, err := ev.Evaluate(req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp.EvaluationSummary != tt.wantSummary {
+				t.Errorf("evaluation_summary = %q, want %q", resp.EvaluationSummary, tt.wantSummary)
+			}
+		})
+	}
+}
