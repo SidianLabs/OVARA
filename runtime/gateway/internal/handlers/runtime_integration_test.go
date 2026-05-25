@@ -10,6 +10,7 @@ import (
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipts"
@@ -360,9 +361,84 @@ func TestRuntimeIntegration(t *testing.T) {
 				t.Errorf("shield_active mismatch: got %v, want %v", receipt.ShieldActive, decisionResp.TrustContext.ShieldActive)
 			}
 
-			if len(receipt.AnomalySignals) != len(decisionResp.TrustContext.AnomalySignals) {
-				t.Errorf("anomaly_signals count mismatch: got %d, want %d", len(receipt.AnomalySignals), len(decisionResp.TrustContext.AnomalySignals))
-			}
+if len(receipt.AnomalySignals) != len(decisionResp.TrustContext.AnomalySignals) {
+			t.Errorf("anomaly_signals count mismatch: got %d, want %d", len(receipt.AnomalySignals), len(decisionResp.TrustContext.AnomalySignals))
+		}
+		}
+	})
+
+	t.Run("metrics_endpoint_returns_valid_shape", func(t *testing.T) {
+		metrics.Global().RecordDecision("allow", "shell", 5)
+		metrics.Global().RecordHeartbeat()
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/metrics", nil)
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal metrics response: %v", err)
+		}
+
+		if _, ok := resp["decision_counts"]; !ok {
+			t.Error("expected decision_counts in metrics response")
+		}
+		if _, ok := resp["total_decisions"]; !ok {
+			t.Error("expected total_decisions in metrics response")
+		}
+		if _, ok := resp["heartbeat_count"]; !ok {
+			t.Error("expected heartbeat_count in metrics response")
+		}
+		if _, ok := resp["policy_reload_status"]; !ok {
+			t.Error("expected policy_reload_status in metrics response")
+		}
+		if _, ok := resp["avg_latency_ms"]; !ok {
+			t.Error("expected avg_latency_ms in metrics response")
+		}
+		if _, ok := resp["policy_version"]; !ok {
+			t.Error("expected policy_version in metrics response")
+		}
+		if status, ok := resp["policy_reload_status"].(string); !ok || status == "" {
+			t.Errorf("policy_reload_status should be non-empty string, got %v", resp["policy_reload_status"])
+		}
+	})
+
+	t.Run("metrics_after_decisions_show_increased_count", func(t *testing.T) {
+		before := metrics.Global().Snapshot().TotalDecisions
+
+		reqBody := models.ActionRequest{
+			ActionType:  models.ActionTypeCIBuildTrigger,
+			Resource:    "build:./scripts/test.sh",
+			Environment: models.EnvironmentDev,
+			AgentIdentity: &models.AgentIdentity{
+				Issuer:    "test-issuer",
+				SubjectID: "agent-metrics-test",
+			},
+		}
+		body, _ := json.Marshal(reqBody)
+
+		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/check", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("decision request failed: %d - %s", w.Code, w.Body.String())
+		}
+
+		snap := metrics.Global().Snapshot()
+		if snap.TotalDecisions <= before {
+			t.Errorf("total decisions did not increase: before=%d, after=%d", before, snap.TotalDecisions)
+		}
+
+		if snap.DecisionCounts["allow"] < 1 {
+			t.Errorf("expected at least 1 allow decision in counts, got %v", snap.DecisionCounts)
 		}
 	})
 }
