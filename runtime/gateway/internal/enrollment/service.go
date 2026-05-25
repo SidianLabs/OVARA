@@ -6,6 +6,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"ovara.runtime.gateway/internal/metrics"
 )
 
 type Service interface {
@@ -143,9 +145,12 @@ func (s *localService) Heartbeat() error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(s.filePath, data, 0644)
+		if err := os.WriteFile(s.filePath, data, 0644); err != nil {
+			return err
+		}
 	}
 
+	metrics.RecordHeartbeat()
 	return nil
 }
 

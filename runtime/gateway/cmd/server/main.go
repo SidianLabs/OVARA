@@ -16,6 +16,7 @@ import (
 	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/handlers"
 	"ovara.runtime.gateway/internal/logging"
+	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipts"
 	"ovara.runtime.gateway/internal/trust"
@@ -61,6 +62,7 @@ func main() {
 		stopHeartbeat = enrollmentSvc.StartHeartbeat(interval)
 		log.Printf("enrollment heartbeat started (default interval=%ds)", int(interval.Seconds()))
 	}
+	metrics.RecordHeartbeat()
 
 	log.Printf("gateway_id=%s enrollment_state=%s environment=%s",
 		enrollmentSvc.GetIdentity().ID,
@@ -96,8 +98,10 @@ func main() {
 								if event.Has(fsnotify.Write) {
 									if err := watcher.Reload(); err != nil {
 										log.Printf("policy reload failed: %v", err)
+										metrics.RecordPolicyReload(false, err.Error())
 									} else {
 										log.Printf("policy reloaded from %s", cfg.PolicyFile)
+										metrics.RecordPolicyReload(true, "")
 									}
 								}
 							}
