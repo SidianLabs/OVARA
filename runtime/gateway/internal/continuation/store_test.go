@@ -37,6 +37,12 @@ func TestContinuation_CanResume(t *testing.T) {
 	if c2.CanResume() {
 		t.Error("denied continuation should not be resumable")
 	}
+
+	c3 := NewContinuation("dec_3", "shell", "shell:ls")
+	c3.MarkExpired()
+	if c3.CanResume() {
+		t.Error("expired continuation should not be resumable")
+	}
 }
 
 func TestContinuation_IsTerminal(t *testing.T) {
@@ -48,6 +54,14 @@ func TestContinuation_IsTerminal(t *testing.T) {
 	c.MarkDenied("r", "test")
 	if !c.IsTerminal() {
 		t.Error("denied should be terminal")
+	}
+
+	c2 := NewContinuation("dec_2", "shell", "shell:ls")
+	c2.MarkApproved("admin")
+	c2.MarkReady()
+	c2.MarkResumed()
+	if !c2.IsTerminal() {
+		t.Error("resumed should be terminal")
 	}
 }
 
@@ -69,16 +83,181 @@ func TestContinuation_MarkApproved(t *testing.T) {
 	}
 }
 
-func TestContinuation_MarkResumed(t *testing.T) {
+func TestContinuation_IsExecutable(t *testing.T) {
+	c := NewContinuation("dec_1", "shell", "shell:ls")
+	if c.IsExecutable() {
+		t.Error("escalated should not be executable")
+	}
+
+	c.MarkApproved("admin")
+	if !c.IsExecutable() {
+		t.Error("approved should be executable")
+	}
+
+	c2 := NewContinuation("dec_2", "shell", "shell:ls")
+	c2.MarkApproved("admin")
+	c2.MarkReady()
+	if !c2.IsExecutable() {
+		t.Error("ready should be executable")
+	}
+
+	c3 := NewContinuation("dec_3", "shell", "shell:ls").WithExpiration(1)
+	c3.MarkApproved("admin")
+	c3.MarkReady()
+	c3.State = StateEscalated
+	if c3.IsExecutable() {
+		t.Error("escalated should not be executable even if was previously approved/ready")
+	}
+
+	c4 := NewContinuation("dec_4", "shell", "shell:ls")
+	c4.MarkDenied("admin", "test")
+	if c4.IsExecutable() {
+		t.Error("denied should not be executable")
+	}
+}
+
+func TestContinuation_ShouldExpire(t *testing.T) {
+	now := time.Now().UTC()
+
+	past := now.Add(-1 * time.Hour)
+	c := NewContinuation("dec_1", "shell", "shell:ls")
+	c.ExpiresAt = &past
+	c.State = StateApproved
+
+	if !c.ShouldExpire(now) {
+		t.Error("approved with past expiration should expire")
+	}
+
+	future := now.Add(1 * time.Hour)
+	c2 := NewContinuation("dec_2", "shell", "shell:ls")
+	c2.ExpiresAt = &future
+	c2.State = StateApproved
+
+	if c2.ShouldExpire(now) {
+		t.Error("approved with future expiration should not expire")
+	}
+
+	c3 := NewContinuation("dec_3", "shell", "shell:ls")
+	c3.ExpiresAt = &past
+	c3.State = StateResumed
+
+	if c3.ShouldExpire(now) {
+		t.Error("resumed should not be subject to expiration check")
+	}
+}
+
+func TestContinuation_MarkReady(t *testing.T) {
 	c := NewContinuation("dec_1", "shell", "shell:ls")
 	c.MarkApproved("admin")
-	c.MarkResumed()
+	c.MarkReady()
 
-	if c.State != StateResumed {
-		t.Errorf("state = %s, want resumed", c.State)
+	if c.State != StateReady {
+		t.Errorf("state = %s, want ready", c.State)
 	}
-	if c.ResumedAt == nil {
-		t.Error("resumed_at should be set")
+
+	c2 := NewContinuation("dec_2", "shell", "shell:ls")
+	c2.MarkReady()
+	if c2.State != StateEscalated {
+		t.Error("escalated continuation should not transition via MarkReady")
+	}
+}
+
+func TestContinuation_MarkExpired(t *testing.T) {
+	c := NewContinuation("dec_1", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	c.MarkExpired()
+
+	if c.State != StateExpired {
+		t.Errorf("state = %s, want expired", c.State)
+	}
+	if c.ExpiredAt == nil {
+		t.Error("expired_at should be set")
+	}
+
+	c2 := NewContinuation("dec_2", "shell", "shell:ls")
+	c2.MarkDenied("admin", "test")
+	c2.MarkExpired()
+	if c2.State != StateDenied {
+		t.Error("denied continuation should not transition to expired")
+	}
+}
+
+func TestContinuation_WithExpiration(t *testing.T) {
+	c := NewContinuation("dec_1", "shell", "shell:ls").
+		WithExpiration(30)
+
+	if c.ExpiresAt == nil {
+		t.Fatal("expires_at should be set")
+	}
+	if c.ExpiresAt.IsZero() {
+		t.Error("expires_at should not be zero")
+	}
+
+	elapsed := time.Since(c.CreatedAt)
+	expected := 30 * time.Minute
+	diff := c.ExpiresAt.Sub(c.CreatedAt)
+	if diff != expected {
+		t.Errorf("expires_at mismatch: got %v, want %v", diff, expected)
+	}
+	_ = elapsed
+}
+
+func TestContinuation_IsExpired(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-1 * time.Hour)
+	c := NewContinuation("dec_1", "shell", "shell:ls")
+	c.ExpiresAt = &past
+
+	if !c.IsExpired() {
+		t.Error("continuation with past expiration should be expired")
+	}
+
+	c2 := NewContinuation("dec_2", "shell", "shell:ls")
+	if c2.IsExpired() {
+		t.Error("continuation with no expiration should not be expired")
+	}
+}
+
+func TestContinuation_TimeToExpiry(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(60 * time.Minute)
+	c := NewContinuation("dec_1", "shell", "shell:ls")
+	c.ExpiresAt = &future
+
+	ttl := c.TimeToExpiry()
+	if ttl <= 59*time.Minute || ttl > 60*time.Minute {
+		t.Errorf("time to expiry out of range: %v", ttl)
+	}
+
+	c2 := NewContinuation("dec_2", "shell", "shell:ls")
+	if c2.TimeToExpiry() != -1 {
+		t.Error("continuation with no expiration should return -1")
+	}
+}
+
+func TestContinuation_StateTransitionFlow(t *testing.T) {
+	c := NewContinuation("dec_flow", "shell", "shell:ls")
+
+	if c.State != StateEscalated {
+		t.Fatalf("initial state should be escalated, got %s", c.State)
+	}
+
+	c.MarkApproved("admin")
+	if c.State != StateApproved {
+		t.Fatalf("after approve: state should be approved, got %s", c.State)
+	}
+
+	c.MarkReady()
+	if c.State != StateReady {
+		t.Fatalf("after mark ready: state should be ready, got %s", c.State)
+	}
+
+	c.MarkResumed()
+	if c.State != StateResumed {
+		t.Fatalf("after resume: state should be resumed, got %s", c.State)
+	}
+	if !c.IsTerminal() {
+		t.Error("resumed should be terminal")
 	}
 }
 

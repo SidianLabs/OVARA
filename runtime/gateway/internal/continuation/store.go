@@ -13,10 +13,13 @@ type State string
 const (
 	StateEscalated   State = "escalated"
 	StateApproved    State = "approved"
+	StateReady       State = "ready"
 	StateDenied      State = "denied"
 	StateResumed     State = "resumed"
 	StateExpired     State = "expired"
 )
+
+const DefaultExpirationMinutes = 60
 
 type Continuation struct {
 	ContinuationID string    `json:"continuation_id"`
@@ -30,6 +33,8 @@ type Continuation struct {
 	CreatedAt     time.Time `json:"created_at"`
 	ApprovedAt    *time.Time `json:"approved_at,omitempty"`
 	ResumedAt     *time.Time `json:"resumed_at,omitempty"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	ExpiredAt     *time.Time `json:"expired_at,omitempty"`
 	ResolvedBy    string    `json:"resolved_by,omitempty"`
 	DenyReason    string    `json:"deny_reason,omitempty"`
 	TrustScore    float64   `json:"trust_score,omitempty"`
@@ -43,11 +48,11 @@ type Continuation struct {
 }
 
 func (c *Continuation) CanResume() bool {
-	return c.State == StateApproved
+	return c.State == StateApproved || c.State == StateReady
 }
 
 func (c *Continuation) IsTerminal() bool {
-	return c.State == StateDenied || c.State == StateExpired
+	return c.State == StateDenied || c.State == StateExpired || c.State == StateResumed
 }
 
 func NewContinuation(decisionID, actionType, resource string) *Continuation {
@@ -95,6 +100,14 @@ func (c *Continuation) WithApprovalID(approvalID string) *Continuation {
 	return c
 }
 
+func (c *Continuation) WithExpiration(minutes int) *Continuation {
+	if minutes > 0 {
+		t := c.CreatedAt.Add(time.Duration(minutes) * time.Minute)
+		c.ExpiresAt = &t
+	}
+	return c
+}
+
 func (c *Continuation) WithMetadata(key string, value any) *Continuation {
 	if c.Metadata == nil {
 		c.Metadata = make(map[string]any)
@@ -110,6 +123,12 @@ func (c *Continuation) MarkApproved(resolvedBy string) {
 	c.ApprovedAt = &now
 }
 
+func (c *Continuation) MarkReady() {
+	if c.State == StateApproved {
+		c.State = StateReady
+	}
+}
+
 func (c *Continuation) MarkDenied(resolvedBy, reason string) {
 	c.State = StateDenied
 	c.ResolvedBy = resolvedBy
@@ -120,6 +139,52 @@ func (c *Continuation) MarkResumed() {
 	c.State = StateResumed
 	now := time.Now().UTC()
 	c.ResumedAt = &now
+}
+
+func (c *Continuation) MarkExpired() {
+	if !c.IsTerminal() {
+		c.State = StateExpired
+		now := time.Now().UTC()
+		c.ExpiredAt = &now
+	}
+}
+
+func (c *Continuation) IsReady() bool {
+	return c.State == StateReady
+}
+
+func (c *Continuation) IsExpired() bool {
+	if c.ExpiresAt == nil {
+		return false
+	}
+	return time.Now().UTC().After(*c.ExpiresAt)
+}
+
+func (c *Continuation) ShouldExpire(now time.Time) bool {
+	if c.State != StateEscalated && c.State != StateApproved {
+		return false
+	}
+	if c.ExpiresAt == nil {
+		return false
+	}
+	return now.After(*c.ExpiresAt)
+}
+
+func (c *Continuation) IsExecutable() bool {
+	if c.State != StateApproved && c.State != StateReady {
+		return false
+	}
+	if c.ExpiresAt != nil && time.Now().UTC().After(*c.ExpiresAt) {
+		return false
+	}
+	return true
+}
+
+func (c *Continuation) TimeToExpiry() time.Duration {
+	if c.ExpiresAt == nil {
+		return -1
+	}
+	return time.Until(*c.ExpiresAt)
 }
 
 type Store interface {

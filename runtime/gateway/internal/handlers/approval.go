@@ -79,7 +79,8 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		WithAgentID(req.AgentID).
 		WithEnvironment(string(req.Environment)).
 		WithTrustContext(req.TrustScore, string(req.TrustLevel), req.AnomalyCodes, req.ShieldActive, req.Restricted).
-		WithApprovalID(created.ApprovalID)
+		WithApprovalID(created.ApprovalID).
+		WithExpiration(continuation.DefaultExpirationMinutes)
 
 	if req.ActionType == "shell" || req.ActionType == "git.push" {
 		cnt.WithMetadata("escalation_reason", "policy_escalate")
@@ -163,6 +164,7 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 		list := h.continuationStore.ListByApprovalID(id)
 		for _, cnt := range list {
 			cnt.MarkApproved(body.ResolvedBy)
+			cnt.MarkReady()
 			_ = h.continuationStore.Update(cnt)
 		}
 	}
@@ -266,6 +268,16 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		api.JSONBadRequest(w, "approval id is required")
 		return
+	}
+
+	if h.continuationStore != nil {
+		list := h.continuationStore.ListByApprovalID(id)
+		for _, cnt := range list {
+			if !cnt.CanResume() {
+				api.JSONBadRequest(w, "continuation not ready for resume: "+string(cnt.State))
+				return
+			}
+		}
 	}
 
 	result, err := h.service.ResumeAction(id)
