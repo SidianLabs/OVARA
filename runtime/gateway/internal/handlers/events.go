@@ -40,15 +40,32 @@ func (h *EventHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	eventType := r.URL.Query().Get("type")
+	agentID := r.URL.Query().Get("agent_id")
+	decisionID := r.URL.Query().Get("decision_id")
+	approvalID := r.URL.Query().Get("approval_id")
+	receiptID := r.URL.Query().Get("receipt_id")
 
 	allEvents := h.store.List(limit)
 
-	if eventType != "" {
+	if eventType != "" || agentID != "" || decisionID != "" || approvalID != "" || receiptID != "" {
 		filtered := make([]*events.Event, 0, len(allEvents))
 		for _, e := range allEvents {
-			if e.EventType == eventType {
-				filtered = append(filtered, e)
+			if eventType != "" && e.EventType != eventType {
+				continue
 			}
+			if agentID != "" && e.AgentID != agentID {
+				continue
+			}
+			if decisionID != "" && e.DecisionID != decisionID {
+				continue
+			}
+			if approvalID != "" && e.ApprovalID != approvalID {
+				continue
+			}
+			if receiptID != "" && e.ReceiptID != receiptID {
+				continue
+			}
+			filtered = append(filtered, e)
 		}
 		allEvents = filtered
 	}

@@ -132,3 +132,87 @@ func TestEventHandler_HandleList_MethodNotAllowed(t *testing.T) {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}
 }
+
+func TestEventHandler_HandleListFilterByAgentID(t *testing.T) {
+	store := events.NewInMemoryStore(100)
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithAgentID("agt_a").WithDecisionID("dec_1"))
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithAgentID("agt_b").WithDecisionID("dec_2"))
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithAgentID("agt_a").WithDecisionID("dec_3"))
+
+	h := NewEventHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events?agent_id=agt_a", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+	if result["count"].(float64) != 2 {
+		t.Errorf("count = %v, want 2", result["count"])
+	}
+}
+
+func TestEventHandler_HandleListFilterByDecisionID(t *testing.T) {
+	store := events.NewInMemoryStore(100)
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithDecisionID("dec_target"))
+	store.Append(events.NewEvent(events.EventTypeReceiptIssued).WithDecisionID("dec_target"))
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithDecisionID("dec_other"))
+
+	h := NewEventHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events?decision_id=dec_target", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+	if result["count"].(float64) != 2 {
+		t.Errorf("count = %v, want 2", result["count"])
+	}
+}
+
+func TestEventHandler_HandleListFilterByApprovalID(t *testing.T) {
+	store := events.NewInMemoryStore(100)
+	store.Append(events.NewEvent(events.EventTypeApprovalCreated).WithApprovalID("apr_target"))
+	store.Append(events.NewEvent(events.EventTypeApprovalResolved).WithApprovalID("apr_target"))
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithDecisionID("dec_other"))
+
+	h := NewEventHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events?approval_id=apr_target", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+	if result["count"].(float64) != 2 {
+		t.Errorf("count = %v, want 2", result["count"])
+	}
+}
+
+func TestEventHandler_HandleListMultipleFilters(t *testing.T) {
+	store := events.NewInMemoryStore(100)
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithAgentID("agt_x").WithDecisionID("dec_1"))
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithAgentID("agt_x").WithDecisionID("dec_2"))
+	store.Append(events.NewEvent(events.EventTypeDecisionEvaluated).WithAgentID("agt_y").WithDecisionID("dec_1"))
+
+	h := NewEventHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/events?agent_id=agt_x&decision_id=dec_1", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+	if result["count"].(float64) != 1 {
+		t.Errorf("count = %v, want 1", result["count"])
+	}
+}
