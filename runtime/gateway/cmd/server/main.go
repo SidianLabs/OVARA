@@ -78,13 +78,13 @@ func main() {
 
 	var eventStore events.Store
 	if cfg.EventsFile != "" {
-		store, err := events.NewFileBackedStore(cfg.EventsFile, cfg.EventsMaxSize)
+		store, err := events.NewFileBackedStoreWithRetention(cfg.EventsFile, cfg.EventsMaxSize, cfg.EventsRetentionDays, cfg.EventsMaxRecords)
 		if err != nil {
 			log.Printf("warning: failed to create file-backed event store: %v, using in-memory", err)
 			eventStore = events.NewInMemoryStore(10000)
 		} else {
 			eventStore = store
-			log.Printf("event store persisted to %s (max=%d)", cfg.EventsFile, cfg.EventsMaxSize)
+			log.Printf("event store persisted to %s (max=%d, retention_days=%d, max_records=%d)", cfg.EventsFile, cfg.EventsMaxSize, cfg.EventsRetentionDays, cfg.EventsMaxRecords)
 		}
 	} else {
 		eventStore = events.NewInMemoryStore(10000)
@@ -198,13 +198,13 @@ func main() {
 
 	var continuationStore continuation.Store
 	if cfg.ContinuationsFile != "" {
-		store, err := continuation.NewFileBackedStore(cfg.ContinuationsFile, cfg.ContinuationsMaxSize)
+		store, err := continuation.NewFileBackedStoreWithRetention(cfg.ContinuationsFile, cfg.ContinuationsMaxSize, cfg.ContinuationRetentionDays, cfg.ContinuationMaxRecords)
 		if err != nil {
 			log.Printf("warning: failed to create file-backed continuation store: %v, using in-memory", err)
 			continuationStore = continuation.NewInMemoryStore()
 		} else {
 			continuationStore = store
-			log.Printf("continuation store persisted to %s (max=%d)", cfg.ContinuationsFile, cfg.ContinuationsMaxSize)
+			log.Printf("continuation store persisted to %s (max=%d, retention_days=%d, max_records=%d)", cfg.ContinuationsFile, cfg.ContinuationsMaxSize, cfg.ContinuationRetentionDays, cfg.ContinuationMaxRecords)
 		}
 	} else {
 		continuationStore = continuation.NewInMemoryStore()
@@ -262,6 +262,7 @@ func main() {
 	} else {
 		log.Printf("execution store in-memory (no persistence configured)")
 	}
+	h.SetExecutionStore(execStore)
 	shellExec := execution.NewShellExecutorWithLimits(
 		60,
 		cfg.ExecutionStdoutLimitBytes,

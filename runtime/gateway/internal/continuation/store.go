@@ -46,6 +46,8 @@ type Continuation struct {
 	PolicyVersion string    `json:"policy_version,omitempty"`
 	CapabilityRef string    `json:"capability_ref,omitempty"`
 	Metadata      map[string]any `json:"metadata,omitempty"`
+	RetryCount    int       `json:"retry_count,omitempty"`
+	MaxRetries    int       `json:"max_retries,omitempty"`
 }
 
 func (c *Continuation) CanResume() bool {
@@ -64,7 +66,14 @@ func NewContinuation(decisionID, actionType, resource string) *Continuation {
 		Resource:       resource,
 		State:          StateEscalated,
 		CreatedAt:      time.Now().UTC(),
+		MaxRetries:     3,
+		RetryCount:     0,
 	}
+}
+
+func (c *Continuation) WithMaxRetries(max int) *Continuation {
+	c.MaxRetries = max
+	return c
 }
 
 func (c *Continuation) WithAgentID(agentID string) *Continuation {
@@ -147,6 +156,16 @@ func (c *Continuation) MarkExecuted() {
 		return
 	}
 	c.State = StateExecuted
+}
+
+func (c *Continuation) CanRetry() bool {
+	if c.State != StateExecuted && c.State != StateResumed {
+		return false
+	}
+	if c.MaxRetries <= 0 {
+		return false
+	}
+	return c.RetryCount < c.MaxRetries
 }
 
 func (c *Continuation) MarkExpired() {

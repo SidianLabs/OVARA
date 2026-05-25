@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/events"
+	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
@@ -30,6 +32,7 @@ type Handler struct {
 	approvalSvc        *approval.Service
 	eventStore         events.Store
 	continuationStore  continuation.Store
+	executionStore     execution.Store
 	shieldStats        func() (restricted, total int)
 }
 
@@ -65,6 +68,10 @@ func (h *Handler) SetApprovalService(svc *approval.Service) {
 
 func (h *Handler) SetContinuationStore(store continuation.Store) {
 	h.continuationStore = store
+}
+
+func (h *Handler) SetExecutionStore(store execution.Store) {
+	h.executionStore = store
 }
 
 type HandlerWithStores struct {
@@ -188,6 +195,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
 	mux.HandleFunc("GET /v1/runtime/status", h.handleGetStatus)
 	mux.HandleFunc("GET /v1/runtime/metrics", h.handleGetMetrics)
+	mux.HandleFunc("GET /v1/audit/export", h.handleAuditExport)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
 }
@@ -448,6 +456,55 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		status["shield_total_agents"] = total
 	}
 
+	if h.executionStore != nil {
+		total, succeeded, failed, running, timedOut := h.executionStore.Stats()
+		execStats := map[string]any{
+			"total": total, "succeeded": succeeded, "failed": failed,
+			"running": running, "timed_out": timedOut,
+		}
+		if h.config != nil {
+			execStats["storage_mode"] = "in_memory"
+		}
+		status["executions"] = execStats
+	}
+
+	if h.eventStore != nil {
+		eventStats := map[string]any{"count": h.eventStore.Count()}
+		if h.config != nil {
+			eventStats["storage_mode"] = "in_memory"
+		}
+		if fb, ok := h.eventStore.(*events.FileBackedStore); ok {
+			eventStats["storage_mode"] = "file_backed"
+			eventStats["retention_days"] = fb.RetentionDays()
+			eventStats["max_records"] = fb.MaxRecords()
+			eventStats["current_count"] = fb.CurrentCount()
+			eventStats["file_path"] = fb.FilePath()
+			if size, err := fb.FileSizeBytes(); err == nil {
+				eventStats["file_size_bytes"] = size
+			}
+		}
+		status["events"] = eventStats
+	}
+
+	if h.continuationStore != nil {
+		contStats := map[string]any{
+			"count": len(h.continuationStore.ListAll()),
+		}
+		if fb, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
+			contStats["storage_mode"] = "file_backed"
+			contStats["retention_days"] = fb.RetentionDays()
+			contStats["max_records"] = fb.MaxRecords()
+			contStats["current_count"] = fb.CurrentCount()
+			contStats["file_path"] = fb.FilePath()
+			if size, err := fb.FileSizeBytes(); err == nil {
+				contStats["file_size_bytes"] = size
+			}
+		} else {
+			contStats["storage_mode"] = "in_memory"
+		}
+		status["continuations"] = contStats
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
@@ -489,6 +546,117 @@ func (h *Handler) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (h *Handler) handleAuditExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	limit := 10000
+	if ls := r.URL.Query().Get("limit"); ls != "" {
+		if l, err := strconv.Atoi(ls); err == nil && l > 0 {
+			limit = l
+			if limit > 100000 {
+				limit = 100000
+			}
+		}
+	}
+
+	gatewayID := r.URL.Query().Get("gateway_id")
+
+	var since, until *time.Time
+	if sinceStr := r.URL.Query().Get("since"); sinceStr != "" {
+		if t, err := time.Parse(time.RFC3339, sinceStr); err == nil {
+			since = &t
+		}
+	}
+	if untilStr := r.URL.Query().Get("until"); untilStr != "" {
+		if t, err := time.Parse(time.RFC3339, untilStr); err == nil {
+			until = &t
+		}
+	}
+
+	var exportedEvents []*events.Event
+	if h.eventStore != nil {
+		allEvents := h.eventStore.List(limit)
+		for _, e := range allEvents {
+			if gatewayID != "" && e.GatewayID != gatewayID {
+				continue
+			}
+			if since != nil && e.Timestamp.Before(*since) {
+				continue
+			}
+			if until != nil && e.Timestamp.After(*until) {
+				continue
+			}
+			exportedEvents = append(exportedEvents, e)
+		}
+	}
+
+	var exportedExecs []*execution.Execution
+	if h.executionStore != nil {
+		allExecs := h.executionStore.ListAll()
+		for _, e := range allExecs {
+			if since != nil && e.StartedAt.Before(*since) {
+				continue
+			}
+			if until != nil && e.StartedAt.After(*until) {
+				continue
+			}
+			exportedExecs = append(exportedExecs, e)
+			if len(exportedExecs) >= limit {
+				break
+			}
+		}
+	}
+
+	var exportedConts []*continuation.Continuation
+	if h.continuationStore != nil {
+		allConts := h.continuationStore.ListAll()
+		for _, c := range allConts {
+			if since != nil && c.CreatedAt.Before(*since) {
+				continue
+			}
+			if until != nil && c.CreatedAt.After(*until) {
+				continue
+			}
+			exportedConts = append(exportedConts, c)
+			if len(exportedConts) >= limit {
+				break
+			}
+		}
+	}
+
+	eventTypeCounts := make(map[string]int)
+	for _, e := range exportedEvents {
+		eventTypeCounts[e.EventType]++
+	}
+
+	execTotal, execSucceeded, execFailed, execRunning, execTimedOut := 0, 0, 0, 0, 0
+	if h.executionStore != nil {
+		execTotal, execSucceeded, execFailed, execRunning, execTimedOut = h.executionStore.Stats()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"exported_at":        time.Now().UTC(),
+		"gateway_id":         gatewayID,
+		"time_range_since":   since,
+		"time_range_until":  until,
+		"event_count":       len(exportedEvents),
+		"execution_count":   len(exportedExecs),
+		"continuation_count": len(exportedConts),
+		"event_types":         eventTypeCounts,
+		"execution_stats": map[string]int{
+			"total": execTotal, "succeeded": execSucceeded,
+			"failed": execFailed, "running": execRunning, "timed_out": execTimedOut,
+		},
+		"events":        exportedEvents,
+		"executions":    exportedExecs,
+		"continuations": exportedConts,
+	})
 }
 
 func (h *Handler) StartCacheCleanup(interval time.Duration) {

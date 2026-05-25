@@ -32,6 +32,10 @@ type Config struct {
 	ContinuationsFile    string `json:"continuations_file"`
 	ContinuationsMaxSize  int    `json:"continuations_max_size"`
 	ContinuationSweepIntervalSec int `json:"continuation_sweep_interval_secs"`
+	ContinuationRetentionDays   int    `json:"continuation_retention_days"`
+	ContinuationMaxRecords      int    `json:"continuation_max_records"`
+	EventsRetentionDays         int    `json:"events_retention_days"`
+	EventsMaxRecords            int    `json:"events_max_records"`
 	ExecutionFile               string `json:"execution_file"`
 	ExecutionsMaxSize           int    `json:"executions_max_size"`
 	ExecutionRetentionDays      int    `json:"execution_retention_days"`
@@ -92,6 +96,10 @@ func Default() *Config {
 		ContinuationsFile:      "var/data/continuations.jsonl",
 		ContinuationsMaxSize:   10000,
 		ContinuationSweepIntervalSec: 60,
+		ContinuationRetentionDays:     7,
+		ContinuationMaxRecords:       10000,
+		EventsRetentionDays:           7,
+		EventsMaxRecords:              50000,
 		ExecutionFile:             "var/data/executions.jsonl",
 		ExecutionsMaxSize:         10000,
 		ExecutionRetentionDays:    7,

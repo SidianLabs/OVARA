@@ -30,27 +30,29 @@ const (
 )
 
 type Event struct {
-	EventID    string         `json:"event_id"`
-	EventType  string         `json:"event_type"`
-	Timestamp  time.Time      `json:"timestamp"`
-	Seq        int64          `json:"seq,omitempty"`
-	GatewayID  string         `json:"gateway_id,omitempty"`
-	AgentID    string         `json:"agent_id,omitempty"`
-	TraceID    string         `json:"trace_id,omitempty"`
-	DecisionID string         `json:"decision_id,omitempty"`
-	ReceiptID  string         `json:"receipt_id,omitempty"`
-	ApprovalID string         `json:"approval_id,omitempty"`
-	Payload    map[string]any `json:"payload,omitempty"`
+	EventID      string         `json:"event_id"`
+	EventType    string         `json:"event_type"`
+	EventVersion string         `json:"event_version"`
+	Timestamp    time.Time      `json:"timestamp"`
+	Seq          int64          `json:"seq,omitempty"`
+	GatewayID    string         `json:"gateway_id,omitempty"`
+	AgentID      string         `json:"agent_id,omitempty"`
+	TraceID      string         `json:"trace_id,omitempty"`
+	DecisionID   string         `json:"decision_id,omitempty"`
+	ReceiptID    string         `json:"receipt_id,omitempty"`
+	ApprovalID   string         `json:"approval_id,omitempty"`
+	Payload      map[string]any `json:"payload,omitempty"`
 }
 
 var globalSeq int64
 
 func NewEvent(eventType string) *Event {
 	e := &Event{
-		EventID:   "evt_" + uuid.New().String()[:16],
-		EventType: eventType,
-		Timestamp: time.Now().UTC(),
-		Seq:       nextSeq(),
+		EventID:      "evt_" + uuid.New().String()[:16],
+		EventType:    eventType,
+		EventVersion: "1.0",
+		Timestamp:    time.Now().UTC(),
+		Seq:          nextSeq(),
 	}
 	return e
 }

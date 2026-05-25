@@ -230,6 +230,14 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		cnt.MarkReady()
 	}
 
+	if cnt.State == continuation.StateResumed {
+		if !cnt.CanRetry() {
+			api.JSONBadRequest(w, "continuation retry limit reached: retry_count="+strconv.Itoa(cnt.RetryCount)+", max_retries="+strconv.Itoa(cnt.MaxRetries))
+			return
+		}
+		cnt.RetryCount++
+	}
+
 	if !cnt.CanExecute() {
 		api.JSONBadRequest(w, "continuation not in executable state: current state="+string(cnt.State))
 		return
@@ -288,6 +296,7 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 				"exit_code":      exe.ExitCode,
 				"error":          exe.Error,
 				"state":          string(exe.State),
+				"retry_count":    cnt.RetryCount,
 			})
 		h.eventStore.Append(evt)
 	}
@@ -310,6 +319,8 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		"trust_level":   cnt.TrustLevel,
 		"action_type":   cnt.ActionType,
 		"resource":      cnt.Resource,
+		"retry_count":   cnt.RetryCount,
+		"max_retries":   cnt.MaxRetries,
 	}
 	if exe.StdoutTruncated {
 		resp["stdout_truncated"] = true
