@@ -6,25 +6,32 @@ import (
 )
 
 type RuntimeMetrics struct {
-	mu              sync.RWMutex
-	DecisionCounts  map[string]int
-	ActionCounts    map[string]int
-	ApprovalCounts  int
-	HeartbeatCount  int
-	LastDecisionAt  time.Time
-	LastHeartbeatAt time.Time
-	TotalLatencyMs  int64
-	DecisionCount   int64
-	LastLatencyMs   int64
-	PolicyReloadOK      bool
+	mu                  sync.RWMutex
+	DecisionCounts      map[string]int
+	ActionCounts        map[string]int
+	ApprovalCounts      int
+	HeartbeatCount      int
+	LastDecisionAt      time.Time
+	LastHeartbeatAt     time.Time
+	TotalLatencyMs       int64
+	DecisionCount       int64
+	LastLatencyMs        int64
+	PolicyReloadStatus  string
 	PolicyReloadLastAt  time.Time
 	PolicyReloadErrMsg  string
 }
 
+const (
+	PolicyReloadStatusNone   = "none"
+	PolicyReloadStatusOK     = "ok"
+	PolicyReloadStatusFailed = "failed"
+)
+
 func NewRuntimeMetrics() *RuntimeMetrics {
 	return &RuntimeMetrics{
-		DecisionCounts: make(map[string]int),
-		ActionCounts:   make(map[string]int),
+		DecisionCounts:     make(map[string]int),
+		ActionCounts:       make(map[string]int),
+		PolicyReloadStatus: "none",
 	}
 }
 
@@ -56,7 +63,11 @@ func (m *RuntimeMetrics) RecordHeartbeat() {
 func (m *RuntimeMetrics) RecordPolicyReload(success bool, errMsg string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.PolicyReloadOK = success
+	if success {
+		m.PolicyReloadStatus = PolicyReloadStatusOK
+	} else {
+		m.PolicyReloadStatus = PolicyReloadStatusFailed
+	}
 	m.PolicyReloadLastAt = time.Now().UTC()
 	m.PolicyReloadErrMsg = errMsg
 }
@@ -80,16 +91,16 @@ func (m *RuntimeMetrics) Snapshot() MetricsSnapshot {
 	}
 
 	return MetricsSnapshot{
-		DecisionCounts:   decisionCounts,
-		ActionCounts:     actionCounts,
-		ApprovalCounts:   m.ApprovalCounts,
-		HeartbeatCount:   m.HeartbeatCount,
-		LastDecisionAt:   m.LastDecisionAt,
-		LastHeartbeatAt:  m.LastHeartbeatAt,
-		TotalDecisions:   int(m.DecisionCount),
-		AvgLatencyMs:     avgLatency,
-		LastLatencyMs:    m.LastLatencyMs,
-		PolicyReloadOK:   m.PolicyReloadOK,
+		DecisionCounts:     decisionCounts,
+		ActionCounts:       actionCounts,
+		ApprovalCounts:     m.ApprovalCounts,
+		HeartbeatCount:     m.HeartbeatCount,
+		LastDecisionAt:     m.LastDecisionAt,
+		LastHeartbeatAt:    m.LastHeartbeatAt,
+		TotalDecisions:     int(m.DecisionCount),
+		AvgLatencyMs:       avgLatency,
+		LastLatencyMs:      m.LastLatencyMs,
+		PolicyReloadStatus: m.PolicyReloadStatus,
 		PolicyReloadLastAt: m.PolicyReloadLastAt,
 		PolicyReloadErrMsg: m.PolicyReloadErrMsg,
 	}
@@ -105,7 +116,7 @@ type MetricsSnapshot struct {
 	TotalDecisions     int
 	AvgLatencyMs       int64
 	LastLatencyMs      int64
-	PolicyReloadOK     bool
+	PolicyReloadStatus string
 	PolicyReloadLastAt time.Time
 	PolicyReloadErrMsg string
 }

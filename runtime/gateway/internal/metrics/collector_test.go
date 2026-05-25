@@ -74,8 +74,8 @@ func TestRuntimeMetrics_RecordPolicyReload(t *testing.T) {
 
 	m.RecordPolicyReload(true, "")
 	snap := m.Snapshot()
-	if !snap.PolicyReloadOK {
-		t.Error("policy reload should be OK")
+	if snap.PolicyReloadStatus != PolicyReloadStatusOK {
+		t.Errorf("policy reload status = %v, want ok", snap.PolicyReloadStatus)
 	}
 	if snap.PolicyReloadErrMsg != "" {
 		t.Errorf("err msg should be empty, got %s", snap.PolicyReloadErrMsg)
@@ -83,11 +83,25 @@ func TestRuntimeMetrics_RecordPolicyReload(t *testing.T) {
 
 	m.RecordPolicyReload(false, "file not found")
 	snap = m.Snapshot()
-	if snap.PolicyReloadOK {
-		t.Error("policy reload should be failed")
+	if snap.PolicyReloadStatus != PolicyReloadStatusFailed {
+		t.Errorf("policy reload status = %v, want failed", snap.PolicyReloadStatus)
 	}
 	if snap.PolicyReloadErrMsg != "file not found" {
 		t.Errorf("err msg = %s, want 'file not found'", snap.PolicyReloadErrMsg)
+	}
+
+	m.RecordPolicyReload(true, "")
+	snap = m.Snapshot()
+	if snap.PolicyReloadStatus != PolicyReloadStatusOK {
+		t.Errorf("policy reload status = %v, want ok after recovery", snap.PolicyReloadStatus)
+	}
+}
+
+func TestRuntimeMetrics_InitialPolicyReloadStatus(t *testing.T) {
+	m := NewRuntimeMetrics()
+	snap := m.Snapshot()
+	if snap.PolicyReloadStatus != PolicyReloadStatusNone {
+		t.Errorf("initial policy reload status = %v, want none", snap.PolicyReloadStatus)
 	}
 }
 
