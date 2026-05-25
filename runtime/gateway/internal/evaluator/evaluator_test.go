@@ -403,15 +403,48 @@ func TestEvaluator_TrustCanEscalateAllowedAction(t *testing.T) {
 	}
 }
 
-func TestEvaluator_DefaultDenyForUnknownAction(t *testing.T) {
+func TestEvaluator_DefaultAllowForUnknownAction(t *testing.T) {
 	cfg := map[string]any{
 		"policy_version": "test-default",
-		"rules": []any{},
+		"rules":          []any{},
 	}
 	store, err := policy.LoadStoreFromConfig(cfg)
 	if err != nil {
 		t.Fatalf("failed to load store: %v", err)
 	}
+	ev := New(store)
+
+	req := &models.ActionRequest{
+		ActionType:  models.ActionTypeGitPull,
+		Resource:    "git:acme/api",
+		Environment: models.EnvironmentDev,
+		AgentIdentity: &models.AgentIdentity{
+			Issuer:    "test",
+			SubjectID: "agent-unknown",
+		},
+	}
+
+	resp, err := ev.Evaluate(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Decision != models.DecisionAllow {
+		t.Errorf("decision = %v, want allow (no rules = default allow)", resp.Decision)
+	}
+	hasAllowedReason := false
+	for _, code := range resp.ReasonCodes {
+		if code == models.ReasonAllowed {
+			hasAllowedReason = true
+			break
+		}
+	}
+	if !hasAllowedReason {
+		t.Errorf("expected reason_codes to contain allowed, got %v", resp.ReasonCodes)
+	}
+}
+
+func TestEvaluator_DefaultEscalateForProductionUnknownAction(t *testing.T) {
+	store := policy.NewStore("test-default")
 	ev := New(store)
 
 	req := &models.ActionRequest{
@@ -428,5 +461,53 @@ func TestEvaluator_DefaultDenyForUnknownAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	t.Logf("decision = %v, reasons = %v", resp.Decision, resp.ReasonCodes)
+	if resp.Decision != models.DecisionEscalate {
+		t.Errorf("decision = %v, want escalate (default rules escalate production shell)", resp.Decision)
+	}
+}
+
+func TestEvaluator_PolicyExplicitAllowVoucher(t *testing.T) {
+	cfg := map[string]any{
+		"policy_version": "test-voucher",
+		"rules": []any{
+			map[string]any{
+				"action_type": "ci.build_trigger",
+				"environment": "*",
+				"allow":       true,
+			},
+		},
+	}
+	store, err := policy.LoadStoreFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("failed to load store: %v", err)
+	}
+	ev := New(store)
+
+	req := &models.ActionRequest{
+		ActionType:  models.ActionTypeCIBuildTrigger,
+		Resource:    "build:pipeline.yaml",
+		Environment: models.EnvironmentProduction,
+		AgentIdentity: &models.AgentIdentity{
+			Issuer:    "test",
+			SubjectID: "agent-builder",
+		},
+	}
+
+	resp, err := ev.Evaluate(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Decision != models.DecisionAllow {
+		t.Errorf("decision = %v, want allow (ci.build_trigger is explicitly allowed)", resp.Decision)
+	}
+	hasPolicyAllow := false
+	for _, code := range resp.ReasonCodes {
+		if code == models.ReasonPolicyAllow {
+			hasPolicyAllow = true
+			break
+		}
+	}
+	if !hasPolicyAllow {
+		t.Errorf("expected reason_codes to contain policy_allow, got %v", resp.ReasonCodes)
+	}
 }

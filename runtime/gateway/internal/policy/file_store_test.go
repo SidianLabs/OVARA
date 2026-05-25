@@ -39,6 +39,60 @@ func TestLoadStoreFromFile_ValidJSON(t *testing.T) {
 	}
 }
 
+func TestLoadStoreFromFile_AllowRules(t *testing.T) {
+	tmpDir := t.TempDir()
+	policyFile := tmpDir + "/policy.json"
+
+	policyJSON := `{
+		"version": "v1-allow-test",
+		"rules": [
+			{"action_type": "shell", "environment": "local", "allow": true},
+			{"action_type": "shell", "environment": "production", "deny": true},
+			{"action_type": "shell", "environment": "dev", "escalate": true},
+			{"action_type": "git.pull", "environment": "*", "allow": true}
+		]
+	}`
+	if err := os.WriteFile(policyFile, []byte(policyJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := LoadStoreFromFile(policyFile, "")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if store.Version() != "v1-allow-test" {
+		t.Errorf("expected version v1-allow-test, got %s", store.Version())
+	}
+
+	rules := store.RulesForAction("shell")
+	if len(rules) != 3 {
+		t.Fatalf("expected 3 rules for shell, got %d", len(rules))
+	}
+
+	for _, r := range rules {
+		if r.ActionType != "shell" {
+			continue
+		}
+		if r.Environment == "local" && !r.Allow {
+			t.Error("expected shell/local rule to have allow=true")
+		}
+		if r.Environment == "production" && !r.Deny {
+			t.Error("expected shell/production rule to have deny=true")
+		}
+		if r.Environment == "dev" && !r.Escalate {
+			t.Error("expected shell/dev rule to have escalate=true")
+		}
+	}
+
+	pullRules := store.RulesForAction("git.pull")
+	if len(pullRules) != 1 {
+		t.Fatalf("expected 1 rule for git.pull, got %d", len(pullRules))
+	}
+	if !pullRules[0].Allow {
+		t.Error("expected git.pull rule to have allow=true")
+	}
+}
+
 func TestLoadStoreFromFile_InvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	policyFile := tmpDir + "/policy.json"
