@@ -89,6 +89,19 @@ A "local dev" policy profile demonstrating all three outcomes (allow, deny, esca
 ### `sample_config.yaml`
 Sample gateway configuration file.
 
+### Enrollment and Status
+
+The gateway maintains a local enrollment identity stored in `var/data/enrollment.json`. The status endpoint shows:
+- `gateway_id`, `gateway_name`, `gateway_version` from enrollment
+- `enrollment_state` (always `local` in v1)
+- `last_seen_at` (updated by heartbeat every 30s by default)
+- `pending_approval_count`, `shield_restricted_agents`, `shield_total_agents`
+
+Check enrollment status:
+```bash
+curl -s http://localhost:8080/v1/runtime/status | jq '{gateway_id, enrollment_state, last_seen_at}'
+```
+
 ## Common Patterns
 
 **Override gateway URL:**

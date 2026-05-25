@@ -256,7 +256,9 @@ curl http://localhost:8080/v1/runtime/status
 
 # Response
 # {"gateway_id":"gw_12345","gateway_name":"local-gateway",
-#  "gateway_version":"0.7.0","enrollment_status":"local",
+#  "gateway_version":"0.9.0","enrollment_state":"local",
+#  "last_seen_at":"...","last_seen_age_secs":5.2,
+#  "pending_approval_count":0,"shield_restricted_agents":0,
 #  "decision_cache_count":150,"decision_cache_max":10000,
 #  "receipt_count":42}
 ```
@@ -338,6 +340,175 @@ When `PolicyRefreshInterval > 0`:
 - On file write, policy is reloaded automatically
 - No server restart required
 - Value is in seconds between check intervals
+
+## Local Enrollment and Heartbeat
+
+The gateway maintains a local enrollment identity that tracks:
+- **gateway_id**: stable identifier that persists across restarts
+- **gateway_name**: operator-assigned name from config
+- **gateway_version**: version string from config
+- **enrollment_state**: `local` (not connected to a control plane)
+- **environment**: `local`, `dev`, `staging`, or `production`
+- **registered_at**: when the gateway first started
+- **last_seen_at**: timestamp of the most recent heartbeat
+
+### Enrollment File Location
+
+Enrollment state is stored at:
+- Default: `var/data/enrollment.json`
+- Configurable via `enrollment_file` in config JSON
+
+The file is created automatically on first start. Directory is created if missing.
+
+### Heartbeat Behavior
+
+The gateway runs a background heartbeat that updates `last_seen_at`:
+- Default interval: 30 seconds
+- Configurable via `heartbeat_interval_secs` in config
+- Each heartbeat persists the enrollment file
+- Heartbeat stops gracefully on shutdown (SIGINT/SIGTERM)
+
+### Verifying Enrollment Persistence
+
+```bash
+# Start the gateway
+cd runtime/gateway && go run cmd/server/main.go
+
+# Check initial enrollment state
+curl -s http://localhost:8080/v1/runtime/status | jq '{gateway_id, enrollment_state, last_seen_at}'
+
+# Wait 35 seconds and check last_seen_at has updated
+sleep 35
+curl -s http://localhost:8080/v1/runtime/status | jq '{gateway_id, last_seen_at, last_seen_age_secs}'
+
+# Restart and verify same gateway_id
+# (stop the gateway, start it again, check the id is the same)
+pkill -f "go run cmd/server"  # or Ctrl-C
+cd runtime/gateway && go run cmd/server/main.go
+curl -s http://localhost:8080/v1/runtime/status | jq '{gateway_id, enrollment_state, registered_at}'
+```
+
+The `gateway_id` should be identical after a restart if the enrollment file exists.
+
+### Status Endpoint Fields
+
+The `/v1/runtime/status` endpoint returns:
+
+| Field | Description |
+|-------|-------------|
+| `gateway_id` | Stable gateway identifier (persists across restarts) |
+| `gateway_name` | Configured name (default: `local-gateway`) |
+| `gateway_version` | Configured version (default: `0.9.0`) |
+| `enrollment_state` | Always `local` in v1 (control plane not connected) |
+| `environment` | From `OVARA_ENVIRONMENT` env var or config |
+| `registered_at` | First start timestamp |
+| `last_seen_at` | Last heartbeat timestamp |
+| `last_seen_age_secs` | Seconds since last heartbeat |
+| `enrollment_healthy` | `true` if enrollment service is healthy |
+| `enrollment_file` | Configured enrollment file path |
+| `policy_version` | Loaded policy version |
+| `policy_source` | `in-memory` or `file:<path>` |
+| `hot_reload` | `enabled` or `disabled` |
+| `storage_mode` | `in-memory` or `file-backed` |
+| `decision_cache_count` | Cached decisions count |
+| `decision_cache_max` | Max cache size |
+| `receipt_count` | Stored receipts count |
+| `pending_approval_count` | Pending approvals (from approval store) |
+| `shield_restricted_agents` | Restricted agent count (from shield store) |
+| `shield_total_agents` | Total tracked agents (from shield store) |
+
+### What Remains Local-Only in v1
+
+The following are **not** implemented in v1:
+- Remote control plane enrollment (always `local` state)
+- Gateway identity federation across multiple gateways
+- Enrollment file encryption or access control
+- Heartbeat sends no external telemetry
+- Tags/metadata on enrollment identity are present but unused in decisions
+
+## Control-Plane Readiness Smoke Test
+
+Run this after building or restarting to verify enrollment and heartbeat are working.
+
+### 1. Build and Start
+
+```bash
+cd runtime/gateway
+go build -o gateway_smoke ./cmd/server/
+./gateway_smoke 2>&1 &
+sleep 2
+```
+
+Expected log output:
+```
+enrollment heartbeat started (default interval=30s)
+gateway_id=gw_XXX enrollment_state=local environment=local
+```
+
+### 2. Check Initial Status
+
+```bash
+curl -s http://localhost:8080/v1/runtime/status | jq '{gateway_id, enrollment_state, last_seen_at}'
+```
+
+Record the `gateway_id`. This should be stable across restarts.
+
+### 3. Wait for Heartbeat Update
+
+```bash
+# Wait 35 seconds for at least one heartbeat to fire
+sleep 35
+curl -s http://localhost:8080/v1/runtime/status | jq '{gateway_id, last_seen_at, last_seen_age_secs}'
+```
+
+- `last_seen_age_secs` should be less than 35
+- `last_seen_at` should show a recent timestamp
+
+### 4. Verify Persistence (Restart Test)
+
+```bash
+# Stop the gateway
+pkill -f gateway_smoke
+sleep 1
+
+# Restart with same enrollment file
+./gateway_smoke 2>&1 &
+sleep 2
+
+# Check that gateway_id is the same
+curl -s http://localhost:8080/v1/runtime/status | jq '{gateway_id, enrollment_state, registered_at}'
+```
+
+If the `gateway_id` is the same as step 2, enrollment persistence is working.
+
+### 5. Check Enrollment File
+
+```bash
+# File should exist and contain the gateway identity
+cat var/data/enrollment.json | jq '{id, name, version, enrollment_state}'
+```
+
+### 6. Verify Full Status Richness
+
+```bash
+curl -s http://localhost:8080/v1/runtime/status | jq '{
+  gateway_id,
+  enrollment_state,
+  last_seen_age_secs,
+  pending_approval_count,
+  shield_restricted_agents,
+  shield_total_agents,
+  enrollment_file
+}'
+```
+
+All fields should be present and non-null. `enrollment_healthy` should be `true`.
+
+### 7. Clean Up
+
+```bash
+pkill -f gateway_smoke
+```
 
 ## Local-Only Limitations (v1)
 
