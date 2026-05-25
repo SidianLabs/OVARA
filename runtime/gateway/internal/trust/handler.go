@@ -9,16 +9,27 @@ import (
 	"github.com/google/uuid"
 
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/models"
 )
 
 type Handler struct {
 	shieldStore *ShieldStore
 	trustEval  *Evaluator
+	eventStore events.Store
+	gatewayID  string
 }
 
 func NewHandler(shieldStore *ShieldStore, trustEval *Evaluator) *Handler {
 	return &Handler{shieldStore: shieldStore, trustEval: trustEval}
+}
+
+func (h *Handler) SetEventStore(store events.Store) {
+	h.eventStore = store
+}
+
+func (h *Handler) SetGatewayID(id string) {
+	h.gatewayID = id
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -111,6 +122,17 @@ func (h *Handler) handleRestrict(w http.ResponseWriter, r *http.Request) {
 
 	h.shieldStore.Restrict(agentID, body.Reason)
 
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeShieldRestrictionChanged).
+			WithGatewayID(h.gatewayID).
+			WithAgentID(agentID).
+			WithPayload(map[string]any{
+				"action": "restricted",
+				"reason": body.Reason,
+			})
+		h.eventStore.Append(evt)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"agent_id":  agentID,
@@ -131,6 +153,16 @@ func (h *Handler) handleUnrestrict(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.shieldStore.Unrestrict(agentID)
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeShieldRestrictionChanged).
+			WithGatewayID(h.gatewayID).
+			WithAgentID(agentID).
+			WithPayload(map[string]any{
+				"action": "unrestricted",
+			})
+		h.eventStore.Append(evt)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{

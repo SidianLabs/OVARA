@@ -2,25 +2,29 @@ package events
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 const (
-	EventTypeDecisionEvaluated   = "runtime.decision_evaluated"
-	EventTypeApprovalCreated     = "approval.created"
-	EventTypeApprovalResolved    = "approval.resolved"
-	EventTypeReceiptIssued       = "receipt.issued"
-	EventTypePolicyReloaded      = "policy.reloaded"
-	EventTypeShieldRestrictionChanged = "shield.restriction_changed"
-	EventTypeEnrollmentHeartbeat = "enrollment.heartbeat"
+	EventTypeDecisionEvaluated          = "runtime.decision_evaluated"
+	EventTypeApprovalCreated            = "approval.created"
+	EventTypeApprovalResolved           = "approval.resolved"
+	EventTypeApprovalResumed            = "approval.resumed"
+	EventTypeReceiptIssued              = "receipt.issued"
+	EventTypePolicyReloaded             = "policy.reloaded"
+	EventTypePolicyReloadFailed         = "policy.reload_failed"
+	EventTypeShieldRestrictionChanged   = "shield.restriction_changed"
+	EventTypeEnrollmentHeartbeat        = "enrollment.heartbeat"
 )
 
 type Event struct {
 	EventID    string         `json:"event_id"`
 	EventType  string         `json:"event_type"`
 	Timestamp  time.Time      `json:"timestamp"`
+	Seq        int64          `json:"seq,omitempty"`
 	GatewayID  string         `json:"gateway_id,omitempty"`
 	AgentID    string         `json:"agent_id,omitempty"`
 	TraceID    string         `json:"trace_id,omitempty"`
@@ -30,12 +34,21 @@ type Event struct {
 	Payload    map[string]any `json:"payload,omitempty"`
 }
 
+var globalSeq int64
+
 func NewEvent(eventType string) *Event {
-	return &Event{
+	e := &Event{
 		EventID:   "evt_" + uuid.New().String()[:16],
 		EventType: eventType,
 		Timestamp: time.Now().UTC(),
+		Seq:       nextSeq(),
 	}
+	return e
+}
+
+func nextSeq() int64 {
+	v := atomic.AddInt64(&globalSeq, 1)
+	return v
 }
 
 func (e *Event) WithGatewayID(id string) *Event {

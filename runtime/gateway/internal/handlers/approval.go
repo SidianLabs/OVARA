@@ -238,6 +238,19 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeApprovalResumed).
+			WithGatewayID(h.gatewayID).
+			WithApprovalID(id).
+			WithDecisionID(result.DecisionID).
+			WithPayload(map[string]any{
+				"trust_score":   result.TrustScore,
+				"trust_level":   result.TrustLevel,
+				"anomaly_codes": result.AnomalyCodes,
+			})
+		h.eventStore.Append(evt)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 }

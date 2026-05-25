@@ -73,7 +73,21 @@ func main() {
 	policyStore := policy.NewStore(cfg.PolicyVersion)
 	var watcher *policy.Watcher
 	var wg sync.WaitGroup
-	eventStore := events.NewInMemoryStore(10000)
+
+	var eventStore events.Store
+	if cfg.EventsFile != "" {
+		store, err := events.NewFileBackedStore(cfg.EventsFile, cfg.EventsMaxSize)
+		if err != nil {
+			log.Printf("warning: failed to create file-backed event store: %v, using in-memory", err)
+			eventStore = events.NewInMemoryStore(10000)
+		} else {
+			eventStore = store
+			log.Printf("event store persisted to %s (max=%d)", cfg.EventsFile, cfg.EventsMaxSize)
+		}
+	} else {
+		eventStore = events.NewInMemoryStore(10000)
+		log.Printf("event store in-memory (no persistence configured)")
+	}
 
 	if cfg.PolicyFile != "" {
 		initialSource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
@@ -101,6 +115,15 @@ func main() {
 									if err := watcher.Reload(); err != nil {
 										log.Printf("policy reload failed: %v", err)
 										metrics.RecordPolicyReload(false, err.Error())
+										if eventStore != nil {
+											evt := events.NewEvent(events.EventTypePolicyReloadFailed).
+												WithGatewayID(enrollmentSvc.GetIdentity().ID).
+												WithPayload(map[string]any{
+													"error":  err.Error(),
+													"source": cfg.PolicyFile,
+												})
+											eventStore.Append(evt)
+										}
 									} else {
 										log.Printf("policy reloaded from %s", cfg.PolicyFile)
 										metrics.RecordPolicyReload(true, "")
@@ -185,6 +208,9 @@ func main() {
 	approvalHandler.SetEventStore(eventStore)
 	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 
+	trustHandler.SetEventStore(eventStore)
+	trustHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+
 	eventHandler := handlers.NewEventHandler(eventStore)
 
 	mux := http.NewServeMux()
@@ -220,6 +246,9 @@ func main() {
 		if stopHeartbeat != nil {
 			stopHeartbeat()
 			log.Println("enrollment heartbeat stopped")
+		}
+		if fb, ok := eventStore.(*events.FileBackedStore); ok {
+			fb.Close()
 		}
 		wg.Wait()
 		os.Exit(0)

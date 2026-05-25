@@ -22,6 +22,8 @@ type Config struct {
 	ReceiptsMaxSize       int    `json:"receipts_max_size"`
 	ReceiptsMaxAgeMinutes  int    `json:"receipts_max_age_minutes"`
 	ApprovalsFile         string `json:"approvals_file"`
+	EventsFile            string `json:"events_file"`
+	EventsMaxSize         int    `json:"events_max_size"`
 	ReceiptLogEnabled     bool   `json:"receipt_log_enabled"`
 	DecisionCacheMaxSize  int    `json:"decision_cache_max_size"`
 	DecisionCacheTTLMin   int    `json:"decision_cache_ttl_minutes"`
@@ -68,6 +70,8 @@ func Default() *Config {
 		ReceiptsMaxSize:        10000,
 		ReceiptsMaxAgeMinutes:  60,
 		ApprovalsFile:         "var/data/approvals.json",
+		EventsFile:            "var/data/events.jsonl",
+		EventsMaxSize:         50000,
 		ReceiptLogEnabled:      true,
 		DecisionCacheMaxSize:   10000,
 		DecisionCacheTTLMin:    10,
