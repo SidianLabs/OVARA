@@ -18,6 +18,7 @@ import (
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/handlers"
+	"ovara.runtime.gateway/internal/integrity"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
@@ -223,7 +224,10 @@ func main() {
 	h.SetShieldStats(shieldStore.Stats)
 	h.SetEventStore(eventStore)
 	h.SetContinuationStore(continuationStore)
+
 	approvalHandler.SetEventStore(eventStore)
+	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	approvalHandler.SetContinuationStore(continuationStore)
 	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	approvalHandler.SetContinuationStore(continuationStore)
 
@@ -263,6 +267,17 @@ func main() {
 		log.Printf("execution store in-memory (no persistence configured)")
 	}
 	h.SetExecutionStore(execStore)
+
+	checker := integrity.NewChecker()
+	checker.SetEventStore(eventStore)
+	checker.SetContinuationStore(continuationStore)
+	checker.SetExecutionStore(execStore)
+	checker.SetReceiptStore(receiptsStore)
+	checker.SetApprovalStore(approvalStore)
+	checker.SetGatewayInfo(enrollmentSvc.GetIdentity().ID, cfg.GatewayVersion)
+	h.SetIntegrityChecker(checker)
+	log.Printf("integrity checker configured")
+
 	shellExec := execution.NewShellExecutorWithLimits(
 		60,
 		cfg.ExecutionStdoutLimitBytes,
@@ -303,6 +318,13 @@ func main() {
 		sweeper.Start(sweepInterval)
 		log.Printf("continuation sweeper started (interval=%ds)", sweepInterval)
 	}
+
+	adminHandler := handlers.NewAdminHandler()
+	adminHandler.SetContinuationStore(continuationStore)
+	adminHandler.SetEventStore(eventStore)
+	adminHandler.SetExecutionStore(execStore)
+	adminHandler.SetContinuationSweeper(sweeper)
+	adminHandler.RegisterRoutes(mux)
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway v%s listening on %s", cfg.GatewayVersion, addr)

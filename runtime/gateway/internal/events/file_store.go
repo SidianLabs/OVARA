@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -158,30 +159,29 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 	ageCutoff := now.AddDate(0, 0, -s.retentionDays)
 
 	var toRemove []string
+	staleSet := make(map[string]bool)
 	for _, evt := range s.events {
 		if !evt.Timestamp.IsZero() && evt.Timestamp.Before(ageCutoff) {
 			toRemove = append(toRemove, evt.EventID)
+			staleSet[evt.EventID] = true
 		}
 	}
 
 	if len(s.events)-len(toRemove) > s.maxRecords && len(toRemove) < len(s.events) {
 		ageSorted := make([]*Event, 0, len(s.events))
 		for _, evt := range s.events {
-			if !evt.Timestamp.IsZero() {
+			if !evt.Timestamp.IsZero() && !staleSet[evt.EventID] {
 				ageSorted = append(ageSorted, evt)
 			}
 		}
-		for i := 0; i < len(ageSorted)-1; i++ {
-			for j := i + 1; j < len(ageSorted); j++ {
-				if ageSorted[j].Timestamp.Before(ageSorted[i].Timestamp) {
-					ageSorted[i], ageSorted[j] = ageSorted[j], ageSorted[i]
-				}
-			}
-		}
+		sort.Slice(ageSorted, func(i, j int) bool {
+			return ageSorted[i].Timestamp.Before(ageSorted[j].Timestamp)
+		})
 		target := s.maxRecords
 		for i := 0; i < len(ageSorted)-target && i < len(ageSorted); i++ {
-			if !containsStr(toRemove, ageSorted[i].EventID) {
+			if !staleSet[ageSorted[i].EventID] {
 				toRemove = append(toRemove, ageSorted[i].EventID)
+				staleSet[ageSorted[i].EventID] = true
 			}
 		}
 	}
@@ -197,17 +197,29 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 	}
 
 	s.staleEvents = append(s.staleEvents, toRemove...)
+	s.removeByIDsInMemory(toRemove)
 	return len(toRemove), nil
+}
+
+func (s *FileBackedStore) removeByIDsInMemory(ids []string) {
+	idSet := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
+	kept := 0
+	for _, evt := range s.events {
+		if !idSet[evt.EventID] {
+			s.events[kept] = evt
+			kept++
+		}
+	}
+	s.events = s.events[:kept]
 }
 
 func (s *FileBackedStore) Compact() error {
 	s.mu.Lock()
 	stale := s.staleEvents
 	s.mu.Unlock()
-
-	if len(stale) == 0 {
-		return nil
-	}
 
 	staleSet := make(map[string]bool)
 	for _, id := range stale {
@@ -220,8 +232,9 @@ func (s *FileBackedStore) Compact() error {
 		return fmt.Errorf("failed to open compact tmp file: %w", err)
 	}
 
+	var keptEvents []*Event
+
 	s.mu.RLock()
-	var kept int
 	for _, evt := range s.events {
 		if staleSet[evt.EventID] {
 			continue
@@ -239,7 +252,7 @@ func (s *FileBackedStore) Compact() error {
 			s.mu.RUnlock()
 			return fmt.Errorf("failed to write event during compact: %w", err)
 		}
-		kept++
+		keptEvents = append(keptEvents, evt)
 	}
 	s.mu.RUnlock()
 
@@ -266,6 +279,7 @@ func (s *FileBackedStore) Compact() error {
 	}
 	oldFile := s.file
 	s.file = newFile
+	s.events = keptEvents
 	s.mu.Unlock()
 
 	oldFile.Close()

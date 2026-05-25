@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -207,30 +208,29 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 	}
 
 	var toRemove []string
+	staleSet := make(map[string]bool)
 	for _, cnt := range s.continuations {
 		if isTerminal(cnt.State) && !cnt.CreatedAt.IsZero() && cnt.CreatedAt.Before(ageCutoff) {
 			toRemove = append(toRemove, cnt.ContinuationID)
+			staleSet[cnt.ContinuationID] = true
 		}
 	}
 
 	if len(s.continuations)-len(toRemove) > s.maxRecords && len(toRemove) < len(s.continuations) {
 		ageSorted := make([]*Continuation, 0, len(s.continuations))
 		for _, cnt := range s.continuations {
-			if !cnt.CreatedAt.IsZero() {
+			if !cnt.CreatedAt.IsZero() && !staleSet[cnt.ContinuationID] {
 				ageSorted = append(ageSorted, cnt)
 			}
 		}
-		for i := 0; i < len(ageSorted)-1; i++ {
-			for j := i + 1; j < len(ageSorted); j++ {
-				if ageSorted[j].CreatedAt.Before(ageSorted[i].CreatedAt) {
-					ageSorted[i], ageSorted[j] = ageSorted[j], ageSorted[i]
-				}
-			}
-		}
+		sort.Slice(ageSorted, func(i, j int) bool {
+			return ageSorted[i].CreatedAt.Before(ageSorted[j].CreatedAt)
+		})
 		target := s.maxRecords
 		for i := 0; i < len(ageSorted)-target && i < len(ageSorted); i++ {
-			if !containsStr(toRemove, ageSorted[i].ContinuationID) {
+			if !staleSet[ageSorted[i].ContinuationID] {
 				toRemove = append(toRemove, ageSorted[i].ContinuationID)
+				staleSet[ageSorted[i].ContinuationID] = true
 			}
 		}
 	}
@@ -248,6 +248,7 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 	for _, id := range toRemove {
 		delete(s.continuations, id)
 	}
+	s.staleIDs = append(s.staleIDs, toRemove...)
 
 	return len(toRemove), nil
 }
@@ -261,12 +262,10 @@ func (s *FileBackedStore) Compact() error {
 		return nil
 	}
 
-	s.mu.Lock()
+	staleSet := make(map[string]bool, len(stale))
 	for _, id := range stale {
-		delete(s.continuations, id)
+		staleSet[id] = true
 	}
-	s.staleIDs = nil
-	s.mu.Unlock()
 
 	tmpPath := s.path + ".compact.tmp"
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -274,8 +273,13 @@ func (s *FileBackedStore) Compact() error {
 		return fmt.Errorf("failed to open compact tmp file: %w", err)
 	}
 
+	var keptConts []*Continuation
+
 	s.mu.RLock()
 	for _, cnt := range s.continuations {
+		if staleSet[cnt.ContinuationID] {
+			continue
+		}
 		data, err := json.Marshal(cnt)
 		if err != nil {
 			tmpFile.Close()
@@ -289,6 +293,7 @@ func (s *FileBackedStore) Compact() error {
 			s.mu.RUnlock()
 			return fmt.Errorf("failed to write continuation during compact: %w", err)
 		}
+		keptConts = append(keptConts, cnt)
 	}
 	s.mu.RUnlock()
 
@@ -307,6 +312,10 @@ func (s *FileBackedStore) Compact() error {
 	}
 
 	s.mu.Lock()
+	for _, id := range stale {
+		delete(s.continuations, id)
+	}
+	s.staleIDs = nil
 	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		s.mu.Unlock()

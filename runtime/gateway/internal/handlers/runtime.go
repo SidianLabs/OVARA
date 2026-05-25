@@ -16,6 +16,7 @@ import (
 	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
+	"ovara.runtime.gateway/internal/integrity"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
@@ -33,6 +34,7 @@ type Handler struct {
 	eventStore         events.Store
 	continuationStore  continuation.Store
 	executionStore     execution.Store
+	integrityChecker   *integrity.Checker
 	shieldStats        func() (restricted, total int)
 }
 
@@ -72,6 +74,10 @@ func (h *Handler) SetContinuationStore(store continuation.Store) {
 
 func (h *Handler) SetExecutionStore(store execution.Store) {
 	h.executionStore = store
+}
+
+func (h *Handler) SetIntegrityChecker(checker *integrity.Checker) {
+	h.integrityChecker = checker
 }
 
 type HandlerWithStores struct {
@@ -195,6 +201,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
 	mux.HandleFunc("GET /v1/runtime/status", h.handleGetStatus)
 	mux.HandleFunc("GET /v1/runtime/metrics", h.handleGetMetrics)
+	mux.HandleFunc("GET /v1/runtime/integrity", h.handleIntegrity)
+	mux.HandleFunc("GET /v1/runtime/snapshot", h.handleSnapshot)
 	mux.HandleFunc("GET /v1/audit/export", h.handleAuditExport)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
@@ -507,6 +515,125 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+func (h *Handler) handleIntegrity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	if h.integrityChecker == nil {
+		api.JSONBadRequest(w, "integrity checker not configured")
+		return
+	}
+
+	result := h.integrityChecker.Check()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	snap := metrics.Global().Snapshot()
+
+	var eventStats, contStats, execStats map[string]any
+
+	if h.eventStore != nil {
+		eventCount := h.eventStore.Count()
+		if fb, ok := h.eventStore.(*events.FileBackedStore); ok {
+			eventStats = map[string]any{
+				"count":            fb.CurrentCount(),
+				"storage_mode":     "file_backed",
+				"retention_days":   fb.RetentionDays(),
+				"max_records":      fb.MaxRecords(),
+				"file_path":       fb.FilePath(),
+			}
+			if size, err := fb.FileSizeBytes(); err == nil {
+				eventStats["file_size_bytes"] = size
+			}
+		} else {
+			eventStats = map[string]any{"count": eventCount, "storage_mode": "in_memory"}
+		}
+	}
+
+	if h.continuationStore != nil {
+		allConts := h.continuationStore.ListAll()
+		stateCounts := make(map[string]int)
+		for _, c := range allConts {
+			stateCounts[string(c.State)]++
+		}
+		if fb, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
+			contStats = map[string]any{
+				"count":            len(allConts),
+				"storage_mode":     "file_backed",
+				"retention_days":   fb.RetentionDays(),
+				"max_records":      fb.MaxRecords(),
+				"file_path":       fb.FilePath(),
+				"by_state":        stateCounts,
+			}
+			if size, err := fb.FileSizeBytes(); err == nil {
+				contStats["file_size_bytes"] = size
+			}
+		} else {
+			contStats = map[string]any{"count": len(allConts), "storage_mode": "in_memory", "by_state": stateCounts}
+		}
+	}
+
+	if h.executionStore != nil {
+		total, succeeded, failed, running, timedOut := h.executionStore.Stats()
+		execStats = map[string]any{
+			"total":      total,
+			"succeeded":  succeeded,
+			"failed":     failed,
+			"running":    running,
+			"timed_out":  timedOut,
+		}
+		if fb, ok := h.executionStore.(*execution.FileBackedStore); ok {
+			execStats["storage_mode"] = "file_backed"
+			execStats["retention_days"] = fb.RetentionDays()
+			execStats["max_records"] = fb.MaxRecords()
+			execStats["file_path"] = fb.FilePath()
+		} else {
+			execStats["storage_mode"] = "in_memory"
+		}
+	}
+
+	gatewayID := ""
+	gatewayName := ""
+	enrollmentState := "local"
+	if h.enrollmentSvc != nil {
+		gatewayID = h.enrollmentSvc.GetIdentity().ID
+		gatewayName = h.enrollmentSvc.GetIdentity().Name
+		enrollmentState = string(h.enrollmentSvc.GetIdentity().EnrollmentState)
+	}
+
+	cacheCount, cacheMax := h.decisionCache.Stats()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"snapshot_at":          time.Now().UTC(),
+		"gateway_id":          gatewayID,
+		"gateway_name":        gatewayName,
+		"enrollment_state":     enrollmentState,
+		"policy_version":      h.evaluator.PolicyVersion(),
+		"decision_cache_count": cacheCount,
+		"decision_cache_max":   cacheMax,
+		"total_decisions":     snap.TotalDecisions,
+		"events":              eventStats,
+		"continuations":       contStats,
+		"executions":          execStats,
+		"metrics": map[string]any{
+			"decision_counts": snap.DecisionCounts,
+			"action_counts":  snap.ActionCounts,
+			"avg_latency_ms": snap.AvgLatencyMs,
+		},
+	})
 }
 
 func (h *Handler) handleGetMetrics(w http.ResponseWriter, r *http.Request) {

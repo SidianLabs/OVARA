@@ -30,18 +30,19 @@ const (
 )
 
 type Event struct {
-	EventID      string         `json:"event_id"`
-	EventType    string         `json:"event_type"`
-	EventVersion string         `json:"event_version"`
-	Timestamp    time.Time      `json:"timestamp"`
-	Seq          int64          `json:"seq,omitempty"`
-	GatewayID    string         `json:"gateway_id,omitempty"`
-	AgentID      string         `json:"agent_id,omitempty"`
-	TraceID      string         `json:"trace_id,omitempty"`
-	DecisionID   string         `json:"decision_id,omitempty"`
-	ReceiptID    string         `json:"receipt_id,omitempty"`
-	ApprovalID   string         `json:"approval_id,omitempty"`
-	Payload      map[string]any `json:"payload,omitempty"`
+	EventID        string         `json:"event_id"`
+	EventType      string         `json:"event_type"`
+	EventVersion   string         `json:"event_version"`
+	Timestamp      time.Time      `json:"timestamp"`
+	Seq            int64          `json:"seq,omitempty"`
+	GatewayID      string         `json:"gateway_id,omitempty"`
+	AgentID        string         `json:"agent_id,omitempty"`
+	TraceID        string         `json:"trace_id,omitempty"`
+	DecisionID     string         `json:"decision_id,omitempty"`
+	ReceiptID      string         `json:"receipt_id,omitempty"`
+	ApprovalID     string         `json:"approval_id,omitempty"`
+	ContinuationID string         `json:"continuation_id,omitempty"`
+	Payload        map[string]any `json:"payload,omitempty"`
 }
 
 var globalSeq int64
@@ -89,6 +90,11 @@ func (e *Event) WithReceiptID(id string) *Event {
 
 func (e *Event) WithApprovalID(id string) *Event {
 	e.ApprovalID = id
+	return e
+}
+
+func (e *Event) WithContinuationID(id string) *Event {
+	e.ContinuationID = id
 	return e
 }
 
@@ -155,6 +161,37 @@ func (s *InMemoryStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.events)
+}
+
+func (s *InMemoryStore) RemoveByIDs(ids []string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	staleSet := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		staleSet[id] = true
+	}
+	kept := 0
+	for _, evt := range s.events {
+		if !staleSet[evt.EventID] {
+			s.events[kept] = evt
+			kept++
+		}
+	}
+	trimmed := len(s.events) - kept
+	s.events = s.events[:kept]
+	return trimmed
+}
+
+func (s *InMemoryStore) FilterByIDs(idSet map[string]bool) []*Event {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Event
+	for _, evt := range s.events {
+		if !idSet[evt.EventID] {
+			result = append(result, evt)
+		}
+	}
+	return result
 }
 
 func (s *InMemoryStore) Latest() *Event {

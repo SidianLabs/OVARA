@@ -67,6 +67,12 @@ func (s *Sweeper) Stop() {
 	s.running = false
 }
 
+func (s *Sweeper) IsRunning() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
+}
+
 func (s *Sweeper) runSweep() {
 	now := time.Now().UTC()
 	candidates := s.store.ListNonTerminal()
@@ -84,6 +90,7 @@ func (s *Sweeper) runSweep() {
 					WithDecisionID(cnt.DecisionID).
 					WithApprovalID(cnt.ApprovalID).
 					WithAgentID(cnt.AgentID).
+					WithContinuationID(cnt.ContinuationID).
 					WithPayload(map[string]any{
 						"continuation_id": cnt.ContinuationID,
 						"state":           string(cnt.State),
@@ -120,6 +127,7 @@ func (s *Sweeper) SweepNow() int {
 					WithDecisionID(cnt.DecisionID).
 					WithApprovalID(cnt.ApprovalID).
 					WithAgentID(cnt.AgentID).
+					WithContinuationID(cnt.ContinuationID).
 					WithPayload(map[string]any{
 						"continuation_id": cnt.ContinuationID,
 						"state":           string(cnt.State),
@@ -147,10 +155,11 @@ func (s *Sweeper) ReconcileOnStartup() int {
 					WithDecisionID(cnt.DecisionID).
 					WithApprovalID(cnt.ApprovalID).
 					WithAgentID(cnt.AgentID).
+					WithContinuationID(cnt.ContinuationID).
 					WithPayload(map[string]any{
 						"continuation_id": cnt.ContinuationID,
 						"state":           string(cnt.State),
-						"reason":          "expired_on_startup",
+						"reason":          "expired",
 					})
 				s.eventStore.Append(evt)
 			}
