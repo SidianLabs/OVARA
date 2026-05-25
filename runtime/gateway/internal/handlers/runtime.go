@@ -424,11 +424,11 @@ func (h *Handler) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 		"approval_counts":    snap.ApprovalCounts,
 		"heartbeat_count":    snap.HeartbeatCount,
 		"last_heartbeat_at":  snap.LastHeartbeatAt,
-		"policy_version":     policyVersion,
-		"policy_source":      policySource,
-		"policy_reload_ok":   snap.PolicyReloadOK,
-		"policy_reload_last": snap.PolicyReloadLastAt,
-		"policy_reload_err":  snap.PolicyReloadErrMsg,
+		"policy_version":      policyVersion,
+		"policy_source":       policySource,
+		"policy_reload_status": snap.PolicyReloadStatus,
+		"policy_reload_last":   snap.PolicyReloadLastAt,
+		"policy_reload_err":    snap.PolicyReloadErrMsg,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
