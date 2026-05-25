@@ -171,3 +171,8 @@ func (s *ShieldStore) GetAllStats() ShieldStoreStats {
 		TotalRiskEvents: totalRisk,
 	}
 }
+
+func (s *ShieldStore) Stats() (restricted, total int) {
+	stats := s.GetAllStats()
+	return stats.RestrictedCount, stats.TotalAgents
+}

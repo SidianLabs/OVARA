@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -40,15 +39,29 @@ func main() {
 		env = "local"
 	}
 
-	var enrollmentFile string
-	if cfg.ReceiptsFile != "" {
-		enrollmentFile = cfg.ReceiptsFile
-		enrollmentFile = enrollmentFile[:len(enrollmentFile)-len(filepath.Base(enrollmentFile))] + "enrollment.json"
+	enrollmentFile := cfg.EnrollmentFile
+	if enrollmentFile == "" {
+		enrollmentFile = "var/data/enrollment.json"
 	}
-	enrollmentSvc := enrollment.NewLocalService(enrollmentFile)
+	enrollmentSvc := enrollment.NewLocalService(enrollmentFile,
+		enrollment.WithGatewayName(cfg.GatewayName),
+		enrollment.WithGatewayVersion(cfg.GatewayVersion),
+	)
 	if err := enrollmentSvc.Initialize(env); err != nil {
 		log.Printf("warning: failed to initialize enrollment: %v", err)
 	}
+
+	var stopHeartbeat func()
+	if cfg.HeartbeatIntervalSec > 0 {
+		interval := time.Duration(cfg.HeartbeatIntervalSec) * time.Second
+		stopHeartbeat = enrollmentSvc.StartHeartbeat(interval)
+		log.Printf("enrollment heartbeat started (interval=%ds)", cfg.HeartbeatIntervalSec)
+	} else {
+		interval := 30 * time.Second
+		stopHeartbeat = enrollmentSvc.StartHeartbeat(interval)
+		log.Printf("enrollment heartbeat started (default interval=%ds)", int(interval.Seconds()))
+	}
+
 	log.Printf("gateway_id=%s enrollment_state=%s environment=%s",
 		enrollmentSvc.GetIdentity().ID,
 		enrollmentSvc.GetIdentity().EnrollmentState,
@@ -151,6 +164,9 @@ func main() {
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	receiptHandler := handlers.NewReceiptHandler(receiptsStore)
 
+	h.SetApprovalStats(approvalService)
+	h.SetShieldStats(shieldStore.Stats)
+
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	approvalHandler.RegisterRoutes(mux)
@@ -179,6 +195,10 @@ func main() {
 		log.Println("shutting down...")
 		if watcher != nil {
 			watcher.Close()
+		}
+		if stopHeartbeat != nil {
+			stopHeartbeat()
+			log.Println("enrollment heartbeat stopped")
 		}
 		wg.Wait()
 		os.Exit(0)

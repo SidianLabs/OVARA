@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
@@ -23,6 +24,8 @@ type Handler struct {
 	receiptsStore  receipts.Store
 	decisionCache  *decisionCache
 	enrollmentSvc  enrollment.Service
+	approvalSvc    *approval.Service
+	shieldStats    func() (restricted, total int)
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -37,6 +40,14 @@ func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, 
 
 func (h *Handler) SetEnrollment(svc enrollment.Service) {
 	h.enrollmentSvc = svc
+}
+
+func (h *Handler) SetApprovalStats(svc *approval.Service) {
+	h.approvalSvc = svc
+}
+
+func (h *Handler) SetShieldStats(fn func() (restricted, total int)) {
+	h.shieldStats = fn
 }
 
 type HandlerWithStores struct {
@@ -323,14 +334,15 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := map[string]any{
-		"gateway_version":      h.config.GatewayVersion,
-		"policy_version":       policyVersion,
-		"policy_source":        policySource,
+		"gateway_version":       h.config.GatewayVersion,
+		"policy_version":        policyVersion,
+		"policy_source":         policySource,
 		"policy_refresh_secs":   h.config.PolicyRefreshInterval,
-		"storage_mode":         storageMode,
-		"decision_cache_count": cacheCount,
-		"decision_cache_max":   cacheMax,
-		"receipt_count":        receiptCount,
+		"storage_mode":          storageMode,
+		"decision_cache_count":  cacheCount,
+		"decision_cache_max":    cacheMax,
+		"receipt_count":         receiptCount,
+		"enrollment_file":       h.config.EnrollmentFile,
 	}
 
 	if h.config.PolicyRefreshInterval > 0 {
@@ -341,6 +353,7 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	if h.enrollmentSvc != nil {
 		identity := h.enrollmentSvc.GetIdentity()
+		enrollStatus := h.enrollmentSvc.GetStatus()
 		status["gateway_id"] = identity.ID
 		status["gateway_name"] = identity.Name
 		status["enrollment_state"] = identity.EnrollmentState
@@ -348,10 +361,27 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		status["registered_at"] = identity.RegisteredAt
 		status["last_seen_at"] = identity.LastSeenAt
 		status["gateway_version"] = identity.Version
+		if enrollStatus != nil {
+			status["enrollment_healthy"] = enrollStatus.IsHealthy
+			if !identity.LastSeenAt.IsZero() {
+				status["last_seen_age_secs"] = time.Since(identity.LastSeenAt).Seconds()
+			}
+		}
 	} else {
 		status["gateway_id"] = h.config.GatewayID
 		status["gateway_name"] = h.config.GatewayName
 		status["enrollment_state"] = "local"
+	}
+
+	if h.approvalSvc != nil {
+		pending := h.approvalSvc.ListPending()
+		status["pending_approval_count"] = len(pending)
+	}
+
+	if h.shieldStats != nil {
+		restricted, total := h.shieldStats()
+		status["shield_restricted_agents"] = restricted
+		status["shield_total_agents"] = total
 	}
 
 	w.Header().Set("Content-Type", "application/json")
