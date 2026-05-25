@@ -15,10 +15,8 @@ type FileBackedStore struct {
 	path     string
 	mu       sync.RWMutex
 	receipts map[string]*models.Receipt
-	// Bounded retention
-	maxSize    int
-	maxAge     time.Duration
-	lastSentAt time.Time
+	maxSize  int
+	maxAge   time.Duration
 }
 
 func NewFileBackedStore(path string, maxSize int, maxAge time.Duration) (*FileBackedStore, error) {
@@ -51,16 +49,10 @@ func (s *FileBackedStore) load() error {
 	return nil
 }
 
-func (s *FileBackedStore) persist() error {
+func (s *FileBackedStore) persist(receipts []*models.Receipt) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
-	s.mu.RLock()
-	var receipts []*models.Receipt
-	for _, r := range s.receipts {
-		receipts = append(receipts, r)
-	}
-	s.mu.RUnlock()
 	data, err := json.MarshalIndent(receipts, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal receipts: %w", err)
@@ -81,8 +73,11 @@ func (s *FileBackedStore) Put(receipt *models.Receipt) error {
 	if s.maxSize > 0 && len(s.receipts) > s.maxSize {
 		s.evictOldest(len(s.receipts) - s.maxSize)
 	}
-	go s.persist()
-	return nil
+	var all []*models.Receipt
+	for _, r := range s.receipts {
+		all = append(all, r)
+	}
+	return s.persist(all)
 }
 
 func (s *FileBackedStore) evictOldest(count int) {

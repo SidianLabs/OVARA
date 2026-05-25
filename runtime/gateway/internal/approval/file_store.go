@@ -42,16 +42,10 @@ func (s *FileBackedStore) load() error {
 	return nil
 }
 
-func (s *FileBackedStore) persist() error {
+func (s *FileBackedStore) persist(items []*ApprovalRequest) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
-	s.mu.RLock()
-	var items []*ApprovalRequest
-	for _, req := range s.items {
-		items = append(items, req)
-	}
-	s.mu.RUnlock()
 	data, err := json.MarshalIndent(items, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal approvals: %w", err)
@@ -72,8 +66,11 @@ func (s *FileBackedStore) Create(req *ApprovalRequest) error {
 		return fmt.Errorf("approval already exists: %s", req.ApprovalID)
 	}
 	s.items[req.ApprovalID] = req
-	go s.persist()
-	return nil
+	var all []*ApprovalRequest
+	for _, r := range s.items {
+		all = append(all, r)
+	}
+	return s.persist(all)
 }
 
 func (s *FileBackedStore) Get(id string) (*ApprovalRequest, error) {
@@ -93,8 +90,11 @@ func (s *FileBackedStore) Update(req *ApprovalRequest) error {
 		return fmt.Errorf("approval not found: %s", req.ApprovalID)
 	}
 	s.items[req.ApprovalID] = req
-	go s.persist()
-	return nil
+	var all []*ApprovalRequest
+	for _, r := range s.items {
+		all = append(all, r)
+	}
+	return s.persist(all)
 }
 
 func (s *FileBackedStore) ListByStatus(status Status) []*ApprovalRequest {
@@ -116,8 +116,11 @@ func (s *FileBackedStore) Delete(id string) error {
 		return fmt.Errorf("approval not found: %s", id)
 	}
 	delete(s.items, id)
-	go s.persist()
-	return nil
+	var all []*ApprovalRequest
+	for _, r := range s.items {
+		all = append(all, r)
+	}
+	return s.persist(all)
 }
 
 func (s *FileBackedStore) Stats() (pending, total int) {
