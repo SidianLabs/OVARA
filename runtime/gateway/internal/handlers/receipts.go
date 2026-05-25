@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/receipts"
 )
 
@@ -36,7 +37,7 @@ func (h *ReceiptHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	receipt, err := h.store.Get(id)
 	if err != nil {
-		api.JSONNotFound(w, "receipt not found: "+err.Error())
+		api.JSONNotFound(w, err.Error())
 		return
 	}
 
@@ -71,6 +72,9 @@ func (h *ReceiptHandler) handleListByDecision(w http.ResponseWriter, r *http.Req
 	}
 
 	receipts := h.store.ListByDecision(decisionID)
+	if receipts == nil {
+		receipts = []*models.Receipt{}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{

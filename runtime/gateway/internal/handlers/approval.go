@@ -76,7 +76,7 @@ func (h *ApprovalHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	approval, err := h.service.GetApproval(id)
 	if err != nil {
-		api.JSONNotFound(w, "approval not found: "+err.Error())
+		api.JSONNotFound(w, err.Error())
 		return
 	}
 
@@ -158,6 +158,9 @@ func (h *ApprovalHandler) handleListPending(w http.ResponseWriter, r *http.Reque
 	}
 
 	pending := h.service.ListPending()
+	if pending == nil {
+		pending = []*approval.ApprovalRequest{}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
