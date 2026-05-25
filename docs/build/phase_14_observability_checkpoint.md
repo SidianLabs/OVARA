@@ -73,7 +73,7 @@ metrics.Global().Snapshot() MetricsSnapshot
 - `last_heartbeat_at` — timestamp
 - `policy_version` — current policy version
 - `policy_source` — in-memory or file path
-- `policy_reload_ok` — last reload success
+- `policy_reload_status` — `none`, `ok`, or `failed` — state of last reload attempt
 - `policy_reload_last` — last reload timestamp
 - `policy_reload_err` — error message if failed
 
@@ -163,7 +163,7 @@ ok  ovara.runtime.gateway/internal/handlers    1.336s
 ./gateway_phase14 &
 
 # Metrics before decisions:
-{"total_decisions":0,"decision_counts":{},"avg_latency_ms":0,"heartbeat_count":1,"policy_reload_ok":false}
+{"total_decisions":0,"decision_counts":{},"avg_latency_ms":0,"heartbeat_count":1,"policy_reload_status":"none"}
 
 # Made 2 decisions:
 curl .../v1/runtime/check -> "escalate"

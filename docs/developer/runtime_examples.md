@@ -276,7 +276,7 @@ curl http://localhost:8080/v1/runtime/metrics
 #  "last_decision_at":"2026-05-25T12:00:00Z",
 #  "approval_counts":3,"heartbeat_count":24,"last_heartbeat_at":"...",
 #  "policy_version":"v1","policy_source":"file:./examples/sample_policy.json",
-#  "policy_reload_ok":true,"policy_reload_last":"2026-05-25T11:55:00Z",
+#  "policy_reload_status":"none","policy_reload_last":"...",
 #  "policy_reload_err":""}
 ```
 
@@ -293,7 +293,7 @@ curl http://localhost:8080/v1/runtime/metrics
 | `last_heartbeat_at` | Timestamp of last heartbeat |
 | `policy_version` | Current policy version |
 | `policy_source` | `in-memory` or `file:<path>` |
-| `policy_reload_ok` | `true` if last reload succeeded |
+| `policy_reload_status` | `none`, `ok`, or `failed` — state of last reload attempt |
 | `policy_reload_last` | Timestamp of last reload attempt |
 | `policy_reload_err` | Error message if last reload failed |
 
@@ -310,9 +310,10 @@ curl http://localhost:8080/v1/runtime/metrics | jq '{total_decisions, avg_latenc
 **Detecting policy reload failures:**
 
 ```bash
-# Check if policy reload is healthy
-curl http://localhost:8080/v1/runtime/metrics | jq '{policy_reload_ok, policy_reload_last, policy_reload_err}'
-# If policy_reload_ok is false, check policy_reload_err for the error message
+# Check policy reload status
+curl http://localhost:8080/v1/runtime/metrics | jq '{policy_reload_status, policy_reload_last, policy_reload_err}'
+# policy_reload_status can be: "none" (no reload attempted yet), "ok" (last reload succeeded), "failed" (last reload failed)
+# If policy_reload_status is "failed", check policy_reload_err for the error message
 ```
 
 ## Auto-Restriction Behavior
@@ -649,7 +650,7 @@ curl http://localhost:8080/v1/approval/pending | jq .
 
 ```bash
 # Check that metrics endpoint is accessible and populated
-curl -s http://localhost:8080/v1/runtime/metrics | jq '{total_decisions, heartbeat_count, policy_reload_ok}'
+curl -s http://localhost:8080/v1/runtime/metrics | jq '{total_decisions, heartbeat_count, policy_reload_status}'
 
 # Make a decision and verify it shows up in metrics
 curl -X POST http://localhost:8080/v1/runtime/check \
