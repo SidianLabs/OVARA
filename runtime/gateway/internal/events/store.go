@@ -23,6 +23,9 @@ const (
 	EventTypeContinuationDenied        = "continuation.denied"
 	EventTypeContinuationResumed       = "continuation.resumed"
 	EventTypeContinuationExpired        = "continuation.expired"
+	EventTypeExecutionStarted          = "execution.started"
+	EventTypeExecutionSucceeded         = "execution.succeeded"
+	EventTypeExecutionFailed            = "execution.failed"
 )
 
 type Event struct {

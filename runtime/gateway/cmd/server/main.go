@@ -16,6 +16,7 @@ import (
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/events"
+	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/handlers"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
@@ -240,6 +241,18 @@ func main() {
 
 	continuationHandler := handlers.NewContinuationHandler(continuationStore)
 	continuationHandler.RegisterRoutes(mux)
+
+	execStore := execution.NewInMemoryStore()
+	shellExec := execution.NewShellExecutor(60)
+	execHandler := handlers.NewExecutionHandler(execStore, shellExec)
+	execHandler.SetEventStore(eventStore)
+	execHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	execHandler.RegisterRoutes(mux)
+
+	continuationHandler.SetExecutionStore(execStore)
+	continuationHandler.SetExecutor(shellExec)
+	continuationHandler.SetEventStore(eventStore)
+	continuationHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 
 	sweeper := continuation.NewSweeper(continuationStore)
 	sweeper.SetEventStore(eventStore)

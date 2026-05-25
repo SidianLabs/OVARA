@@ -17,6 +17,7 @@ const (
 	StateDenied      State = "denied"
 	StateResumed     State = "resumed"
 	StateExpired     State = "expired"
+	StateExecuted    State = "executed"
 )
 
 const DefaultExpirationMinutes = 60
@@ -139,6 +140,13 @@ func (c *Continuation) MarkResumed() {
 	c.State = StateResumed
 	now := time.Now().UTC()
 	c.ResumedAt = &now
+}
+
+func (c *Continuation) MarkExecuted() {
+	if c.State != StateResumed && c.State != StateReady {
+		return
+	}
+	c.State = StateExecuted
 }
 
 func (c *Continuation) MarkExpired() {

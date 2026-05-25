@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -8,14 +9,36 @@ import (
 
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/continuation"
+	"ovara.runtime.gateway/internal/events"
+	"ovara.runtime.gateway/internal/execution"
 )
 
 type ContinuationHandler struct {
-	store continuation.Store
+	store       continuation.Store
+	execStore   execution.Store
+	executor    execution.Executor
+	eventStore  events.Store
+	gatewayID   string
 }
 
 func NewContinuationHandler(store continuation.Store) *ContinuationHandler {
 	return &ContinuationHandler{store: store}
+}
+
+func (h *ContinuationHandler) SetExecutionStore(store execution.Store) {
+	h.execStore = store
+}
+
+func (h *ContinuationHandler) SetExecutor(exec execution.Executor) {
+	h.executor = exec
+}
+
+func (h *ContinuationHandler) SetEventStore(es events.Store) {
+	h.eventStore = es
+}
+
+func (h *ContinuationHandler) SetGatewayID(id string) {
+	h.gatewayID = id
 }
 
 func (h *ContinuationHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -23,6 +46,7 @@ func (h *ContinuationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/continuations/{id}", h.handleGet)
 	mux.HandleFunc("GET /v1/continuations/stats", h.handleStats)
 	mux.HandleFunc("POST /v1/continuations/sweep", h.handleSweep)
+	mux.HandleFunc("POST /v1/continuations/{id}/execute", h.handleExecute)
 }
 
 func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -182,4 +206,106 @@ func (h *ContinuationHandler) handleSweep(w http.ResponseWriter, r *http.Request
 		"expired":    expired,
 		"scanned":    len(candidates),
 	})
+}
+
+func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		api.JSONBadRequest(w, "continuation id is required")
+		return
+	}
+
+	cnt, found := h.store.Get(id)
+	if !found {
+		api.JSONNotFound(w, "continuation not found: "+id)
+		return
+	}
+
+	if !cnt.IsExecutable() {
+		api.JSONBadRequest(w, "continuation not executable: current state="+string(cnt.State))
+		return
+	}
+
+	if cnt.ActionType != "shell" {
+		api.JSONBadRequest(w, "execution only supported for shell action type")
+		return
+	}
+
+	timeout := 60
+	if ts := r.URL.Query().Get("timeout_seconds"); ts != "" {
+		if t, err := strconv.Atoi(ts); err == nil && t > 0 && t <= 300 {
+			timeout = t
+		}
+	}
+
+	exe := execution.NewExecution(
+		cnt.ContinuationID,
+		cnt.DecisionID,
+		cnt.ApprovalID,
+		cnt.AgentID,
+		cnt.ActionType,
+		cnt.Resource,
+		timeout,
+	)
+
+	ctx := context.Background()
+	if h.executor != nil {
+		h.executor.Execute(ctx, exe)
+	}
+
+	if h.execStore != nil {
+		h.execStore.Create(exe)
+	}
+
+	if h.eventStore != nil {
+		var evtType string
+		if exe.State == execution.StateSucceeded {
+			evtType = events.EventTypeExecutionSucceeded
+			cnt.MarkExecuted()
+		} else {
+			evtType = events.EventTypeExecutionFailed
+		}
+		evt := events.NewEvent(evtType).
+			WithGatewayID(h.gatewayID).
+			WithApprovalID(cnt.ApprovalID).
+			WithDecisionID(cnt.DecisionID).
+			WithAgentID(cnt.AgentID).
+			WithPayload(map[string]any{
+				"execution_id":    exe.ExecutionID,
+				"continuation_id": cnt.ContinuationID,
+				"exit_code":      exe.ExitCode,
+				"error":          exe.Error,
+				"state":          string(exe.State),
+			})
+		h.eventStore.Append(evt)
+	}
+
+	h.store.Update(cnt)
+
+	resp := map[string]any{
+		"execution_id":  exe.ExecutionID,
+		"continuation_id": cnt.ContinuationID,
+		"state":         string(exe.State),
+		"exit_code":     exe.ExitCode,
+		"stdout":        exe.Stdout,
+		"stderr":        exe.Stderr,
+		"error":         exe.Error,
+		"started_at":    exe.StartedAt,
+		"finished_at":   exe.FinishedAt,
+		"approved_at":   cnt.ApprovedAt,
+		"resolved_by":   cnt.ResolvedBy,
+		"trust_score":   cnt.TrustScore,
+		"trust_level":   cnt.TrustLevel,
+		"action_type":   cnt.ActionType,
+		"resource":      cnt.Resource,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
 }
