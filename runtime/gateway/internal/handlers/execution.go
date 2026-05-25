@@ -20,6 +20,7 @@ func NewExecutionHandler(store execution.Store) *ExecutionHandler {
 func (h *ExecutionHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/executions", h.handleList)
 	mux.HandleFunc("GET /v1/executions/{id}", h.handleGet)
+	mux.HandleFunc("GET /v1/executions/stats", h.handleStats)
 }
 
 func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +61,39 @@ func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		"executions": execs,
 		"count":      len(execs),
 	})
+}
+
+func (h *ExecutionHandler) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	total, succeeded, failed, running, timedOut := h.store.Stats()
+
+	response := map[string]any{
+		"total":      total,
+		"succeeded":  succeeded,
+		"failed":     failed,
+		"running":    running,
+		"timed_out":   timedOut,
+	}
+
+	if fb, ok := h.store.(*execution.FileBackedStore); ok {
+		response["persistence_mode"] = "file_backed"
+		response["retention_days"] = fb.RetentionDays()
+		response["max_records"] = fb.MaxRecords()
+		response["current_count"] = fb.CurrentCount()
+		response["file_path"] = fb.FilePath()
+		if size, err := fb.FileSizeBytes(); err == nil {
+			response["file_size_bytes"] = size
+		}
+	} else {
+		response["persistence_mode"] = "in_memory"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func (h *ExecutionHandler) handleGet(w http.ResponseWriter, r *http.Request) {

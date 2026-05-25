@@ -448,7 +448,7 @@ func TestContinuationHandler_Execute_ApprovedAutoReady(t *testing.T) {
 	}
 }
 
-func TestContinuationHandler_Execute_ResumedNotExecutable(t *testing.T) {
+func TestContinuationHandler_Execute_ResumedExecutable(t *testing.T) {
 	contStore := continuation.NewInMemoryStore()
 	execStore := execution.NewInMemoryStore()
 
@@ -468,8 +468,13 @@ func TestContinuationHandler_Execute_ResumedNotExecutable(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 for resumed continuation", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 for resumed continuation (bug fix: resumed continuations are now executable)", rec.Code)
+	}
+
+	execs := execStore.ListAll()
+	if len(execs) != 1 {
+		t.Errorf("executions count = %d, want 1", len(execs))
 	}
 }
 
@@ -818,7 +823,7 @@ func TestContinuation_CanExecute_Semantics(t *testing.T) {
 		{"ready_shell", continuation.StateReady, "shell", true},
 		{"approved_shell", continuation.StateApproved, "shell", false},
 		{"executed_shell", continuation.StateExecuted, "shell", false},
-		{"resumed_shell", continuation.StateResumed, "shell", false},
+		{"resumed_shell", continuation.StateResumed, "shell", true},
 		{"denied_shell", continuation.StateDenied, "shell", false},
 		{"expired_shell", continuation.StateExpired, "shell", false},
 		{"ready_non_shell", continuation.StateReady, "git.push", false},

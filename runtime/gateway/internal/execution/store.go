@@ -128,6 +128,8 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 			e.MarkTimedOut()
 			return err
 		}
+		e.MarkFailed(stderr.String())
+		return nil
 	}
 
 	e.MarkSucceeded(exitCode, stdout.String(), stderr.String())

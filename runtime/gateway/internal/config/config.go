@@ -34,6 +34,9 @@ type Config struct {
 	ContinuationSweepIntervalSec int `json:"continuation_sweep_interval_secs"`
 	ExecutionFile               string `json:"execution_file"`
 	ExecutionsMaxSize           int    `json:"executions_max_size"`
+	ExecutionRetentionDays      int    `json:"execution_retention_days"`
+	ExecutionMaxRecords         int    `json:"execution_max_records"`
+	ExecutionSweepIntervalSec   int    `json:"execution_sweep_interval_secs"`
 }
 
 type Enrollment struct {
@@ -87,6 +90,9 @@ func Default() *Config {
 		ContinuationSweepIntervalSec: 60,
 		ExecutionFile:             "var/data/executions.jsonl",
 		ExecutionsMaxSize:         10000,
+		ExecutionRetentionDays:    7,
+		ExecutionMaxRecords:       10000,
+		ExecutionSweepIntervalSec: 300,
 	}
 }
 

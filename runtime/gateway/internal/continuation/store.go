@@ -192,7 +192,13 @@ func (c *Continuation) IsExecutable() bool {
 }
 
 func (c *Continuation) CanExecute() bool {
-	return c.State == StateReady && c.ActionType == "shell"
+	if c.State != StateReady && c.State != StateResumed {
+		return false
+	}
+	if c.ActionType != "shell" {
+		return false
+	}
+	return true
 }
 
 func (c *Continuation) TimeToExpiry() time.Duration {

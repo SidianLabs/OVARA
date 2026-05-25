@@ -245,13 +245,19 @@ func main() {
 	var execStore execution.Store
 	execStore = execution.NewInMemoryStore()
 	if cfg.ExecutionFile != "" {
-		store, err := execution.NewFileBackedStore(cfg.ExecutionFile, cfg.ExecutionsMaxSize)
+		store, err := execution.NewFileBackedStoreWithRetention(
+			cfg.ExecutionFile,
+			cfg.ExecutionsMaxSize,
+			cfg.ExecutionRetentionDays,
+			cfg.ExecutionMaxRecords,
+		)
 		if err != nil {
 			log.Printf("warning: failed to create file-backed execution store: %v, using in-memory", err)
 			execStore = execution.NewInMemoryStore()
 		} else {
 			execStore = store
-			log.Printf("execution store persisted to %s (max=%d)", cfg.ExecutionFile, cfg.ExecutionsMaxSize)
+			log.Printf("execution store persisted to %s (max=%d, retention_days=%d, max_records=%d)",
+				cfg.ExecutionFile, cfg.ExecutionsMaxSize, cfg.ExecutionRetentionDays, cfg.ExecutionMaxRecords)
 		}
 	} else {
 		log.Printf("execution store in-memory (no persistence configured)")
@@ -264,6 +270,10 @@ func main() {
 	continuationHandler.SetExecutor(shellExec)
 	continuationHandler.SetEventStore(eventStore)
 	continuationHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+
+	execSweeper := execution.NewSweeper(execStore)
+	execSweeper.Start(cfg.ExecutionSweepIntervalSec)
+	log.Printf("execution sweeper started (interval=%ds)", cfg.ExecutionSweepIntervalSec)
 
 	sweeper := continuation.NewSweeper(continuationStore)
 	sweeper.SetEventStore(eventStore)
@@ -318,6 +328,9 @@ func main() {
 		}
 		if sweeper != nil {
 			sweeper.Stop()
+		}
+		if execSweeper != nil {
+			execSweeper.Stop()
 		}
 		wg.Wait()
 		os.Exit(0)
