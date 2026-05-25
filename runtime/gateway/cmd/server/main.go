@@ -195,7 +195,20 @@ func main() {
 		log.Printf("approvals in-memory (no persistence configured)")
 	}
 
-	continuationStore := continuation.NewInMemoryStore()
+	var continuationStore continuation.Store
+	if cfg.ContinuationsFile != "" {
+		store, err := continuation.NewFileBackedStore(cfg.ContinuationsFile, cfg.ContinuationsMaxSize)
+		if err != nil {
+			log.Printf("warning: failed to create file-backed continuation store: %v, using in-memory", err)
+			continuationStore = continuation.NewInMemoryStore()
+		} else {
+			continuationStore = store
+			log.Printf("continuation store persisted to %s (max=%d)", cfg.ContinuationsFile, cfg.ContinuationsMaxSize)
+		}
+	} else {
+		continuationStore = continuation.NewInMemoryStore()
+		log.Printf("continuation store in-memory (no persistence configured)")
+	}
 
 	h := handlers.New(eval, decisionLogger, cfg, receiptsStore)
 	h.SetEnrollment(enrollmentSvc)
@@ -257,6 +270,9 @@ func main() {
 		}
 		if fb, ok := eventStore.(*events.FileBackedStore); ok {
 			fb.Close()
+		}
+		if fbCnt, ok := continuationStore.(*continuation.FileBackedStore); ok {
+			fbCnt.Close()
 		}
 		wg.Wait()
 		os.Exit(0)

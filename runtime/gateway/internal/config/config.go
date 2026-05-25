@@ -29,6 +29,8 @@ type Config struct {
 	DecisionCacheTTLMin   int    `json:"decision_cache_ttl_minutes"`
 	EnrollmentFile        string `json:"enrollment_file"`
 	HeartbeatIntervalSec  int    `json:"heartbeat_interval_secs"`
+	ContinuationsFile    string `json:"continuations_file"`
+	ContinuationsMaxSize  int    `json:"continuations_max_size"`
 }
 
 type Enrollment struct {
@@ -77,6 +79,8 @@ func Default() *Config {
 		DecisionCacheTTLMin:    10,
 		EnrollmentFile:         "var/data/enrollment.json",
 		HeartbeatIntervalSec:    30,
+		ContinuationsFile:      "var/data/continuations.jsonl",
+		ContinuationsMaxSize:   10000,
 	}
 }
 
