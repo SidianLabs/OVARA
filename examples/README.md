@@ -80,7 +80,11 @@ OVARA_POLICY_FILE=./examples/sample_policy.json OVARA_POLICY_REFRESH_INTERVAL=10
 ```
 
 ### `sample_policy_local.json`
-A "local dev" policy profile. Note: The current policy engine does not support Allow rules for shell actions - all shell commands escalate by default policy. This file is provided for future use when Allow rules are implemented.
+A "local dev" policy profile demonstrating all three outcomes (allow, deny, escalate). Useful for first-run testing:
+- `shell` + `local` → allow (harmless read-only)
+- `shell` + `production` → deny (too risky)
+- `shell` + `dev` → escalate (risky but recoverable)
+- `git.pull` + `*` → allow (read-only, always safe)
 
 ### `sample_config.yaml`
 Sample gateway configuration file.

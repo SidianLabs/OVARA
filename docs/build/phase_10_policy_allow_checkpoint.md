@@ -76,25 +76,51 @@ Add check: if rule has `Allow: true` and no deny/escalate on that rule, it's all
 
 ---
 
-## Validation
+## Implementation Completed
 
-- Unit tests for evaluateRules with allow/deny/escalate rules
-- Integration test crossing runtime + policy + trust
-- Manual test: start gateway, POST /v1/runtime/check with shell action, see escalate; POST with ci.read, see allow
+### Changes Made
+
+**1. Policy Store** (`policy/store.go`)
+- `LoadStoreFromConfig` now parses `allow` field from JSON rules
+
+**2. Evaluator** (`evaluator/evaluator.go`)
+- Added `RuleOutcome` struct with Allowed/Denied/Escalate/Reason fields
+- `evaluateRules` now returns `RuleOutcome` instead of `(bool, ReasonCode)`
+- Rule evaluation order: Deny → Allow → Escalate → default allow
+- Trust signals checked at start of evaluation and can escalate even allowed actions
+- Anomaly signals from trust now propagated to reason_codes on escalate
+
+**3. Reason Codes** (`models/decision_response.go`)
+- Added: `ReasonPolicyAllow`, `ReasonPolicyDeny`, `ReasonPolicyEscalate`, `ReasonTrustEscalate`
+
+### New Behavior
+
+| Rule Match | Decision | Reason Code |
+|------------|----------|--------------|
+| `deny: true` | deny | `policy_deny` |
+| `allow: true` (no trust concern) | allow | `policy_allow` |
+| `allow: true` (trust overrides) | escalate | `containment_active` / `trust_escalate` |
+| `escalate: true` | escalate | `policy_escalate` (+ anomaly signals if trust also concerned) |
+| No matching rule | allow | `allowed` |
+| production + wildcard | escalate | `policy_escalate` + `production_target` |
 
 ---
 
-## Files to Change
+## Validation
 
-**Modified**:
-- `runtime/gateway/internal/policy/store.go` — parse `allow` field in LoadStoreFromConfig
-- `runtime/gateway/internal/evaluator/evaluator.go` — implement allow path semantics
-- `runtime/gateway/internal/models/decision_response.go` — add policy-specific reason codes
-- `examples/sample_policy.json` — add explicit allow rules
-- `examples/sample_policy_local.json` — create first-run-friendly policy
+**Tests**: All 12 packages pass, 0 failures
+**New tests added**:
+- `TestEvaluator_ExplicitAllowPath` — allow rule → allow decision with `policy_allow` reason
+- `TestEvaluator_ExplicitDenyPath` — deny rule → deny decision with `policy_deny` reason
+- `TestEvaluator_ExplicitEscalatePath` — escalate rule → escalate with `requires_approval=true`
+- `TestEvaluator_TrustCanEscalateAllowedAction` — trust containment overrides allow
+- `TestEvaluator_DefaultDenyForUnknownAction` — unknown actions fall through to default
 
-**Created**:
-- `docs/build/phase_10_policy_allow_checkpoint.md` — this file
+---
 
-**Tests modified/added**:
-- `runtime/gateway/internal/evaluator/evaluator_test.go` — add allow/deny/escalate tests
+## Git Log
+
+```
+62464c8 feat(policy): implement explicit allow path semantics
+eebab7b docs(build): add phase 10 policy allow checkpoint
+```
