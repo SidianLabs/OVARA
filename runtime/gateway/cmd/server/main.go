@@ -38,15 +38,15 @@ func main() {
 	var wg sync.WaitGroup
 
 	if cfg.PolicyFile != "" {
-		policySource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
-		store, err := policySource.Load()
+		initialSource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
+		store, err := initialSource.Load()
 		if err != nil {
 			log.Printf("warning: failed to load policy from file: %v", err)
 		} else {
 			policyStore = store
-			policyStore.SetFilePath(cfg.PolicyFile)
 
 			if cfg.PolicyRefreshInterval > 0 {
+				policySource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
 				w, err := policy.NewWatcher(policySource)
 				if err != nil {
 					log.Printf("warning: failed to create policy watcher: %v", err)

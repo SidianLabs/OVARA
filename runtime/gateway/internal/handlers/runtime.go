@@ -301,16 +301,43 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		receiptCount = len(h.receiptsStore.ListAll())
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	policyVersion := ""
+	if h.evaluator != nil {
+		policyVersion = h.evaluator.PolicyVersion()
+	}
+
+	policySource := "in-memory"
+	if h.config != nil && h.config.PolicyFile != "" {
+		policySource = "file:" + h.config.PolicyFile
+	}
+
+	storageMode := "in-memory"
+	if h.config != nil && h.config.ReceiptsFile != "" {
+		storageMode = "file-backed"
+	}
+
+	status := map[string]any{
 		"gateway_id":           h.config.GatewayID,
 		"gateway_name":         h.config.GatewayName,
 		"gateway_version":      h.config.GatewayVersion,
 		"enrollment_status":    "local",
+		"policy_version":       policyVersion,
+		"policy_source":        policySource,
+		"policy_refresh_secs":   h.config.PolicyRefreshInterval,
+		"storage_mode":         storageMode,
 		"decision_cache_count": cacheCount,
 		"decision_cache_max":   cacheMax,
 		"receipt_count":        receiptCount,
-	})
+	}
+
+	if h.config.PolicyRefreshInterval > 0 {
+		status["hot_reload"] = "enabled"
+	} else {
+		status["hot_reload"] = "disabled"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(status)
 }
 
 func (h *Handler) StartCacheCleanup(interval time.Duration) {

@@ -37,6 +37,10 @@ func NewWithShield(p *policy.Store, ss *trust.ShieldStore) *Evaluator {
 	}
 }
 
+func (e *Evaluator) PolicyVersion() string {
+	return e.policyStore.Version()
+}
+
 type EvalResult struct {
 	Decision         models.Decision
 	ReasonCodes      []models.ReasonCode
@@ -218,10 +222,6 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 	}
 
 	return RuleOutcome{Allowed: true, Reason: models.ReasonAllowed}
-}
-
-func (e *Evaluator) shouldEscalate(actionRules, envRules []policy.Rule, req *models.ActionRequest) bool {
-	return false
 }
 
 func (e *Evaluator) buildReceiptStub(req *models.ActionRequest, decision models.Decision, policyVersion string, trustScore float64) *models.ReceiptStub {
