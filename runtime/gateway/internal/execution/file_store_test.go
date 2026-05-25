@@ -143,7 +143,7 @@ func TestFileBackedStore_ListByState(t *testing.T) {
 	store.Create(e3)
 
 	e1.MarkSucceeded(0, "out", "")
-	e2.MarkFailed("err")
+	e2.MarkFailed("err", 1)
 	store.Update(e1)
 	store.Update(e2)
 
@@ -184,7 +184,7 @@ func TestFileBackedStore_Stats(t *testing.T) {
 	store.Create(e4)
 
 	e1.MarkSucceeded(0, "", "")
-	e2.MarkFailed("err")
+	e2.MarkFailed("err", 1)
 	e3.MarkStarted()
 	store.Update(e1)
 	store.Update(e2)

@@ -28,7 +28,7 @@ func (m *mockExecutor) Execute(ctx context.Context, e *execution.Execution) erro
 		case execution.StateSucceeded:
 			e.MarkSucceeded(m.resultExit, m.resultOutput, m.resultErr)
 		case execution.StateFailed:
-			e.MarkFailed(m.resultErr)
+			e.MarkFailed(m.resultErr, m.resultExit)
 		case execution.StateTimedOut:
 			e.MarkTimedOut()
 		}
@@ -43,7 +43,7 @@ func TestExecutionHandler_ListExecutions(t *testing.T) {
 	store.Create(e1)
 
 	e2 := execution.NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "shell", "shell:echo b", 60)
-	e2.MarkFailed("error_b")
+	e2.MarkFailed("error_b", 1)
 	store.Create(e2)
 
 	h := NewExecutionHandler(store)
@@ -72,7 +72,7 @@ func TestExecutionHandler_ListExecutions_FilterByState(t *testing.T) {
 	store.Create(e1)
 
 	e2 := execution.NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "shell", "shell:echo b", 60)
-	e2.MarkFailed("err")
+	e2.MarkFailed("err", 1)
 	store.Create(e2)
 
 	h := NewExecutionHandler(store)
@@ -665,7 +665,7 @@ func TestExecution_FileBackedStore_ReloadSurvivesRestart(t *testing.T) {
 		store.Create(e1)
 
 		e2 := execution.NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "shell", "shell:exit 1", 60)
-		e2.MarkFailed("exit status 1")
+		e2.MarkFailed("exit status 1", 1)
 		store.Create(e2)
 
 		e3 := execution.NewExecution("cnt_3", "dec_3", "apr_3", "agt_3", "shell", "shell:sleep 10", 60)
@@ -786,7 +786,7 @@ func TestExecution_Stats_FiveValues(t *testing.T) {
 	store.Create(e5)
 
 	e1.MarkSucceeded(0, "", "")
-	e2.MarkFailed("err")
+	e2.MarkFailed("err", 1)
 	e3.MarkStarted()
 	e4.MarkTimedOut()
 
@@ -887,7 +887,7 @@ func TestContinuation_RetrySemantics_AfterNonZeroExit(t *testing.T) {
 	contStore.Create(cnt)
 
 	e := execution.NewExecution(cnt.ContinuationID, cnt.DecisionID, cnt.ApprovalID, cnt.AgentID, "shell", "shell:exit 1", 60)
-	e.MarkFailed("exit status 1")
+	e.MarkFailed("exit status 1", 1)
 	execStore.Create(e)
 
 	h := NewContinuationHandler(contStore)

@@ -67,9 +67,10 @@ func (e *Execution) MarkSucceeded(exitCode int, stdout, stderr string) {
 	e.FinishedAt = &now
 }
 
-func (e *Execution) MarkFailed(errMsg string) {
+func (e *Execution) MarkFailed(errMsg string, exitCode int) {
 	e.State = StateFailed
 	e.Error = errMsg
+	e.ExitCode = exitCode
 	now := time.Now().UTC()
 	e.FinishedAt = &now
 }
@@ -106,11 +107,15 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 
 	shellCmd, err := ParseShellResource(e.Resource)
 	if err != nil {
-		e.MarkFailed("invalid shell resource: " + err.Error())
+		e.MarkFailed("invalid shell resource: "+err.Error(), 1)
 		return err
 	}
 
-	execCtx, cancel := context.WithTimeout(ctx, se.DefaultTimeout)
+	timeout := se.DefaultTimeout
+	if e.TimeoutSeconds > 0 {
+		timeout = time.Duration(e.TimeoutSeconds) * time.Second
+	}
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
@@ -128,7 +133,7 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 			e.MarkTimedOut()
 			return err
 		}
-		e.MarkFailed(stderr.String())
+		e.MarkFailed(stderr.String(), exitCode)
 		return nil
 	}
 

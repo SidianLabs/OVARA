@@ -25,7 +25,7 @@ func TestFileBackedStore_Sweep_AgeBased(t *testing.T) {
 
 	e2 := NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "shell", "shell:echo b", 60)
 	e2.MarkStarted()
-	e2.MarkFailed("err")
+	e2.MarkFailed("err", 1)
 	store.Create(e2)
 
 	e3 := NewExecution("cnt_3", "dec_3", "apr_3", "agt_3", "shell", "shell:echo c", 60)
@@ -333,7 +333,7 @@ func TestExecutionHandler_Stats_IncludesRetentionInfo(t *testing.T) {
 	store.Create(e1)
 
 	e2 := NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "shell", "shell:echo b", 60)
-	e2.MarkFailed("err")
+	e2.MarkFailed("err", 1)
 	store.Create(e2)
 
 	total, succeeded, failed, running, timedOut := store.Stats()

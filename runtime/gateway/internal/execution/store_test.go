@@ -51,7 +51,7 @@ func TestExecution_MarkSucceeded(t *testing.T) {
 
 func TestExecution_MarkFailed(t *testing.T) {
 	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo hi", 60)
-	exe.MarkFailed("command not found")
+	exe.MarkFailed("command not found", 1)
 	if exe.State != StateFailed {
 		t.Errorf("state = %s, want failed", exe.State)
 	}
@@ -77,7 +77,7 @@ func TestExecution_IsTerminal(t *testing.T) {
 		t.Error("succeeded should be terminal")
 	}
 	exe2 := NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "shell", "shell:bad", 60)
-	exe2.MarkFailed("error")
+	exe2.MarkFailed("error", 1)
 	if !exe2.IsTerminal() {
 		t.Error("failed should be terminal")
 	}
@@ -143,7 +143,7 @@ func TestInMemoryStore_Stats(t *testing.T) {
 	store.Create(e2)
 	store.Create(e3)
 	e1.MarkSucceeded(0, "", "")
-	e2.MarkFailed("error")
+	e2.MarkFailed("error", 1)
 	e3.MarkStarted()
 	total, succeeded, failed, running, timedOut := store.Stats()
 	if total != 3 {
