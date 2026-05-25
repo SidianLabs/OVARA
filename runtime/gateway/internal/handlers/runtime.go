@@ -13,6 +13,7 @@ import (
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
 	"ovara.runtime.gateway/internal/logging"
+	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/receipts"
 )
@@ -170,11 +171,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runtime/decision/{id}", h.handleGetDecision)
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
 	mux.HandleFunc("GET /v1/runtime/status", h.handleGetStatus)
+	mux.HandleFunc("GET /v1/runtime/metrics", h.handleGetMetrics)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
 }
 
 func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
@@ -194,8 +198,10 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	latencyMs := time.Since(start).Milliseconds()
+
 	if h.logger != nil {
-		_ = h.logger.Log(&req, resp)
+		_ = h.logger.Log(&req, resp, latencyMs)
 	}
 
 	if h.receiptsStore != nil && resp.ReceiptStub != nil {
@@ -206,6 +212,8 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if h.decisionCache != nil {
 		h.decisionCache.Put(resp.DecisionID, resp)
 	}
+
+	metrics.RecordDecision(string(resp.Decision), string(req.ActionType), latencyMs)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -386,6 +394,45 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+func (h *Handler) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	snap := metrics.Global().Snapshot()
+
+	policyVersion := ""
+	if h.evaluator != nil {
+		policyVersion = h.evaluator.PolicyVersion()
+	}
+
+	policySource := "in-memory"
+	if h.config != nil && h.config.PolicyFile != "" {
+		policySource = "file:" + h.config.PolicyFile
+	}
+
+	response := map[string]any{
+		"decision_counts":   snap.DecisionCounts,
+		"action_counts":      snap.ActionCounts,
+		"total_decisions":    snap.TotalDecisions,
+		"avg_latency_ms":     snap.AvgLatencyMs,
+		"last_latency_ms":    snap.LastLatencyMs,
+		"last_decision_at":   snap.LastDecisionAt,
+		"approval_counts":    snap.ApprovalCounts,
+		"heartbeat_count":    snap.HeartbeatCount,
+		"last_heartbeat_at":  snap.LastHeartbeatAt,
+		"policy_version":     policyVersion,
+		"policy_source":      policySource,
+		"policy_reload_ok":   snap.PolicyReloadOK,
+		"policy_reload_last": snap.PolicyReloadLastAt,
+		"policy_reload_err":  snap.PolicyReloadErrMsg,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func (h *Handler) StartCacheCleanup(interval time.Duration) {

@@ -17,12 +17,13 @@ type DecisionLogger struct {
 }
 
 type DecisionLogEntry struct {
-	Timestamp   time.Time `json:"timestamp"`
+	Timestamp   time.Time          `json:"timestamp"`
+	ElapsedMs   int64              `json:"elapsed_ms"`
 	Request     *models.ActionRequest   `json:"request"`
 	Response    *models.DecisionResponse `json:"response"`
-	DecisionID  string    `json:"decision_id,omitempty"`
-	ReceiptID   string    `json:"receipt_id,omitempty"`
-	ApprovalID  string    `json:"approval_id,omitempty"`
+	DecisionID  string             `json:"decision_id,omitempty"`
+	ReceiptID   string             `json:"receipt_id,omitempty"`
+	ApprovalID  string             `json:"approval_id,omitempty"`
 }
 
 func NewDecisionLogger(logFile string) (*DecisionLogger, error) {
@@ -37,11 +38,12 @@ func NewDecisionLogger(logFile string) (*DecisionLogger, error) {
 	return &DecisionLogger{logFile: f}, nil
 }
 
-func (l *DecisionLogger) Log(req *models.ActionRequest, resp *models.DecisionResponse) error {
+func (l *DecisionLogger) Log(req *models.ActionRequest, resp *models.DecisionResponse, elapsedMs int64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	entry := DecisionLogEntry{
 		Timestamp:  time.Now().UTC(),
+		ElapsedMs:  elapsedMs,
 		Request:    req,
 		Response:   resp,
 		DecisionID: resp.DecisionID,

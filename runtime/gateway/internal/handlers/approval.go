@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"ovara.runtime.gateway/internal/approval"
+	"ovara.runtime.gateway/internal/metrics"
 )
 
 type ApprovalHandler struct {
@@ -54,6 +55,8 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to create approval: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	metrics.RecordApproval()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
