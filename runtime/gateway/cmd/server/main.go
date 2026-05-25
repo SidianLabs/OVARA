@@ -242,7 +242,20 @@ func main() {
 	continuationHandler := handlers.NewContinuationHandler(continuationStore)
 	continuationHandler.RegisterRoutes(mux)
 
-	execStore := execution.NewInMemoryStore()
+	var execStore execution.Store
+	execStore = execution.NewInMemoryStore()
+	if cfg.ExecutionFile != "" {
+		store, err := execution.NewFileBackedStore(cfg.ExecutionFile, cfg.ExecutionsMaxSize)
+		if err != nil {
+			log.Printf("warning: failed to create file-backed execution store: %v, using in-memory", err)
+			execStore = execution.NewInMemoryStore()
+		} else {
+			execStore = store
+			log.Printf("execution store persisted to %s (max=%d)", cfg.ExecutionFile, cfg.ExecutionsMaxSize)
+		}
+	} else {
+		log.Printf("execution store in-memory (no persistence configured)")
+	}
 	shellExec := execution.NewShellExecutor(60)
 	execHandler := handlers.NewExecutionHandler(execStore, shellExec)
 	execHandler.SetEventStore(eventStore)
@@ -301,6 +314,9 @@ func main() {
 		}
 		if fbCnt, ok := continuationStore.(*continuation.FileBackedStore); ok {
 			fbCnt.Close()
+		}
+		if fbExe, ok := execStore.(*execution.FileBackedStore); ok {
+			fbExe.Close()
 		}
 		if sweeper != nil {
 			sweeper.Stop()

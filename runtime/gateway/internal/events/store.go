@@ -26,6 +26,7 @@ const (
 	EventTypeExecutionStarted          = "execution.started"
 	EventTypeExecutionSucceeded         = "execution.succeeded"
 	EventTypeExecutionFailed            = "execution.failed"
+	EventTypeExecutionTimedOut          = "execution.timed_out"
 )
 
 type Event struct {

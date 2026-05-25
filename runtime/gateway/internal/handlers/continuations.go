@@ -226,8 +226,8 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if !cnt.IsExecutable() {
-		api.JSONBadRequest(w, "continuation not executable: current state="+string(cnt.State))
+	if !cnt.CanExecute() {
+		api.JSONBadRequest(w, "continuation not in executable state: current state="+string(cnt.State))
 		return
 	}
 
@@ -264,10 +264,13 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 
 	if h.eventStore != nil {
 		var evtType string
-		if exe.State == execution.StateSucceeded {
+		switch exe.State {
+		case execution.StateSucceeded:
 			evtType = events.EventTypeExecutionSucceeded
 			cnt.MarkExecuted()
-		} else {
+		case execution.StateTimedOut:
+			evtType = events.EventTypeExecutionTimedOut
+		default:
 			evtType = events.EventTypeExecutionFailed
 		}
 		evt := events.NewEvent(evtType).

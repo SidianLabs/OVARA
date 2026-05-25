@@ -182,10 +182,17 @@ func (c *Continuation) IsExecutable() bool {
 	if c.State != StateApproved && c.State != StateReady {
 		return false
 	}
+	if c.State == StateExecuted {
+		return false
+	}
 	if c.ExpiresAt != nil && time.Now().UTC().After(*c.ExpiresAt) {
 		return false
 	}
 	return true
+}
+
+func (c *Continuation) CanExecute() bool {
+	return c.State == StateReady && c.ActionType == "shell"
 }
 
 func (c *Continuation) TimeToExpiry() time.Duration {

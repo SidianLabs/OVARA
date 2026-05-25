@@ -18,6 +18,7 @@ const (
 	StateRunning   State = "running"
 	StateSucceeded State = "succeeded"
 	StateFailed    State = "failed"
+	StateTimedOut  State = "timed_out"
 )
 
 type Execution struct {
@@ -74,7 +75,13 @@ func (e *Execution) MarkFailed(errMsg string) {
 }
 
 func (e *Execution) IsTerminal() bool {
-	return e.State == StateSucceeded || e.State == StateFailed
+	return e.State == StateSucceeded || e.State == StateFailed || e.State == StateTimedOut
+}
+
+func (e *Execution) MarkTimedOut() {
+	e.State = StateTimedOut
+	now := time.Now().UTC()
+	e.FinishedAt = &now
 }
 
 type Executor interface {
@@ -118,7 +125,7 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 			exitCode = exitErr.ExitCode()
 		}
 		if execCtx.Err() == context.DeadlineExceeded {
-			e.MarkFailed("execution timed out after " + fmt.Sprintf("%d seconds", se.DefaultTimeout/time.Second))
+			e.MarkTimedOut()
 			return err
 		}
 	}
@@ -145,7 +152,7 @@ type Store interface {
 	ListByContinuation(continuationID string) []*Execution
 	ListAll() []*Execution
 	ListByState(state State) []*Execution
-	Stats() (total, succeeded, failed, running int)
+	Stats() (total, succeeded, failed, running, timedOut int)
 }
 
 type InMemoryStore struct {
@@ -207,7 +214,7 @@ func (s *InMemoryStore) ListByState(state State) []*Execution {
 	return result
 }
 
-func (s *InMemoryStore) Stats() (total, succeeded, failed, running int) {
+func (s *InMemoryStore) Stats() (total, succeeded, failed, running, timedOut int) {
 	for _, e := range s.executions {
 		total++
 		switch e.State {
@@ -217,6 +224,8 @@ func (s *InMemoryStore) Stats() (total, succeeded, failed, running int) {
 			failed++
 		case StateRunning:
 			running++
+		case StateTimedOut:
+			timedOut++
 		}
 	}
 	return

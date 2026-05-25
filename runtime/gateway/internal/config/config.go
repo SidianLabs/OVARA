@@ -32,6 +32,8 @@ type Config struct {
 	ContinuationsFile    string `json:"continuations_file"`
 	ContinuationsMaxSize  int    `json:"continuations_max_size"`
 	ContinuationSweepIntervalSec int `json:"continuation_sweep_interval_secs"`
+	ExecutionFile               string `json:"execution_file"`
+	ExecutionsMaxSize           int    `json:"executions_max_size"`
 }
 
 type Enrollment struct {
@@ -83,6 +85,8 @@ func Default() *Config {
 		ContinuationsFile:      "var/data/continuations.jsonl",
 		ContinuationsMaxSize:   10000,
 		ContinuationSweepIntervalSec: 60,
+		ExecutionFile:             "var/data/executions.jsonl",
+		ExecutionsMaxSize:         10000,
 	}
 }
 

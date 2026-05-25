@@ -145,7 +145,7 @@ func TestInMemoryStore_Stats(t *testing.T) {
 	e1.MarkSucceeded(0, "", "")
 	e2.MarkFailed("error")
 	e3.MarkStarted()
-	total, succeeded, failed, running := store.Stats()
+	total, succeeded, failed, running, timedOut := store.Stats()
 	if total != 3 {
 		t.Errorf("total = %d, want 3", total)
 	}
@@ -157,6 +157,9 @@ func TestInMemoryStore_Stats(t *testing.T) {
 	}
 	if running != 1 {
 		t.Errorf("running = %d, want 1", running)
+	}
+	if timedOut != 0 {
+		t.Errorf("timedOut = %d, want 0", timedOut)
 	}
 }
 
