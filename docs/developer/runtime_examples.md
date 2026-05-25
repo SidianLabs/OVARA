@@ -341,12 +341,95 @@ When `PolicyRefreshInterval > 0`:
 
 ## Local-Only Limitations (v1)
 
-- **In-memory state**: Shield restrictions, risk counts, and receipts reset on server restart
+- **Shield restrictions reset on restart**: Risk counts and shield state are in-memory only
 - **No automatic re-execution**: Approved actions are not automatically re-run — clients must retry
 - **No cryptographic verification**: Signatures are placeholder format (`sig_v1_local:...`)
-- **No persistent storage**: All stores are in-memory; configure external storage for production
 - **No distributed enforcement**: Shield state is local to one gateway instance
 - **No policy distribution**: Policy is loaded from local config file; no remote distribution
+
+## Morning Test Checklist
+
+Use this checklist to verify the gateway is working correctly after a restart.
+
+### 1. Start the Gateway
+
+```bash
+cd runtime/gateway
+go run cmd/server/main.go
+```
+
+Or with file persistence enabled:
+```bash
+export OVARA_RECEIPTS_FILE="var/data/receipts.json"
+export OVARA_APPROVALS_FILE="var/data/approvals.json"
+go run cmd/server/main.go
+```
+
+### 2. Verify Gateway is Running
+
+```bash
+curl http://localhost:8080/health
+# Expected: {"status":"ok"}
+```
+
+### 3. Check Gateway Status
+
+```bash
+curl http://localhost:8080/v1/runtime/status | jq .
+# Expected: Shows gateway_id, name, version, cache stats, receipt count
+```
+
+### 4. Test a Simple Action
+
+```bash
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action_type": "shell",
+    "resource": "shell:pwd",
+    "environment": "local",
+    "agent_identity": {"issuer": "ovara", "subject_id": "agent-test"}
+  }' | jq .decision
+# Expected: "escalate" (shell actions escalate by default policy)
+```
+
+### 5. Verify Receipt Persistence
+
+```bash
+curl http://localhost:8080/v1/receipts | jq .count
+# Expected: > 0 if actions were processed
+
+# Also check the file exists:
+cat var/data/receipts.json | jq .count
+```
+
+### 6. Test Trust Context
+
+```bash
+curl "http://localhost:8080/v1/trust/context?agent_id=agent-test" | jq .
+# Expected: Shows agent's risk_count, last_decision
+```
+
+### 7. Test Approval Flow (optional)
+
+```bash
+# Create an approval for an escalated action
+curl -X POST http://localhost:8080/v1/approval/create \
+  -H "Content-Type: application/json" \
+  -d '{"decision_id":"dec_test","action_type":"shell","resource":"shell:test","agent_id":"agent-test"}' | jq .
+
+# List pending approvals
+curl http://localhost:8080/v1/approval/pending | jq .
+```
+
+### What to Check If Something Goes Wrong
+
+| Symptom | Check |
+|---------|-------|
+| Gateway won't start | Check port 8080 is free; check config file syntax |
+| Actions always escalate | Default policy; use custom policy file to change |
+| No receipts after restart | Verify `var/data/receipts.json` exists |
+| Health check fails | Check gateway process is running; check port |
 
 ## Decision Flow Summary
 
