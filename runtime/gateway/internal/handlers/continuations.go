@@ -226,6 +226,10 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if cnt.State == continuation.StateApproved {
+		cnt.MarkReady()
+	}
+
 	if !cnt.CanExecute() {
 		api.JSONBadRequest(w, "continuation not in executable state: current state="+string(cnt.State))
 		return

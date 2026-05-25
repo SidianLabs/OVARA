@@ -257,9 +257,7 @@ func main() {
 		log.Printf("execution store in-memory (no persistence configured)")
 	}
 	shellExec := execution.NewShellExecutor(60)
-	execHandler := handlers.NewExecutionHandler(execStore, shellExec)
-	execHandler.SetEventStore(eventStore)
-	execHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	execHandler := handlers.NewExecutionHandler(execStore)
 	execHandler.RegisterRoutes(mux)
 
 	continuationHandler.SetExecutionStore(execStore)
