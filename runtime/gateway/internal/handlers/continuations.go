@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/continuation"
@@ -21,6 +22,7 @@ func (h *ContinuationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/continuations", h.handleList)
 	mux.HandleFunc("GET /v1/continuations/{id}", h.handleGet)
 	mux.HandleFunc("GET /v1/continuations/stats", h.handleStats)
+	mux.HandleFunc("POST /v1/continuations/sweep", h.handleSweep)
 }
 
 func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -137,16 +139,15 @@ func (h *ContinuationHandler) handleStats(w http.ResponseWriter, r *http.Request
 
 	all := h.store.ListAll()
 	counts := make(map[string]int)
-	var total int
+	var total, executable, expired int
 	for _, c := range all {
 		counts[string(c.State)]++
 		total++
-	}
-
-	executable := 0
-	for _, c := range all {
 		if c.IsExecutable() {
 			executable++
+		}
+		if c.State == continuation.StateExpired {
+			expired++
 		}
 	}
 
@@ -155,5 +156,30 @@ func (h *ContinuationHandler) handleStats(w http.ResponseWriter, r *http.Request
 		"total":        total,
 		"by_state":     counts,
 		"executable":   executable,
+		"expired":      expired,
+	})
+}
+
+func (h *ContinuationHandler) handleSweep(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	now := time.Now().UTC()
+	candidates := h.store.ListNonTerminal()
+	expired := 0
+	for _, cnt := range candidates {
+		if cnt.ShouldExpire(now) {
+			cnt.MarkExpired()
+			h.store.Update(cnt)
+			expired++
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"expired":    expired,
+		"scanned":    len(candidates),
 	})
 }

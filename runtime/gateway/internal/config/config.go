@@ -31,6 +31,7 @@ type Config struct {
 	HeartbeatIntervalSec  int    `json:"heartbeat_interval_secs"`
 	ContinuationsFile    string `json:"continuations_file"`
 	ContinuationsMaxSize  int    `json:"continuations_max_size"`
+	ContinuationSweepIntervalSec int `json:"continuation_sweep_interval_secs"`
 }
 
 type Enrollment struct {
@@ -81,6 +82,7 @@ func Default() *Config {
 		HeartbeatIntervalSec:    30,
 		ContinuationsFile:      "var/data/continuations.jsonl",
 		ContinuationsMaxSize:   10000,
+		ContinuationSweepIntervalSec: 60,
 	}
 }
 

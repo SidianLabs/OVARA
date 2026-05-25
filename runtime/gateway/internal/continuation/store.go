@@ -196,6 +196,7 @@ type Store interface {
 	ListByAgent(agentID string) []*Continuation
 	ListByApprovalID(approvalID string) []*Continuation
 	ListAll() []*Continuation
+	ListNonTerminal() []*Continuation
 }
 
 type InMemoryStore struct {
@@ -290,6 +291,18 @@ func (s *InMemoryStore) ListAll() []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		result = append(result, c)
+	}
+	return result
+}
+
+func (s *InMemoryStore) ListNonTerminal() []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if !c.IsTerminal() {
+			result = append(result, c)
+		}
 	}
 	return result
 }

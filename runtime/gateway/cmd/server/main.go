@@ -241,6 +241,21 @@ func main() {
 	continuationHandler := handlers.NewContinuationHandler(continuationStore)
 	continuationHandler.RegisterRoutes(mux)
 
+	sweeper := continuation.NewSweeper(continuationStore)
+	sweeper.SetEventStore(eventStore)
+	sweeper.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+
+	expiredOnStartup := sweeper.ReconcileOnStartup()
+	if expiredOnStartup > 0 {
+		log.Printf("continuation reconciliation: %d expired on startup", expiredOnStartup)
+	}
+
+	sweepInterval := cfg.ContinuationSweepIntervalSec
+	if sweepInterval > 0 {
+		sweeper.Start(sweepInterval)
+		log.Printf("continuation sweeper started (interval=%ds)", sweepInterval)
+	}
+
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway v%s listening on %s", cfg.GatewayVersion, addr)
 	log.Printf("gateway_id=%s enrollment_state=%s environment=%s",
@@ -273,6 +288,9 @@ func main() {
 		}
 		if fbCnt, ok := continuationStore.(*continuation.FileBackedStore); ok {
 			fbCnt.Close()
+		}
+		if sweeper != nil {
+			sweeper.Stop()
 		}
 		wg.Wait()
 		os.Exit(0)
