@@ -91,6 +91,23 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeContinuationCreated).
+			WithGatewayID(h.gatewayID).
+			WithDecisionID(req.DecisionID).
+			WithApprovalID(created.ApprovalID).
+			WithAgentID(req.AgentID).
+			WithPayload(map[string]any{
+				"continuation_id": cnt.ContinuationID,
+				"action_type":    string(req.ActionType),
+				"resource":       req.Resource,
+				"trust_score":    req.TrustScore,
+				"state":          string(cnt.State),
+				"expires_at":     cnt.ExpiresAt,
+			})
+		h.eventStore.Append(evt)
+	}
+
+	if h.eventStore != nil {
 		evt := events.NewEvent(events.EventTypeApprovalCreated).
 			WithGatewayID(h.gatewayID).
 			WithDecisionID(req.DecisionID).
@@ -166,6 +183,20 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 			cnt.MarkApproved(body.ResolvedBy)
 			cnt.MarkReady()
 			_ = h.continuationStore.Update(cnt)
+
+			if h.eventStore != nil {
+				evt := events.NewEvent(events.EventTypeContinuationReady).
+					WithGatewayID(h.gatewayID).
+					WithApprovalID(id).
+					WithDecisionID(cnt.DecisionID).
+					WithAgentID(cnt.AgentID).
+					WithPayload(map[string]any{
+						"continuation_id": cnt.ContinuationID,
+						"resolved_by":     body.ResolvedBy,
+						"state":           string(cnt.State),
+					})
+				h.eventStore.Append(evt)
+			}
 		}
 	}
 
@@ -221,6 +252,21 @@ func (h *ApprovalHandler) handleDeny(w http.ResponseWriter, r *http.Request) {
 		for _, cnt := range list {
 			cnt.MarkDenied(body.ResolvedBy, body.Reason)
 			_ = h.continuationStore.Update(cnt)
+
+			if h.eventStore != nil {
+				evt := events.NewEvent(events.EventTypeContinuationDenied).
+					WithGatewayID(h.gatewayID).
+					WithApprovalID(id).
+					WithDecisionID(cnt.DecisionID).
+					WithAgentID(cnt.AgentID).
+					WithPayload(map[string]any{
+						"continuation_id": cnt.ContinuationID,
+						"resolved_by":     body.ResolvedBy,
+						"reason":          body.Reason,
+						"state":           string(cnt.State),
+					})
+				h.eventStore.Append(evt)
+			}
 		}
 	}
 
@@ -291,6 +337,19 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		for _, cnt := range list {
 			cnt.MarkResumed()
 			_ = h.continuationStore.Update(cnt)
+
+			if h.eventStore != nil {
+				evt := events.NewEvent(events.EventTypeContinuationResumed).
+					WithGatewayID(h.gatewayID).
+					WithApprovalID(id).
+					WithDecisionID(cnt.DecisionID).
+					WithAgentID(cnt.AgentID).
+					WithPayload(map[string]any{
+						"continuation_id": cnt.ContinuationID,
+						"state":          string(cnt.State),
+					})
+				h.eventStore.Append(evt)
+			}
 		}
 	}
 

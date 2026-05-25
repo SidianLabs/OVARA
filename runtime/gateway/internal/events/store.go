@@ -18,6 +18,11 @@ const (
 	EventTypePolicyReloadFailed         = "policy.reload_failed"
 	EventTypeShieldRestrictionChanged   = "shield.restriction_changed"
 	EventTypeEnrollmentHeartbeat        = "enrollment.heartbeat"
+	EventTypeContinuationCreated        = "continuation.created"
+	EventTypeContinuationReady          = "continuation.ready"
+	EventTypeContinuationDenied        = "continuation.denied"
+	EventTypeContinuationResumed       = "continuation.resumed"
+	EventTypeContinuationExpired        = "continuation.expired"
 )
 
 type Event struct {
