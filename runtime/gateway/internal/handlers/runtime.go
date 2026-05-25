@@ -2,13 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"sync"
 	"time"
 
 	"ovara.runtime.gateway/internal/approval"
+	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
@@ -181,20 +181,20 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		api.JSONBadRequest(w, "failed to read request body")
 		return
 	}
 	defer r.Body.Close()
 
 	var req models.ActionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		api.JSONBadRequest(w, "invalid request: "+err.Error())
 		return
 	}
 
 	resp, err := h.evaluator.Evaluate(&req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("evaluation failed: %v", err), http.StatusInternalServerError)
+		api.JSONInternalError(w, "evaluation failed: "+err.Error())
 		return
 	}
 
@@ -264,12 +264,12 @@ func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleGetDecision(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "decision id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "decision id is required")
 		return
 	}
 
@@ -281,23 +281,23 @@ func (h *Handler) handleGetDecision(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.Error(w, "decision not found", http.StatusNotFound)
+	api.JSONNotFound(w, "decision not found")
 }
 
 func (h *Handler) handleGetAgentRecentDecisions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 
 	if h.decisionCache == nil {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"decisions": []any{}, "count": 0})
+		json.NewEncoder(w).Encode(map[string]any{"agent_id": agentID, "receipts": []any{}, "count": 0})
 		return
 	}
 
@@ -312,7 +312,7 @@ func (h *Handler) handleGetAgentRecentDecisions(w http.ResponseWriter, r *http.R
 
 func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 
@@ -398,7 +398,7 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 

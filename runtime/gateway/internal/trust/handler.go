@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/models"
 )
 
@@ -30,13 +31,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 func (h *Handler) handleGetTrustContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 
 	agentID := r.URL.Query().Get("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 
@@ -44,17 +45,17 @@ func (h *Handler) handleGetTrustContext(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"agent_id":       agentID,
-		"restricted":     stats.Restricted,
-		"risk_count":     stats.RiskCount,
-		"last_decision":  stats.LastDecision,
+		"agent_id":        agentID,
+		"restricted":      stats.Restricted,
+		"risk_count":      stats.RiskCount,
+		"last_decision":   stats.LastDecision,
 		"last_decision_at": stats.LastDecisionAt,
 	})
 }
 
 func (h *Handler) handleShieldStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 
@@ -63,18 +64,18 @@ func (h *Handler) handleShieldStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"restricted_agents": restricted,
-		"count":           len(restricted),
+		"count":             len(restricted),
 	})
 }
 
 func (h *Handler) handleAgentShieldStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 
@@ -82,9 +83,9 @@ func (h *Handler) handleAgentShieldStatus(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"agent_id":       agentID,
-		"restricted":    stats.Restricted,
-		"risk_count":    stats.RiskCount,
+		"agent_id":        agentID,
+		"restricted":     stats.Restricted,
+		"risk_count":     stats.RiskCount,
 		"last_decision":  stats.LastDecision,
 		"last_decision_at": stats.LastDecisionAt,
 	})
@@ -92,12 +93,12 @@ func (h *Handler) handleAgentShieldStatus(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) handleRestrict(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 
@@ -120,12 +121,12 @@ func (h *Handler) handleRestrict(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleUnrestrict(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 

@@ -2,11 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 
 	"ovara.runtime.gateway/internal/approval"
+	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/metrics"
 )
 
@@ -29,30 +29,30 @@ func (h *ApprovalHandler) RegisterRoutes(mux *http.ServeMux) {
 
 func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		api.JSONBadRequest(w, "failed to read body")
 		return
 	}
 	defer r.Body.Close()
 
 	var req approval.CreateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		api.JSONBadRequest(w, "invalid request: "+err.Error())
 		return
 	}
 
 	if req.DecisionID == "" || req.ActionType == "" {
-		http.Error(w, "decision_id and action_type are required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "decision_id and action_type are required")
 		return
 	}
 
 	created, err := h.service.CreateApproval(&req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to create approval: %v", err), http.StatusInternalServerError)
+		api.JSONInternalError(w, "failed to create approval: "+err.Error())
 		return
 	}
 
@@ -65,18 +65,18 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 func (h *ApprovalHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "approval id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "approval id is required")
 		return
 	}
 
 	approval, err := h.service.GetApproval(id)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("approval not found: %v", err), http.StatusNotFound)
+		api.JSONNotFound(w, "approval not found: "+err.Error())
 		return
 	}
 
@@ -86,12 +86,12 @@ func (h *ApprovalHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "approval id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "approval id is required")
 		return
 	}
 
@@ -99,17 +99,17 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 		ResolvedBy string `json:"resolved_by"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		api.JSONBadRequest(w, "invalid request body")
 		return
 	}
 	if body.ResolvedBy == "" {
-		http.Error(w, "resolved_by is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "resolved_by is required")
 		return
 	}
 
 	updated, err := h.service.Approve(id, body.ResolvedBy)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to approve: %v", err), http.StatusInternalServerError)
+		api.JSONInternalError(w, "failed to approve: "+err.Error())
 		return
 	}
 
@@ -119,12 +119,12 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 
 func (h *ApprovalHandler) handleDeny(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "approval id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "approval id is required")
 		return
 	}
 
@@ -133,17 +133,17 @@ func (h *ApprovalHandler) handleDeny(w http.ResponseWriter, r *http.Request) {
 		Reason     string `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		api.JSONBadRequest(w, "invalid request body")
 		return
 	}
 	if body.ResolvedBy == "" {
-		http.Error(w, "resolved_by is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "resolved_by is required")
 		return
 	}
 
 	updated, err := h.service.Deny(id, body.ResolvedBy, body.Reason)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to deny: %v", err), http.StatusInternalServerError)
+		api.JSONInternalError(w, "failed to deny: "+err.Error())
 		return
 	}
 
@@ -153,7 +153,7 @@ func (h *ApprovalHandler) handleDeny(w http.ResponseWriter, r *http.Request) {
 
 func (h *ApprovalHandler) handleListPending(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 
@@ -168,18 +168,18 @@ func (h *ApprovalHandler) handleListPending(w http.ResponseWriter, r *http.Reque
 
 func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "approval id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "approval id is required")
 		return
 	}
 
 	result, err := h.service.ResumeAction(id)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("cannot resume: %v", err), http.StatusBadRequest)
+		api.JSONBadRequest(w, "cannot resume: "+err.Error())
 		return
 	}
 
