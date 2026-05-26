@@ -1552,3 +1552,73 @@ When a request includes a capability lease:
 - **Per-gateway**: Each gateway maintains its own lease state (no distributed synchronization)
 - **No automatic cleanup**: Expired leases remain in the store until explicit revocation or max size eviction
 - **No cross-gateway revocation**: Revoking on one gateway does not affect another gateway's copy
+
+## Workflow Trace
+
+Trace one action through the entire system by its decision ID, continuation ID, execution ID, approval ID, or receipt ID:
+
+```bash
+# Trace by decision_id
+curl "http://localhost:8080/v1/runtime/trace?decision_id=dec_abc123"
+
+# Trace by continuation_id
+curl "http://localhost:8080/v1/runtime/trace?continuation_id=cnt_xyz789"
+
+# Trace by execution_id
+curl "http://localhost:8080/v1/runtime/trace?execution_id=exe_def456"
+
+# Trace by approval_id
+curl "http://localhost:8080/v1/runtime/trace?approval_id=apr_ghi789"
+```
+
+Response:
+```json
+{
+  "decision": {...},
+  "receipt": {...},
+  "continuations": [...],
+  "approvals": [...],
+  "executions": [...],
+  "events": [...],
+  "capabilities": [...]
+}
+```
+
+The trace endpoint correlates across:
+- Decision and receipt
+- Continuations via decision_id
+- Approvals via decision_id
+- Executions via decision_id and continuation_id
+- Events via all relevant IDs
+- Capability leases via receipt.CapabilityLeaseID and continuation.CapabilityRef
+
+## Governance Summary
+
+Get a high-level overview of system state:
+
+```bash
+curl "http://localhost:8080/v1/runtime/summary"
+```
+
+Response:
+```json
+{
+  "approvals": {"pending": 2, "approved": 10, "denied": 3, "total": 15},
+  "executions": {"succeeded": 8, "failed": 1, "running": 2, "timed_out": 0, "total": 11},
+  "capabilities": {"active": 5, "revoked": 2, "total": 7},
+  "decision_cache_size": 23
+}
+```
+
+### Filtering Executions
+
+```bash
+# By continuation
+curl "http://localhost:8080/v1/executions?continuation_id=cnt_xyz789"
+
+# By state
+curl "http://localhost:8080/v1/executions?state=succeeded"
+
+# By state with limit
+curl "http://localhost:8080/v1/executions?state=failed&limit=50"
+```

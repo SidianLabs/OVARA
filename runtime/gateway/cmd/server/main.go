@@ -307,7 +307,8 @@ func main() {
 	} else {
 		log.Printf("execution store in-memory (no persistence configured)")
 	}
-	h.SetExecutionStore(execStore)
+		h.SetExecutionStore(execStore)
+	h.SetCapabilitiesStore(capabilitiesStore)
 
 	checker := integrity.NewChecker()
 	checker.SetEventStore(eventStore)

@@ -10,6 +10,7 @@ import (
 
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/evaluator"
@@ -37,6 +38,7 @@ type Handler struct {
 	integrityChecker   *integrity.Checker
 	shieldStats        func() (restricted, total int)
 	maintenanceMode    bool
+	capabilitiesStore  capabilities.Store
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -83,6 +85,10 @@ func (h *Handler) SetIntegrityChecker(checker *integrity.Checker) {
 
 func (h *Handler) SetMaintenanceMode(enabled bool) {
 	h.maintenanceMode = enabled
+}
+
+func (h *Handler) SetCapabilitiesStore(store capabilities.Store) {
+	h.capabilitiesStore = store
 }
 
 type HandlerWithStores struct {
@@ -208,6 +214,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runtime/metrics", h.handleGetMetrics)
 	mux.HandleFunc("GET /v1/runtime/integrity", h.handleIntegrity)
 	mux.HandleFunc("GET /v1/runtime/snapshot", h.handleSnapshot)
+	mux.HandleFunc("GET /v1/runtime/trace", h.handleTrace)
+	mux.HandleFunc("GET /v1/runtime/summary", h.handleSummary)
 	mux.HandleFunc("GET /v1/audit/export", h.handleAuditExport)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
@@ -818,4 +826,251 @@ func (h *Handler) StartCacheCleanup(interval time.Duration) {
 	if h.decisionCache != nil {
 		h.decisionCache.StartCleanup(interval)
 	}
+}
+
+type TraceResponse struct {
+	Decision     *models.DecisionResponse `json:"decision,omitempty"`
+	Receipt      *models.Receipt          `json:"receipt,omitempty"`
+	Continuations []*continuation.Continuation `json:"continuations,omitempty"`
+	Approvals    []*approval.ApprovalRequest  `json:"approvals,omitempty"`
+	Executions   []*execution.Execution        `json:"executions,omitempty"`
+	Events       []*events.Event               `json:"events,omitempty"`
+	Capabilities  []*capabilities.TrackedLease  `json:"capabilities,omitempty"`
+}
+
+func (h *Handler) handleTrace(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	decisionID := r.URL.Query().Get("decision_id")
+	continuationID := r.URL.Query().Get("continuation_id")
+	executionID := r.URL.Query().Get("execution_id")
+	approvalID := r.URL.Query().Get("approval_id")
+	receiptID := r.URL.Query().Get("receipt_id")
+
+	if decisionID == "" && continuationID == "" && executionID == "" && approvalID == "" && receiptID == "" {
+		api.JSONBadRequest(w, "at least one of decision_id, continuation_id, execution_id, approval_id, or receipt_id is required")
+		return
+	}
+
+	var decision *models.DecisionResponse
+	var receipt *models.Receipt
+	var continuations []*continuation.Continuation
+	var approvals []*approval.ApprovalRequest
+	var executions []*execution.Execution
+	var evts []*events.Event
+	var caps []*capabilities.TrackedLease
+
+	if decisionID != "" {
+		h.decisionCache.mu.RLock()
+		if cached, ok := h.decisionCache.decisions[decisionID]; ok {
+			decision = cached.Response
+		}
+		h.decisionCache.mu.RUnlock()
+
+		if h.receiptsStore != nil {
+			if rcp, err := h.receiptsStore.Get(decisionID); err == nil {
+				receipt = rcp
+			}
+		}
+
+		if h.continuationStore != nil {
+			continuations = h.continuationStore.ListByDecision(decisionID)
+		}
+
+		if h.approvalSvc != nil {
+			approvals = h.approvalSvc.ListByDecision(decisionID)
+		}
+
+		if h.executionStore != nil {
+			executions = h.executionStore.ListByDecision(decisionID)
+		}
+	}
+
+	if continuationID != "" {
+		if h.continuationStore != nil {
+			if cnt, found := h.continuationStore.Get(continuationID); found {
+				continuations = append(continuations, cnt)
+			}
+		}
+		if h.executionStore != nil {
+			executions = append(executions, h.executionStore.ListByContinuation(continuationID)...)
+		}
+	}
+
+	if executionID != "" {
+		if h.executionStore != nil {
+			if exe, found := h.executionStore.Get(executionID); found {
+				executions = append(executions, exe)
+			}
+		}
+	}
+
+	if approvalID != "" {
+		if h.approvalSvc != nil {
+			if apr, err := h.approvalSvc.GetApproval(approvalID); err == nil {
+				approvals = append(approvals, apr)
+			}
+		}
+	}
+
+	if receiptID != "" {
+		if h.receiptsStore != nil {
+			if rcp, err := h.receiptsStore.Get(receiptID); err == nil {
+				receipt = rcp
+			}
+		}
+	}
+
+	if h.eventStore != nil {
+		allEvents := h.eventStore.List(500)
+		for _, e := range allEvents {
+			if decisionID != "" && e.DecisionID == decisionID {
+				evts = append(evts, e)
+				continue
+			}
+			if continuationID != "" && e.ContinuationID == continuationID {
+				evts = append(evts, e)
+				continue
+			}
+			if approvalID != "" && e.ApprovalID == approvalID {
+				evts = append(evts, e)
+				continue
+			}
+			if receiptID != "" && e.ReceiptID == receiptID {
+				evts = append(evts, e)
+				continue
+			}
+			for _, exe := range executions {
+				if exe != nil && e.ContinuationID == exe.ContinuationID {
+					evts = append(evts, e)
+					break
+				}
+			}
+		}
+	}
+
+	if receipt != nil && receipt.CapabilityLeaseID != "" && h.capabilitiesStore != nil {
+		if tracked, ok := h.capabilitiesStore.Get(receipt.CapabilityLeaseID); ok {
+			caps = append(caps, tracked)
+		}
+	}
+
+	if h.capabilitiesStore != nil {
+		for _, cnt := range continuations {
+			if cnt != nil && cnt.CapabilityRef != "" {
+				if tracked, ok := h.capabilitiesStore.Get(cnt.CapabilityRef); ok {
+					found := false
+					for _, c := range caps {
+						if c.Lease.LeaseID == tracked.Lease.LeaseID {
+							found = true
+							break
+						}
+					}
+					if !found {
+						caps = append(caps, tracked)
+					}
+				}
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(TraceResponse{
+		Decision:      decision,
+		Receipt:       receipt,
+		Continuations: continuations,
+		Approvals:     approvals,
+		Executions:    executions,
+		Events:        evts,
+		Capabilities:  caps,
+	})
+}
+
+type SummaryResponse struct {
+	Approvals      ApprovalSummary      `json:"approvals"`
+	Executions     ExecutionSummary     `json:"executions"`
+	Capabilities   CapabilitySummary    `json:"capabilities"`
+	DecisionCache  int                 `json:"decision_cache_size"`
+}
+
+type ApprovalSummary struct {
+	Pending   int `json:"pending"`
+	Approved int `json:"approved"`
+	Denied   int `json:"denied"`
+	Total    int `json:"total"`
+}
+
+type ExecutionSummary struct {
+	Succeeded int `json:"succeeded"`
+	Failed    int `json:"failed"`
+	Running   int `json:"running"`
+	TimedOut  int `json:"timed_out"`
+	Total     int `json:"total"`
+}
+
+type CapabilitySummary struct {
+	Active   int `json:"active"`
+	Revoked  int `json:"revoked"`
+	Total    int `json:"total"`
+}
+
+func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	var approvalSummary ApprovalSummary
+	var executionSummary ExecutionSummary
+	var capabilitySummary CapabilitySummary
+
+	if h.approvalSvc != nil {
+		pending := h.approvalSvc.ListByStatus(approval.StatusPending)
+		approved := h.approvalSvc.ListByStatus(approval.StatusApproved)
+		denied := h.approvalSvc.ListByStatus(approval.StatusDenied)
+		approvalSummary.Pending = len(pending)
+		approvalSummary.Approved = len(approved)
+		approvalSummary.Denied = len(denied)
+		approvalSummary.Total = approvalSummary.Pending + approvalSummary.Approved + approvalSummary.Denied
+	}
+
+	if h.executionStore != nil {
+		total, succeeded, failed, running, timedOut := h.executionStore.Stats()
+		executionSummary.Total = total
+		executionSummary.Succeeded = succeeded
+		executionSummary.Failed = failed
+		executionSummary.Running = running
+		executionSummary.TimedOut = timedOut
+	}
+
+	if h.capabilitiesStore != nil {
+		if fs, ok := h.capabilitiesStore.(interface{ Stats() (int, int, int) }); ok {
+			total, active, revoked := fs.Stats()
+			capabilitySummary.Total = total
+			capabilitySummary.Active = active
+			capabilitySummary.Revoked = revoked
+		} else {
+			all := h.capabilitiesStore.List()
+			active := h.capabilitiesStore.ListActive()
+			revoked := h.capabilitiesStore.ListRevoked()
+			capabilitySummary.Total = len(all)
+			capabilitySummary.Active = len(active)
+			capabilitySummary.Revoked = len(revoked)
+		}
+	}
+
+	h.decisionCache.mu.RLock()
+	cacheSize := len(h.decisionCache.decisions)
+	h.decisionCache.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(SummaryResponse{
+		Approvals:     approvalSummary,
+		Executions:    executionSummary,
+		Capabilities:  capabilitySummary,
+		DecisionCache: cacheSize,
+	})
 }

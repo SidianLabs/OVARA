@@ -116,6 +116,15 @@ func (m *mockExecutionStore) ListByContinuation(continuationID string) []*execut
 	}
 	return result
 }
+func (m *mockExecutionStore) ListByDecision(decisionID string) []*execution.Execution {
+	var result []*execution.Execution
+	for _, e := range m.executions {
+		if e.DecisionID == decisionID {
+			result = append(result, e)
+		}
+	}
+	return result
+}
 func (m *mockExecutionStore) ListAll() []*execution.Execution {
 	return m.executions
 }
@@ -183,6 +192,15 @@ func (m *mockApprovalStore) ListByStatus(status approval.Status) []*approval.App
 		return m.pending
 	}
 	return nil
+}
+func (m *mockApprovalStore) ListByDecision(decisionID string) []*approval.ApprovalRequest {
+	var result []*approval.ApprovalRequest
+	for _, a := range m.pending {
+		if a.DecisionID == decisionID {
+			result = append(result, a)
+		}
+	}
+	return result
 }
 
 func TestChecker_CleanState(t *testing.T) {

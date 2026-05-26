@@ -64,6 +64,9 @@ func (m *mockExecutionStore) Update(e *execution.Execution) error {
 func (m *mockExecutionStore) ListByContinuation(continuationID string) []*execution.Execution {
 	return nil
 }
+func (m *mockExecutionStore) ListByDecision(decisionID string) []*execution.Execution {
+	return nil
+}
 func (m *mockExecutionStore) ListAll() []*execution.Execution {
 	return nil
 }

@@ -74,6 +74,10 @@ func (s *Service) ListByStatus(status Status) []*ApprovalRequest {
 	return s.store.ListByStatus(status)
 }
 
+func (s *Service) ListByDecision(decisionID string) []*ApprovalRequest {
+	return s.store.ListByDecision(decisionID)
+}
+
 func (s *Service) ResumeAction(approvalID string) (*ResumeResult, error) {
 	approval, err := s.store.Get(approvalID)
 	if err != nil {

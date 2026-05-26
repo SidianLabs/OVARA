@@ -247,6 +247,7 @@ type Store interface {
 	Get(id string) (*Execution, bool)
 	Update(e *Execution) error
 	ListByContinuation(continuationID string) []*Execution
+	ListByDecision(decisionID string) []*Execution
 	ListAll() []*Execution
 	ListByState(state State) []*Execution
 	Stats() (total, succeeded, failed, running, timedOut int)
@@ -287,6 +288,16 @@ func (s *InMemoryStore) ListByContinuation(continuationID string) []*Execution {
 	var result []*Execution
 	for _, e := range s.executions {
 		if e.ContinuationID == continuationID {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
+func (s *InMemoryStore) ListByDecision(decisionID string) []*Execution {
+	var result []*Execution
+	for _, e := range s.executions {
+		if e.DecisionID == decisionID {
 			result = append(result, e)
 		}
 	}

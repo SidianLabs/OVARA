@@ -109,6 +109,18 @@ func (s *FileBackedStore) ListByStatus(status Status) []*ApprovalRequest {
 	return result
 }
 
+func (s *FileBackedStore) ListByDecision(decisionID string) []*ApprovalRequest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*ApprovalRequest
+	for _, req := range s.items {
+		if req.DecisionID == decisionID {
+			result = append(result, req)
+		}
+	}
+	return result
+}
+
 func (s *FileBackedStore) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
