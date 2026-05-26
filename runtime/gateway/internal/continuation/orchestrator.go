@@ -12,7 +12,7 @@ import (
 type Orchestrator struct {
 	store        Store
 	execStore   execution.Store
-	executor    execution.Executor
+	registry    *execution.ExecutorRegistry
 	eventStore  events.Store
 	gatewayID   string
 	pollInterval time.Duration
@@ -24,14 +24,18 @@ type Orchestrator struct {
 	wg          sync.WaitGroup
 }
 
-func NewOrchestrator(store Store, execStore execution.Store, executor execution.Executor) *Orchestrator {
+func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
 	return &Orchestrator{
 		store:        store,
 		execStore:    execStore,
-		executor:    executor,
+		registry:     registry,
 		pollInterval: 2 * time.Second,
 		stopChan:    make(chan struct{}),
 	}
+}
+
+func (o *Orchestrator) SetRegistry(reg *execution.ExecutorRegistry) {
+	o.registry = reg
 }
 
 func (o *Orchestrator) SetEventStore(es events.Store) {
@@ -147,8 +151,10 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 	)
 
 	ctx := context.Background()
-	if o.executor != nil {
-		o.executor.Execute(ctx, exe)
+	if o.registry != nil {
+		if exec, ok := o.registry.Get(cnt.ActionType); ok {
+			exec.Execute(ctx, exe)
+		}
 	}
 
 	if o.execStore != nil {

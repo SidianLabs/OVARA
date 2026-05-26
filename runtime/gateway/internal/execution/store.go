@@ -242,6 +242,155 @@ func ParseShellResource(resource string) (string, error) {
 	return cmd, nil
 }
 
+type ExecutorRegistry struct {
+	executors map[string]Executor
+}
+
+func NewExecutorRegistry() *ExecutorRegistry {
+	return &ExecutorRegistry{executors: make(map[string]Executor)}
+}
+
+func (r *ExecutorRegistry) Register(actionType string, exec Executor) {
+	r.executors[actionType] = exec
+}
+
+func (r *ExecutorRegistry) Get(actionType string) (Executor, bool) {
+	exec, ok := r.executors[actionType]
+	return exec, ok
+}
+
+func (r *ExecutorRegistry) RegisteredTypes() []string {
+	types := make([]string, 0, len(r.executors))
+	for t := range r.executors {
+		types = append(types, t)
+	}
+	return types
+}
+
+type DirectExecutor struct {
+	DefaultTimeout    time.Duration
+	StdoutLimitBytes int
+	StderrLimitBytes int
+	WorkingDir       string
+	AllowedEnvVars   []string
+}
+
+func NewDirectExecutor(timeoutSec int) *DirectExecutor {
+	if timeoutSec <= 0 {
+		timeoutSec = 60
+	}
+	return &DirectExecutor{
+		DefaultTimeout:    time.Duration(timeoutSec) * time.Second,
+		StdoutLimitBytes: 1024 * 1024,
+		StderrLimitBytes: 256 * 1024,
+	}
+}
+
+func NewDirectExecutorWithLimits(timeoutSec, stdoutLimit, stderrLimit int) *DirectExecutor {
+	if timeoutSec <= 0 {
+		timeoutSec = 60
+	}
+	if stdoutLimit <= 0 {
+		stdoutLimit = 1024 * 1024
+	}
+	if stderrLimit <= 0 {
+		stderrLimit = 256 * 1024
+	}
+	return &DirectExecutor{
+		DefaultTimeout:    time.Duration(timeoutSec) * time.Second,
+		StdoutLimitBytes: stdoutLimit,
+		StderrLimitBytes: stderrLimit,
+	}
+}
+
+func ParseExecResource(resource string) (string, []string, error) {
+	if !strings.HasPrefix(resource, "exec:") {
+		return "", nil, fmt.Errorf("resource does not start with exec: %s", resource)
+	}
+	rest := strings.TrimPrefix(resource, "exec:")
+	rest = strings.TrimLeft(rest, " ")
+	if rest == "" {
+		return "", nil, fmt.Errorf("exec resource is empty")
+	}
+	parts := strings.SplitN(rest, " ", 2)
+	binary := parts[0]
+	if binary == "" {
+		return "", nil, fmt.Errorf("exec binary name is empty")
+	}
+	var args []string
+	if len(parts) > 1 {
+		rawArgs := parts[1]
+		if rawArgs != "" {
+			args = strings.Split(rawArgs, " ")
+		}
+	}
+	return binary, args, nil
+}
+
+func (de *DirectExecutor) Execute(ctx context.Context, e *Execution) error {
+	e.MarkStarted()
+
+	binary, args, err := ParseExecResource(e.Resource)
+	if err != nil {
+		e.MarkFailed("invalid exec resource: "+err.Error(), 1)
+		return err
+	}
+
+	timeout := de.DefaultTimeout
+	if e.TimeoutSeconds > 0 {
+		timeout = time.Duration(e.TimeoutSeconds) * time.Second
+	}
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	stdoutBuf := &limitedWriter{buf: new(bytes.Buffer), limit: de.StdoutLimitBytes}
+	stderrBuf := &limitedWriter{buf: new(bytes.Buffer), limit: de.StderrLimitBytes}
+
+	cmd := exec.CommandContext(execCtx, binary, args...)
+	cmd.Stdout = stdoutBuf
+	cmd.Stderr = stderrBuf
+
+	if de.WorkingDir != "" {
+		cmd.Dir = de.WorkingDir
+	}
+	if de.AllowedEnvVars != nil {
+		cmd.Env = filterEnv(de.AllowedEnvVars)
+	}
+
+	err = cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+		if execCtx.Err() == context.DeadlineExceeded {
+			e.MarkTimedOut()
+			e.Stdout = stdoutBuf.buf.String()
+			e.Stderr = stderrBuf.buf.String()
+			e.StdoutTruncated = stdoutBuf.truncated
+			e.StderrTruncated = stderrBuf.truncated
+			e.StdoutLimitBytes = de.StdoutLimitBytes
+			e.StderrLimitBytes = de.StderrLimitBytes
+			return err
+		}
+		e.MarkFailed(stderrBuf.buf.String(), exitCode)
+		e.Stdout = stdoutBuf.buf.String()
+		e.Stderr = stderrBuf.buf.String()
+		e.StdoutTruncated = stdoutBuf.truncated
+		e.StderrTruncated = stderrBuf.truncated
+		e.StdoutLimitBytes = de.StdoutLimitBytes
+		e.StderrLimitBytes = de.StderrLimitBytes
+		return nil
+	}
+
+	e.MarkSucceeded(exitCode, stdoutBuf.buf.String(), stderrBuf.buf.String())
+	e.StdoutTruncated = stdoutBuf.truncated
+	e.StderrTruncated = stderrBuf.truncated
+	e.StdoutLimitBytes = de.StdoutLimitBytes
+	e.StderrLimitBytes = de.StderrLimitBytes
+	return nil
+}
+
 type Store interface {
 	Create(e *Execution) error
 	Get(id string) (*Execution, bool)

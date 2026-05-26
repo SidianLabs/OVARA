@@ -871,7 +871,7 @@ func TestContinuation_CanExecute_Semantics(t *testing.T) {
 		{"resumed_shell", continuation.StateResumed, "shell", true},
 		{"denied_shell", continuation.StateDenied, "shell", false},
 		{"expired_shell", continuation.StateExpired, "shell", false},
-		{"ready_non_shell", continuation.StateReady, "git.push", false},
+		{"ready_non_shell", continuation.StateReady, "git.push", true},
 		{"escalated_shell", continuation.StateEscalated, "shell", false},
 	}
 

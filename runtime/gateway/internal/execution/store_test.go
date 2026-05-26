@@ -366,3 +366,137 @@ func TestShellExecutor_TimeoutSetsTruncationFlags(t *testing.T) {
 		t.Errorf("stdout_limit_bytes = %d, want 1048576", exe.StdoutLimitBytes)
 	}
 }
+
+type mockExecForRegistry struct {
+	calls int
+}
+
+func (m *mockExecForRegistry) Execute(ctx context.Context, e *Execution) error {
+	m.calls++
+	e.MarkSucceeded(0, "ok", "")
+	return nil
+}
+
+func TestExecutorRegistry(t *testing.T) {
+	reg := NewExecutorRegistry()
+
+	exec1 := &mockExecForRegistry{}
+	exec2 := &mockExecForRegistry{}
+
+	reg.Register("shell", exec1)
+	reg.Register("exec", exec2)
+
+	got1, ok := reg.Get("shell")
+	if !ok {
+		t.Fatal("shell not found in registry")
+	}
+	if got1 != exec1 {
+		t.Error("shell executor mismatch")
+	}
+
+	got2, ok := reg.Get("exec")
+	if !ok {
+		t.Fatal("exec not found in registry")
+	}
+	if got2 != exec2 {
+		t.Error("exec executor mismatch")
+	}
+
+	_, ok = reg.Get("git.push")
+	if ok {
+		t.Error("unexpected executor for git.push")
+	}
+
+	types := reg.RegisteredTypes()
+	if len(types) != 2 {
+		t.Errorf("registered types count = %d, want 2", len(types))
+	}
+}
+
+func TestParseExecResource(t *testing.T) {
+	tests := []struct {
+		name      string
+		resource  string
+		wantBin   string
+		wantErr   bool
+	}{
+		{"simple", "exec:echo hello", "echo", false},
+		{"no_args", "exec:ls", "ls", false},
+		{"multiple_args", "exec:git push origin main", "git", false},
+		{"missing_prefix", "shell:echo hi", "", true},
+		{"empty", "exec:", "", true},
+		{"whitespace_only", "exec:   ", "", true},
+		{"leading_whitespace", "exec:  pwd", "pwd", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bin, _, err := ParseExecResource(tt.resource)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if bin != tt.wantBin {
+				t.Errorf("binary = %s, want %s", bin, tt.wantBin)
+			}
+		})
+	}
+}
+
+func TestDirectExecutor(t *testing.T) {
+	ctx := context.Background()
+	exec := NewDirectExecutor(10)
+
+	t.Run("simple_command", func(t *testing.T) {
+		exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "exec", "exec:echo hello", 10)
+		err := exec.Execute(ctx, exe)
+		if err != nil {
+			t.Fatalf("execute failed: %v", err)
+		}
+		if exe.State != StateSucceeded {
+			t.Errorf("state = %s, want succeeded", exe.State)
+		}
+		if exe.Stdout != "hello\n" {
+			t.Errorf("stdout = %q, want %q", exe.Stdout, "hello\n")
+		}
+	})
+
+	t.Run("binary_not_found", func(t *testing.T) {
+		exe := NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "exec", "exec:this_binary_does_not_exist_12345", 5)
+		err := exec.Execute(ctx, exe)
+		if err != nil {
+			t.Fatalf("execute returned error: %v", err)
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+	})
+
+	t.Run("metacharacters_literal", func(t *testing.T) {
+		exe := NewExecution("cnt_3", "dec_3", "apr_3", "agt_3", "exec", "exec:printf hello", 10)
+		err := exec.Execute(ctx, exe)
+		if err != nil {
+			t.Fatalf("execute failed: %v", err)
+		}
+		if exe.State != StateSucceeded {
+			t.Errorf("state = %s, want succeeded", exe.State)
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		exec2 := NewDirectExecutor(1)
+		exe := NewExecution("cnt_4", "dec_4", "apr_4", "agt_4", "exec", "exec:sleep 5", 1)
+		err := exec2.Execute(ctx, exe)
+		if err == nil {
+			t.Fatal("expected error for timeout")
+		}
+		if exe.State != StateTimedOut {
+			t.Errorf("state = %s, want timed_out", exe.State)
+		}
+	})
+}

@@ -16,7 +16,7 @@ import (
 type ContinuationHandler struct {
 	store        continuation.Store
 	execStore    execution.Store
-	executor     execution.Executor
+	registry     *execution.ExecutorRegistry
 	eventStore   events.Store
 	gatewayID    string
 	orchestrator *continuation.Orchestrator
@@ -30,8 +30,15 @@ func (h *ContinuationHandler) SetExecutionStore(store execution.Store) {
 	h.execStore = store
 }
 
+func (h *ContinuationHandler) SetExecutorRegistry(reg *execution.ExecutorRegistry) {
+	h.registry = reg
+}
+
 func (h *ContinuationHandler) SetExecutor(exec execution.Executor) {
-	h.executor = exec
+	if h.registry == nil {
+		h.registry = execution.NewExecutorRegistry()
+	}
+	h.registry.Register("shell", exec)
 }
 
 func (h *ContinuationHandler) SetEventStore(es events.Store) {
@@ -457,9 +464,11 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if cnt.ActionType != "shell" {
-		api.JSONBadRequest(w, "execution only supported for shell action type")
-		return
+	if h.registry != nil {
+		if _, ok := h.registry.Get(cnt.ActionType); !ok {
+			api.JSONBadRequest(w, "no executor registered for action type: "+cnt.ActionType)
+			return
+		}
 	}
 
 	timeout := 60
@@ -480,8 +489,10 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 	)
 
 	ctx := context.Background()
-	if h.executor != nil {
-		h.executor.Execute(ctx, exe)
+	if h.registry != nil {
+		if exec, ok := h.registry.Get(cnt.ActionType); ok {
+			exec.Execute(ctx, exe)
+		}
 	}
 
 	if h.execStore != nil {
