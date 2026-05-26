@@ -162,7 +162,7 @@ func (c *Continuation) MarkExecuted() {
 }
 
 func (c *Continuation) MarkQueued() {
-	if c.State == StateApproved {
+	if c.State == StateApproved || c.State == StateReady {
 		c.State = StateQueued
 	}
 }
@@ -176,7 +176,7 @@ func (c *Continuation) MarkCancelled() {
 }
 
 func (c *Continuation) CanEnqueue() bool {
-	return c.State == StateApproved
+	return c.State == StateApproved || c.State == StateReady
 }
 
 func (c *Continuation) CanCancel() bool {

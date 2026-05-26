@@ -113,7 +113,7 @@ func (o *Orchestrator) drainQueue() {
 
 	candidates := o.store.ListByState(StateQueued)
 	for _, cnt := range candidates {
-		o.executeOne(cnt)
+		go o.executeOne(cnt)
 	}
 }
 
@@ -122,8 +122,18 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 		return
 	}
 
+	cnt.State = StateReady
+	o.store.Update(cnt)
+
 	timeout := 60
-	if cnt.MaxRetries > 0 && cnt.RetryCount > 0 {
+	if cnt.ExpiresAt != nil {
+		remaining := time.Until(*cnt.ExpiresAt)
+		if remaining > 0 && remaining < time.Duration(timeout)*time.Second {
+			timeout = int(remaining.Seconds())
+			if timeout < 5 {
+				timeout = 5
+			}
+		}
 	}
 
 	exe := execution.NewExecution(
