@@ -6,10 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ovara.runtime.gateway/internal/approval"
+	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
+	"ovara.runtime.gateway/internal/continuation"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
@@ -574,6 +579,302 @@ func TestIntegrityHandler(t *testing.T) {
 
 		if w.Code != http.StatusMethodNotAllowed {
 			t.Errorf("expected status 405, got %d", w.Code)
+		}
+	})
+}
+
+func TestTraceAndSummaryHandler(t *testing.T) {
+	policyStore := policy.NewStore("test-trace")
+	shieldStore := trust.NewShieldStore()
+	eval := evaluator.NewWithShield(policyStore, shieldStore)
+	receiptsStore := receipts.NewInMemoryStore()
+	cfg := config.Default()
+	h := New(eval, nil, cfg, receiptsStore)
+
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	approvalStore := approval.NewInMemoryStore()
+	approvalSvc := approval.NewService(approvalStore)
+	eventStore := events.NewInMemoryStore(500)
+	capsStore := capabilities.NewInMemoryStore()
+
+	h.SetContinuationStore(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetApprovalService(approvalSvc)
+	h.SetEventStore(eventStore)
+	h.SetCapabilitiesStore(capsStore)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	t.Run("trace_requires_at_least_one_id", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", w.Code)
+		}
+		var resp map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if resp["error"] == "" {
+			t.Error("expected error field in response")
+		}
+	})
+
+	t.Run("trace_with_fake_decision_id_returns_empty", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?decision_id=dec_fake", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", w.Code)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if resp["decision"] != nil {
+			t.Error("expected nil decision for fake ID")
+		}
+	})
+
+	t.Run("trace_with_real_decision_id", func(t *testing.T) {
+		decisionID := "dec_trace_test_001"
+		h.decisionCache.Put(decisionID, &models.DecisionResponse{
+			DecisionID: decisionID,
+			Decision:   models.DecisionAllow,
+		})
+		rcp := &models.Receipt{ReceiptID: decisionID, TrustScore: 0.95}
+		receiptsStore.Put(rcp)
+
+		cnt := continuation.NewContinuation(decisionID, "shell", "shell:ls")
+		cnt.CapabilityRef = "cap_trace_001"
+		contStore.Create(cnt)
+
+		exe := execution.NewExecution(decisionID, decisionID, "", "agent-trace", "shell", "shell:ls", 30)
+		execStore.Create(exe)
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?decision_id="+decisionID, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var resp TraceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if resp.Decision == nil || resp.Decision.DecisionID != decisionID {
+			t.Errorf("decision mismatch")
+		}
+		if resp.Receipt == nil || resp.Receipt.ReceiptID != decisionID {
+			t.Errorf("receipt mismatch")
+		}
+		if len(resp.Continuations) != 1 {
+			t.Errorf("continuations count = %d, want 1", len(resp.Continuations))
+		}
+		if len(resp.Executions) != 1 {
+			t.Errorf("executions count = %d, want 1", len(resp.Executions))
+		}
+	})
+
+	t.Run("trace_by_continuation_id", func(t *testing.T) {
+		continuationID := "cnt_trace_002"
+		cnt := continuation.NewContinuation("dec_trace_002", "git.push", "git:repo")
+		cnt.ContinuationID = continuationID
+		contStore.Create(cnt)
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?continuation_id="+continuationID, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var resp TraceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if len(resp.Continuations) != 1 {
+			t.Errorf("continuations count = %d, want 1", len(resp.Continuations))
+		}
+		if resp.Continuations[0].ContinuationID != continuationID {
+			t.Errorf("continuation ID mismatch")
+		}
+	})
+
+	t.Run("trace_by_execution_id", func(t *testing.T) {
+		executionID := "exe_trace_003"
+		exe := execution.NewExecution("dec_trace_003", "dec_trace_003", "", "agent-exe", "shell", "shell:pwd", 30)
+		exe.ExecutionID = executionID
+		execStore.Create(exe)
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?execution_id="+executionID, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var resp TraceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if len(resp.Executions) != 1 {
+			t.Errorf("executions count = %d, want 1", len(resp.Executions))
+		}
+		if resp.Executions[0].ExecutionID != executionID {
+			t.Errorf("execution ID mismatch")
+		}
+	})
+
+	t.Run("trace_correlates_capability_from_continuation", func(t *testing.T) {
+		decisionID := "dec_trace_cap_001"
+		capsStore.Track(&models.CapabilityLease{
+			LeaseID:         "cap_trace_010",
+			Issuer:          "admin",
+			Subject:         "agent-cap",
+			AllowedActions:  []string{"shell"},
+			ResourceScope:   "*",
+			DelegationDepth: 1,
+			Expiry:          time.Now().Add(1 * time.Hour),
+		}, "test-gateway")
+
+		cnt := continuation.NewContinuation(decisionID, "shell", "shell:ls")
+		cnt.ContinuationID = "cnt_trace_cap_001"
+		cnt.CapabilityRef = "cap_trace_010"
+		contStore.Create(cnt)
+
+		h.decisionCache.Put(decisionID, &models.DecisionResponse{DecisionID: decisionID, Decision: models.DecisionAllow})
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?decision_id="+decisionID, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var resp TraceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if len(resp.Capabilities) != 1 {
+			t.Errorf("capabilities count = %d, want 1", len(resp.Capabilities))
+		}
+	})
+
+	t.Run("summary_returns_correct_structure", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/summary", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var resp SummaryResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if resp.DecisionCache < 0 {
+			t.Error("decision_cache_size should be >= 0")
+		}
+	})
+
+	t.Run("summary_method_not_allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/summary", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("status = %d, want 405", w.Code)
+		}
+	})
+
+	t.Run("summary_reflects_approval_counts", func(t *testing.T) {
+		approvalStore.Create(&approval.ApprovalRequest{
+			ApprovalID:  "apr_sum_001",
+			DecisionID: "dec_sum_001",
+			Status:     approval.StatusPending,
+		})
+		approvalStore.Create(&approval.ApprovalRequest{
+			ApprovalID:  "apr_sum_002",
+			DecisionID: "dec_sum_002",
+			Status:     approval.StatusApproved,
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/summary", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var resp SummaryResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if resp.Approvals.Pending < 1 {
+			t.Errorf("pending approvals should be >= 1, got %d", resp.Approvals.Pending)
+		}
+	})
+
+	t.Run("trace_method_not_allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/trace", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("status = %d, want 405", w.Code)
+		}
+	})
+
+	t.Run("trace_by_approval_id", func(t *testing.T) {
+		apr := &approval.ApprovalRequest{
+			ApprovalID:  "apr_trace_001",
+			DecisionID: "dec_trace_apr",
+			Status:     approval.StatusApproved,
+		}
+		approvalStore.Create(apr)
+
+		h.decisionCache.Put("dec_trace_apr", &models.DecisionResponse{DecisionID: "dec_trace_apr", Decision: models.DecisionEscalate})
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?approval_id=apr_trace_001", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var resp TraceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if len(resp.Approvals) != 1 {
+			t.Errorf("approvals count = %d, want 1", len(resp.Approvals))
+		}
+	})
+
+	t.Run("trace_by_receipt_id", func(t *testing.T) {
+		rcp := &models.Receipt{ReceiptID: "rcp_trace_001", TrustScore: 0.95}
+		receiptsStore.Put(rcp)
+
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?receipt_id=rcp_trace_001", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var resp TraceResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if resp.Receipt == nil || resp.Receipt.ReceiptID != "rcp_trace_001" {
+			t.Errorf("receipt mismatch")
 		}
 	})
 }

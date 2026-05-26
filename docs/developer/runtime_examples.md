@@ -1515,9 +1515,10 @@ After revocation, any action request using that lease will be denied with `capab
 When a request includes a capability lease:
 
 1. **Revocation check**: If the lease is in the revocation store, the request is denied immediately
-2. **Expiry check**: If the lease has expired, the request is denied
-3. **Scope validation**: If the action or resource doesn't match the lease scope, the request is denied
-4. **Policy evaluation**: If the lease passes validation, normal policy evaluation proceeds
+2. **LastSeenAt update**: The lease's LastSeenAt timestamp is updated on each use
+3. **Expiry check**: If the lease has expired, the request is denied
+4. **Scope validation**: If the action or resource doesn't match the lease scope, the request is denied
+5. **Policy evaluation**: If the lease passes validation, normal policy evaluation proceeds
 
 ### Capability Lease Persistence
 
@@ -1536,16 +1537,6 @@ With persistence configured:
 - Lease history (tracked/used/revoked events) is persisted to `capabilities_history_file` and survives restart
 - LastSeenAt is updated each time a lease is used at runtime
 - `used` history events include the action and resource that were used
-
-### Runtime Behavior
-
-When a request includes a capability lease:
-
-1. **Revocation check**: If the lease is in the revocation store, the request is denied immediately
-2. **LastSeenAt update**: The lease's LastSeenAt timestamp is updated on each use
-3. **Expiry check**: If the lease has expired, the request is denied
-4. **Scope validation**: If the action or resource doesn't match the lease scope, the request is denied
-5. **Policy evaluation**: If the lease passes validation, normal policy evaluation proceeds
 
 ### Capability Lease Limitations
 
