@@ -89,24 +89,51 @@ func TestReceiptHandler_HandleListByDecision(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/receipts/decision/dec_a", nil)
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
+	t.Run("returns receipts for decision", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/receipts/decision/dec_a", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", rec.Code)
-	}
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
 
-	var result map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
-		t.Fatalf("decode error: %v", err)
-	}
-	if result["decision_id"] != "dec_a" {
-		t.Errorf("decision_id = %v, want dec_a", result["decision_id"])
-	}
-	if result["count"].(float64) != 2 {
-		t.Errorf("count = %v, want 2", result["count"])
-	}
+		var result map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if result["decision_id"] != "dec_a" {
+			t.Errorf("decision_id = %v, want dec_a", result["decision_id"])
+		}
+		if result["count"].(float64) != 2 {
+			t.Errorf("count = %v, want 2", result["count"])
+		}
+	})
+
+	t.Run("returns empty array not null for decision with no receipts", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/receipts/decision/dec_nonexistent", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want 200", rec.Code)
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+			t.Fatalf("decode error: %v", err)
+		}
+		if result["count"].(float64) != 0 {
+			t.Errorf("count = %v, want 0", result["count"])
+		}
+		receipts, ok := result["receipts"].([]any)
+		if !ok {
+			t.Errorf("receipts is not an array, got %T", result["receipts"])
+		}
+		if len(receipts) != 0 {
+			t.Errorf("receipts length = %d, want 0", len(receipts))
+		}
+	})
 }
 
 func TestReceiptHandler_HandleGet_MethodNotAllowed(t *testing.T) {

@@ -14,11 +14,16 @@ type ReasonCode string
 
 const (
 	ReasonAllowed               ReasonCode = "allowed"
-	ReasonDenied                ReasonCode = "denied"
+	ReasonPolicyAllow           ReasonCode = "policy_allow"
+	ReasonPolicyDeny            ReasonCode = "policy_deny"
+	ReasonPolicyEscalate        ReasonCode = "policy_escalate"
+	ReasonTrustEscalate         ReasonCode = "trust_escalate"
+	ReasonDeny                  ReasonCode = "denied"
 	ReasonEscalate              ReasonCode = "escalate"
 	ReasonCapabilityExpiry      ReasonCode = "capability_expired"
 	ReasonCapabilityNotAllowed  ReasonCode = "capability_not_allowed"
 	ReasonCapabilityScope       ReasonCode = "capability_scope_mismatch"
+	ReasonCapabilityRevoked     ReasonCode = "capability_revoked"
 	ReasonActionNotAllowed      ReasonCode = "action_not_allowed"
 	ReasonResourceNotCovered    ReasonCode = "resource_not_covered"
 	ReasonMissingIdentity       ReasonCode = "missing_identity"
@@ -42,9 +47,10 @@ type DecisionResponse struct {
 	TrustScore       float64      `json:"trust_score,omitempty"`
 	TrustLevel       TrustLevel   `json:"trust_level,omitempty"`
 	RequiresApproval bool         `json:"requires_approval"`
-	ApprovalID       string       `json:"approval_id,omitempty"`
+	ApprovalID       string      `json:"approval_id,omitempty"`
 	ReceiptStub      *ReceiptStub `json:"receipt_stub,omitempty"`
 	TrustContext     *TrustContext `json:"trust_context,omitempty"`
+	EvaluationSummary string      `json:"evaluation_summary,omitempty"`
 }
 
 type TrustLevel string

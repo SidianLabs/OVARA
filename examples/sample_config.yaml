@@ -1,0 +1,40 @@
+# OVARA Runtime Gateway Configuration
+# Sample config file for testing
+
+gateway:
+  name: "local-demo-gateway"
+  port: 8080
+  version: "0.7.0"
+
+policy:
+  # Policy source: "memory" or "file"
+  source: "file"
+  # Path to policy JSON file
+  file: "./examples/sample_policy.json"
+  # Policy refresh interval in seconds (0 = disabled)
+  refresh_interval: 10
+
+trust:
+  # Trust score thresholds
+  thresholds:
+    high: 0.8
+    medium: 0.5
+    low: 0.0
+  # Auto-restriction threshold (risk events before restriction)
+  auto_restrict_threshold: 3
+
+shield:
+  # Enable auto-restriction
+  auto_restrict: true
+  # Default restriction reason
+  default_restriction_reason: "auto_restriction"
+
+receipt:
+  # Receipt store capacity
+  max_entries: 10000
+  # Decision cache capacity
+  cache_max: 10000
+
+logging:
+  level: "info"
+  format: "json"

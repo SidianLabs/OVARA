@@ -1,0 +1,59 @@
+{
+  "version": "v1",
+  "rules": [
+    {
+      "action_type": "ci.build_trigger",
+      "environment": "*",
+      "allow": true,
+      "description": "CI build triggers are allowed in any environment"
+    },
+    {
+      "action_type": "git.pull",
+      "environment": "*",
+      "allow": true,
+      "description": "Read-only git pull is always safe"
+    },
+    {
+      "action_type": "shell",
+      "environment": "production",
+      "escalate": true,
+      "description": "Shell in production requires approval"
+    },
+    {
+      "action_type": "shell",
+      "environment": "dev",
+      "escalate": true,
+      "conditions": {
+        "patterns": ["curl |sh", "rm -rf /", "mkfs", ":(){:|:&};"]
+      }
+    },
+    {
+      "action_type": "git.force_push",
+      "environment": "*",
+      "escalate": true
+    },
+    {
+      "action_type": "git.branch_delete",
+      "environment": "*",
+      "escalate": true
+    },
+    {
+      "action_type": "github.merge",
+      "environment": "*",
+      "escalate": true
+    },
+    {
+      "action_type": "ci.deploy",
+      "environment": "*",
+      "escalate": true
+    },
+    {
+      "action_type": "*",
+      "environment": "production",
+      "escalate": true,
+      "conditions": {
+        "require_explicit_approval": true
+      }
+    }
+  ]
+}

@@ -2,18 +2,19 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 
+	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/receipts"
 )
 
 type ReceiptHandler struct {
-	store *receipts.InMemoryStore
+	store receipts.Store
 }
 
-func NewReceiptHandler(store *receipts.InMemoryStore) *ReceiptHandler {
+func NewReceiptHandler(store receipts.Store) *ReceiptHandler {
 	return &ReceiptHandler{store: store}
 }
 
@@ -25,18 +26,18 @@ func (h *ReceiptHandler) RegisterRoutes(mux *http.ServeMux) {
 
 func (h *ReceiptHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	id := r.PathValue("id")
 	if id == "" {
-		http.Error(w, "receipt id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "receipt id is required")
 		return
 	}
 
 	receipt, err := h.store.Get(id)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("receipt not found: %v", err), http.StatusNotFound)
+		api.JSONNotFound(w, err.Error())
 		return
 	}
 
@@ -46,7 +47,7 @@ func (h *ReceiptHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 
 func (h *ReceiptHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 
@@ -61,16 +62,19 @@ func (h *ReceiptHandler) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (h *ReceiptHandler) handleListByDecision(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	decisionID := r.PathValue("decision_id")
 	if decisionID == "" {
-		http.Error(w, "decision_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "decision_id is required")
 		return
 	}
 
 	receipts := h.store.ListByDecision(decisionID)
+	if receipts == nil {
+		receipts = []*models.Receipt{}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -82,19 +86,19 @@ func (h *ReceiptHandler) handleListByDecision(w http.ResponseWriter, r *http.Req
 
 func (h *ReceiptHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		api.JSONBadRequest(w, "failed to read body")
 		return
 	}
 	defer r.Body.Close()
 
 	var receipt map[string]any
 	if err := json.Unmarshal(body, &receipt); err != nil {
-		http.Error(w, fmt.Sprintf("invalid receipt: %v", err), http.StatusBadRequest)
+		api.JSONBadRequest(w, "invalid receipt: "+err.Error())
 		return
 	}
 

@@ -10,6 +10,7 @@ type Store interface {
 	Get(id string) (*ApprovalRequest, error)
 	Update(req *ApprovalRequest) error
 	ListByStatus(status Status) []*ApprovalRequest
+	ListByDecision(decisionID string) []*ApprovalRequest
 }
 
 type InMemoryStore struct {
@@ -62,6 +63,18 @@ func (s *InMemoryStore) ListByStatus(status Status) []*ApprovalRequest {
 	var result []*ApprovalRequest
 	for _, req := range s.items {
 		if req.Status == status {
+			result = append(result, req)
+		}
+	}
+	return result
+}
+
+func (s *InMemoryStore) ListByDecision(decisionID string) []*ApprovalRequest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*ApprovalRequest
+	for _, req := range s.items {
+		if req.DecisionID == decisionID {
 			result = append(result, req)
 		}
 	}

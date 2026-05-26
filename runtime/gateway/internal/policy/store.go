@@ -25,6 +25,12 @@ func NewStore(version string) *Store {
 	return &Store{version: version, rules: defaultRules()}
 }
 
+func (s *Store) ClearRules() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rules = nil
+}
+
 func (s *Store) Version() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -82,6 +88,42 @@ func (s *Store) AddRule(r Rule) {
 	s.rules = append(s.rules, r)
 }
 
+func (s *Store) ListRules() []Rule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]Rule, len(s.rules))
+	copy(result, s.rules)
+	return result
+}
+
+func (s *Store) GetRule(actionType, environment string) (Rule, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.rules {
+		if r.ActionType == actionType && r.Environment == environment {
+			return r, true
+		}
+	}
+	return Rule{}, false
+}
+
+func (s *Store) ReloadFromStore(other *Store) error {
+	if other == nil {
+		return errors.New("cannot reload from nil store")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rules = other.ListRules()
+	s.version = other.Version()
+	return nil
+}
+
+func (s *Store) SetVersion(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.version = v
+}
+
 func defaultRules() []Rule {
 	return []Rule{
 		{ActionType: "*", Environment: "production", Deny: false, Escalate: true},
@@ -111,6 +153,9 @@ func LoadStoreFromConfig(cfg map[string]any) (*Store, error) {
 			}
 			if env, ok := ruleMap["environment"].(string); ok {
 				rule.Environment = env
+			}
+			if allow, ok := ruleMap["allow"].(bool); ok {
+				rule.Allow = allow
 			}
 			if deny, ok := ruleMap["deny"].(bool); ok {
 				rule.Deny = deny

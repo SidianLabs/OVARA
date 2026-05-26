@@ -8,16 +8,28 @@ import (
 
 	"github.com/google/uuid"
 
+	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/models"
 )
 
 type Handler struct {
 	shieldStore *ShieldStore
 	trustEval  *Evaluator
+	eventStore events.Store
+	gatewayID  string
 }
 
 func NewHandler(shieldStore *ShieldStore, trustEval *Evaluator) *Handler {
 	return &Handler{shieldStore: shieldStore, trustEval: trustEval}
+}
+
+func (h *Handler) SetEventStore(store events.Store) {
+	h.eventStore = store
+}
+
+func (h *Handler) SetGatewayID(id string) {
+	h.gatewayID = id
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -30,13 +42,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 func (h *Handler) handleGetTrustContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 
 	agentID := r.URL.Query().Get("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 
@@ -44,17 +56,17 @@ func (h *Handler) handleGetTrustContext(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"agent_id":       agentID,
-		"restricted":     stats.Restricted,
-		"risk_count":     stats.RiskCount,
-		"last_decision":  stats.LastDecision,
+		"agent_id":        agentID,
+		"restricted":      stats.Restricted,
+		"risk_count":      stats.RiskCount,
+		"last_decision":   stats.LastDecision,
 		"last_decision_at": stats.LastDecisionAt,
 	})
 }
 
 func (h *Handler) handleShieldStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 
@@ -63,18 +75,18 @@ func (h *Handler) handleShieldStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"restricted_agents": restricted,
-		"count":           len(restricted),
+		"count":             len(restricted),
 	})
 }
 
 func (h *Handler) handleAgentShieldStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 
@@ -82,9 +94,9 @@ func (h *Handler) handleAgentShieldStatus(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"agent_id":       agentID,
-		"restricted":    stats.Restricted,
-		"risk_count":    stats.RiskCount,
+		"agent_id":        agentID,
+		"restricted":     stats.Restricted,
+		"risk_count":     stats.RiskCount,
 		"last_decision":  stats.LastDecision,
 		"last_decision_at": stats.LastDecisionAt,
 	})
@@ -92,12 +104,12 @@ func (h *Handler) handleAgentShieldStatus(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) handleRestrict(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 
@@ -110,6 +122,17 @@ func (h *Handler) handleRestrict(w http.ResponseWriter, r *http.Request) {
 
 	h.shieldStore.Restrict(agentID, body.Reason)
 
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeShieldRestrictionChanged).
+			WithGatewayID(h.gatewayID).
+			WithAgentID(agentID).
+			WithPayload(map[string]any{
+				"action": "restricted",
+				"reason": body.Reason,
+			})
+		h.eventStore.Append(evt)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"agent_id":  agentID,
@@ -120,16 +143,26 @@ func (h *Handler) handleRestrict(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleUnrestrict(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		api.JSONMethodNotAllowed(w)
 		return
 	}
 	agentID := r.PathValue("agent_id")
 	if agentID == "" {
-		http.Error(w, "agent_id is required", http.StatusBadRequest)
+		api.JSONBadRequest(w, "agent_id is required")
 		return
 	}
 
 	h.shieldStore.Unrestrict(agentID)
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeShieldRestrictionChanged).
+			WithGatewayID(h.gatewayID).
+			WithAgentID(agentID).
+			WithPayload(map[string]any{
+				"action": "unrestricted",
+			})
+		h.eventStore.Append(evt)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{

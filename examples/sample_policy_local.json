@@ -1,0 +1,53 @@
+{
+  "version": "v1-demo",
+  "rules": [
+    {
+      "action_type": "shell",
+      "environment": "local",
+      "allow": true,
+      "description": "Local shell commands are allowed — safe for testing"
+    },
+    {
+      "action_type": "shell",
+      "environment": "dev",
+      "escalate": true,
+      "description": "Dev shell commands require approval — risky but recoverable"
+    },
+    {
+      "action_type": "shell",
+      "environment": "production",
+      "deny": true,
+      "description": "Production shell is blocked — too risky to auto-approve"
+    },
+    {
+      "action_type": "git.pull",
+      "environment": "*",
+      "allow": true,
+      "description": "Read-only git pull is safe across all environments"
+    },
+    {
+      "action_type": "git.force_push",
+      "environment": "*",
+      "deny": true,
+      "description": "Force push is always denied — destroys history"
+    },
+    {
+      "action_type": "github.merge",
+      "environment": "production",
+      "escalate": true,
+      "description": "Production merges require manual approval"
+    },
+    {
+      "action_type": "ci.deploy",
+      "environment": "production",
+      "escalate": true,
+      "description": "Production deployments require manual approval"
+    },
+    {
+      "action_type": "*",
+      "environment": "production",
+      "escalate": true,
+      "description": "Catch-all: anything production requires approval"
+    }
+  ]
+}
