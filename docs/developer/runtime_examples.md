@@ -1420,11 +1420,47 @@ curl "http://localhost:8080/v1/capabilities/?id=cap_abc123"
 Response:
 ```json
 {
-  "Lease": {...},
-  "CreatedAt": "2026-05-26T12:00:00Z",
-  "RevokedAt": null,
-  "RevocationReason": "",
-  "GatewayID": "gw_12345"
+  "lease": {
+    "Lease": {...},
+    "CreatedAt": "2026-05-26T12:00:00Z",
+    "RevokedAt": null,
+    "RevocationReason": "",
+    "GatewayID": "gw_12345",
+    "LastSeenAt": "2026-05-26T12:03:00Z"
+  },
+  "history": [
+    {"lease_id": "cap_abc123", "event": "tracked", "timestamp": "2026-05-26T12:00:00Z", "gateway_id": "gw_12345", "subject": "agent-001", "issuer": "admin"},
+    {"lease_id": "cap_abc123", "event": "used", "timestamp": "2026-05-26T12:03:00Z", "gateway_id": "gw_12345"}
+  ]
+}
+```
+
+### Listing with Filtering
+
+```bash
+# Filter by subject
+curl "http://localhost:8080/v1/capabilities?subject=agent-001"
+
+# Filter by issuer
+curl "http://localhost:8080/v1/capabilities?issuer=admin"
+```
+
+### Lease History
+
+```bash
+# Get recent lease lifecycle events
+curl http://localhost:8080/v1/capabilities/history
+```
+
+Response:
+```json
+{
+  "entries": [
+    {"lease_id": "cap_abc123", "event": "tracked", "timestamp": "2026-05-26T12:00:00Z", "gateway_id": "gw_12345", "subject": "agent-001", "issuer": "admin"},
+    {"lease_id": "cap_abc123", "event": "used", "timestamp": "2026-05-26T12:03:00Z", "gateway_id": "gw_12345"},
+    {"lease_id": "cap_abc123", "event": "revoked", "timestamp": "2026-05-26T12:10:00Z", "gateway_id": "gw_12345", "reason": "security incident", "subject": "agent-001", "issuer": "admin"}
+  ],
+  "count": 3
 }
 ```
 
@@ -1459,9 +1495,34 @@ When a request includes a capability lease:
 3. **Scope validation**: If the action or resource doesn't match the lease scope, the request is denied
 4. **Policy evaluation**: If the lease passes validation, normal policy evaluation proceeds
 
+### Capability Lease Persistence
+
+Configure a file path for durable lease storage via `OVARA_CONFIG`:
+
+```json
+{
+  "capabilities_file": "var/data/capabilities.json",
+  "capabilities_max_size": 10000
+}
+```
+
+With persistence configured:
+- Tracked and revoked leases survive gateway restart
+- Lease history (tracked/used/revoked events) is maintained in-memory (resets on restart)
+- LastSeenAt is updated each time a lease is used at runtime
+
+### Runtime Behavior
+
+When a request includes a capability lease:
+
+1. **Revocation check**: If the lease is in the revocation store, the request is denied immediately
+2. **LastSeenAt update**: The lease's LastSeenAt timestamp is updated on each use
+3. **Expiry check**: If the lease has expired, the request is denied
+4. **Scope validation**: If the action or resource doesn't match the lease scope, the request is denied
+5. **Policy evaluation**: If the lease passes validation, normal policy evaluation proceeds
+
 ### Capability Lease Limitations
 
-- **In-memory only**: Tracked leases are local to this gateway and lost on restart
-- **Per-gateway**: Each gateway maintains its own lease state
-- **No automatic cleanup**: Revoked leases remain in the store until restart
-- **No persistent lease state**: Leases must be re-tracked after gateway restart
+- **Per-gateway**: Each gateway maintains its own lease state (no distributed synchronization)
+- **No automatic cleanup**: Expired leases remain in the store until explicit revocation or max size eviction
+- **No cross-gateway revocation**: Revoking on one gateway does not affect another gateway's copy

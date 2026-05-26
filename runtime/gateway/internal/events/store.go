@@ -41,6 +41,7 @@ const (
 	EventTypePolicyHistoryCreated      = "policy.history_created"
 	EventTypeCapabilityTracked        = "capability.tracked"
 	EventTypeCapabilityRevoked        = "capability.revoked"
+	EventTypeCapabilityUsed           = "capability.used"
 )
 
 type Event struct {

@@ -8,11 +8,22 @@ import (
 )
 
 type TrackedLease struct {
-	Lease           *models.CapabilityLease
-	CreatedAt       time.Time
-	RevokedAt       *time.Time
+	Lease            *models.CapabilityLease
+	CreatedAt        time.Time
+	RevokedAt        *time.Time
 	RevocationReason string
-	GatewayID       string
+	GatewayID        string
+	LastSeenAt       *time.Time
+}
+
+type LeaseHistoryEntry struct {
+	LeaseID    string    `json:"lease_id"`
+	Event      string    `json:"event"`
+	Timestamp  time.Time `json:"timestamp"`
+	GatewayID  string    `json:"gateway_id,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	Subject    string    `json:"subject,omitempty"`
+	Issuer     string    `json:"issuer,omitempty"`
 }
 
 type Store interface {
@@ -23,6 +34,7 @@ type Store interface {
 	ListRevoked() []*TrackedLease
 	Revoke(leaseID, reason string) (*TrackedLease, bool)
 	IsRevoked(leaseID string) bool
+	Touch(leaseID string)
 }
 
 type InMemoryStore struct {
@@ -120,6 +132,17 @@ func (s *InMemoryStore) IsRevoked(leaseID string) bool {
 		return false
 	}
 	return tracked.RevokedAt != nil
+}
+
+func (s *InMemoryStore) Touch(leaseID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tracked, ok := s.leases[leaseID]
+	if !ok {
+		return
+	}
+	now := time.Now().UTC()
+	tracked.LastSeenAt = &now
 }
 
 func (s *InMemoryStore) Clear() {

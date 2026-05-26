@@ -45,6 +45,8 @@ type Config struct {
 	ExecutionStderrLimitBytes   int    `json:"execution_stderr_limit_bytes"`
 	ExecutionWorkingDir         string `json:"execution_working_dir"`
 	ExecutionAllowedEnvVars     []string `json:"execution_allowed_env_vars"`
+	CapabilitiesFile            string   `json:"capabilities_file"`
+	CapabilitiesMaxSize         int      `json:"capabilities_max_size"`
 }
 
 type Enrollment struct {
@@ -108,6 +110,8 @@ func Default() *Config {
 		ExecutionStdoutLimitBytes: 1024 * 1024,  // 1 MB
 		ExecutionStderrLimitBytes: 256 * 1024,   // 256 KB
 		ExecutionAllowedEnvVars:   []string{},
+		CapabilitiesFile:           "var/data/capabilities.json",
+		CapabilitiesMaxSize:        10000,
 	}
 }
 

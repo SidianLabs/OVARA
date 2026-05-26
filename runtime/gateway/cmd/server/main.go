@@ -220,7 +220,20 @@ func main() {
 	policyHandler.SetEventStore(eventStore)
 	policyHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 
-	capabilitiesStore := capabilities.NewInMemoryStore()
+	var capabilitiesStore capabilities.Store
+	if cfg.CapabilitiesFile != "" {
+		store, err := capabilities.NewFileBackedStore(cfg.CapabilitiesFile, cfg.CapabilitiesMaxSize, 0)
+		if err != nil {
+			log.Printf("warning: failed to create file-backed capabilities store: %v, falling back to in-memory", err)
+			capabilitiesStore = capabilities.NewInMemoryStore()
+		} else {
+			capabilitiesStore = store
+			log.Printf("capabilities persisted to %s (max=%d)", cfg.CapabilitiesFile, cfg.CapabilitiesMaxSize)
+		}
+	} else {
+		capabilitiesStore = capabilities.NewInMemoryStore()
+		log.Printf("capabilities in-memory (no persistence configured)")
+	}
 	capabilitiesHandler := handlers.NewCapabilitiesHandler(capabilitiesStore)
 	capabilitiesHandler.SetEventStore(eventStore)
 	capabilitiesHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)

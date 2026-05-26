@@ -17,6 +17,7 @@ import (
 
 type RevocationChecker interface {
 	IsRevoked(leaseID string) bool
+	Touch(leaseID string)
 }
 
 type Evaluator struct {
@@ -139,6 +140,9 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 		}
 
 		if decision == "" {
+			if e.revocationChecker != nil {
+				e.revocationChecker.Touch(req.CapabilityLease.LeaseID)
+			}
 			leaseResult := e.validator.ValidateCapabilityLease(req.CapabilityLease)
 			if !leaseResult.Valid {
 				for _, reason := range leaseResult.Reasons {
