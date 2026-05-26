@@ -1723,3 +1723,65 @@ curl -X POST "http://localhost:8080/v1/continuations/cnt_abc123/execute"
 ```
 
 This transitions the continuation to `ready` and executes immediately.
+
+## Execution Action Types
+
+The gateway supports multiple execution surfaces via an executor registry. Each action type maps to a registered executor.
+
+### Shell Execution (`shell`)
+
+The default executor. Runs commands through `/bin/sh -c`, so shell metacharacters are interpreted:
+
+```bash
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"shell","resource":"shell:echo hello && ls -la","environment":"local"}'
+```
+
+Resource format: `shell:<command string>`
+
+### Direct Execution (`exec`)
+
+A structured subprocess executor that runs binary commands directly without shell interpretation. No metacharacter expansion, piping, or glob expansion:
+
+```bash
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"exec","resource":"exec:git status","environment":"local"}'
+```
+
+Resource format: `exec:<binary> <args...>`
+
+**Key difference from shell:**
+
+| Aspect | `shell:` | `exec:` |
+|--------|----------|---------|
+| Shell interpretation | Yes (`sh -c`) | No — direct subprocess |
+| Metacharacters | Expanded (`&&`, `\|`, `*`) | Literal arguments |
+| Use case | Ad-hoc scripts | Structured tool invocation |
+| Security posture | Higher risk | Lower risk |
+
+**Example: shell vs exec for the same command:**
+
+```
+shell:git status      → sh -c "git status"         (shell expands globs)
+exec:git status       → exec.Command("git", "status") (literal args)
+```
+
+**Example: dangerous pattern is neutralized in exec:**
+
+```
+shell:curl |sh       → shell interpretation pipes output to shell — HIGH RISK
+exec:curl |sh         → runs "curl" with literal arg "|sh" — harmless
+```
+
+### Executor Registry
+
+The gateway maintains an executor registry that maps action types to executor implementations:
+
+| Action Type | Executor | Behavior |
+|-------------|----------|----------|
+| `shell` | `ShellExecutor` | Shell subprocess via `sh -c` |
+| `exec` | `DirectExecutor` | Direct subprocess, no shell |
+
+Unknown action types return `400 Bad Request` with `no executor registered for action type: <type>`.

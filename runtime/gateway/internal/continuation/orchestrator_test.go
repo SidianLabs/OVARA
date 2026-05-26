@@ -72,8 +72,10 @@ func TestOrchestrator_PicksUpQueuedContinuation(t *testing.T) {
 	store := NewInMemoryStore()
 	execStore := &mockExecStore{}
 	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
 
-	orch := NewOrchestrator(store, execStore, exec)
+	orch := NewOrchestrator(store, execStore, reg)
 	orch.pollInterval = 100 * time.Millisecond
 	orch.Start()
 	defer orch.Stop()
@@ -101,8 +103,10 @@ func TestOrchestrator_PausesExecution(t *testing.T) {
 	store := NewInMemoryStore()
 	execStore := &mockExecStore{}
 	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
 
-	orch := NewOrchestrator(store, execStore, exec)
+	orch := NewOrchestrator(store, execStore, reg)
 	orch.pollInterval = 50 * time.Millisecond
 	orch.Start()
 	defer orch.Stop()
@@ -136,8 +140,10 @@ func TestOrchestrator_DoesNotRePickExecuted(t *testing.T) {
 	store := NewInMemoryStore()
 	execStore := &mockExecStore{}
 	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
 
-	orch := NewOrchestrator(store, execStore, exec)
+	orch := NewOrchestrator(store, execStore, reg)
 	orch.pollInterval = 50 * time.Millisecond
 	orch.Start()
 	defer orch.Stop()
@@ -158,8 +164,10 @@ func TestOrchestrator_RespectsExpiryTimeout(t *testing.T) {
 	store := NewInMemoryStore()
 	execStore := &mockExecStore{}
 	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
 
-	orch := NewOrchestrator(store, execStore, exec)
+	orch := NewOrchestrator(store, execStore, reg)
 	orch.pollInterval = 50 * time.Millisecond
 	orch.Start()
 	defer orch.Stop()
@@ -183,8 +191,10 @@ func TestOrchestrator_QueueStats(t *testing.T) {
 	store := NewInMemoryStore()
 	execStore := &mockExecStore{}
 	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
 
-	orch := NewOrchestrator(store, execStore, exec)
+	orch := NewOrchestrator(store, execStore, reg)
 	orch.pollInterval = 100 * time.Millisecond
 	orch.Start()
 	defer orch.Stop()
@@ -211,8 +221,10 @@ func TestOrchestrator_CancelBeforeExecution(t *testing.T) {
 	store := NewInMemoryStore()
 	execStore := &mockExecStore{}
 	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
 
-	orch := NewOrchestrator(store, execStore, exec)
+	orch := NewOrchestrator(store, execStore, reg)
 	orch.pollInterval = 500 * time.Millisecond
 	orch.Start()
 	defer orch.Stop()

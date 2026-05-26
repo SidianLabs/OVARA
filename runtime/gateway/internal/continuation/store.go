@@ -239,9 +239,6 @@ func (c *Continuation) CanExecute() bool {
 	if c.State != StateQueued && c.State != StateReady && c.State != StateResumed {
 		return false
 	}
-	if c.ActionType != "shell" {
-		return false
-	}
 	return true
 }
 

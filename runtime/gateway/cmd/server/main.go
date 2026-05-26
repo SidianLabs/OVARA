@@ -333,21 +333,30 @@ func main() {
 	}
 	log.Printf("shell executor configured (stdout_limit=%d, stderr_limit=%d, workdir=%q, allowed_env=%v)",
 		cfg.ExecutionStdoutLimitBytes, cfg.ExecutionStderrLimitBytes, cfg.ExecutionWorkingDir, cfg.ExecutionAllowedEnvVars)
+
 	execHandler := handlers.NewExecutionHandler(execStore)
 	execHandler.SetExecutor(shellExec)
 	execHandler.RegisterRoutes(mux)
 
+	execRegistry := execution.NewExecutorRegistry()
+	execRegistry.Register("shell", shellExec)
+
+	directExec := execution.NewDirectExecutor(60)
+	execRegistry.Register("exec", directExec)
+	log.Printf("direct executor configured (exec: action type)")
+
 	continuationHandler.SetExecutionStore(execStore)
+	continuationHandler.SetExecutorRegistry(execRegistry)
 	continuationHandler.SetExecutor(shellExec)
 	continuationHandler.SetEventStore(eventStore)
 	continuationHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 
-	orchestrator := continuation.NewOrchestrator(continuationStore, execStore, shellExec)
+	orchestrator := continuation.NewOrchestrator(continuationStore, execStore, execRegistry)
 	orchestrator.SetEventStore(eventStore)
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	orchestrator.Start()
 	continuationHandler.SetOrchestrator(orchestrator)
-	log.Printf("execution orchestrator started (poll_interval=2s)")
+	log.Printf("execution orchestrator started (poll_interval=2s, registered_types=[shell, exec])")
 
 	execSweeper := execution.NewSweeper(execStore)
 	execSweeper.Start(cfg.ExecutionSweepIntervalSec)
