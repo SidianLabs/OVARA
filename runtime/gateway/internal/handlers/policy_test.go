@@ -133,3 +133,71 @@ func TestPolicyValidator_ValidateRules(t *testing.T) {
 		t.Errorf("expected at least 1 error")
 	}
 }
+
+func TestPolicyHandler_ListHistory(t *testing.T) {
+	store := policy.NewStore("v1-test")
+	e := evaluator.New(store)
+	h := NewPolicyHandler(e, store)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/policy/history", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPolicyHandler_GetHistoryEntry_NotFound(t *testing.T) {
+	store := policy.NewStore("v1-test")
+	e := evaluator.New(store)
+	h := NewPolicyHandler(e, store)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/policy/history/entry?id=nonexistent", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", w.Code)
+	}
+}
+
+func TestPolicyHandler_Rollback_NoHistory(t *testing.T) {
+	store := policy.NewStore("v1-test")
+	e := evaluator.New(store)
+	h := NewPolicyHandler(e, store)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/policy/rollback", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for empty history, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPolicyHandler_Restore_MissingId(t *testing.T) {
+	store := policy.NewStore("v1-test")
+	e := evaluator.New(store)
+	h := NewPolicyHandler(e, store)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/policy/restore", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for missing id, got %d: %s", w.Code, w.Body.String())
+	}
+}

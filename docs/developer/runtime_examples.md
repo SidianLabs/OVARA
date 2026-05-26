@@ -1194,6 +1194,78 @@ The candidate policy store is **local and in-memory only**:
 
 If durability of staged policies is required, load the candidate file from disk and promote — the file is durable; the in-memory candidate store is not.
 
+### Policy History and Rollback
+
+Every promotion creates a history entry, recording the previous policy state. This enables safe rollback if a promotion causes issues.
+
+#### Viewing Policy History
+
+```bash
+curl http://localhost:8080/v1/policy/history
+```
+
+Response:
+```json
+{
+  "history": [
+    {
+      "id": "hist_abc123...",
+      "version": "v1-before",
+      "rule_count": 6,
+      "source": "promote",
+      "previous_version": "v1-before",
+      "timestamp": "2026-05-26T12:00:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+#### Getting a Specific History Entry
+
+```bash
+curl "http://localhost:8080/v1/policy/history/entry?id=hist_abc123..."
+```
+
+Response includes the full policy rules at that point in time.
+
+#### Rolling Back to the Previous Version
+
+If a promotion causes issues, rollback to the previously active policy:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/rollback
+```
+
+Response:
+```json
+{
+  "status": "rolled_back",
+  "restored_version": "v1-before",
+  "previous_version": "v1-after"
+}
+```
+
+Rollback saves the current (problematic) policy to history before restoring, so you can roll forward again if needed.
+
+#### Restoring a Specific History Version
+
+To restore a specific historical version (not just the most recent):
+
+```bash
+curl -X POST "http://localhost:8080/v1/policy/restore?id=hist_abc123..."
+```
+
+Response:
+```json
+{
+  "status": "restored",
+  "restored_version": "v1-old",
+  "restored_from_id": "hist_abc123...",
+  "previous_version": "v1-current"
+}
+```
+
 ### Policy Audit Events
 
 Each policy operation emits an audit event:
@@ -1205,6 +1277,8 @@ Each policy operation emits an audit event:
 | Generate diff | `policy.diff_generated` |
 | Load candidate | `policy.candidate_loaded` |
 | Promote candidate | `policy.promoted` |
+| Rollback | `policy.rollback` |
+| Restore from history | `policy.restored` |
 
 View events:
 ```bash
@@ -1222,6 +1296,10 @@ curl http://localhost:8080/v1/audit/export | jq '.events[] | select(.event_type 
 | GET/POST | `/v1/policy/diff` | Structural diff between current and candidate |
 | POST | `/v1/policy/candidate/load` | Stage a policy as candidate (validates first) |
 | POST | `/v1/policy/candidate/promote` | Promote candidate to live, replacing current policy |
+| GET | `/v1/policy/history` | List policy history entries |
+| GET | `/v1/policy/history/entry` | Get a specific history entry (requires `?id=`) |
+| POST | `/v1/policy/rollback` | Rollback to the previous policy version |
+| POST | `/v1/policy/restore` | Restore a specific history entry (requires `?id=`) |
 
 ### End-to-End Policy Change Workflow
 
@@ -1234,6 +1312,24 @@ curl http://localhost:8080/v1/audit/export | jq '.events[] | select(.event_type 
 7. **Simulate again** with the staged candidate (now uses candidate by default)
 8. **Promote**: `POST /v1/policy/candidate/promote`
 9. **Verify** live policy version: `GET /v1/policy/rules` or `GET /v1/runtime/metrics`
+10. **Check history**: `GET /v1/policy/history` — confirms previous version was saved
+
+### Safe Rollback Workflow
+
+If a promotion causes issues:
+
+1. **Check history**: `GET /v1/policy/history` — see all policy versions
+2. **Get specific entry**: `GET /v1/policy/history/entry?id=hist_xxx` — inspect rules at that point
+3. **Rollback**: `POST /v1/policy/rollback` — restores previous version
+4. **Verify**: `GET /v1/policy/rules` — confirms version was restored
+5. **If needed, restore further**: `POST /v1/policy/restore?id=hist_yyy` — restore any historical version
+
+### Policy History Limitations
+
+- **In-memory only**: Policy history is stored in gateway memory and is lost on restart.
+- **Per-gateway**: Each gateway maintains its own history. In multi-gateway deployments, history is not synchronized.
+- **No automatic cleanup**: History grows indefinitely. For long-running gateways, consider periodic restart to reset history.
+- **No content guarantee**: History entries store the rules at promotion time. If you need durable policy version history, maintain policy files in version control.
 
 ### Policy Design Notes
 

@@ -17,12 +17,14 @@ type PolicyHandler struct {
 	store     *policy.Store
 	eventStore events.Store
 	gatewayID  string
+	history    *policy.PolicyHistorySnapshotter
 }
 
 func NewPolicyHandler(e *evaluator.Evaluator, s *policy.Store) *PolicyHandler {
 	return &PolicyHandler{
 		evaluator: e,
 		store:     s,
+		history:   policy.NewPolicyHistorySnapshotter(),
 	}
 }
 
@@ -43,6 +45,10 @@ func (h *PolicyHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/policy/candidate/load", h.handleCandidateLoad)
 	mux.HandleFunc("POST /v1/policy/candidate/promote", h.handleCandidatePromote)
 	mux.HandleFunc("GET /v1/policy/rules", h.handleListRules)
+	mux.HandleFunc("GET /v1/policy/history", h.handleListHistory)
+	mux.HandleFunc("GET /v1/policy/history/entry", h.handleGetHistoryEntry)
+	mux.HandleFunc("POST /v1/policy/rollback", h.handleRollback)
+	mux.HandleFunc("POST /v1/policy/restore", h.handleRestore)
 }
 
 type ValidateRequest struct {
@@ -382,6 +388,9 @@ func (h *PolicyHandler) handleCandidatePromote(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	previousVersion := h.store.Version()
+	h.history.SnapshotFromStore(h.store, policy.PolicySourcePromote, previousVersion, h.gatewayID)
+
 	if err := h.store.ReloadFromStore(candidatePolicyStore); err != nil {
 		api.JSONBadRequest(w, "failed to promote candidate: "+err.Error())
 		return
@@ -393,8 +402,9 @@ func (h *PolicyHandler) handleCandidatePromote(w http.ResponseWriter, r *http.Re
 			evt.WithGatewayID(h.gatewayID)
 		}
 		evt.Payload = map[string]any{
-			"version": candidatePolicyStore.Version(),
-			"rules":   len(candidatePolicyStore.ListRules()),
+			"version":          candidatePolicyStore.Version(),
+			"rules":            len(candidatePolicyStore.ListRules()),
+			"previous_version": previousVersion,
 		}
 		h.eventStore.Append(evt)
 	}
@@ -430,6 +440,144 @@ func (h *PolicyHandler) handleListRules(w http.ResponseWriter, r *http.Request) 
 		"rules":            rules,
 		"candidate_loaded": candidateLoaded,
 		"candidate_version": candidateVersion,
+	})
+}
+
+func (h *PolicyHandler) handleListHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	entries := h.history.List()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"history": entries,
+		"count":   len(entries),
+	})
+}
+
+func (h *PolicyHandler) handleGetHistoryEntry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		api.JSONBadRequest(w, "id is required")
+		return
+	}
+
+	entry, ok := h.history.Get(id)
+	if !ok {
+		api.JSONBadRequest(w, "history entry not found: "+id)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(entry)
+}
+
+func (h *PolicyHandler) handleRollback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	latest, ok := h.history.Latest()
+	if !ok {
+		api.JSONBadRequest(w, "no history available for rollback")
+		return
+	}
+
+	previousVersion := h.store.Version()
+	h.history.SnapshotFromStore(h.store, policy.PolicySourceRollback, previousVersion, h.gatewayID)
+
+	restoredStore := policy.NewStore(latest.Version)
+	restoredStore.ClearRules()
+	for _, rule := range latest.Rules {
+		restoredStore.AddRule(rule)
+	}
+
+	if err := h.store.ReloadFromStore(restoredStore); err != nil {
+		api.JSONBadRequest(w, "failed to rollback: "+err.Error())
+		return
+	}
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypePolicyRolledBack)
+		if h.gatewayID != "" {
+			evt.WithGatewayID(h.gatewayID)
+		}
+		evt.Payload = map[string]any{
+			"restored_version": latest.Version,
+			"previous_version": previousVersion,
+			"history_id":       latest.ID,
+		}
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":           "rolled_back",
+		"restored_version": latest.Version,
+		"previous_version": previousVersion,
+	})
+}
+
+func (h *PolicyHandler) handleRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		api.JSONBadRequest(w, "id query parameter is required")
+		return
+	}
+
+	entry, ok := h.history.Get(id)
+	if !ok {
+		api.JSONBadRequest(w, "history entry not found: "+id)
+		return
+	}
+
+	previousVersion := h.store.Version()
+	h.history.SnapshotFromStore(h.store, policy.PolicySourceRestore, previousVersion, h.gatewayID)
+
+	restoredStore := policy.NewStore(entry.Version)
+	restoredStore.ClearRules()
+	for _, rule := range entry.Rules {
+		restoredStore.AddRule(rule)
+	}
+
+	if err := h.store.ReloadFromStore(restoredStore); err != nil {
+		api.JSONBadRequest(w, "failed to restore: "+err.Error())
+		return
+	}
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypePolicyRestored)
+		if h.gatewayID != "" {
+			evt.WithGatewayID(h.gatewayID)
+		}
+		evt.Payload = map[string]any{
+			"restored_version": entry.Version,
+			"restored_from_id": entry.ID,
+			"previous_version": previousVersion,
+		}
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":           "restored",
+		"restored_version": entry.Version,
+		"restored_from_id": entry.ID,
+		"previous_version": previousVersion,
 	})
 }
 

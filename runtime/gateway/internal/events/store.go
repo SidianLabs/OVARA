@@ -36,6 +36,9 @@ const (
 	EventTypePolicyDiffGenerated        = "policy.diff_generated"
 	EventTypePolicyCandidateLoaded     = "policy.candidate_loaded"
 	EventTypePolicyPromoted            = "policy.promoted"
+	EventTypePolicyRolledBack         = "policy.rollback"
+	EventTypePolicyRestored           = "policy.restored"
+	EventTypePolicyHistoryCreated      = "policy.history_created"
 )
 
 type Event struct {
