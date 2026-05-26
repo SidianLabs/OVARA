@@ -442,3 +442,138 @@ if len(receipt.AnomalySignals) != len(decisionResp.TrustContext.AnomalySignals) 
 		}
 	})
 }
+
+func TestSnapshotHandler(t *testing.T) {
+	policyStore := policy.NewStore("test-snapshot")
+	shieldStore := trust.NewShieldStore()
+	eval := evaluator.NewWithShield(policyStore, shieldStore)
+	receiptsStore := receipts.NewInMemoryStore()
+	cfg := config.Default()
+	h := New(eval, nil, cfg, receiptsStore)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	t.Run("snapshot_returns_valid_shape", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/snapshot", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+
+		if _, ok := resp["snapshot_at"]; !ok {
+			t.Errorf("expected snapshot_at field in response")
+		}
+		if _, ok := resp["gateway_id"]; !ok {
+			t.Errorf("expected gateway_id field in response")
+		}
+		if _, ok := resp["policy_version"]; !ok {
+			t.Errorf("expected policy_version field in response")
+		}
+		if _, ok := resp["decision_cache_count"]; !ok {
+			t.Errorf("expected decision_cache_count field in response")
+		}
+		if _, ok := resp["decision_cache_max"]; !ok {
+			t.Errorf("expected decision_cache_max field in response")
+		}
+		if _, ok := resp["total_decisions"]; !ok {
+			t.Errorf("expected total_decisions field in response")
+		}
+		if _, ok := resp["metrics"]; !ok {
+			t.Errorf("expected metrics field in response")
+		}
+		if _, ok := resp["events"]; !ok {
+			t.Errorf("expected events field in response")
+		}
+		if _, ok := resp["continuations"]; !ok {
+			t.Errorf("expected continuations field in response")
+		}
+		if _, ok := resp["executions"]; !ok {
+			t.Errorf("expected executions field in response")
+		}
+	})
+
+	t.Run("snapshot_content_type_json", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/snapshot", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Header().Get("Content-Type") != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %s", w.Header().Get("Content-Type"))
+		}
+	})
+
+	t.Run("snapshot_method_not_allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/snapshot", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected status 405, got %d", w.Code)
+		}
+	})
+
+	t.Run("snapshot_metrics_have_expected_structure", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/snapshot", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		metrics, ok := resp["metrics"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected metrics to be a map")
+		}
+		if _, ok := metrics["decision_counts"]; !ok {
+			t.Errorf("expected decision_counts in metrics")
+		}
+		if _, ok := metrics["action_counts"]; !ok {
+			t.Errorf("expected action_counts in metrics")
+		}
+		if _, ok := metrics["avg_latency_ms"]; !ok {
+			t.Errorf("expected avg_latency_ms in metrics")
+		}
+	})
+}
+
+func TestIntegrityHandler(t *testing.T) {
+	policyStore := policy.NewStore("test-integrity")
+	shieldStore := trust.NewShieldStore()
+	eval := evaluator.NewWithShield(policyStore, shieldStore)
+	receiptsStore := receipts.NewInMemoryStore()
+	cfg := config.Default()
+	h := New(eval, nil, cfg, receiptsStore)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	t.Run("integrity_endpoint_exists", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/integrity", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code == http.StatusNotFound {
+			t.Errorf("integrity endpoint not registered")
+		}
+	})
+
+	t.Run("integrity_method_not_allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/integrity", nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected status 405, got %d", w.Code)
+		}
+	})
+}

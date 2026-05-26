@@ -694,3 +694,122 @@ Trust Evaluation adds:
 | 0.5 - 0.8   | medium      | no            |
 | 0.0 - 0.5   | low         | yes (<0.6)    |
 | 0.0         | none        | yes           |
+
+## Integrity Checking
+
+The gateway includes an integrity checker that validates consistency across all stores.
+
+```bash
+# Run integrity check
+curl -s http://localhost:8080/v1/runtime/integrity | jq .
+```
+
+Response shape:
+```json
+{
+  "timestamp": "2026-05-26T10:00:00Z",
+  "passed": true,
+  "issues": [],
+  "warnings": [
+    {"severity": "low", "category": "event_store", "message": "event store is empty"}
+  ],
+  "summary": {
+    "total_issues": 0,
+    "total_warnings": 1,
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "store_stats": {
+    "events": 0,
+    "continuations": 0,
+    "executions_total": 0,
+    "receipts": 0,
+    "approvals_pending": 0
+  },
+  "version_info": {
+    "gateway_id": "gw_123456"
+  }
+}
+```
+
+**Passed field**: `passed: true` means no critical or high severity issues were found. Medium and low severity issues do NOT cause `passed: false`.
+
+**Issue severities**:
+- `critical` — data corruption, must fix immediately
+- `high` — duplicate IDs, orphaned references, data loss risk
+- `medium` — zero timestamps, expired-but-not-marked records
+- `low` — empty stores, stuck in escalated state
+
+**What the checker validates**:
+- Duplicate event/execution/receipt IDs
+- Zero timestamps on records
+- Orphaned execution→continuation references
+- Orphaned approval IDs on non-approved continuations
+- Expired continuations not marked as expired
+- Continuation created timestamps
+
+## Admin Repair Operations
+
+The gateway provides admin endpoints for repair and maintenance. These are local-only and unauthenticated — they should only be accessible to operators on the same machine.
+
+```bash
+# Reconcile continuations — marks expired records and returns count
+curl -X POST http://localhost:8080/v1/admin/reconcile/continuations
+# Response: {"action": "reconcile_continuations", "expired": 0, "status": "ok"}
+
+# Reconcile executions — returns execution stats
+curl -X POST http://localhost:8080/v1/admin/reconcile/executions
+# Response: {"action": "reconcile_executions", "stats": {"total": 0, "succeeded": 0, ...}, "status": "ok"}
+
+# Compact all file-backed stores — rewrites files without stale/tombstoned records
+curl -X POST http://localhost:8080/v1/admin/compact
+# Response: {"action": "compact", "results": {"continuations": {"status": "compacted"}, ...}, "status": "ok"}
+
+# Sweep continuations — removes expired records (file-backed stores only)
+curl -X POST http://localhost:8080/v1/admin/sweep/continuations
+# Response: {"action": "sweep_continuations", "removed": 0, "status": "ok"}
+
+# Sweep events — removes tombstoned records (file-backed stores only)
+curl -X POST http://localhost:8080/v1/admin/sweep/events
+# Response: {"action": "sweep_events", "removed": 0, "status": "ok"}
+```
+
+**Important notes**:
+- Sweep endpoints only work on file-backed stores; in-memory stores return `{"error": "store does not support sweep"}`
+- Compact endpoints return `{"status": "not_file_backed"}` for in-memory stores
+- No background sweeper runs automatically — operators must call sweep/compact endpoints manually
+- These are local-only endpoints with no authentication
+
+## Snapshot Endpoint
+
+The snapshot endpoint provides a combined view of all stores and metrics:
+
+```bash
+curl -s http://localhost:8080/v1/runtime/snapshot | jq .
+```
+
+Response shape:
+```json
+{
+  "snapshot_at": "2026-05-26T10:00:00Z",
+  "gateway_id": "gw_123456",
+  "gateway_name": "local-gateway",
+  "enrollment_state": "local",
+  "policy_version": "v1-local",
+  "decision_cache_count": 0,
+  "decision_cache_max": 10000,
+  "total_decisions": 42,
+  "events": {"count": 0, "storage_mode": "in_memory"},
+  "continuations": {"count": 0, "storage_mode": "in_memory", "by_state": {}},
+  "executions": {"total": 0, "succeeded": 0, "failed": 0, "running": 0, "storage_mode": "in_memory"},
+  "metrics": {
+    "decision_counts": {"allow": 30, "deny": 10, "escalate": 2},
+    "action_counts": {"shell": 25, "git.push": 5},
+    "avg_latency_ms": 1.2
+  }
+}
+```
+
+For file-backed stores, additional fields are included: `retention_days`, `max_records`, `file_path`, `file_size_bytes`.

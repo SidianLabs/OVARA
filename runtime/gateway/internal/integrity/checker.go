@@ -116,6 +116,8 @@ func (c *Checker) Check() Result {
 		}
 	}
 
+	c.summarize(&result)
+
 	return result
 }
 
