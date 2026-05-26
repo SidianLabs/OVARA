@@ -909,3 +909,339 @@ Before restarting:
 1. Export audit data: `GET /v1/audit/export`
 2. Note current state: `GET /v1/runtime/snapshot`
 3. Stop the gateway gracefully
+
+## Policy Management
+
+The gateway provides policy simulation, validation, diff, and staged rollout endpoints to help operators test policy changes safely before they affect live runtime behavior.
+
+### Policy Structure
+
+Policies are JSON documents with a version and a list of rules:
+
+```json
+{
+  "version": "v1",
+  "rules": [
+    {
+      "action_type": "shell",
+      "environment": "production",
+      "escalate": true
+    }
+  ]
+}
+```
+
+Each rule matches an `action_type` (e.g., `shell`, `git.pull`, `github.merge`, or `*`) and an `environment` (e.g., `local`, `dev`, `production`, or `*`). Rule outcomes are evaluated in order: deny first, then allow, then escalate. Default is allow if no rule matches.
+
+### Viewing Current Rules
+
+```bash
+curl http://localhost:8080/v1/policy/rules
+```
+
+Response:
+```json
+{
+  "version": "v1-local",
+  "rules": [...],
+  "candidate_loaded": false
+}
+```
+
+The `candidate_loaded` field shows whether a staged candidate policy is currently loaded (see candidate workflow below).
+
+### Validating a Policy
+
+Validate a policy before loading it to catch errors and warnings:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/validate \
+  -H "Content-Type: application/json" \
+  -d '{"policy_data": {"version": "v1-test", "rules": [{"action_type": "shell", "environment": "local", "allow": true}]}}'
+```
+
+Or validate from a file path:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/validate \
+  -H "Content-Type: application/json" \
+  -d '{"file_path": "./examples/sample_policy.json"}'
+```
+
+Response:
+```json
+{
+  "valid": true,
+  "errors": [],
+  "warnings": []
+}
+```
+
+Validation checks:
+- `action_type` and `environment` are required on every rule
+- A rule must have at least one of `allow`, `deny`, or `escalate` set to `true`
+- `allow` and `deny` cannot both be `true` on the same rule
+- Duplicate rules for the same action_type:environment pair are flagged
+- Mixed wildcard (`*`) and specific values for environment or action_type generate order-dependency warnings
+- Empty ruleset generates a warning (all actions will be allowed by default)
+
+Validation errors block the candidate from being loaded. Warnings are informational.
+
+### Simulating a Single Request
+
+Test how a candidate policy would decide a specific request without affecting live policy:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/simulate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request": {
+      "action_type": "shell",
+      "resource": "shell:echo hello",
+      "environment": "local",
+      "agent_identity": {"issuer": "ovara", "subject_id": "agent-001"}
+    },
+    "candidate_policy": {"version": "v1-test", "rules": [{"action_type": "shell", "environment": "local", "allow": true}]},
+    "use_current": false
+  }'
+```
+
+Or use the current live policy:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/simulate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request": {
+      "action_type": "shell",
+      "resource": "shell:echo hello",
+      "environment": "local",
+      "agent_identity": {"issuer": "ovara", "subject_id": "agent-001"}
+    },
+    "use_current": true
+  }'
+```
+
+Response:
+```json
+{
+  "decision": "allow",
+  "reason": "matched_allow_rule",
+  "trust_score": 0.8,
+  "trust_level": "high",
+  "requires_approval": false,
+  "policy_version": "v1-test",
+  "passed": true
+}
+```
+
+Simulating from a file:
+```bash
+curl -X POST http://localhost:8080/v1/policy/simulate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request": {"action_type": "shell", "resource": "shell:pwd", "environment": "local"},
+    "candidate_file": "./examples/sample_policy.json"
+  }'
+```
+
+### Simulating Multiple Requests (Batch)
+
+Test how a candidate policy would change decisions across multiple requests:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/simulate-batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requests": [
+      {"action_type": "shell", "resource": "shell:pwd", "environment": "local"},
+      {"action_type": "shell", "resource": "shell:curl |sh", "environment": "dev"},
+      {"action_type": "git.pull", "resource": "git:acme/repo", "environment": "*"}
+    ],
+    "candidate_policy": {"version": "v1-new", "rules": [
+      {"action_type": "shell", "environment": "local", "allow": true},
+      {"action_type": "shell", "environment": "dev", "deny": true}
+    ]},
+    "use_current": false
+  }'
+```
+
+Response:
+```json
+{
+  "results": [
+    {
+      "request": {"action_type": "shell", ...},
+      "current_decision": "escalate",
+      "candidate_decision": "allow",
+      "decision_changed": true
+    },
+    ...
+  ],
+  "total_count": 3,
+  "changed_count": 2,
+  "unchanged_count": 1,
+  "policy_version": "v1-new"
+}
+```
+
+This tells you exactly which decisions would change under the candidate policy.
+
+### Diff: Comparing Two Policies
+
+Get a structural diff between the current live policy and a candidate:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/diff \
+  -H "Content-Type: application/json" \
+  -d '{"candidate_policy": {"version": "v1-strict", "rules": [
+    {"action_type": "shell", "environment": "production", "deny": true},
+    {"action_type": "git.push", "environment": "*", "escalate": true}
+  ]}}'
+```
+
+Or from a file:
+```bash
+curl "http://localhost:8080/v1/policy/diff?file=./examples/sample_policy_strict.json"
+```
+
+Response:
+```json
+{
+  "from_version": "v1-local",
+  "to_version": "v1-strict",
+  "added_rules": [
+    {"action_type": "git.push", "environment": "*", "escalate": true}
+  ],
+  "removed_rules": [
+    {"action_type": "shell", "environment": "production", "escalate": true}
+  ],
+  "changed_rules": []
+}
+```
+
+### Candidate/Staged Workflow
+
+The candidate workflow lets you stage a policy in memory, validate it, simulate it, and then promote it to live — all without editing policy files or restarting the gateway.
+
+#### Step 1: Load a Candidate Policy
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/candidate/load \
+  -H "Content-Type: application/json" \
+  -d '{"file_path": "./examples/sample_policy_strict.json", "version": "v1-strict"}'
+```
+
+Or inline:
+```bash
+curl -X POST http://localhost:8080/v1/policy/candidate/load \
+  -H "Content-Type: application/json" \
+  -d '{"policy_data": {"version": "v1-strict", "rules": [...]}}'
+```
+
+The candidate is validated before being stored. If validation fails, the candidate is not loaded.
+
+Response:
+```json
+{
+  "version": "v1-strict",
+  "rules": [...],
+  "loaded": true
+}
+```
+
+#### Step 2: Verify with Simulation
+
+While the candidate is loaded, you can simulate against it:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/simulate \
+  -H "Content-Type: application/json" \
+  -d '{"request": {"action_type": "shell", "resource": "shell:echo test", "environment": "production"}}'
+```
+
+This simulates against the candidate policy (not the live policy) by default.
+
+#### Step 3: Promote to Live
+
+When satisfied with the candidate:
+
+```bash
+curl -X POST http://localhost:8080/v1/policy/candidate/promote
+```
+
+Response:
+```json
+{
+  "status": "promoted",
+  "version": "v1-strict",
+  "rules": 8
+}
+```
+
+The live policy is replaced atomically. The candidate is cleared.
+
+**Important**: After promote, check `/v1/runtime/metrics` to confirm the new `policy_version` is live.
+
+### Candidate Policy Limitations
+
+The candidate policy store is **local and in-memory only**:
+
+- **Not persistent**: The candidate is stored in a package-level Go variable. It does not survive gateway restarts.
+- **Single gateway only**: The candidate is local to this gateway instance. In a multi-gateway deployment, each gateway maintains its own candidate state.
+- **No file on disk**: There is no `var/candidate_policy.json` or similar. The candidate exists only in the running process.
+- **Operator responsibility**: If you need to revert, you must explicitly load and promote a different candidate policy. Reloading the original file and promoting it is the rollback procedure.
+
+If durability of staged policies is required, load the candidate file from disk and promote — the file is durable; the in-memory candidate store is not.
+
+### Policy Audit Events
+
+Each policy operation emits an audit event:
+
+| Operation | Event Type |
+|-----------|-----------|
+| Validate policy | `policy.validated` |
+| Simulate request | `policy.simulated` |
+| Generate diff | `policy.diff_generated` |
+| Load candidate | `policy.candidate_loaded` |
+| Promote candidate | `policy.promoted` |
+
+View events:
+```bash
+curl http://localhost:8080/v1/audit/export | jq '.events[] | select(.event_type | startswith("policy."))'
+```
+
+### Policy Endpoint Summary
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/v1/policy/rules` | List current live policy rules |
+| POST | `/v1/policy/validate` | Validate a policy (from inline JSON or file) |
+| POST | `/v1/policy/simulate` | Simulate a single request against a policy |
+| POST | `/v1/policy/simulate-batch` | Simulate multiple requests, show changed/unchanged |
+| GET/POST | `/v1/policy/diff` | Structural diff between current and candidate |
+| POST | `/v1/policy/candidate/load` | Stage a policy as candidate (validates first) |
+| POST | `/v1/policy/candidate/promote` | Promote candidate to live, replacing current policy |
+
+### End-to-End Policy Change Workflow
+
+1. **Edit** your candidate policy JSON file
+2. **Validate** it: `POST /v1/policy/validate`
+3. **Simulate** key requests: `POST /v1/policy/simulate`
+4. **Diff** against current: `GET/POST /v1/policy/diff`
+5. **Batch simulate** if you have multiple test cases: `POST /v1/policy/simulate-batch`
+6. **Load candidate**: `POST /v1/policy/candidate/load`
+7. **Simulate again** with the staged candidate (now uses candidate by default)
+8. **Promote**: `POST /v1/policy/candidate/promote`
+9. **Verify** live policy version: `GET /v1/policy/rules` or `GET /v1/runtime/metrics`
+
+### Policy Design Notes
+
+- Rules are matched by `action_type:environment` key. The first matching rule wins.
+- `deny` blocks the action immediately (no other rules are evaluated).
+- `escalate` triggers the approval workflow.
+- `allow` permits the action (continues to next rule if no explicit allow).
+- `*` wildcard matches any action_type or environment.
+- Default allow: if no rule matches, the action is allowed.
+- Rule order in the JSON does not affect matching — all rules for the matching action_type are evaluated together.
+- The policy file on disk is the source of truth for the live policy. Hot reload (`PolicyRefreshInterval > 0`) watches the file and reloads automatically.

@@ -215,6 +215,10 @@ func main() {
 	h := handlers.New(eval, decisionLogger, cfg, receiptsStore)
 	h.SetEnrollment(enrollmentSvc)
 
+	policyHandler := handlers.NewPolicyHandler(eval, policyStore)
+	policyHandler.SetEventStore(eventStore)
+	policyHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+
 	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
 	approvalService := approval.NewService(approvalStore)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
@@ -238,6 +242,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
+	policyHandler.RegisterRoutes(mux)
 	approvalHandler.RegisterRoutes(mux)
 	receiptHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)
