@@ -13,11 +13,13 @@ type State string
 const (
 	StateEscalated   State = "escalated"
 	StateApproved    State = "approved"
+	StateQueued      State = "queued"
 	StateReady       State = "ready"
 	StateDenied      State = "denied"
 	StateResumed     State = "resumed"
 	StateExpired     State = "expired"
 	StateExecuted    State = "executed"
+	StateCancelled   State = "cancelled"
 )
 
 const DefaultExpirationMinutes = 60
@@ -36,6 +38,7 @@ type Continuation struct {
 	ResumedAt     *time.Time `json:"resumed_at,omitempty"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	ExpiredAt     *time.Time `json:"expired_at,omitempty"`
+	CancelledAt   *time.Time `json:"cancelled_at,omitempty"`
 	ResolvedBy    string    `json:"resolved_by,omitempty"`
 	DenyReason    string    `json:"deny_reason,omitempty"`
 	TrustScore    float64   `json:"trust_score,omitempty"`
@@ -55,7 +58,7 @@ func (c *Continuation) CanResume() bool {
 }
 
 func (c *Continuation) IsTerminal() bool {
-	return c.State == StateDenied || c.State == StateExpired || c.State == StateResumed
+	return c.State == StateDenied || c.State == StateExpired || c.State == StateResumed || c.State == StateCancelled
 }
 
 func NewContinuation(decisionID, actionType, resource string) *Continuation {
@@ -158,6 +161,28 @@ func (c *Continuation) MarkExecuted() {
 	c.State = StateExecuted
 }
 
+func (c *Continuation) MarkQueued() {
+	if c.State == StateApproved {
+		c.State = StateQueued
+	}
+}
+
+func (c *Continuation) MarkCancelled() {
+	if c.State == StateQueued || c.State == StateReady || c.State == StateResumed {
+		c.State = StateCancelled
+		now := time.Now().UTC()
+		c.CancelledAt = &now
+	}
+}
+
+func (c *Continuation) CanEnqueue() bool {
+	return c.State == StateApproved
+}
+
+func (c *Continuation) CanCancel() bool {
+	return c.State == StateQueued || c.State == StateReady || c.State == StateResumed
+}
+
 func (c *Continuation) CanRetry() bool {
 	if c.State != StateExecuted && c.State != StateResumed {
 		return false
@@ -198,10 +223,10 @@ func (c *Continuation) ShouldExpire(now time.Time) bool {
 }
 
 func (c *Continuation) IsExecutable() bool {
-	if c.State != StateApproved && c.State != StateReady {
+	if c.State != StateApproved && c.State != StateReady && c.State != StateQueued {
 		return false
 	}
-	if c.State == StateExecuted {
+	if c.State == StateExecuted || c.State == StateCancelled {
 		return false
 	}
 	if c.ExpiresAt != nil && time.Now().UTC().After(*c.ExpiresAt) {
@@ -211,7 +236,7 @@ func (c *Continuation) IsExecutable() bool {
 }
 
 func (c *Continuation) CanExecute() bool {
-	if c.State != StateReady && c.State != StateResumed {
+	if c.State != StateQueued && c.State != StateReady && c.State != StateResumed {
 		return false
 	}
 	if c.ActionType != "shell" {

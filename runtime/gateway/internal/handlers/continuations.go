@@ -14,11 +14,12 @@ import (
 )
 
 type ContinuationHandler struct {
-	store       continuation.Store
-	execStore   execution.Store
-	executor    execution.Executor
-	eventStore  events.Store
-	gatewayID   string
+	store        continuation.Store
+	execStore    execution.Store
+	executor     execution.Executor
+	eventStore   events.Store
+	gatewayID    string
+	orchestrator *continuation.Orchestrator
 }
 
 func NewContinuationHandler(store continuation.Store) *ContinuationHandler {
@@ -41,11 +42,20 @@ func (h *ContinuationHandler) SetGatewayID(id string) {
 	h.gatewayID = id
 }
 
+func (h *ContinuationHandler) SetOrchestrator(orch *continuation.Orchestrator) {
+	h.orchestrator = orch
+}
+
 func (h *ContinuationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/continuations", h.handleList)
 	mux.HandleFunc("GET /v1/continuations/{id}", h.handleGet)
 	mux.HandleFunc("GET /v1/continuations/stats", h.handleStats)
+	mux.HandleFunc("GET /v1/continuations/queue", h.handleQueue)
 	mux.HandleFunc("POST /v1/continuations/sweep", h.handleSweep)
+	mux.HandleFunc("POST /v1/continuations/queue/pause", h.handleQueuePause)
+	mux.HandleFunc("POST /v1/continuations/queue/resume", h.handleQueueResume)
+	mux.HandleFunc("POST /v1/continuations/{id}/enqueue", h.handleEnqueue)
+	mux.HandleFunc("POST /v1/continuations/{id}/cancel", h.handleCancel)
 	mux.HandleFunc("POST /v1/continuations/{id}/execute", h.handleExecute)
 }
 
@@ -176,12 +186,19 @@ func (h *ContinuationHandler) handleStats(w http.ResponseWriter, r *http.Request
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"total":        total,
 		"by_state":     counts,
 		"executable":   executable,
 		"expired":      expired,
-	})
+		"queued":       counts[string(continuation.StateQueued)],
+	}
+	if h.orchestrator != nil {
+		resp["queue_paused"] = h.orchestrator.IsPaused()
+		_, running := h.orchestrator.QueueStats()
+		resp["running"] = running
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ContinuationHandler) handleSweep(w http.ResponseWriter, r *http.Request) {
@@ -208,6 +225,199 @@ func (h *ContinuationHandler) handleSweep(w http.ResponseWriter, r *http.Request
 	})
 }
 
+func (h *ContinuationHandler) handleEnqueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		api.JSONBadRequest(w, "continuation id is required")
+		return
+	}
+
+	cnt, found := h.store.Get(id)
+	if !found {
+		api.JSONNotFound(w, "continuation not found: "+id)
+		return
+	}
+
+	if !cnt.CanEnqueue() {
+		api.JSONBadRequest(w, "continuation cannot be enqueued: state="+string(cnt.State))
+		return
+	}
+
+	cnt.MarkQueued()
+	h.store.Update(cnt)
+
+	if h.eventStore != nil {
+		evt := events.NewEvent("continuation.enqueued").
+			WithGatewayID(h.gatewayID).
+			WithDecisionID(cnt.DecisionID).
+			WithApprovalID(cnt.ApprovalID).
+			WithAgentID(cnt.AgentID).
+			WithContinuationID(cnt.ContinuationID).
+			WithPayload(map[string]any{
+				"continuation_id": cnt.ContinuationID,
+				"state":          string(cnt.State),
+			})
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]any{
+		"continuation_id": cnt.ContinuationID,
+		"state":          string(cnt.State),
+		"message":        "continuation queued for execution",
+	})
+}
+
+func (h *ContinuationHandler) handleCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		api.JSONBadRequest(w, "continuation id is required")
+		return
+	}
+
+	cnt, found := h.store.Get(id)
+	if !found {
+		api.JSONNotFound(w, "continuation not found: "+id)
+		return
+	}
+
+	if !cnt.CanCancel() {
+		api.JSONBadRequest(w, "continuation cannot be cancelled: state="+string(cnt.State))
+		return
+	}
+
+	cnt.MarkCancelled()
+	h.store.Update(cnt)
+
+	if h.eventStore != nil {
+		evt := events.NewEvent("continuation.cancelled").
+			WithGatewayID(h.gatewayID).
+			WithDecisionID(cnt.DecisionID).
+			WithApprovalID(cnt.ApprovalID).
+			WithAgentID(cnt.AgentID).
+			WithContinuationID(cnt.ContinuationID).
+			WithPayload(map[string]any{
+				"continuation_id": cnt.ContinuationID,
+				"state":          string(cnt.State),
+			})
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"continuation_id": cnt.ContinuationID,
+		"state":          string(cnt.State),
+		"cancelled_at":   cnt.CancelledAt,
+	})
+}
+
+func (h *ContinuationHandler) handleQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+			if limit > 1000 {
+				limit = 1000
+			}
+		}
+	}
+
+	queued := h.store.ListByState(continuation.StateQueued)
+
+	if limit > 0 && len(queued) > limit {
+		queued = queued[len(queued)-limit:]
+	}
+
+	enriched := make([]map[string]any, 0, len(queued))
+	for _, c := range queued {
+		m := map[string]any{
+			"continuation_id": c.ContinuationID,
+			"decision_id":     c.DecisionID,
+			"approval_id":     c.ApprovalID,
+			"agent_id":        c.AgentID,
+			"action_type":     c.ActionType,
+			"resource":        c.Resource,
+			"state":           string(c.State),
+			"created_at":      c.CreatedAt,
+			"approved_at":     c.ApprovedAt,
+			"queued_at":      c.ApprovedAt,
+		}
+		enriched = append(enriched, m)
+	}
+
+	paused := false
+	running := 0
+	if h.orchestrator != nil {
+		paused = h.orchestrator.IsPaused()
+		_, running = h.orchestrator.QueueStats()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"queue":           enriched,
+		"count":           len(enriched),
+		"queue_paused":    paused,
+		"running_count":   running,
+	})
+}
+
+func (h *ContinuationHandler) handleQueuePause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	if h.orchestrator == nil {
+		api.JSONBadRequest(w, "orchestrator not configured")
+		return
+	}
+
+	h.orchestrator.Pause()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"queue_paused": true,
+		"message":      "execution queue paused",
+	})
+}
+
+func (h *ContinuationHandler) handleQueueResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	if h.orchestrator == nil {
+		api.JSONBadRequest(w, "orchestrator not configured")
+		return
+	}
+
+	h.orchestrator.Resume()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"queue_paused": false,
+		"message":      "execution queue resumed",
+	})
+}
+
 func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		api.JSONMethodNotAllowed(w)
@@ -228,6 +438,10 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 
 	if cnt.State == continuation.StateApproved {
 		cnt.MarkReady()
+	}
+
+	if cnt.State == continuation.StateQueued {
+		cnt.State = continuation.StateReady
 	}
 
 	if cnt.State == continuation.StateResumed {

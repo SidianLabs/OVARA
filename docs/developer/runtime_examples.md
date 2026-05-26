@@ -1613,3 +1613,113 @@ curl "http://localhost:8080/v1/executions?state=succeeded"
 # By state with limit
 curl "http://localhost:8080/v1/executions?state=failed&limit=50"
 ```
+
+## Execution Queue
+
+After an approval, work can be explicitly queued and executed asynchronously rather than immediately.
+
+### Continuation States
+
+Continuations progress through these states:
+
+| State | Meaning |
+|-------|---------|
+| `escalated` | Awaiting human approval |
+| `approved` | Approved but not yet queued |
+| `queued` | Queued for async execution |
+| `ready` | Ready to execute (runner picks up) |
+| `resumed` | Retrying after failure |
+| `executed` | Successfully executed |
+| `cancelled` | Cancelled before execution |
+| `denied` | Denied by approver |
+| `expired` | Timed out before execution |
+
+### Enqueue an Approved Continuation
+
+```bash
+# Enqueue an approved continuation for async execution
+curl -X POST "http://localhost:8080/v1/continuations/cnt_abc123/enqueue"
+```
+
+Response:
+```json
+{"continuation_id":"cnt_abc123","state":"queued","message":"continuation queued for execution"}
+```
+
+### List the Queue
+
+```bash
+curl "http://localhost:8080/v1/continuations/queue"
+```
+
+Response:
+```json
+{
+  "queue": [...],
+  "count": 2,
+  "queue_paused": false,
+  "running_count": 1
+}
+```
+
+### Cancel a Queued Continuation
+
+```bash
+curl -X POST "http://localhost:8080/v1/continuations/cnt_abc123/cancel"
+```
+
+Response:
+```json
+{"continuation_id":"cnt_abc123","state":"cancelled","cancelled_at":"2026-05-26T14:00:00Z"}
+```
+
+### Pause and Resume the Queue
+
+```bash
+# Pause queue processing (queued items stay queued)
+curl -X POST "http://localhost:8080/v1/continuations/queue/pause"
+# {"queue_paused":true,"message":"execution queue paused"}
+
+# Resume queue processing
+curl -X POST "http://localhost:8080/v1/continuations/queue/resume"
+# {"queue_paused":false,"message":"execution queue resumed"}
+```
+
+### Continuation Stats with Queue State
+
+```bash
+curl "http://localhost:8080/v1/continuations/stats"
+```
+
+Response:
+```json
+{
+  "total": 15,
+  "by_state": {"escalated":1,"approved":3,"queued":2,"executed":8,"denied":1},
+  "executable": 5,
+  "expired": 0,
+  "queued": 2,
+  "queue_paused": false,
+  "running": 1
+}
+```
+
+### Execution States
+
+| State | Meaning |
+|-------|---------|
+| `pending` | Created but not yet started |
+| `running` | Currently executing |
+| `succeeded` | Completed with exit code 0 |
+| `failed` | Completed with non-zero exit code |
+| `timed_out` | Exceeded timeout |
+
+### Immediate Execution (Sync)
+
+For synchronous execution (blocks until complete), use the execute endpoint:
+
+```bash
+curl -X POST "http://localhost:8080/v1/continuations/cnt_abc123/execute"
+```
+
+This transitions the continuation to `ready` and executes immediately.

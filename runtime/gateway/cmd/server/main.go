@@ -342,6 +342,13 @@ func main() {
 	continuationHandler.SetEventStore(eventStore)
 	continuationHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 
+	orchestrator := continuation.NewOrchestrator(continuationStore, execStore, shellExec)
+	orchestrator.SetEventStore(eventStore)
+	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	orchestrator.Start()
+	continuationHandler.SetOrchestrator(orchestrator)
+	log.Printf("execution orchestrator started (poll_interval=2s)")
+
 	execSweeper := execution.NewSweeper(execStore)
 	execSweeper.Start(cfg.ExecutionSweepIntervalSec)
 	log.Printf("execution sweeper started (interval=%ds)", cfg.ExecutionSweepIntervalSec)
@@ -412,6 +419,9 @@ func main() {
 		}
 		if execSweeper != nil {
 			execSweeper.Stop()
+		}
+		if orchestrator != nil {
+			orchestrator.Stop()
 		}
 		wg.Wait()
 		os.Exit(0)
