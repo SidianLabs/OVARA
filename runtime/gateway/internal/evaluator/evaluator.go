@@ -49,6 +49,45 @@ type EvalResult struct {
 	PolicyVersion    string
 }
 
+type SimResult struct {
+	Request           *models.ActionRequest
+	Decision         models.Decision
+	CurrentDecision  models.Decision
+	CandidateDecision models.Decision
+	DecisionChanged  bool
+	Reason           string
+	CurrentReason    string
+	CandidateReason  string
+	RequiresApproval bool
+	TrustScore       float64
+	TrustLevel       models.TrustLevel
+	PolicyVersion    string
+	Passed           bool
+}
+
+type BatchSimResult struct {
+	Results        []*SimResult
+	TotalCount    int
+	ChangedCount  int
+	UnchangedCount int
+	PolicyVersion string
+}
+
+type PolicyRuleChange struct {
+	ActionType  string
+	Environment string
+	From        policy.Rule
+	To          policy.Rule
+}
+
+type PolicyDiff struct {
+	AddedRules   []policy.Rule
+	RemovedRules []policy.Rule
+	ChangedRules []PolicyRuleChange
+	FromVersion  string
+	ToVersion    string
+}
+
 func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionResponse, error) {
 	if errs := req.Validate(); len(errs) > 0 {
 		return &models.DecisionResponse{
@@ -271,6 +310,151 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 	}
 
 	return RuleOutcome{Allowed: true, Reason: models.ReasonAllowed}
+}
+
+func (e *Evaluator) evaluateRulesWithStore(store *policy.Store, req *models.ActionRequest) RuleOutcome {
+	actionRules := store.RulesForAction(string(req.ActionType))
+	envRules := store.RulesForEnvironment(string(req.Environment))
+	return e.evaluateRules(actionRules, envRules, req)
+}
+
+func (e *Evaluator) Simulate(req *models.ActionRequest, candidateStore *policy.Store) (*SimResult, error) {
+	if errs := req.Validate(); len(errs) > 0 {
+		return &SimResult{
+			Request:    req,
+			Decision:  models.DecisionDeny,
+			Reason:    "invalid request: " + errs[0],
+			Passed:    false,
+		}, nil
+	}
+
+	outcome := e.evaluateRulesWithStore(candidateStore, req)
+	trustResult := trust.NewEvaluator(e.shieldStore).Evaluate(req)
+
+	var decision models.Decision
+	var requiresApproval bool
+	var reason string
+
+	if outcome.Denied {
+		decision = models.DecisionDeny
+		reason = string(outcome.Reason)
+	} else if outcome.Escalate || trustResult.ShouldEscalate() {
+		decision = models.DecisionEscalate
+		requiresApproval = true
+		if outcome.Escalate {
+			reason = string(outcome.Reason)
+		} else {
+			reason = string(models.ReasonTrustEscalate)
+		}
+	} else {
+		decision = models.DecisionAllow
+		reason = string(outcome.Reason)
+	}
+
+	return &SimResult{
+		Request:           req,
+		Decision:         decision,
+		Reason:           reason,
+		RequiresApproval:  requiresApproval,
+		TrustScore:        trustResult.Score,
+		TrustLevel:        trustResult.Level,
+		PolicyVersion:    candidateStore.Version(),
+		Passed:           true,
+	}, nil
+}
+
+func (e *Evaluator) SimulateBatch(requests []*models.ActionRequest, candidateStore *policy.Store) *BatchSimResult {
+	results := make([]*SimResult, 0, len(requests))
+	changedCount := 0
+
+	currentStore := e.policyStore
+
+	for _, req := range requests {
+		currentResult, _ := e.Simulate(req, currentStore)
+		candidateResult, _ := e.Simulate(req, candidateStore)
+
+		result := &SimResult{
+			Request:          req,
+			CurrentDecision:  currentResult.Decision,
+			CandidateDecision: candidateResult.Decision,
+			DecisionChanged:  currentResult.Decision != candidateResult.Decision,
+			CurrentReason:    currentResult.Reason,
+			CandidateReason:  candidateResult.Reason,
+			RequiresApproval: candidateResult.RequiresApproval,
+			TrustScore:       candidateResult.TrustScore,
+			TrustLevel:       candidateResult.TrustLevel,
+			PolicyVersion:    candidateStore.Version(),
+			Passed:          true,
+		}
+
+		if result.DecisionChanged {
+			changedCount++
+		}
+
+		results = append(results, result)
+	}
+
+	return &BatchSimResult{
+		Results:       results,
+		TotalCount:    len(requests),
+		ChangedCount:  changedCount,
+		UnchangedCount: len(requests) - changedCount,
+		PolicyVersion: candidateStore.Version(),
+	}
+}
+
+func (e *Evaluator) ComparePolicies(candidateStore *policy.Store) *PolicyDiff {
+	currentRules := e.policyStore.ListRules()
+	candidateRules := candidateStore.ListRules()
+
+	currentRuleMap := make(map[string]policy.Rule)
+	for _, r := range currentRules {
+		key := ruleKey(r.ActionType, r.Environment)
+		currentRuleMap[key] = r
+	}
+
+	candidateRuleMap := make(map[string]policy.Rule)
+	for _, r := range candidateRules {
+		key := ruleKey(r.ActionType, r.Environment)
+		candidateRuleMap[key] = r
+	}
+
+	var added []policy.Rule
+	var removed []policy.Rule
+	var changed []PolicyRuleChange
+
+	for key, cr := range candidateRuleMap {
+		if pr, exists := currentRuleMap[key]; exists {
+			if pr.Allow != cr.Allow || pr.Deny != cr.Deny || pr.Escalate != cr.Escalate {
+				changed = append(changed, PolicyRuleChange{
+					ActionType:  cr.ActionType,
+					Environment: cr.Environment,
+					From:       pr,
+					To:         cr,
+				})
+			}
+		} else {
+			added = append(added, cr)
+		}
+	}
+
+	for key, pr := range currentRuleMap {
+		if _, exists := candidateRuleMap[key]; !exists {
+			removed = append(removed, pr)
+		}
+	}
+
+	return &PolicyDiff{
+		AddedRules:   added,
+		RemovedRules: removed,
+		ChangedRules: changed,
+		FromVersion:  e.policyStore.Version(),
+		ToVersion:    candidateStore.Version(),
+	}
+}
+
+func ruleKey(actionType, environment string) string {
+	return actionType + ":" + environment
 }
 
 func (e *Evaluator) buildReceiptStub(req *models.ActionRequest, decision models.Decision, policyVersion string, trustScore float64) *models.ReceiptStub {

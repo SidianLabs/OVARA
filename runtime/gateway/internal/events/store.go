@@ -31,6 +31,11 @@ const (
 	EventTypeAdminCompact               = "admin.compact"
 	EventTypeAdminSweep                 = "admin.sweep"
 	EventTypeIntegrityCheck             = "admin.integrity_check"
+	EventTypePolicyValidated            = "policy.validated"
+	EventTypePolicySimulated            = "policy.simulated"
+	EventTypePolicyDiffGenerated        = "policy.diff_generated"
+	EventTypePolicyCandidateLoaded     = "policy.candidate_loaded"
+	EventTypePolicyPromoted            = "policy.promoted"
 )
 
 type Event struct {
