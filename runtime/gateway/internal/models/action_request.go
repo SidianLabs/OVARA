@@ -9,6 +9,7 @@ type ActionType string
 
 const (
 	ActionTypeShell           ActionType = "shell"
+	ActionTypeExec            ActionType = "exec"
 	ActionTypeGitPush         ActionType = "git.push"
 	ActionTypeGitPull         ActionType = "git.pull"
 	ActionTypeGitForcePush    ActionType = "git.force_push"

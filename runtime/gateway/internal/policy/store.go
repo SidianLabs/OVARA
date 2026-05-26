@@ -128,6 +128,7 @@ func defaultRules() []Rule {
 	return []Rule{
 		{ActionType: "*", Environment: "production", Deny: false, Escalate: true},
 		{ActionType: "shell", Environment: "*", Escalate: true},
+		{ActionType: "exec", Environment: "*", Escalate: true},
 		{ActionType: "github.merge", Environment: "*", Escalate: true},
 		{ActionType: "github.delete_branch", Environment: "*", Escalate: true},
 		{ActionType: "ci.deploy", Environment: "*", Escalate: true},

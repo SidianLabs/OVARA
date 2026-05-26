@@ -466,6 +466,52 @@ func TestEvaluator_DefaultEscalateForProductionUnknownAction(t *testing.T) {
 	}
 }
 
+func TestEvaluator_DefaultEscalateForExecAction(t *testing.T) {
+	store := policy.NewStore("test-default")
+	ev := New(store)
+
+	req := &models.ActionRequest{
+		ActionType:  models.ActionTypeExec,
+		Resource:    "exec:echo hello",
+		Environment: models.EnvironmentDev,
+		AgentIdentity: &models.AgentIdentity{
+			Issuer:    "test",
+			SubjectID: "agent-test",
+		},
+	}
+
+	resp, err := ev.Evaluate(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Decision != models.DecisionEscalate {
+		t.Errorf("decision = %v, want escalate (default rules escalate exec in all environments)", resp.Decision)
+	}
+}
+
+func TestEvaluator_ExecEscalatesInProduction(t *testing.T) {
+	store := policy.NewStore("test-default")
+	ev := New(store)
+
+	req := &models.ActionRequest{
+		ActionType:  models.ActionTypeExec,
+		Resource:    "exec:git status",
+		Environment: models.EnvironmentProduction,
+		AgentIdentity: &models.AgentIdentity{
+			Issuer:    "test",
+			SubjectID: "agent-prod",
+		},
+	}
+
+	resp, err := ev.Evaluate(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Decision != models.DecisionEscalate {
+		t.Errorf("decision = %v, want escalate (exec in production is escalated)", resp.Decision)
+	}
+}
+
 func TestEvaluator_PolicyExplicitAllowVoucher(t *testing.T) {
 	cfg := map[string]any{
 		"policy_version": "test-voucher",
