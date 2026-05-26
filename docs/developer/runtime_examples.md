@@ -1443,6 +1443,10 @@ curl "http://localhost:8080/v1/capabilities?subject=agent-001"
 
 # Filter by issuer
 curl "http://localhost:8080/v1/capabilities?issuer=admin"
+
+# Filter by status
+curl "http://localhost:8080/v1/capabilities?status=active"
+curl "http://localhost:8080/v1/capabilities?status=revoked"
 ```
 
 ### Lease History
@@ -1457,10 +1461,30 @@ Response:
 {
   "entries": [
     {"lease_id": "cap_abc123", "event": "tracked", "timestamp": "2026-05-26T12:00:00Z", "gateway_id": "gw_12345", "subject": "agent-001", "issuer": "admin"},
-    {"lease_id": "cap_abc123", "event": "used", "timestamp": "2026-05-26T12:03:00Z", "gateway_id": "gw_12345"},
+    {"lease_id": "cap_abc123", "event": "used", "timestamp": "2026-05-26T12:03:00Z", "gateway_id": "gw_12345", "action": "shell", "resource": "shell:ls -la"},
     {"lease_id": "cap_abc123", "event": "revoked", "timestamp": "2026-05-26T12:10:00Z", "gateway_id": "gw_12345", "reason": "security incident", "subject": "agent-001", "issuer": "admin"}
   ],
   "count": 3
+}
+```
+
+### Bulk Revoke by Subject
+
+Revoke all active leases for a given subject (governance operation):
+
+```bash
+curl -X POST http://localhost:8080/v1/capabilities/revoke-by-subject \
+  -H "Content-Type: application/json" \
+  -d '{"subject": "agent-001", "reason": "offboarding"}'
+```
+
+Response:
+```json
+{
+  "subject": "agent-001",
+  "revoked_count": 2,
+  "lease_ids": ["cap_abc123", "cap_def456"],
+  "not_found_count": 0
 }
 ```
 
@@ -1502,14 +1526,16 @@ Configure a file path for durable lease storage via `OVARA_CONFIG`:
 ```json
 {
   "capabilities_file": "var/data/capabilities.json",
-  "capabilities_max_size": 10000
+  "capabilities_max_size": 10000,
+  "capabilities_history_file": "var/data/capabilities_history.jsonl"
 }
 ```
 
 With persistence configured:
 - Tracked and revoked leases survive gateway restart
-- Lease history (tracked/used/revoked events) is maintained in-memory (resets on restart)
+- Lease history (tracked/used/revoked events) is persisted to `capabilities_history_file` and survives restart
 - LastSeenAt is updated each time a lease is used at runtime
+- `used` history events include the action and resource that were used
 
 ### Runtime Behavior
 

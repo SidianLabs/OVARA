@@ -47,6 +47,7 @@ type Config struct {
 	ExecutionAllowedEnvVars     []string `json:"execution_allowed_env_vars"`
 	CapabilitiesFile            string   `json:"capabilities_file"`
 	CapabilitiesMaxSize         int      `json:"capabilities_max_size"`
+	CapabilitiesHistoryFile     string   `json:"capabilities_history_file"`
 }
 
 type Enrollment struct {
@@ -112,6 +113,7 @@ func Default() *Config {
 		ExecutionAllowedEnvVars:   []string{},
 		CapabilitiesFile:           "var/data/capabilities.json",
 		CapabilitiesMaxSize:        10000,
+		CapabilitiesHistoryFile:     "var/data/capabilities_history.jsonl",
 	}
 }
 

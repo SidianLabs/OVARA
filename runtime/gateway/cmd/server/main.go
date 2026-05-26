@@ -234,9 +234,24 @@ func main() {
 		capabilitiesStore = capabilities.NewInMemoryStore()
 		log.Printf("capabilities in-memory (no persistence configured)")
 	}
+
+	var capabilitiesHistoryStore *capabilities.FileBackedHistoryStore
+	if cfg.CapabilitiesHistoryFile != "" {
+		store, err := capabilities.NewFileBackedHistoryStore(cfg.CapabilitiesHistoryFile, 50000)
+		if err != nil {
+			log.Printf("warning: failed to create file-backed history store: %v, using in-memory", err)
+		} else {
+			capabilitiesHistoryStore = store
+			log.Printf("capability history persisted to %s", cfg.CapabilitiesHistoryFile)
+		}
+	}
+
 	capabilitiesHandler := handlers.NewCapabilitiesHandler(capabilitiesStore)
 	capabilitiesHandler.SetEventStore(eventStore)
 	capabilitiesHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	if capabilitiesHistoryStore != nil {
+		capabilitiesHandler.SetHistoryStore(capabilitiesHistoryStore)
+	}
 	eval.SetRevocationChecker(capabilitiesHandler)
 
 	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
@@ -387,6 +402,9 @@ func main() {
 		}
 		if fbExe, ok := execStore.(*execution.FileBackedStore); ok {
 			fbExe.Close()
+		}
+		if capabilitiesHistoryStore != nil {
+			capabilitiesHistoryStore.Close()
 		}
 		if sweeper != nil {
 			sweeper.Stop()

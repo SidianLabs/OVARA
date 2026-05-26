@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/capabilities"
@@ -13,14 +14,13 @@ import (
 type CapabilitiesHandler struct {
 	store        capabilities.Store
 	eventStore   events.Store
-	historyStore *capabilities.HistoryStore
+	historyStore *capabilities.FileBackedHistoryStore
 	gatewayID    string
 }
 
 func NewCapabilitiesHandler(s capabilities.Store) *CapabilitiesHandler {
 	return &CapabilitiesHandler{
-		store:        s,
-		historyStore: capabilities.NewHistoryStore(),
+		store: s,
 	}
 }
 
@@ -32,7 +32,7 @@ func (h *CapabilitiesHandler) SetGatewayID(id string) {
 	h.gatewayID = id
 }
 
-func (h *CapabilitiesHandler) SetHistoryStore(hs *capabilities.HistoryStore) {
+func (h *CapabilitiesHandler) SetHistoryStore(hs *capabilities.FileBackedHistoryStore) {
 	h.historyStore = hs
 }
 
@@ -42,6 +42,7 @@ func (h *CapabilitiesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/capabilities/track", h.handleTrack)
 	mux.HandleFunc("POST /v1/capabilities/revoke", h.handleRevoke)
 	mux.HandleFunc("GET /v1/capabilities/history", h.handleHistory)
+	mux.HandleFunc("POST /v1/capabilities/revoke-by-subject", h.handleRevokeBySubject)
 }
 
 type ListCapabilitiesResponse struct {
@@ -60,6 +61,7 @@ func (h *CapabilitiesHandler) handleList(w http.ResponseWriter, r *http.Request)
 
 	subjectFilter := r.URL.Query().Get("subject")
 	issuerFilter := r.URL.Query().Get("issuer")
+	statusFilter := r.URL.Query().Get("status")
 
 	all := h.store.List()
 	active := h.store.ListActive()
@@ -72,6 +74,23 @@ func (h *CapabilitiesHandler) handleList(w http.ResponseWriter, r *http.Request)
 		}
 		if issuerFilter != "" && tracked.Lease.Issuer != issuerFilter {
 			continue
+		}
+		if statusFilter != "" {
+			switch statusFilter {
+			case "active":
+				isActive := tracked.RevokedAt == nil && tracked.Lease.Expiry.After(time.Now())
+				if !isActive {
+					continue
+				}
+			case "revoked":
+				if tracked.RevokedAt == nil {
+					continue
+				}
+			case "all":
+			default:
+				api.JSONBadRequest(w, "status must be one of: active, revoked, all")
+				return
+			}
 		}
 		filtered = append(filtered, tracked)
 	}
@@ -193,6 +212,79 @@ func (h *CapabilitiesHandler) handleHistory(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+type RevokeBySubjectRequest struct {
+	Subject string `json:"subject"`
+	Reason  string `json:"reason"`
+}
+
+type RevokeBySubjectResponse struct {
+	Subject     string   `json:"subject"`
+	Revoked     int     `json:"revoked_count"`
+	LeaseIDs    []string `json:"lease_ids"`
+	NotFound    int     `json:"not_found_count"`
+}
+
+func (h *CapabilitiesHandler) handleRevokeBySubject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	var req RevokeBySubjectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+		return
+	}
+
+	if req.Subject == "" {
+		api.JSONBadRequest(w, "subject is required")
+		return
+	}
+	if req.Reason == "" {
+		req.Reason = "operator_bulk_revoked"
+	}
+
+	active := h.store.ListActive()
+	var revokedIDs []string
+	var notFound int
+
+	for _, tracked := range active {
+		if tracked.Lease.Subject == req.Subject {
+			_, ok := h.store.Revoke(tracked.Lease.LeaseID, req.Reason)
+			if !ok {
+				notFound++
+				continue
+			}
+			revokedIDs = append(revokedIDs, tracked.Lease.LeaseID)
+
+			if h.historyStore != nil {
+				h.historyStore.Append(capabilities.LeaseRevokedEntry(tracked.Lease.LeaseID, h.gatewayID, req.Reason, tracked.Lease.Subject, tracked.Lease.Issuer))
+			}
+			if h.eventStore != nil {
+				evt := events.NewEvent(events.EventTypeCapabilityRevoked)
+				if h.gatewayID != "" {
+					evt.WithGatewayID(h.gatewayID)
+				}
+				evt.Payload = map[string]any{
+					"lease_id": tracked.Lease.LeaseID,
+					"reason":   req.Reason,
+					"subject":  tracked.Lease.Subject,
+					"issuer":   tracked.Lease.Issuer,
+					"bulk":     true,
+				}
+				h.eventStore.Append(evt)
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(RevokeBySubjectResponse{
+		Subject:  req.Subject,
+		Revoked:  len(revokedIDs),
+		LeaseIDs: revokedIDs,
+	})
+}
+
 func (h *CapabilitiesHandler) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		api.JSONMethodNotAllowed(w)
@@ -255,10 +347,10 @@ func (h *CapabilitiesHandler) IsRevoked(leaseID string) bool {
 	return h.store.IsRevoked(leaseID)
 }
 
-func (h *CapabilitiesHandler) Touch(leaseID string) {
+func (h *CapabilitiesHandler) Touch(leaseID, action, resource string) {
 	h.store.Touch(leaseID)
 	if h.historyStore != nil {
-		h.historyStore.Append(capabilities.LeaseUsedEntry(leaseID, h.gatewayID))
+		h.historyStore.Append(capabilities.LeaseUsedEntryWithContext(leaseID, h.gatewayID, action, resource))
 	}
 	if h.eventStore != nil {
 		evt := events.NewEvent(events.EventTypeCapabilityUsed)
@@ -267,7 +359,13 @@ func (h *CapabilitiesHandler) Touch(leaseID string) {
 		}
 		evt.Payload = map[string]any{
 			"lease_id": leaseID,
+			"action":   action,
+			"resource": resource,
 		}
 		h.eventStore.Append(evt)
 	}
+}
+
+func (h *CapabilitiesHandler) RecordUse(leaseID, action, resource string) {
+	h.Touch(leaseID, action, resource)
 }

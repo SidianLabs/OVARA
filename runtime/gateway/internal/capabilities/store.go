@@ -24,6 +24,8 @@ type LeaseHistoryEntry struct {
 	Reason     string    `json:"reason,omitempty"`
 	Subject    string    `json:"subject,omitempty"`
 	Issuer     string    `json:"issuer,omitempty"`
+	Action     string    `json:"action,omitempty"`
+	Resource   string    `json:"resource,omitempty"`
 }
 
 type Store interface {

@@ -17,7 +17,7 @@ import (
 
 type RevocationChecker interface {
 	IsRevoked(leaseID string) bool
-	Touch(leaseID string)
+	Touch(leaseID, action, resource string)
 }
 
 type Evaluator struct {
@@ -141,7 +141,7 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 
 		if decision == "" {
 			if e.revocationChecker != nil {
-				e.revocationChecker.Touch(req.CapabilityLease.LeaseID)
+				e.revocationChecker.Touch(req.CapabilityLease.LeaseID, string(req.ActionType), req.Resource)
 			}
 			leaseResult := e.validator.ValidateCapabilityLease(req.CapabilityLease)
 			if !leaseResult.Valid {
