@@ -309,10 +309,13 @@ func TestChecker_ExecutionOrphanedContinuation(t *testing.T) {
 	}
 	found := false
 	for _, issue := range result.Issues {
-		if issue.Category == "execution_store" && issue.EntityID == "exe_1" {
+		if (issue.Category == "execution_store" || issue.Category == "cross_store") && issue.EntityID == "exe_1" {
 			found = true
 			if issue.Severity != "high" {
 				t.Errorf("expected severity=high, got %s", issue.Severity)
+			}
+			if issue.Code != "EXEC_ORPHAN_CNT" {
+				t.Errorf("expected code=EXEC_ORPHAN_CNT, got %s", issue.Code)
 			}
 		}
 	}

@@ -813,3 +813,99 @@ Response shape:
 ```
 
 For file-backed stores, additional fields are included: `retention_days`, `max_records`, `file_path`, `file_size_bytes`.
+
+## Operator Recovery Guide
+
+### Stale Continuations
+
+If continuations appear stuck and not progressing:
+
+1. **Check current state**:
+```bash
+curl -s http://localhost:8080/v1/runtime/snapshot | jq '.continuations'
+```
+
+2. **Run integrity check** to find expired-but-not-marked continuations:
+```bash
+curl -s http://localhost:8080/v1/runtime/integrity | jq '.issues[] | select(.code=="CONT_EXPIRED")'
+```
+
+3. **Reconcile continuations** to mark expired ones:
+```bash
+# Dry run first
+curl -s -X POST "http://localhost:8080/v1/admin/reconcile/continuations?dry_run=true"
+
+# Actually reconcile
+curl -s -X POST http://localhost:8080/v1/admin/reconcile/continuations | jq .
+```
+
+4. **Sweep expired continuations** to remove them (file-backed stores only):
+```bash
+# Dry run first
+curl -s -X POST "http://localhost:8080/v1/admin/sweep/continuations?dry_run=true"
+
+# Actually sweep
+curl -s -X POST http://localhost:8080/v1/admin/sweep/continuations | jq .
+```
+
+### Store Growth
+
+If store files are growing large:
+
+1. **Check current sizes**:
+```bash
+curl -s http://localhost:8080/v1/runtime/snapshot | jq '.events, .continuations, .executions'
+```
+
+2. **Run integrity check** to see if there are duplicate IDs or orphaned records:
+```bash
+curl -s http://localhost:8080/v1/runtime/integrity | jq .
+```
+
+3. **Compact stores** to remove tombstoned records:
+```bash
+# Dry run first
+curl -s -X POST "http://localhost:8080/v1/admin/compact?dry_run=true"
+
+# Actually compact
+curl -s -X POST http://localhost:8080/v1/admin/compact | jq .
+```
+
+### Repeated Execution Failures
+
+If executions are repeatedly failing:
+
+1. **Check execution stats**:
+```bash
+curl -s -X POST http://localhost:8080/v1/admin/reconcile/executions | jq .
+```
+
+2. **Run integrity check** for orphaned execution→continuation references:
+```bash
+curl -s http://localhost:8080/v1/runtime/integrity | jq '.issues[] | select(.code=="EXEC_ORPHAN_CNT")'
+```
+
+3. **Check running executions** (if count is unusually high):
+```bash
+curl -s http://localhost:8080/v1/runtime/status | jq '.executions'
+```
+
+### Running Integrity and Repair Safely
+
+1. **Always dry-run first** — use `?dry_run=true` on admin endpoints to preview changes
+2. **Check integrity first** — run `GET /v1/runtime/integrity` before making repairs
+3. **Compact before sweep** — run compact to remove tombstoned records before sweep
+4. **Monitor after changes** — check `/v1/runtime/snapshot` after repairs to verify expected state
+5. **Keep audit trail** — check `GET /v1/audit/export` for historical record of operations
+
+### When to Restart
+
+Consider restarting the gateway if:
+- Integrity checks show persistent issues after repair attempts
+- Store files have corrupted data that cannot be repaired
+- Configuration changes require a restart
+
+Before restarting:
+1. Export audit data: `GET /v1/audit/export`
+2. Note current state: `GET /v1/runtime/snapshot`
+3. Stop the gateway gracefully

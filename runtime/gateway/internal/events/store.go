@@ -27,6 +27,10 @@ const (
 	EventTypeExecutionSucceeded         = "execution.succeeded"
 	EventTypeExecutionFailed            = "execution.failed"
 	EventTypeExecutionTimedOut          = "execution.timed_out"
+	EventTypeAdminReconcile             = "admin.reconcile"
+	EventTypeAdminCompact               = "admin.compact"
+	EventTypeAdminSweep                 = "admin.sweep"
+	EventTypeIntegrityCheck             = "admin.integrity_check"
 )
 
 type Event struct {

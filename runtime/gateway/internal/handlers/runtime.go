@@ -36,6 +36,7 @@ type Handler struct {
 	executionStore     execution.Store
 	integrityChecker   *integrity.Checker
 	shieldStats        func() (restricted, total int)
+	maintenanceMode    bool
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -78,6 +79,10 @@ func (h *Handler) SetExecutionStore(store execution.Store) {
 
 func (h *Handler) SetIntegrityChecker(checker *integrity.Checker) {
 	h.integrityChecker = checker
+}
+
+func (h *Handler) SetMaintenanceMode(enabled bool) {
+	h.maintenanceMode = enabled
 }
 
 type HandlerWithStores struct {
@@ -513,6 +518,8 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		status["continuations"] = contStats
 	}
 
+	status["maintenance_mode"] = h.maintenanceMode
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
@@ -615,16 +622,37 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 
 	cacheCount, cacheMax := h.decisionCache.Stats()
 
+	retentionConfig := make(map[string]any)
+	if fb, ok := h.eventStore.(*events.FileBackedStore); ok {
+		retentionConfig["events"] = map[string]any{
+			"retention_days": fb.RetentionDays(),
+			"max_records":    fb.MaxRecords(),
+		}
+	}
+	if fb, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
+		retentionConfig["continuations"] = map[string]any{
+			"retention_days": fb.RetentionDays(),
+			"max_records":    fb.MaxRecords(),
+		}
+	}
+	if fb, ok := h.executionStore.(*execution.FileBackedStore); ok {
+		retentionConfig["executions"] = map[string]any{
+			"retention_days": fb.RetentionDays(),
+			"max_records":    fb.MaxRecords(),
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"snapshot_at":          time.Now().UTC(),
-		"gateway_id":          gatewayID,
-		"gateway_name":        gatewayName,
+		"snapshot_at":           time.Now().UTC(),
+		"gateway_id":           gatewayID,
+		"gateway_name":         gatewayName,
 		"enrollment_state":     enrollmentState,
 		"policy_version":      h.evaluator.PolicyVersion(),
 		"decision_cache_count": cacheCount,
 		"decision_cache_max":   cacheMax,
 		"total_decisions":     snap.TotalDecisions,
+		"retention_config":    retentionConfig,
 		"events":              eventStats,
 		"continuations":       contStats,
 		"executions":          execStats,

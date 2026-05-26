@@ -31,15 +31,17 @@ type Summary struct {
 }
 
 type Issue struct {
-	Severity  string `json:"severity"`
-	Category  string `json:"category"`
-	Message   string `json:"message"`
-	EntityID  string `json:"entity_id,omitempty"`
+	Code       string `json:"code,omitempty"`
+	Severity   string `json:"severity"`
+	Category   string `json:"category"`
+	Message    string `json:"message"`
+	EntityID   string `json:"entity_id,omitempty"`
 	EntityType string `json:"entity_type,omitempty"`
-	Detail    string `json:"detail,omitempty"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 type Warning struct {
+	Code       string `json:"code,omitempty"`
 	Severity   string `json:"severity"`
 	Category   string `json:"category"`
 	Message    string `json:"message"`
@@ -153,11 +155,12 @@ func (c *Checker) checkEventStore(r *Result) {
 	}
 	if len(duplicateIDs) > 0 {
 		r.Issues = append(r.Issues, Issue{
+			Code:       "EVT_DUP",
 			Severity:   "high",
 			Category:   "event_store",
 			Message:    fmt.Sprintf("found %d duplicate event IDs", len(duplicateIDs)),
 			EntityType: "event",
-			Detail:    fmt.Sprintf("duplicate IDs: %v", duplicateIDs[:min(5, len(duplicateIDs))]),
+			Detail:     fmt.Sprintf("duplicate IDs: %v", duplicateIDs[:min(5, len(duplicateIDs))]),
 		})
 	}
 
@@ -169,11 +172,12 @@ func (c *Checker) checkEventStore(r *Result) {
 	}
 	if len(zeroTimeEvents) > 0 {
 		r.Issues = append(r.Issues, Issue{
+			Code:       "EVT_ZERO_TS",
 			Severity:   "medium",
 			Category:   "event_store",
 			Message:    fmt.Sprintf("found %d events with zero timestamp", len(zeroTimeEvents)),
 			EntityType: "event",
-			Detail:    fmt.Sprintf("event IDs: %v", zeroTimeEvents[:min(5, len(zeroTimeEvents))]),
+			Detail:     fmt.Sprintf("event IDs: %v", zeroTimeEvents[:min(5, len(zeroTimeEvents))]),
 		})
 	}
 
@@ -214,12 +218,13 @@ func (c *Checker) checkContinuationStore(r *Result) {
 		if cnt.ExpiresAt != nil && !cnt.ExpiresAt.IsZero() {
 			if cnt.State != continuation.StateExpired && now.After(*cnt.ExpiresAt) {
 				r.Issues = append(r.Issues, Issue{
+					Code:       "CONT_EXPIRED",
 					Severity:   "medium",
 					Category:   "continuation_store",
 					Message:    "continuation past expiry but not marked expired",
 					EntityID:   cnt.ContinuationID,
 					EntityType: "continuation",
-					Detail:    fmt.Sprintf("state=%s, expired_at=%v", cnt.State, cnt.ExpiresAt),
+					Detail:     fmt.Sprintf("state=%s, expired_at=%v", cnt.State, cnt.ExpiresAt),
 				})
 			}
 		}
@@ -239,10 +244,11 @@ func (c *Checker) checkContinuationStore(r *Result) {
 
 	if len(orphanedApprovals) > 0 {
 		r.Warnings = append(r.Warnings, Warning{
-			Severity:   "low",
-			Category:   "continuation_store",
-			Message:    fmt.Sprintf("found %d continuations with approval IDs in non-approval states", len(orphanedApprovals)),
-			Detail:    fmt.Sprintf("examples: %v", orphanedApprovals[:min(3, len(orphanedApprovals))]),
+			Code:     "CONT_ORPHAN_APPR",
+			Severity: "low",
+			Category: "continuation_store",
+			Message:  fmt.Sprintf("found %d continuations with approval IDs in non-approval states", len(orphanedApprovals)),
+			Detail:   fmt.Sprintf("examples: %v", orphanedApprovals[:min(3, len(orphanedApprovals))]),
 		})
 	}
 
@@ -254,11 +260,12 @@ func (c *Checker) checkContinuationStore(r *Result) {
 	}
 	if len(zeroTimeConts) > 0 {
 		r.Issues = append(r.Issues, Issue{
+			Code:       "CONT_ZERO_CREATED",
 			Severity:   "medium",
 			Category:   "continuation_store",
 			Message:    fmt.Sprintf("found %d continuations with zero CreatedAt", len(zeroTimeConts)),
 			EntityType: "continuation",
-			Detail:    fmt.Sprintf("IDs: %v", zeroTimeConts[:min(5, len(zeroTimeConts))]),
+			Detail:     fmt.Sprintf("IDs: %v", zeroTimeConts[:min(5, len(zeroTimeConts))]),
 		})
 	}
 }
@@ -297,12 +304,13 @@ func (c *Checker) checkExecutionStore(r *Result) {
 		if exe.ContinuationID != "" && c.continuationStore != nil {
 			if _, exists := c.continuationStore.Get(exe.ContinuationID); !exists {
 				r.Issues = append(r.Issues, Issue{
+					Code:       "EXEC_ORPHAN_CNT",
 					Severity:   "high",
-					Category:   "execution_store",
+					Category:   "cross_store",
 					Message:    "execution references non-existent continuation",
 					EntityID:   exe.ExecutionID,
 					EntityType: "execution",
-					Detail:    fmt.Sprintf("continuation_id=%s", exe.ContinuationID),
+					Detail:     fmt.Sprintf("continuation_id=%s", exe.ContinuationID),
 				})
 			}
 		}
@@ -310,21 +318,23 @@ func (c *Checker) checkExecutionStore(r *Result) {
 
 	if len(zeroTimeExecs) > 0 {
 		r.Issues = append(r.Issues, Issue{
+			Code:       "EXEC_ZERO_START",
 			Severity:   "medium",
 			Category:   "execution_store",
 			Message:    fmt.Sprintf("found %d executions with zero StartedAt", len(zeroTimeExecs)),
 			EntityType: "execution",
-			Detail:    fmt.Sprintf("IDs: %v", zeroTimeExecs[:min(5, len(zeroTimeExecs))]),
+			Detail:     fmt.Sprintf("IDs: %v", zeroTimeExecs[:min(5, len(zeroTimeExecs))]),
 		})
 	}
 
 	if len(duplicateIDs) > 0 {
 		r.Issues = append(r.Issues, Issue{
+			Code:       "EXEC_DUP",
 			Severity:   "high",
 			Category:   "execution_store",
 			Message:    fmt.Sprintf("found %d duplicate execution IDs", len(duplicateIDs)),
 			EntityType: "execution",
-			Detail:    fmt.Sprintf("IDs: %v", duplicateIDs[:min(5, len(duplicateIDs))]),
+			Detail:     fmt.Sprintf("IDs: %v", duplicateIDs[:min(5, len(duplicateIDs))]),
 		})
 	}
 
@@ -361,11 +371,12 @@ func (c *Checker) checkReceiptStore(r *Result) {
 
 	if len(duplicateIDs) > 0 {
 		r.Issues = append(r.Issues, Issue{
+			Code:       "RECEIPT_DUP",
 			Severity:   "high",
 			Category:   "receipt_store",
 			Message:    fmt.Sprintf("found %d duplicate receipt IDs", len(duplicateIDs)),
 			EntityType: "receipt",
-			Detail:    fmt.Sprintf("IDs: %v", duplicateIDs[:min(5, len(duplicateIDs))]),
+			Detail:     fmt.Sprintf("IDs: %v", duplicateIDs[:min(5, len(duplicateIDs))]),
 		})
 	}
 }
@@ -386,6 +397,7 @@ func (c *Checker) checkApprovalStore(r *Result) {
 	for _, appr := range pending {
 		if appr.ApprovalID == "" {
 			r.Issues = append(r.Issues, Issue{
+				Code:       "APPR_EMPTY_ID",
 				Severity:   "medium",
 				Category:   "approval_store",
 				Message:    "approval with empty approval ID in pending list",
@@ -405,6 +417,7 @@ func (c *Checker) checkCrossStoreReferences(r *Result) {
 		if evt.ApprovalID != "" && c.approvalStore != nil {
 			if _, err := c.approvalStore.Get(evt.ApprovalID); err != nil {
 				r.Warnings = append(r.Warnings, Warning{
+					Code:       "EVT_ORPHAN_APPR",
 					Severity:   "low",
 					Category:   "cross_store",
 					Message:    "event references non-existent approval",
