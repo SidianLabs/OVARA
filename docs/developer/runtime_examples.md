@@ -1341,3 +1341,127 @@ If a promotion causes issues:
 - Default allow: if no rule matches, the action is allowed.
 - Rule order in the JSON does not affect matching — all rules for the matching action_type are evaluated together.
 - The policy file on disk is the source of truth for the live policy. Hot reload (`PolicyRefreshInterval > 0`) watches the file and reloads automatically.
+
+## Capability Lease Management
+
+Capability leases provide scoped, time-limited authority for agents to perform actions. The gateway tracks leases locally and enforces revocation.
+
+### Capability Lease Structure
+
+```json
+{
+  "lease_id": "cap_abc123",
+  "issuer": "admin",
+  "subject": "agent-001",
+  "allowed_actions": ["shell", "git.pull"],
+  "resource_scope": "*",
+  "expiry": "2026-05-27T00:00:00Z",
+  "delegation_depth": 1
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `lease_id` | Unique identifier for this lease |
+| `issuer` | Who issued this lease (e.g., "admin") |
+| `subject` | Which agent this lease is for |
+| `allowed_actions` | Actions this lease permits (e.g., ["shell"], ["git.pull", "github.merge"]) |
+| `resource_scope` | Resource pattern this lease covers (e.g., "*" for all, "repo:acme/*" for specific repos) |
+| `expiry` | When this lease expires (ISO 8601 format) |
+| `delegation_depth` | How many times this lease can be further delegated (0 = no delegation) |
+
+### Tracking a Capability Lease
+
+When an agent presents a capability lease, track it locally so it can be inspected and revoked:
+
+```bash
+curl -X POST http://localhost:8080/v1/capabilities/track \
+  -H "Content-Type: application/json" \
+  -d '{
+    "lease": {
+      "lease_id": "cap_abc123",
+      "issuer": "admin",
+      "subject": "agent-001",
+      "allowed_actions": ["shell"],
+      "resource_scope": "*",
+      "expiry": "2026-05-27T00:00:00Z",
+      "delegation_depth": 1
+    }
+  }'
+```
+
+Response:
+```json
+{"status": "tracked", "lease_id": "cap_abc123"}
+```
+
+### Listing Active Capabilities
+
+```bash
+curl http://localhost:8080/v1/capabilities
+```
+
+Response:
+```json
+{
+  "capabilities": [...],
+  "count": 2,
+  "active_count": 2,
+  "revoked_count": 0
+}
+```
+
+### Getting a Specific Capability
+
+```bash
+curl "http://localhost:8080/v1/capabilities/?id=cap_abc123"
+```
+
+Response:
+```json
+{
+  "Lease": {...},
+  "CreatedAt": "2026-05-26T12:00:00Z",
+  "RevokedAt": null,
+  "RevocationReason": "",
+  "GatewayID": "gw_12345"
+}
+```
+
+### Revoking a Capability
+
+If a lease is compromised or no longer needed, revoke it immediately:
+
+```bash
+curl -X POST http://localhost:8080/v1/capabilities/revoke \
+  -H "Content-Type: application/json" \
+  -d '{"lease_id": "cap_abc123", "reason": "security incident"}'
+```
+
+Response:
+```json
+{
+  "status": "revoked",
+  "lease_id": "cap_abc123",
+  "revoked_at": "2026-05-26T12:05:00Z",
+  "revoked_reason": "security incident"
+}
+```
+
+After revocation, any action request using that lease will be denied with `capability_revoked` reason.
+
+### Runtime Behavior
+
+When a request includes a capability lease:
+
+1. **Revocation check**: If the lease is in the revocation store, the request is denied immediately
+2. **Expiry check**: If the lease has expired, the request is denied
+3. **Scope validation**: If the action or resource doesn't match the lease scope, the request is denied
+4. **Policy evaluation**: If the lease passes validation, normal policy evaluation proceeds
+
+### Capability Lease Limitations
+
+- **In-memory only**: Tracked leases are local to this gateway and lost on restart
+- **Per-gateway**: Each gateway maintains its own lease state
+- **No automatic cleanup**: Revoked leases remain in the store until restart
+- **No persistent lease state**: Leases must be re-tracked after gateway restart

@@ -23,6 +23,7 @@ const (
 	ReasonCapabilityExpiry      ReasonCode = "capability_expired"
 	ReasonCapabilityNotAllowed  ReasonCode = "capability_not_allowed"
 	ReasonCapabilityScope       ReasonCode = "capability_scope_mismatch"
+	ReasonCapabilityRevoked     ReasonCode = "capability_revoked"
 	ReasonActionNotAllowed      ReasonCode = "action_not_allowed"
 	ReasonResourceNotCovered    ReasonCode = "resource_not_covered"
 	ReasonMissingIdentity       ReasonCode = "missing_identity"

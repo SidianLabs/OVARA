@@ -15,10 +15,15 @@ import (
 	"ovara.runtime.gateway/internal/trust"
 )
 
+type RevocationChecker interface {
+	IsRevoked(leaseID string) bool
+}
+
 type Evaluator struct {
-	policyStore *policy.Store
-	validator   *identity.Validator
-	shieldStore *trust.ShieldStore
+	policyStore       *policy.Store
+	validator         *identity.Validator
+	shieldStore       *trust.ShieldStore
+	revocationChecker RevocationChecker
 }
 
 func New(p *policy.Store) *Evaluator {
@@ -35,6 +40,10 @@ func NewWithShield(p *policy.Store, ss *trust.ShieldStore) *Evaluator {
 		validator:   identity.NewValidator(),
 		shieldStore: ss,
 	}
+}
+
+func (e *Evaluator) SetRevocationChecker(rc RevocationChecker) {
+	e.revocationChecker = rc
 }
 
 func (e *Evaluator) PolicyVersion() string {
@@ -124,16 +133,23 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 	}
 
 	if decision == "" && req.CapabilityLease != nil {
-		leaseResult := e.validator.ValidateCapabilityLease(req.CapabilityLease)
-		if !leaseResult.Valid {
-			for _, reason := range leaseResult.Reasons {
-				if strings.Contains(reason, "expiry") {
-					reasons = append(reasons, models.ReasonCapabilityExpiry)
-				} else {
-					reasons = append(reasons, models.ReasonCapabilityNotAllowed)
-				}
-			}
+		if e.revocationChecker != nil && e.revocationChecker.IsRevoked(req.CapabilityLease.LeaseID) {
+			reasons = append(reasons, models.ReasonCapabilityRevoked)
 			decision = models.DecisionDeny
+		}
+
+		if decision == "" {
+			leaseResult := e.validator.ValidateCapabilityLease(req.CapabilityLease)
+			if !leaseResult.Valid {
+				for _, reason := range leaseResult.Reasons {
+					if strings.Contains(reason, "expiry") {
+						reasons = append(reasons, models.ReasonCapabilityExpiry)
+					} else {
+						reasons = append(reasons, models.ReasonCapabilityNotAllowed)
+					}
+				}
+				decision = models.DecisionDeny
+			}
 		}
 
 		if decision == "" {

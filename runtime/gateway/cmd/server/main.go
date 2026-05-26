@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ovara.runtime.gateway/internal/approval"
+	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/evaluator"
@@ -219,6 +220,12 @@ func main() {
 	policyHandler.SetEventStore(eventStore)
 	policyHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 
+	capabilitiesStore := capabilities.NewInMemoryStore()
+	capabilitiesHandler := handlers.NewCapabilitiesHandler(capabilitiesStore)
+	capabilitiesHandler.SetEventStore(eventStore)
+	capabilitiesHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	eval.SetRevocationChecker(capabilitiesHandler)
+
 	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
 	approvalService := approval.NewService(approvalStore)
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
@@ -243,6 +250,7 @@ func main() {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	policyHandler.RegisterRoutes(mux)
+	capabilitiesHandler.RegisterRoutes(mux)
 	approvalHandler.RegisterRoutes(mux)
 	receiptHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)

@@ -39,6 +39,8 @@ const (
 	EventTypePolicyRolledBack         = "policy.rollback"
 	EventTypePolicyRestored           = "policy.restored"
 	EventTypePolicyHistoryCreated      = "policy.history_created"
+	EventTypeCapabilityTracked        = "capability.tracked"
+	EventTypeCapabilityRevoked        = "capability.revoked"
 )
 
 type Event struct {
