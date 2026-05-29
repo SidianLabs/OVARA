@@ -16,12 +16,14 @@ import (
 )
 
 type ContinuationHandler struct {
-	store        continuation.Store
-	execStore    execution.Store
-	registry     *execution.ExecutorRegistry
-	eventStore   events.Store
-	gatewayID    string
-	orchestrator *continuation.Orchestrator
+	store            continuation.Store
+	execStore        execution.Store
+	registry         *execution.ExecutorRegistry
+	eventStore       events.Store
+	gatewayID        string
+	orchestrator     *continuation.Orchestrator
+	bulkMaxBatchCap  int
+	bulkDefaultBatch int
 }
 
 func NewContinuationHandler(store continuation.Store) *ContinuationHandler {
@@ -55,6 +57,11 @@ func (h *ContinuationHandler) SetOrchestrator(orch *continuation.Orchestrator) {
 	h.orchestrator = orch
 }
 
+func (h *ContinuationHandler) SetBulkConfig(maxCap, defaultBatch int) {
+	h.bulkMaxBatchCap = maxCap
+	h.bulkDefaultBatch = defaultBatch
+}
+
 func (h *ContinuationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/continuations", h.handleList)
 	mux.HandleFunc("GET /v1/continuations/{id}", h.handleGet)
@@ -67,6 +74,8 @@ func (h *ContinuationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/continuations/{id}/cancel", h.handleCancel)
 	mux.HandleFunc("POST /v1/continuations/{id}/retry", h.handleRetry)
 	mux.HandleFunc("POST /v1/continuations/{id}/execute", h.handleExecute)
+	mux.HandleFunc("POST /v1/continuations/retry", h.handleBulkRetry)
+	mux.HandleFunc("POST /v1/continuations/cancel", h.handleBulkCancel)
 }
 
 func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -735,4 +744,440 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
+}
+
+type bulkRetryResult struct {
+	ContinuationID string `json:"continuation_id"`
+	DecisionID     string `json:"decision_id"`
+	State          string `json:"state"`
+	RetryCount     int    `json:"retry_count,omitempty"`
+	MaxRetries     int    `json:"max_retries,omitempty"`
+}
+
+type bulkSkip struct {
+	ContinuationID string `json:"continuation_id"`
+	DecisionID     string `json:"decision_id"`
+	State          string `json:"state"`
+	Reason         string `json:"reason"`
+}
+
+type bulkRetryResponse struct {
+	Matched  int              `json:"matched"`
+	Acted    int              `json:"acted"`
+	Skipped  int              `json:"skipped"`
+	DryRun   bool             `json:"dry_run"`
+	Items    []bulkRetryResult `json:"acted_items,omitempty"`
+	SkippedItems []bulkSkip   `json:"skipped_items,omitempty"`
+}
+
+type bulkCancelResult struct {
+	ContinuationID string `json:"continuation_id"`
+	DecisionID     string `json:"decision_id"`
+	State          string `json:"state"`
+}
+
+type bulkCancelResponse struct {
+	Matched     int                 `json:"matched"`
+	Acted       int                 `json:"acted"`
+	Skipped     int                 `json:"skipped"`
+	DryRun      bool                `json:"dry_run"`
+	Items       []bulkCancelResult  `json:"acted_items,omitempty"`
+	SkippedItems []bulkSkip        `json:"skipped_items,omitempty"`
+}
+
+func (h *ContinuationHandler) handleBulkRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+	confirm := r.URL.Query().Get("confirm") == "true"
+
+	maxBatch := h.bulkMaxBatchCap
+	if maxBatch <= 0 {
+		maxBatch = 100
+	}
+	defaultBatch := h.bulkDefaultBatch
+	if defaultBatch <= 0 {
+		defaultBatch = 20
+	}
+
+	batchLimit := parseLimit(r, defaultBatch, maxBatch)
+
+	filter := r.URL.Query()
+	stateFilter := filter.Get("state")
+	actionTypeFilter := filter.Get("action_type")
+	environmentFilter := filter.Get("environment")
+	retryableFilter := filter.Get("retryable")
+	createdBefore := filter.Get("created_before")
+	createdAfter := filter.Get("created_after")
+	sortOrder := filter.Get("sort")
+
+	continuations := h.buildFilteredList(r, stateFilter, actionTypeFilter, environmentFilter, retryableFilter, createdBefore, createdAfter, sortOrder)
+
+	matched := len(continuations)
+	if matched == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(bulkRetryResponse{
+			Matched:  0,
+			Acted:    0,
+			Skipped:  0,
+			DryRun:   dryRun,
+		})
+		return
+	}
+
+	if matched > batchLimit && !confirm {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":          "batch size exceeds cap",
+			"matched":        matched,
+			"batch_limit":    batchLimit,
+			"max_batch_cap":  maxBatch,
+			"message":        "re-run with confirm=true to proceed anyway",
+		})
+		return
+	}
+
+	var acted []bulkRetryResult
+	var skippedItems []bulkSkip
+
+	for _, cnt := range continuations {
+		if !cnt.CanRetry() {
+			reason := h.skipReasonForRetry(cnt)
+			skippedItems = append(skippedItems, bulkSkip{
+				ContinuationID: cnt.ContinuationID,
+				DecisionID:     cnt.DecisionID,
+				State:          string(cnt.State),
+				Reason:         reason,
+			})
+			continue
+		}
+		acted = append(acted, bulkRetryResult{
+			ContinuationID: cnt.ContinuationID,
+			DecisionID:     cnt.DecisionID,
+			State:          string(cnt.State),
+			RetryCount:     cnt.RetryCount,
+			MaxRetries:     cnt.MaxRetries,
+		})
+	}
+
+	if dryRun {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(bulkRetryResponse{
+			Matched:      matched,
+			Acted:        len(acted),
+			Skipped:      len(skippedItems),
+			DryRun:       true,
+			Items:        acted,
+			SkippedItems: skippedItems,
+		})
+		return
+	}
+
+	for _, item := range acted {
+		cnt, found := h.store.Get(item.ContinuationID)
+		if !found {
+			continue
+		}
+		cnt.Retry()
+		h.store.Update(cnt)
+
+		if h.eventStore != nil {
+			evt := events.NewEvent(events.EventTypeBatchRetryExecuted).
+				WithGatewayID(h.gatewayID).
+				WithDecisionID(cnt.DecisionID).
+				WithApprovalID(cnt.ApprovalID).
+				WithAgentID(cnt.AgentID).
+				WithContinuationID(cnt.ContinuationID).
+				WithPayload(map[string]any{
+					"continuation_id": cnt.ContinuationID,
+					"state":          string(cnt.State),
+					"retry_count":    cnt.RetryCount,
+					"max_retries":    cnt.MaxRetries,
+				})
+			h.eventStore.Append(evt)
+		}
+	}
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeBatchRetryExecuted).
+			WithGatewayID(h.gatewayID).
+			WithPayload(map[string]any{
+				"action":         "bulk_retry",
+				"dry_run":        false,
+				"total_matched":  matched,
+				"total_acted":    len(acted),
+				"total_skipped":  len(skippedItems),
+				"continuation_ids": func() []string {
+					ids := make([]string, len(acted))
+					for i, a := range acted {
+						ids[i] = a.ContinuationID
+					}
+					return ids
+				}(),
+			})
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(bulkRetryResponse{
+		Matched:      matched,
+		Acted:        len(acted),
+		Skipped:      len(skippedItems),
+		DryRun:       false,
+		Items:        acted,
+		SkippedItems: skippedItems,
+	})
+}
+
+func (h *ContinuationHandler) handleBulkCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+	confirm := r.URL.Query().Get("confirm") == "true"
+
+	maxBatch := h.bulkMaxBatchCap
+	if maxBatch <= 0 {
+		maxBatch = 100
+	}
+	defaultBatch := h.bulkDefaultBatch
+	if defaultBatch <= 0 {
+		defaultBatch = 20
+	}
+
+	batchLimit := parseLimit(r, defaultBatch, maxBatch)
+
+	filter := r.URL.Query()
+	stateFilter := filter.Get("state")
+	actionTypeFilter := filter.Get("action_type")
+	environmentFilter := filter.Get("environment")
+	createdBefore := filter.Get("created_before")
+	createdAfter := filter.Get("created_after")
+	sortOrder := filter.Get("sort")
+
+	continuations := h.buildFilteredList(r, stateFilter, actionTypeFilter, environmentFilter, "", createdBefore, createdAfter, sortOrder)
+
+	matched := len(continuations)
+	if matched == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(bulkCancelResponse{
+			Matched:  0,
+			Acted:    0,
+			Skipped:  0,
+			DryRun:   dryRun,
+		})
+		return
+	}
+
+	if matched > batchLimit && !confirm {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":          "batch size exceeds cap",
+			"matched":        matched,
+			"batch_limit":    batchLimit,
+			"max_batch_cap":  maxBatch,
+			"message":        "re-run with confirm=true to proceed anyway",
+		})
+		return
+	}
+
+	var acted []bulkCancelResult
+	var skippedItems []bulkSkip
+
+	for _, cnt := range continuations {
+		if !cnt.CanCancel() {
+			reason := "cannot cancel: state " + string(cnt.State) + " (only queued/ready/resumed can be cancelled)"
+			skippedItems = append(skippedItems, bulkSkip{
+				ContinuationID: cnt.ContinuationID,
+				DecisionID:     cnt.DecisionID,
+				State:          string(cnt.State),
+				Reason:         reason,
+			})
+			continue
+		}
+		acted = append(acted, bulkCancelResult{
+			ContinuationID: cnt.ContinuationID,
+			DecisionID:     cnt.DecisionID,
+			State:          string(cnt.State),
+		})
+	}
+
+	if dryRun {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(bulkCancelResponse{
+			Matched:      matched,
+			Acted:        len(acted),
+			Skipped:      len(skippedItems),
+			DryRun:       true,
+			Items:        acted,
+			SkippedItems: skippedItems,
+		})
+		return
+	}
+
+	for _, item := range acted {
+		cnt, found := h.store.Get(item.ContinuationID)
+		if !found {
+			continue
+		}
+		cnt.MarkCancelled()
+		h.store.Update(cnt)
+
+		if h.eventStore != nil {
+			evt := events.NewEvent(events.EventTypeBatchCancelExecuted).
+				WithGatewayID(h.gatewayID).
+				WithDecisionID(cnt.DecisionID).
+				WithApprovalID(cnt.ApprovalID).
+				WithAgentID(cnt.AgentID).
+				WithContinuationID(cnt.ContinuationID).
+				WithPayload(map[string]any{
+					"continuation_id": cnt.ContinuationID,
+					"state":           string(cnt.State),
+				})
+			h.eventStore.Append(evt)
+		}
+	}
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypeBatchCancelExecuted).
+			WithGatewayID(h.gatewayID).
+			WithPayload(map[string]any{
+				"action":           "bulk_cancel",
+				"dry_run":          false,
+				"total_matched":    matched,
+				"total_acted":      len(acted),
+				"total_skipped":    len(skippedItems),
+				"continuation_ids": func() []string {
+					ids := make([]string, len(acted))
+					for i, a := range acted {
+						ids[i] = a.ContinuationID
+					}
+					return ids
+				}(),
+			})
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(bulkCancelResponse{
+		Matched:      matched,
+		Acted:        len(acted),
+		Skipped:      len(skippedItems),
+		DryRun:       false,
+		Items:        acted,
+		SkippedItems: skippedItems,
+	})
+}
+
+func (h *ContinuationHandler) buildFilteredList(r *http.Request, stateFilter, actionTypeFilter, environmentFilter, retryableFilter, createdBefore, createdAfter, sortOrder string) []*continuation.Continuation {
+	filter := r.URL.Query()
+	decisionFilter := filter.Get("decision_id")
+	agentFilter := filter.Get("agent_id")
+	approvalIDFilter := filter.Get("approval_id")
+
+	var continuations []*continuation.Continuation
+
+	if decisionFilter != "" {
+		continuations = h.store.ListByDecision(decisionFilter)
+	} else if agentFilter != "" {
+		continuations = h.store.ListByAgent(agentFilter)
+	} else if stateFilter != "" {
+		continuations = h.store.ListByState(continuation.State(stateFilter))
+	} else {
+		continuations = h.store.ListAll()
+	}
+
+	if approvalIDFilter != "" {
+		filtered := make([]*continuation.Continuation, 0, len(continuations))
+		for _, c := range continuations {
+			if c.ApprovalID == approvalIDFilter {
+				filtered = append(filtered, c)
+			}
+		}
+		continuations = filtered
+	}
+
+	if environmentFilter != "" {
+		filtered := make([]*continuation.Continuation, 0, len(continuations))
+		for _, c := range continuations {
+			if c.Environment == environmentFilter {
+				filtered = append(filtered, c)
+			}
+		}
+		continuations = filtered
+	}
+
+	if actionTypeFilter != "" {
+		filtered := make([]*continuation.Continuation, 0, len(continuations))
+		for _, c := range continuations {
+			if c.ActionType == actionTypeFilter {
+				filtered = append(filtered, c)
+			}
+		}
+		continuations = filtered
+	}
+
+	if retryableFilter == "true" || retryableFilter == "false" {
+		wantRetryable := retryableFilter == "true"
+		filtered := make([]*continuation.Continuation, 0, len(continuations))
+		for _, c := range continuations {
+			if c.CanRetry() == wantRetryable {
+				filtered = append(filtered, c)
+			}
+		}
+		continuations = filtered
+	}
+
+	if createdBefore != "" {
+		if t, err := time.Parse(time.RFC3339, createdBefore); err == nil {
+			filtered := make([]*continuation.Continuation, 0, len(continuations))
+			for _, c := range continuations {
+				if c.CreatedAt.Before(t) || c.CreatedAt.Equal(t) {
+					filtered = append(filtered, c)
+				}
+			}
+			continuations = filtered
+		}
+	}
+
+	if createdAfter != "" {
+		if t, err := time.Parse(time.RFC3339, createdAfter); err == nil {
+			filtered := make([]*continuation.Continuation, 0, len(continuations))
+			for _, c := range continuations {
+				if c.CreatedAt.After(t) {
+					filtered = append(filtered, c)
+				}
+			}
+			continuations = filtered
+		}
+	}
+
+	ascending := sortAscending(sortOrder)
+	sort.Slice(continuations, func(i, j int) bool {
+		a, b := continuations[i], continuations[j]
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			if ascending {
+				return a.ContinuationID < b.ContinuationID
+			}
+			return a.ContinuationID > b.ContinuationID
+		}
+		if ascending {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return b.CreatedAt.Before(a.CreatedAt)
+	})
+
+	return continuations
+}
+
+func (h *ContinuationHandler) skipReasonForRetry(cnt *continuation.Continuation) string {
+	info := cnt.RetryInfo()
+	return info.Reason
 }

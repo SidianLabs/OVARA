@@ -50,6 +50,8 @@ type Config struct {
 	CapabilitiesHistoryFile      string   `json:"capabilities_history_file"`
 	OperatorTokens              []string `json:"operator_tokens"`
 	AuthEnabled                 bool     `json:"auth_enabled"`
+	BulkMaxBatchCap             int      `json:"bulk_max_batch_cap"`
+	BulkDefaultBatch            int      `json:"bulk_default_batch"`
 }
 
 type Enrollment struct {
@@ -118,6 +120,8 @@ func Default() *Config {
 		CapabilitiesHistoryFile:     "var/data/capabilities_history.jsonl",
 		OperatorTokens:            []string{},
 		AuthEnabled:              false,
+		BulkMaxBatchCap:          100,
+		BulkDefaultBatch:         20,
 	}
 }
 

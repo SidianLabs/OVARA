@@ -42,6 +42,10 @@ const (
 	EventTypeCapabilityTracked        = "capability.tracked"
 	EventTypeCapabilityRevoked        = "capability.revoked"
 	EventTypeCapabilityUsed           = "capability.used"
+	EventTypeBatchRetryExecuted       = "batch.retry.executed"
+	EventTypeBatchRetrySkipped        = "batch.retry.skipped"
+	EventTypeBatchCancelExecuted      = "batch.cancel.executed"
+	EventTypeBatchCancelSkipped       = "batch.cancel.skipped"
 )
 
 type Event struct {

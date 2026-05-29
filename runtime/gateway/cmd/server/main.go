@@ -363,6 +363,7 @@ func main() {
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	orchestrator.Start()
 	continuationHandler.SetOrchestrator(orchestrator)
+	continuationHandler.SetBulkConfig(cfg.BulkMaxBatchCap, cfg.BulkDefaultBatch)
 	h.SetOrchestrator(orchestrator)
 	log.Printf("execution orchestrator started (poll_interval=2s, action_types=[shell, exec, git.push, git.pull, git.fetch, git.checkout])")
 
