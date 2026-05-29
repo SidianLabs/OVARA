@@ -52,6 +52,11 @@ type Config struct {
 	AuthEnabled                 bool     `json:"auth_enabled"`
 	BulkMaxBatchCap             int      `json:"bulk_max_batch_cap"`
 	BulkDefaultBatch            int      `json:"bulk_default_batch"`
+
+	SLAApprovalMaxAgeMin          int              `json:"sla_approval_max_age_min"`
+	SLARetryableMaxAgeMin         int              `json:"sla_retryable_max_age_min"`
+	SLAPendingApprovalMaxAgeMin   int              `json:"sla_pending_approval_max_age_min"`
+	SLAThresholds                 map[string]int   `json:"sla_thresholds"`
 }
 
 type Enrollment struct {
@@ -122,6 +127,11 @@ func Default() *Config {
 		AuthEnabled:              false,
 		BulkMaxBatchCap:          100,
 		BulkDefaultBatch:         20,
+
+		SLAApprovalMaxAgeMin:        30,
+		SLARetryableMaxAgeMin:       60,
+		SLAPendingApprovalMaxAgeMin:  30,
+		SLAThresholds:               map[string]int{},
 	}
 }
 

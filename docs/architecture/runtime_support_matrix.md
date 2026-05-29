@@ -396,6 +396,63 @@ Fields are conditionally present based on what services are wired into the handl
 **Approval summary fields:**
 - `oldest_pending_at` — RFC3339 timestamp of the oldest pending approval (omitted if no pending approvals)
 
+### SLA Health Diagnostics
+
+The runtime tracks SLA health via configurable thresholds and exposes breach counts in two endpoints:
+
+#### Config fields
+
+| Config | JSON key | Default | Description |
+|--------|----------|---------|-------------|
+| `SLAApprovalMaxAgeMin` | `sla_approval_max_age_min` | `30` | Max age (minutes) for pending approvals before breaching |
+| `SLARetryableMaxAgeMin` | `sla_retryable_max_age_min` | `60` | Max age (minutes) for retryable continuations before breaching |
+| `SLAPendingApprovalMaxAgeMin` | `sla_pending_approval_max_age_min` | `30` | Alias for `SLAApprovalMaxAgeMin` |
+| `SLAThresholds` | `sla_thresholds` | `{}` | Per-environment or per-action_type override map (future) |
+
+#### GET /v1/runtime/status — `sla` section
+
+When the gateway config has SLA thresholds configured (or defaults are in effect), `GET /v1/runtime/status` includes an `sla` object:
+
+```json
+{
+  "sla": {
+    "approvals_breaching": 2,
+    "retryable_breaching": 1,
+    "approval_threshold_min": 30,
+    "retryable_threshold_min": 60
+  }
+}
+```
+
+- `approvals_breaching` — count of pending approvals older than `sla_approval_max_age_min`
+- `retryable_breaching` — count of retryable continuations (executed/resumed with retries remaining) older than `sla_retryable_max_age_min`
+- `approval_threshold_min` — effective approval threshold in minutes
+- `retryable_threshold_min` — effective retryable threshold in minutes
+
+#### GET /v1/runtime/health — focused health view
+
+A lightweight health endpoint for load balancers and orchestrators:
+
+```json
+{
+  "healthy": true,
+  "sla": {
+    "approvals_breaching": 0,
+    "retryable_breaching": 0,
+    "approval_threshold_min": 30,
+    "retryable_threshold_min": 60
+  }
+}
+```
+
+`healthy` is `false` when:
+- `maintenance_mode` is active (with `reason: "maintenance_mode"`)
+- Note: SLA breaches are surfaced in the `sla` object but do **not** by themselves set `healthy=false` — they are informational; it is the operator's responsibility to interpret breach counts.
+
+**Why `GET /v1/runtime/health` and not extending `status`?**
+
+`/v1/runtime/status` is already a large aggregate snapshot (policy version, cache stats, per-store persistence info, queue stats). Adding per-breaching counts there layers the data on top of the existing age signals, keeping breach data near the data it relates to. `/v1/runtime/health` is a purpose-built, minimal endpoint suitable for `HEAD`/`GET` from load balancers without pulling the full aggregate dump. This follows the "least-overlapping" principle: health is a single boolean + small sla object; status is a full diagnostic snapshot.
+
 ---
 
 ## Continuation States

@@ -221,6 +221,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runtime/snapshot", h.handleSnapshot)
 	mux.HandleFunc("GET /v1/runtime/trace", h.handleTrace)
 	mux.HandleFunc("GET /v1/runtime/summary", h.handleSummary)
+	mux.HandleFunc("GET /v1/runtime/health", h.handleGetHealth)
 	mux.HandleFunc("GET /v1/audit/export", h.handleAuditExport)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
@@ -586,8 +587,90 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	status["maintenance_mode"] = h.maintenanceMode
 
+	h.addSLABreaches(status)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+func (h *Handler) handleGetHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	status := map[string]any{}
+
+	h.addSLABreaches(status)
+
+	status["maintenance_mode"] = h.maintenanceMode
+
+	if h.orchestrator != nil {
+		status["queue_paused"] = h.orchestrator.IsPaused()
+	}
+
+	health := map[string]any{
+		"healthy": true,
+		"sla":     status["sla"],
+	}
+	if status["maintenance_mode"] == true {
+		health["healthy"] = false
+		health["reason"] = "maintenance_mode"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(health)
+}
+
+func (h *Handler) addSLABreaches(status map[string]any) {
+	if h.config == nil {
+		return
+	}
+
+	var approvalBreachCount int
+	var retryableBreachCount int
+
+	approvalThreshold := h.config.SLAApprovalMaxAgeMin
+	if approvalThreshold <= 0 {
+		approvalThreshold = h.config.SLAPendingApprovalMaxAgeMin
+	}
+	if approvalThreshold <= 0 {
+		approvalThreshold = 30
+	}
+	approvalDuration := time.Duration(approvalThreshold) * time.Minute
+
+	retryableThreshold := h.config.SLARetryableMaxAgeMin
+	if retryableThreshold <= 0 {
+		retryableThreshold = 60
+	}
+	retryableDuration := time.Duration(retryableThreshold) * time.Minute
+
+	now := time.Now().UTC()
+
+	if h.approvalSvc != nil {
+		pending := h.approvalSvc.ListPending()
+		for _, a := range pending {
+			if now.Sub(a.CreatedAt) > approvalDuration {
+				approvalBreachCount++
+			}
+		}
+	}
+
+	if h.continuationStore != nil {
+		all := h.continuationStore.ListAll()
+		for _, c := range all {
+			if c.CanRetry() && now.Sub(c.CreatedAt) > retryableDuration {
+				retryableBreachCount++
+			}
+		}
+	}
+
+	status["sla"] = map[string]any{
+		"approvals_breaching": approvalBreachCount,
+		"retryable_breaching": retryableBreachCount,
+		"approval_threshold_min": approvalThreshold,
+		"retryable_threshold_min": retryableThreshold,
+	}
 }
 
 func (h *Handler) handleIntegrity(w http.ResponseWriter, r *http.Request) {
