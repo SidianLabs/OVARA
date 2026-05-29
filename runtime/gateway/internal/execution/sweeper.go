@@ -1,16 +1,18 @@
 package execution
 
 import (
+	"log"
 	"sync"
 	"time"
 )
 
 type Sweeper struct {
-	store      Store
+	store       Store
 	intervalSec int
-	mu         sync.Mutex
-	stopChan   chan struct{}
-	running    bool
+	mu          sync.Mutex
+	stopMu      sync.Mutex
+	stopChan    chan struct{}
+	running     bool
 }
 
 func NewSweeper(store Store) *Sweeper {
@@ -42,15 +44,17 @@ func (s *Sweeper) Start(intervalSec int) {
 	ticker := time.NewTicker(time.Duration(s.intervalSec) * time.Second)
 	go func() {
 		for {
+			s.mu.Lock()
+			if !s.running {
+				s.mu.Unlock()
+				ticker.Stop()
+				return
+			}
+			s.mu.Unlock()
 			select {
 			case <-ticker.C:
 				s.Sweep()
 			case <-s.stopChan:
-				ticker.Stop()
-				s.mu.Lock()
-				s.running = false
-				s.mu.Unlock()
-				return
 			}
 		}
 	}()
@@ -58,18 +62,26 @@ func (s *Sweeper) Start(intervalSec int) {
 
 func (s *Sweeper) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
-	close(s.stopChan)
 	s.running = false
-	s.stopChan = make(chan struct{})
+	s.mu.Unlock()
+	close(s.stopChan)
 }
 
 func (s *Sweeper) Sweep() (removed int, err error) {
 	if fb, ok := s.store.(*FileBackedStore); ok {
-		return fb.Sweep()
+		removed, err = fb.Sweep()
+		if err != nil {
+			log.Printf("SWEEP execution error=%v", err)
+			return 0, err
+		}
+		if removed > 0 {
+			log.Printf("SWEEP execution removed=%d", removed)
+		}
+		return removed, nil
 	}
 	return 0, nil
 }

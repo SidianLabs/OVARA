@@ -7,6 +7,8 @@
 *.out
 *.log
 var/log/*.jsonl
+runtime/gateway/var/data/*.jsonl
+runtime/gateway/var/log/
 .idea/
 .vscode/
 .DS_Store

@@ -2,6 +2,7 @@ package continuation
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ type Orchestrator struct {
 	running     bool
 	runMu       sync.Mutex
 	wg          sync.WaitGroup
+	logger      *log.Logger
 }
 
 func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
@@ -31,6 +33,7 @@ func NewOrchestrator(store Store, execStore execution.Store, registry *execution
 		registry:     registry,
 		pollInterval: 2 * time.Second,
 		stopChan:    make(chan struct{}),
+		logger:      log.Default(),
 	}
 }
 
@@ -126,6 +129,15 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 		return
 	}
 
+	if o.registry != nil {
+		if _, ok := o.registry.Get(cnt.ActionType); !ok {
+			o.logf("SKIP no executor registered for action_type=%s continuation_id=%s", cnt.ActionType, cnt.ContinuationID)
+			return
+		}
+	}
+
+	o.logf("EXEC pickup action_type=%s continuation_id=%s resource=%q", cnt.ActionType, cnt.ContinuationID, cnt.Resource)
+
 	cnt.State = StateReady
 	o.store.Update(cnt)
 
@@ -166,15 +178,23 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 	case execution.StateSucceeded:
 		evtType = events.EventTypeExecutionSucceeded
 		cnt.MarkExecuted()
+		o.logf("EXEC completed=success action_type=%s continuation_id=%s execution_id=%s exit_code=%d",
+			cnt.ActionType, cnt.ContinuationID, exe.ExecutionID, exe.ExitCode)
 	case execution.StateTimedOut:
 		evtType = events.EventTypeExecutionTimedOut
 		cnt.State = StateExecuted
+		o.logf("EXEC completed=timeout action_type=%s continuation_id=%s execution_id=%s timeout_s=%d",
+			cnt.ActionType, cnt.ContinuationID, exe.ExecutionID, exe.TimeoutSeconds)
 	case execution.StateFailed:
 		evtType = events.EventTypeExecutionFailed
 		cnt.State = StateExecuted
+		o.logf("EXEC completed=failed action_type=%s continuation_id=%s execution_id=%s exit_code=%d error=%q",
+			cnt.ActionType, cnt.ContinuationID, exe.ExecutionID, exe.ExitCode, exe.Error)
 	default:
 		evtType = "execution.completed"
 		cnt.State = StateExecuted
+		o.logf("EXEC completed=%s action_type=%s continuation_id=%s execution_id=%s",
+			exe.State, cnt.ActionType, cnt.ContinuationID, exe.ExecutionID)
 	}
 
 	o.store.Update(cnt)
@@ -204,4 +224,14 @@ func (o *Orchestrator) QueueStats() (queued, running int) {
 		running = len(o.execStore.ListByState(execution.StateRunning))
 	}
 	return
+}
+
+func (o *Orchestrator) SetLogger(l *log.Logger) {
+	o.logger = l
+}
+
+func (o *Orchestrator) logf(format string, args ...any) {
+	if o.logger != nil {
+		o.logger.Printf(format, args...)
+	}
 }

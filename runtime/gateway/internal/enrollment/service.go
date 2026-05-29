@@ -164,6 +164,7 @@ func (s *localService) IsEnrolled() bool {
 }
 
 func (s *localService) StartHeartbeat(interval time.Duration) func() {
+	var stopOnce sync.Once
 	s.mu.Lock()
 	s.stopCh = make(chan struct{})
 	s.mu.Unlock()
@@ -182,12 +183,11 @@ func (s *localService) StartHeartbeat(interval time.Duration) func() {
 	}()
 
 	return func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.stopCh != nil {
+		stopOnce.Do(func() {
+			s.mu.Lock()
 			close(s.stopCh)
-			s.stopCh = nil
-		}
+			s.mu.Unlock()
+		})
 	}
 }
 

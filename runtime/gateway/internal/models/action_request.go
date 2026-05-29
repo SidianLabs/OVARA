@@ -9,17 +9,19 @@ type ActionType string
 
 const (
 	ActionTypeShell           ActionType = "shell"
-	ActionTypeExec            ActionType = "exec"
-	ActionTypeGitPush         ActionType = "git.push"
-	ActionTypeGitPull         ActionType = "git.pull"
-	ActionTypeGitForcePush    ActionType = "git.force_push"
-	ActionTypeGitHubPush      ActionType = "github.push"
-	ActionTypeGitHubPR        ActionType = "github.pr"
-	ActionTypeGitHubMerge     ActionType = "github.merge"
-	ActionTypeGitHubDelete    ActionType = "github.delete_branch"
-	ActionTypeCIDeploy        ActionType = "ci.deploy"
-	ActionTypeCIBuildTrigger  ActionType = "ci.build_trigger"
-	ActionTypeCIApproval      ActionType = "ci.approval"
+	ActionTypeExec           ActionType = "exec"
+	ActionTypeGitPush        ActionType = "git.push"
+	ActionTypeGitPull        ActionType = "git.pull"
+	ActionTypeGitFetch       ActionType = "git.fetch"
+	ActionTypeGitCheckout    ActionType = "git.checkout"
+	ActionTypeGitForcePush   ActionType = "git.force_push"
+	ActionTypeGitHubPush     ActionType = "github.push"
+	ActionTypeGitHubPR       ActionType = "github.pr"
+	ActionTypeGitHubMerge    ActionType = "github.merge"
+	ActionTypeGitHubDelete   ActionType = "github.delete_branch"
+	ActionTypeCIDeploy       ActionType = "ci.deploy"
+	ActionTypeCIBuildTrigger ActionType = "ci.build_trigger"
+	ActionTypeCIApproval     ActionType = "ci.approval"
 )
 
 type Environment string

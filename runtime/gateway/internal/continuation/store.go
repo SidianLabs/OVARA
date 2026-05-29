@@ -2,6 +2,7 @@ package continuation
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -35,6 +36,7 @@ type Continuation struct {
 	State         State     `json:"state"`
 	CreatedAt     time.Time `json:"created_at"`
 	ApprovedAt    *time.Time `json:"approved_at,omitempty"`
+	QueuedAt      *time.Time `json:"queued_at,omitempty"`
 	ResumedAt     *time.Time `json:"resumed_at,omitempty"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 	ExpiredAt     *time.Time `json:"expired_at,omitempty"`
@@ -58,7 +60,7 @@ func (c *Continuation) CanResume() bool {
 }
 
 func (c *Continuation) IsTerminal() bool {
-	return c.State == StateDenied || c.State == StateExpired || c.State == StateResumed || c.State == StateCancelled
+	return c.State == StateDenied || c.State == StateExpired || c.State == StateExecuted || c.State == StateCancelled
 }
 
 func NewContinuation(decisionID, actionType, resource string) *Continuation {
@@ -130,6 +132,9 @@ func (c *Continuation) WithMetadata(key string, value any) *Continuation {
 }
 
 func (c *Continuation) MarkApproved(resolvedBy string) {
+	if c.IsTerminal() {
+		return
+	}
 	c.State = StateApproved
 	c.ResolvedBy = resolvedBy
 	now := time.Now().UTC()
@@ -143,15 +148,38 @@ func (c *Continuation) MarkReady() {
 }
 
 func (c *Continuation) MarkDenied(resolvedBy, reason string) {
+	if c.IsTerminal() {
+		return
+	}
 	c.State = StateDenied
 	c.ResolvedBy = resolvedBy
 	c.DenyReason = reason
 }
 
 func (c *Continuation) MarkResumed() {
+	if c.IsTerminal() {
+		return
+	}
 	c.State = StateResumed
 	now := time.Now().UTC()
 	c.ResumedAt = &now
+}
+
+func (c *Continuation) Retry() bool {
+	if c.State != StateExecuted && c.State != StateResumed {
+		return false
+	}
+	if c.MaxRetries <= 0 {
+		return false
+	}
+	if c.RetryCount >= c.MaxRetries {
+		return false
+	}
+	c.State = StateResumed
+	c.RetryCount++
+	now := time.Now().UTC()
+	c.ResumedAt = &now
+	return true
 }
 
 func (c *Continuation) MarkExecuted() {
@@ -164,6 +192,8 @@ func (c *Continuation) MarkExecuted() {
 func (c *Continuation) MarkQueued() {
 	if c.State == StateApproved || c.State == StateReady {
 		c.State = StateQueued
+		now := time.Now().UTC()
+		c.QueuedAt = &now
 	}
 }
 
@@ -191,6 +221,58 @@ func (c *Continuation) CanRetry() bool {
 		return false
 	}
 	return c.RetryCount < c.MaxRetries
+}
+
+type RetryInfo struct {
+	CanRetry         bool   `json:"can_retry"`
+	RetryLimitReached bool   `json:"retry_limit_reached"`
+	RetriesRemaining  int    `json:"retries_remaining"`
+	Status           string `json:"status"`
+	Reason           string `json:"reason,omitempty"`
+}
+
+func (c *Continuation) RetryInfo() RetryInfo {
+	info := RetryInfo{
+		CanRetry:          c.CanRetry(),
+		RetryLimitReached: false,
+		RetriesRemaining:  0,
+	}
+
+	if c.MaxRetries > 0 {
+		info.RetriesRemaining = c.MaxRetries - c.RetryCount
+		if info.RetriesRemaining < 0 {
+			info.RetriesRemaining = 0
+		}
+	}
+
+	switch {
+	case c.State == StateDenied || c.State == StateExpired || c.State == StateCancelled:
+		info.Status = "terminal"
+		info.Reason = "continuation is in terminal state: " + string(c.State)
+	case c.State == StateExecuted || c.State == StateResumed:
+		if c.MaxRetries <= 0 {
+			info.Status = "disabled"
+			info.Reason = "max_retries is 0, retry disabled"
+		} else if c.RetryCount >= c.MaxRetries {
+			info.Status = "exhausted"
+			info.Reason = "retry limit reached (retry_count=" + strconv.Itoa(c.RetryCount) + ", max_retries=" + strconv.Itoa(c.MaxRetries) + ")"
+			info.RetryLimitReached = true
+		} else {
+			info.Status = "retryable"
+			info.Reason = "execution completed, retry available"
+		}
+	case c.State == StateApproved || c.State == StateQueued || c.State == StateReady:
+		info.Status = "not_needed"
+		info.Reason = "continuation has not been executed yet"
+	case c.State == StateEscalated:
+		info.Status = "pending_approval"
+		info.Reason = "continuation awaiting approval"
+	default:
+		info.Status = "unknown"
+		info.Reason = "state: " + string(c.State)
+	}
+
+	return info
 }
 
 func (c *Continuation) MarkExpired() {

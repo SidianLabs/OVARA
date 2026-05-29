@@ -1,8 +1,10 @@
 package capabilities
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -333,4 +335,47 @@ func TestFileStore_NotFound(t *testing.T) {
 	if ok {
 		t.Errorf("expected revoke to fail for nonexistent")
 	}
+}
+
+func TestFileStore_ConcurrentTrackRevokeTouch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "caps.json")
+
+	store, err := NewFileBackedStore(path, 200, 0)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			lease := &models.CapabilityLease{
+				LeaseID:         fmt.Sprintf("cap_concurrent_%d", id),
+				Issuer:          "admin",
+				Subject:         fmt.Sprintf("agent-%d", id),
+				AllowedActions: []string{"shell", "git.pull"},
+				ResourceScope:   "*",
+				Expiry:          time.Now().Add(1 * time.Hour),
+				DelegationDepth: 1,
+			}
+			store.Track(lease, "gw_test")
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			leaseID := fmt.Sprintf("cap_concurrent_%d", id)
+			store.Revoke(leaseID, "test revocation")
+			store.Touch(leaseID)
+			store.Get(leaseID)
+			store.List()
+		}(i)
+	}
+	wg.Wait()
+	time.Sleep(50 * time.Millisecond)
 }

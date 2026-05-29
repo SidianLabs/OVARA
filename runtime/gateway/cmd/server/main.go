@@ -336,6 +336,7 @@ func main() {
 
 	execHandler := handlers.NewExecutionHandler(execStore)
 	execHandler.SetExecutor(shellExec)
+	execHandler.SetContinuationStore(continuationStore)
 	execHandler.RegisterRoutes(mux)
 
 	execRegistry := execution.NewExecutorRegistry()
@@ -344,6 +345,13 @@ func main() {
 	directExec := execution.NewDirectExecutor(60)
 	execRegistry.Register("exec", directExec)
 	log.Printf("direct executor configured (exec: action type)")
+
+	gitExec := execution.NewGitExecutor(60)
+	execRegistry.Register("git.push", gitExec)
+	execRegistry.Register("git.pull", gitExec)
+	execRegistry.Register("git.fetch", gitExec)
+	execRegistry.Register("git.checkout", gitExec)
+	log.Printf("git executor configured (git.push, git.pull, git.fetch, git.checkout)")
 
 	continuationHandler.SetExecutionStore(execStore)
 	continuationHandler.SetExecutorRegistry(execRegistry)
@@ -356,7 +364,8 @@ func main() {
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	orchestrator.Start()
 	continuationHandler.SetOrchestrator(orchestrator)
-	log.Printf("execution orchestrator started (poll_interval=2s, registered_types=[shell, exec])")
+	h.SetOrchestrator(orchestrator)
+	log.Printf("execution orchestrator started (poll_interval=2s, action_types=[shell, exec, git.push, git.pull, git.fetch, git.checkout])")
 
 	execSweeper := execution.NewSweeper(execStore)
 	execSweeper.Start(cfg.ExecutionSweepIntervalSec)

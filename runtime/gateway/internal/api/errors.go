@@ -38,3 +38,11 @@ func JSONInternalError(w http.ResponseWriter, message string) {
 func JSONMethodNotAllowed(w http.ResponseWriter) {
 	JSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 }
+
+func JSONConflict(w http.ResponseWriter, message string) {
+	JSONError(w, http.StatusConflict, message)
+}
+
+func JSONUnprocessableEntity(w http.ResponseWriter, message string) {
+	JSONError(w, http.StatusUnprocessableEntity, message)
+}

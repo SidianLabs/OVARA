@@ -9,6 +9,7 @@ type Store interface {
 	Create(req *ApprovalRequest) error
 	Get(id string) (*ApprovalRequest, error)
 	Update(req *ApprovalRequest) error
+	ListAll() []*ApprovalRequest
 	ListByStatus(status Status) []*ApprovalRequest
 	ListByDecision(decisionID string) []*ApprovalRequest
 }
@@ -55,6 +56,16 @@ func (s *InMemoryStore) Update(req *ApprovalRequest) error {
 	}
 	s.items[req.ApprovalID] = req
 	return nil
+}
+
+func (s *InMemoryStore) ListAll() []*ApprovalRequest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*ApprovalRequest, 0, len(s.items))
+	for _, req := range s.items {
+		result = append(result, req)
+	}
+	return result
 }
 
 func (s *InMemoryStore) ListByStatus(status Status) []*ApprovalRequest {

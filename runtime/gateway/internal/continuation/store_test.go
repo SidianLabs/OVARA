@@ -60,8 +60,8 @@ func TestContinuation_IsTerminal(t *testing.T) {
 	c2.MarkApproved("admin")
 	c2.MarkReady()
 	c2.MarkResumed()
-	if !c2.IsTerminal() {
-		t.Error("resumed should be terminal")
+	if c2.IsTerminal() {
+		t.Error("resumed should NOT be terminal (it is a retry intermediate state)")
 	}
 }
 
@@ -256,8 +256,8 @@ func TestContinuation_StateTransitionFlow(t *testing.T) {
 	if c.State != StateResumed {
 		t.Fatalf("after resume: state should be resumed, got %s", c.State)
 	}
-	if !c.IsTerminal() {
-		t.Error("resumed should be terminal")
+	if c.IsTerminal() {
+		t.Error("resumed should NOT be terminal (it is a retry intermediate state)")
 	}
 }
 

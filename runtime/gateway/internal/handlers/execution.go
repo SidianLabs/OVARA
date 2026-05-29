@@ -3,23 +3,30 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
+	"sort"
 
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/execution"
 )
 
 type ExecutionHandler struct {
-	store    execution.Store
-	executor *execution.ShellExecutor
+	store      execution.Store
+	execStore  execution.Store
+	contStore  continuation.Store
+	executor   *execution.ShellExecutor
 }
 
 func NewExecutionHandler(store execution.Store) *ExecutionHandler {
-	return &ExecutionHandler{store: store}
+	return &ExecutionHandler{store: store, execStore: store}
 }
 
 func (h *ExecutionHandler) SetExecutor(exec *execution.ShellExecutor) {
 	h.executor = exec
+}
+
+func (h *ExecutionHandler) SetContinuationStore(store continuation.Store) {
+	h.contStore = store
 }
 
 func (h *ExecutionHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -34,37 +41,76 @@ func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limitStr := r.URL.Query().Get("limit")
-	limit := 100
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
-			if limit > 1000 {
-				limit = 1000
-			}
-		}
-	}
+	limit := parseLimit(r, defaultListLimit, maxListLimit)
 
 	stateFilter := r.URL.Query().Get("state")
 	continuationFilter := r.URL.Query().Get("continuation_id")
+	decisionFilter := r.URL.Query().Get("decision_id")
+	actionTypeFilter := r.URL.Query().Get("action_type")
+	sortOrder := r.URL.Query().Get("sort")
 
 	var execs []*execution.Execution
 	if continuationFilter != "" {
 		execs = h.store.ListByContinuation(continuationFilter)
 	} else if stateFilter != "" {
 		execs = h.store.ListByState(execution.State(stateFilter))
+	} else if decisionFilter != "" {
+		execs = h.store.ListByDecision(decisionFilter)
 	} else {
 		execs = h.store.ListAll()
 	}
 
-	if limit > 0 && len(execs) > limit {
-		execs = execs[len(execs)-limit:]
+	if actionTypeFilter != "" {
+		filtered := make([]*execution.Execution, 0, len(execs))
+		for _, e := range execs {
+			if e.ActionType == actionTypeFilter {
+				filtered = append(filtered, e)
+			}
+		}
+		execs = filtered
 	}
+
+	// Sort after filters, before limiting. Default order is newest first
+	// (deterministic) so the limit window returns the most recent executions
+	// reproducibly; sort=oldest reverses it. Executions are ordered by
+	// StartedAt, with ExecutionID as the stable tiebreaker (also covering
+	// pending executions whose StartedAt is still zero).
+	ascending := sortAscending(sortOrder)
+	sort.Slice(execs, func(i, j int) bool {
+		a, b := execs[i], execs[j]
+		if a.StartedAt.Equal(b.StartedAt) {
+			if ascending {
+				return a.ExecutionID < b.ExecutionID
+			}
+			return a.ExecutionID > b.ExecutionID
+		}
+		if ascending {
+			return a.StartedAt.Before(b.StartedAt)
+		}
+		return b.StartedAt.Before(a.StartedAt)
+	})
+
+	if limit > 0 && len(execs) > limit {
+		execs = execs[:limit]
+	}
+
+	if execs == nil {
+		execs = []*execution.Execution{}
+	}
+
+	total, succeeded, failed, running, timedOut := h.store.Stats()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"executions": execs,
 		"count":      len(execs),
+		"summary": map[string]int{
+			"total":      total,
+			"succeeded":  succeeded,
+			"failed":     failed,
+			"running":    running,
+			"timed_out":   timedOut,
+		},
 	})
 }
 
@@ -131,6 +177,19 @@ func (h *ExecutionHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	failureInfo := exe.FailureInfo()
+
+	response := map[string]any{
+		"execution": exe,
+		"failure":   failureInfo,
+	}
+
+	if h.contStore != nil && exe.ContinuationID != "" {
+		if cont, found := h.contStore.Get(exe.ContinuationID); found {
+			response["retry"] = cont.RetryInfo()
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(exe)
+	json.NewEncoder(w).Encode(response)
 }

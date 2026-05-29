@@ -35,6 +35,7 @@ type Handler struct {
 	eventStore         events.Store
 	continuationStore  continuation.Store
 	executionStore     execution.Store
+	orchestrator       *continuation.Orchestrator
 	integrityChecker   *integrity.Checker
 	shieldStats        func() (restricted, total int)
 	maintenanceMode    bool
@@ -77,6 +78,10 @@ func (h *Handler) SetContinuationStore(store continuation.Store) {
 
 func (h *Handler) SetExecutionStore(store execution.Store) {
 	h.executionStore = store
+}
+
+func (h *Handler) SetOrchestrator(orch *continuation.Orchestrator) {
+	h.orchestrator = orch
 }
 
 func (h *Handler) SetIntegrityChecker(checker *integrity.Checker) {
@@ -233,7 +238,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	var req models.ActionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		api.JSONBadRequest(w, "invalid request: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -468,7 +473,23 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	if h.approvalSvc != nil {
 		pending := h.approvalSvc.ListPending()
-		status["pending_approval_count"] = len(pending)
+		approved := h.approvalSvc.ListByStatus(approval.StatusApproved)
+		denied := h.approvalSvc.ListByStatus(approval.StatusDenied)
+		approvalStats := map[string]any{
+			"pending":  len(pending),
+			"approved": len(approved),
+			"denied":   len(denied),
+		}
+		if len(pending) > 0 {
+			var oldest time.Time
+			for _, a := range pending {
+				if oldest.IsZero() || a.CreatedAt.Before(oldest) {
+					oldest = a.CreatedAt
+				}
+			}
+			approvalStats["oldest_pending_at"] = oldest
+		}
+		status["approvals"] = approvalStats
 	}
 
 	if h.shieldStats != nil {
@@ -508,8 +529,36 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.continuationStore != nil {
+		all := h.continuationStore.ListAll()
+		stateCounts := make(map[string]int)
+		var executableCount, retryableCount int
+		var oldestExecutable, oldestRetryable time.Time
+		for _, c := range all {
+			stateCounts[string(c.State)]++
+			if c.IsExecutable() {
+				executableCount++
+				if oldestExecutable.IsZero() || c.CreatedAt.Before(oldestExecutable) {
+					oldestExecutable = c.CreatedAt
+				}
+			}
+			if c.CanRetry() {
+				retryableCount++
+				if oldestRetryable.IsZero() || c.CreatedAt.Before(oldestRetryable) {
+					oldestRetryable = c.CreatedAt
+				}
+			}
+		}
 		contStats := map[string]any{
-			"count": len(h.continuationStore.ListAll()),
+			"count":       len(all),
+			"by_state":    stateCounts,
+			"executable":  executableCount,
+			"retryable":   retryableCount,
+		}
+		if executableCount > 0 {
+			contStats["oldest_executable_at"] = oldestExecutable
+		}
+		if retryableCount > 0 {
+			contStats["oldest_retryable_at"] = oldestRetryable
 		}
 		if fb, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
 			contStats["storage_mode"] = "file_backed"
@@ -524,6 +573,15 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 			contStats["storage_mode"] = "in_memory"
 		}
 		status["continuations"] = contStats
+	}
+
+	if h.orchestrator != nil {
+		status["queue_paused"] = h.orchestrator.IsPaused()
+		queued, running := h.orchestrator.QueueStats()
+		status["queue_stats"] = map[string]int{
+			"queued":   queued,
+			"running": running,
+		}
 	}
 
 	status["maintenance_mode"] = h.maintenanceMode

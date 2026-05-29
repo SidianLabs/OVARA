@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
+	"time"
 
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/api"
@@ -41,6 +43,7 @@ func (h *ApprovalHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/approval/{id}/approve", h.handleApprove)
 	mux.HandleFunc("POST /v1/approval/{id}/deny", h.handleDeny)
 	mux.HandleFunc("GET /v1/approval/pending", h.handleListPending)
+	mux.HandleFunc("GET /v1/approvals", h.handleListApprovals)
 	mux.HandleFunc("POST /v1/approval/{id}/resume", h.handleResume)
 }
 
@@ -51,14 +54,14 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		api.JSONBadRequest(w, "failed to read body")
+		api.JSONBadRequest(w, "failed to read request body")
 		return
 	}
 	defer r.Body.Close()
 
 	var req approval.CreateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		api.JSONBadRequest(w, "invalid request: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -305,6 +308,110 @@ func (h *ApprovalHandler) handleListPending(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+func (h *ApprovalHandler) handleListApprovals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	status := r.URL.Query().Get("status")
+	requester := r.URL.Query().Get("requester")
+	environment := r.URL.Query().Get("environment")
+	actionType := r.URL.Query().Get("action_type")
+	sortOrder := r.URL.Query().Get("sort")
+	createdBefore := r.URL.Query().Get("created_before")
+	createdAfter := r.URL.Query().Get("created_after")
+
+	limit := parseLimit(r, defaultListLimit, maxListLimit)
+
+	var approvals []*approval.ApprovalRequest
+
+	if status != "" {
+		approvals = h.service.ListByStatus(approval.Status(status))
+	} else if requester != "" {
+		approvals = h.service.ListByDecision(requester)
+	} else {
+		approvals = h.service.ListAll()
+	}
+
+	if environment != "" {
+		filtered := make([]*approval.ApprovalRequest, 0, len(approvals))
+		for _, a := range approvals {
+			if string(a.Environment) == environment {
+				filtered = append(filtered, a)
+			}
+		}
+		approvals = filtered
+	}
+
+	if actionType != "" {
+		filtered := make([]*approval.ApprovalRequest, 0, len(approvals))
+		for _, a := range approvals {
+			if string(a.ActionType) == actionType {
+				filtered = append(filtered, a)
+			}
+		}
+		approvals = filtered
+	}
+
+	if createdBefore != "" {
+		if t, err := time.Parse(time.RFC3339, createdBefore); err == nil {
+			filtered := make([]*approval.ApprovalRequest, 0, len(approvals))
+			for _, a := range approvals {
+				if a.CreatedAt.Before(t) || a.CreatedAt.Equal(t) {
+					filtered = append(filtered, a)
+				}
+			}
+			approvals = filtered
+		}
+	}
+
+	if createdAfter != "" {
+		if t, err := time.Parse(time.RFC3339, createdAfter); err == nil {
+			filtered := make([]*approval.ApprovalRequest, 0, len(approvals))
+			for _, a := range approvals {
+				if a.CreatedAt.After(t) {
+					filtered = append(filtered, a)
+				}
+			}
+			approvals = filtered
+		}
+	}
+
+	// Sort after all filters, before limiting. Default order is newest first
+	// (deterministic) so the limit window returns the most recent approvals
+	// reproducibly; sort=oldest reverses it. ApprovalID is the stable
+	// tiebreaker for equal timestamps.
+	ascending := sortAscending(sortOrder)
+	sort.Slice(approvals, func(i, j int) bool {
+		a, b := approvals[i], approvals[j]
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			if ascending {
+				return a.ApprovalID < b.ApprovalID
+			}
+			return a.ApprovalID > b.ApprovalID
+		}
+		if ascending {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return b.CreatedAt.Before(a.CreatedAt)
+	})
+
+	if limit > 0 && len(approvals) > limit {
+		approvals = approvals[:limit]
+	}
+
+	if approvals == nil {
+		approvals = []*approval.ApprovalRequest{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"approvals": approvals,
+		"count":     len(approvals),
+	})
+}
+
 func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		api.JSONMethodNotAllowed(w)
@@ -320,7 +427,7 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		list := h.continuationStore.ListByApprovalID(id)
 		for _, cnt := range list {
 			if !cnt.CanResume() {
-				api.JSONBadRequest(w, "continuation not ready for resume: "+string(cnt.State))
+				api.JSONConflict(w, "continuation not ready for resume: state="+string(cnt.State))
 				return
 			}
 		}
@@ -328,7 +435,7 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.service.ResumeAction(id)
 	if err != nil {
-		api.JSONBadRequest(w, "cannot resume: "+err.Error())
+		api.JSONBadRequest(w, "resume failed: "+err.Error())
 		return
 	}
 

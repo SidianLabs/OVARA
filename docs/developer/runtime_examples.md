@@ -1783,5 +1783,116 @@ The gateway maintains an executor registry that maps action types to executor im
 |-------------|----------|----------|
 | `shell` | `ShellExecutor` | Shell subprocess via `sh -c` |
 | `exec` | `DirectExecutor` | Direct subprocess, no shell |
+| `git.push` | `GitExecutor` | `git push [origin <branch>]` in specified repo directory |
+| `git.pull` | `GitExecutor` | `git pull [<branch>]` in specified repo directory |
 
 Unknown action types return `400 Bad Request` with `no executor registered for action type: <type>`.
+
+### Git Execution (`git`)
+
+Structured git operations via direct subprocess. No shell interpretation.
+
+**Resource format:** `git:<repo-path>[:<branch>]`
+
+- `<repo-path>`: Absolute or relative path to the git repository working directory
+- `<branch>`: Optional branch name; defaults to repository default branch
+
+```bash
+# Check a git.pull action
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"git.pull","resource":"git:/Users/test/myrepo","environment":"local"}'
+
+# Push with branch
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"git.push","resource":"git:/Users/test/myrepo:feature-branch","environment":"local"}'
+```
+
+**Safety:**
+
+| Scenario | Behavior |
+|----------|----------|
+| `git.push` to protected branch | Controlled by `git.force_push` policy rule (escalates) |
+| `git.pull` to uninitialized repo | Fails with descriptive error |
+| Repo path does not exist | Fails with `fatal: cannot stat...` in stderr |
+| Git binary not in PATH | Fails with `git: git binary not found in PATH` |
+| Unknown action type (`git.merge`) | Fails with `unsupported git action type: git.merge` |
+
+**Example: successful git.pull:**
+
+```
+git:pull → git pull (in repo directory)
+stdout: "Already up to date.\n"
+exit_code: 0
+```
+
+**Example: failed git.push (unsupported action):**
+
+```
+git.push with action_type=git.force_push → error="unsupported git action type: git.force_push"
+```
+
+## Execution Records
+
+Each execution produces a record capturing the full outcome:
+
+```json
+{
+  "execution_id": "exe_abc123",
+  "continuation_id": "cnt_xyz",
+  "action_type": "exec",
+  "resource": "exec:git status",
+  "state": "succeeded",
+  "exit_code": 0,
+  "stdout": "On branch main\n...",
+  "stderr": "",
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "started_at": "2026-05-27T12:00:00Z",
+  "finished_at": "2026-05-27T12:00:01Z",
+  "timeout_seconds": 60
+}
+```
+
+**Execution states:**
+
+| State | Meaning |
+|-------|---------|
+| `pending` | Created, not yet started |
+| `running` | Currently executing |
+| `succeeded` | Completed with exit code 0 |
+| `failed` | Completed with non-zero exit code or parse/permission error |
+| `timed_out` | Exceeded timeout |
+
+**Error field**: When state is `failed` or `timed_out`, the `error` field contains a human-readable message:
+- Parse error: `"invalid exec resource: exec resource must start with 'exec:' prefix (got: \"shell:echo\")"`
+- Binary not found: `"exec: binary not found: nonexistent"`
+- Timeout: `"exec timed out after 5s"` or `"shell command timed out after 5s"`
+
+**Orchestrator logs** (stderr/stdout):
+```
+EXEC pickup action_type=exec continuation_id=cnt_abc123 resource="exec:git status"
+EXEC completed=success action_type=exec continuation_id=cnt_abc123 execution_id=exe_def456 exit_code=0
+```
+or on failure:
+```
+EXEC completed=failed action_type=exec continuation_id=cnt_abc123 execution_id=exe_def456 exit_code=1 error="exec: binary not found: nonexistent"
+```
+
+When an action type has no registered executor, the orchestrator logs:
+```
+SKIP no executor registered for action_type=git.push continuation_id=cnt_abc123
+```
+
+## Failure Mode Summary
+
+| Scenario | HTTP Status | Error Message | Log Output |
+|----------|-------------|---------------|------------|
+| No executor for action type | 400 | `no executor registered for action type: X` | `SKIP no executor...` |
+| Malformed exec resource | 200 (in execution) | `invalid exec resource: ...` | via execution record |
+| Binary not found | 200 (in execution) | `exec: binary not found: X` | via execution record |
+| Command timeout | 200 (in execution) | `exec timed out after Xs` | via execution record |
+| Non-zero exit | 200 (in execution) | (stderr content) | via execution record |
+| Parse failure (shell) | 200 (in execution) | `invalid shell resource: ...` | via execution record |
+| Continuation not executable | 400 | `continuation not in executable state: current state=X` | — |

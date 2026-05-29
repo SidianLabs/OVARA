@@ -247,3 +247,66 @@ func TestOrchestrator_CancelBeforeExecution(t *testing.T) {
 		t.Errorf("continuation state = %v, want cancelled", updated.State)
 	}
 }
+
+func TestOrchestrator_PicksUpExecContinuation(t *testing.T) {
+	store := NewInMemoryStore()
+	execStore := &mockExecStore{}
+	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("exec", exec)
+
+	orch := NewOrchestrator(store, execStore, reg)
+	orch.pollInterval = 100 * time.Millisecond
+	orch.Start()
+	defer orch.Stop()
+
+	cnt := NewContinuation("dec_exec_1", "exec", "exec:ls")
+	cnt.MarkApproved("admin")
+	cnt.MarkQueued()
+	store.Create(cnt)
+
+	time.Sleep(400 * time.Millisecond)
+
+	updated, _ := store.Get(cnt.ContinuationID)
+	if updated.State != StateExecuted {
+		t.Errorf("continuation state = %v, want executed", updated.State)
+	}
+	if exec.Calls() == 0 {
+		t.Error("expected executor to be called at least once")
+	}
+	if len(execStore.executions) == 0 {
+		t.Error("expected at least one execution record")
+	}
+	execRecord := execStore.executions[0]
+	if execRecord.ActionType != "exec" {
+		t.Errorf("execution action_type = %s, want exec", execRecord.ActionType)
+	}
+}
+
+func TestOrchestrator_UnknownActionType_SkipsExecution(t *testing.T) {
+	store := NewInMemoryStore()
+	execStore := &mockExecStore{}
+	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
+
+	orch := NewOrchestrator(store, execStore, reg)
+	orch.pollInterval = 100 * time.Millisecond
+	orch.Start()
+	defer orch.Stop()
+
+	cnt := NewContinuation("dec_unknown", "git.push", "git:origin main")
+	cnt.MarkApproved("admin")
+	cnt.MarkQueued()
+	store.Create(cnt)
+
+	time.Sleep(400 * time.Millisecond)
+
+	updated, _ := store.Get(cnt.ContinuationID)
+	if updated.State != StateQueued {
+		t.Errorf("continuation state = %v, want queued (no executor registered, should not execute)", updated.State)
+	}
+	if exec.Calls() != 0 {
+		t.Errorf("executor calls = %d, want 0 (unknown action type)", exec.Calls())
+	}
+}

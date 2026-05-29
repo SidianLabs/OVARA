@@ -15,7 +15,7 @@ This directory contains scripts for exercising the OVARA Runtime Gateway flows.
    ```
    Or with custom config:
    ```bash
-   OVARA_CONFIG=./examples/sample_config.yaml ./start_gateway.sh
+   OVARA_CONFIG=../../examples/sample_policy_local.json ./start_gateway.sh
    ```
 
 2. **Run demo scripts:**
@@ -32,10 +32,11 @@ This directory contains scripts for exercising the OVARA Runtime Gateway flows.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GATEWAY` | `http://localhost:8080` | Gateway base URL |
-| `OVARA_PORT` | `8080` | Gateway port |
-| `OVARA_CONFIG` | `` | Path to config file |
-| `OVARA_POLICY_FILE` | `` | Path to policy JSON |
-| `OVARA_POLICY_REFRESH_INTERVAL` | `0` | Policy hot reload interval (seconds) |
+| `OVARA_PORT` | `8080` | Gateway port (used by start_gateway.sh) |
+| `OVARA_CONFIG` | `` | Path to config JSON file |
+| `OVARA_ENVIRONMENT` | `local` | Gateway environment (local, dev, production) |
+
+Note: Policy configuration is done via the config JSON file (`policy_file` and `policy_refresh_interval` fields), not environment variables.
 
 ## Scripts Overview
 
@@ -43,12 +44,11 @@ This directory contains scripts for exercising the OVARA Runtime Gateway flows.
 Starts the gateway with sensible defaults. Must be run from repo root.
 
 ### `demo_safe_shell.sh`
-Exercises shell commands. By default, ALL shell commands escalate (require approval) in the default policy. This script is useful for verifying the escalation flow works correctly.
+Exercises shell commands. By default, shell commands in `local` environment are allowed. Use `demo_approval_flow.sh` to see the escalation workflow.
 
 ### `demo_risky_shell.sh`
-Exercises risky shell patterns that trigger escalate decisions. Demonstrates:
+Exercises risky shell patterns that trigger escalate decisions:
 - Dangerous patterns (`curl |sh`, `rm -rf /`)
-- Git force push escalation
 - Production targeting
 
 ### `demo_restricted_agent.sh`
@@ -73,23 +73,24 @@ Inspection endpoints demo:
 - Receipts
 - Decision lookup
 
-### `sample_policy.json`
-Sample policy file for testing hot reload. Configure with:
+### `sample_config.json`
+Sample gateway configuration in JSON format. Configure with:
 ```bash
-OVARA_POLICY_FILE=./examples/sample_policy.json OVARA_POLICY_REFRESH_INTERVAL=10 ./start_gateway.sh
+OVARA_CONFIG=./examples/sample_config.json ./start_gateway.sh
 ```
 
+### `sample_policy.json`
+Sample policy file with rules for supported action types (`shell`, `exec`, `git.push`, `git.pull`).
+
 ### `sample_policy_local.json`
-A "local dev" policy profile demonstrating all three outcomes (allow, deny, escalate). Useful for first-run testing:
+A "local dev" policy profile demonstrating all three outcomes (allow, deny, escalate):
 - `shell` + `local` → allow (harmless read-only)
 - `shell` + `production` → deny (too risky)
 - `shell` + `dev` → escalate (risky but recoverable)
 - `git.pull` + `*` → allow (read-only, always safe)
+- `exec` + `*` → escalate (direct subprocess, always requires approval)
 
-### `sample_config.yaml`
-Sample gateway configuration file.
-
-### Enrollment and Status
+## Enrollment and Status
 
 The gateway maintains a local enrollment identity stored in `var/data/enrollment.json`. The status endpoint shows:
 - `gateway_id`, `gateway_name`, `gateway_version` from enrollment

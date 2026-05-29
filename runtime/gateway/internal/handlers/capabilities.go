@@ -38,7 +38,7 @@ func (h *CapabilitiesHandler) SetHistoryStore(hs *capabilities.FileBackedHistory
 
 func (h *CapabilitiesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/capabilities", h.handleList)
-	mux.HandleFunc("GET /v1/capabilities/", h.handleGet)
+	mux.HandleFunc("GET /v1/capabilities/{id}", h.handleGet)
 	mux.HandleFunc("POST /v1/capabilities/track", h.handleTrack)
 	mux.HandleFunc("POST /v1/capabilities/revoke", h.handleRevoke)
 	mux.HandleFunc("GET /v1/capabilities/history", h.handleHistory)
@@ -110,15 +110,15 @@ func (h *CapabilitiesHandler) handleGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	leaseID := r.URL.Query().Get("id")
+	leaseID := r.PathValue("id")
 	if leaseID == "" {
-		api.JSONBadRequest(w, "id query parameter is required")
+		api.JSONBadRequest(w, "capability id is required")
 		return
 	}
 
 	tracked, ok := h.store.Get(leaseID)
 	if !ok {
-		api.JSONBadRequest(w, "capability not found: "+leaseID)
+		api.JSONNotFound(w, "capability not found: "+leaseID)
 		return
 	}
 
@@ -146,7 +146,7 @@ func (h *CapabilitiesHandler) handleTrack(w http.ResponseWriter, r *http.Request
 
 	var req TrackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -232,7 +232,7 @@ func (h *CapabilitiesHandler) handleRevokeBySubject(w http.ResponseWriter, r *ht
 
 	var req RevokeBySubjectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -293,7 +293,7 @@ func (h *CapabilitiesHandler) handleRevoke(w http.ResponseWriter, r *http.Reques
 
 	var req RevokeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 

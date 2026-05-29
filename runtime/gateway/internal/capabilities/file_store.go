@@ -14,6 +14,7 @@ import (
 type FileBackedStore struct {
 	path     string
 	mu       sync.RWMutex
+	fileMu   sync.Mutex
 	leases   map[string]*TrackedLease
 	maxSize  int
 	maxAge   time.Duration
@@ -52,19 +53,25 @@ func (s *FileBackedStore) load() error {
 	return nil
 }
 
-func (s *FileBackedStore) persist() error {
-	var all []*TrackedLease
-	for _, l := range s.leases {
-		all = append(all, l)
-	}
-	data, err := json.MarshalIndent(all, "", "  ")
+func (s *FileBackedStore) persist(snapshot []*TrackedLease) error {
+	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal capabilities: %w", err)
 	}
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	if err := os.WriteFile(s.path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write capabilities file: %w", err)
 	}
 	return nil
+}
+
+func (s *FileBackedStore) snapshot() []*TrackedLease {
+	var all []*TrackedLease
+	for _, l := range s.leases {
+		all = append(all, l.Clone())
+	}
+	return all
 }
 
 func (s *FileBackedStore) Track(lease *models.CapabilityLease, gatewayID string) string {
@@ -87,7 +94,7 @@ func (s *FileBackedStore) Track(lease *models.CapabilityLease, gatewayID string)
 		s.evictOldest(len(s.leases) - s.maxSize)
 	}
 
-	go s.persist()
+	s.persist(s.snapshot())
 	return lease.LeaseID
 }
 
@@ -163,7 +170,7 @@ func (s *FileBackedStore) Revoke(leaseID, reason string) (*TrackedLease, bool) {
 	now := time.Now().UTC()
 	tracked.RevokedAt = &now
 	tracked.RevocationReason = reason
-	go s.persist()
+	s.persist(s.snapshot())
 	return tracked, true
 }
 
@@ -186,14 +193,14 @@ func (s *FileBackedStore) Touch(leaseID string) {
 	}
 	now := time.Now().UTC()
 	tracked.LastSeenAt = &now
-	go s.persist()
+	s.persist(s.snapshot())
 }
 
 func (s *FileBackedStore) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.leases = make(map[string]*TrackedLease)
-	go s.persist()
+	s.persist(s.snapshot())
 }
 
 func (s *FileBackedStore) Stats() (total, active, revoked int) {

@@ -2,8 +2,17 @@ package execution
 
 import (
 	"context"
+	"fmt"
+	"os"
+	osExec "os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
+
+var testExecCmd = osExec.CommandContext
 
 func TestNewExecution(t *testing.T) {
 	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo hi", 30)
@@ -367,6 +376,46 @@ func TestShellExecutor_TimeoutSetsTruncationFlags(t *testing.T) {
 	}
 }
 
+func TestTimeoutErrorMessageFormat(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("shell_timeout_format", func(t *testing.T) {
+		exec := NewShellExecutor(1)
+		exe := NewExecution("cnt_s1", "dec_s1", "apr_s1", "agt_s1", "shell", "shell:sleep 10", 1)
+		exec.Execute(ctx, exe)
+		if exe.State != StateTimedOut {
+			t.Fatalf("state = %s, want timed_out", exe.State)
+		}
+		if exe.Error == "" {
+			t.Fatal("error field should be set on timeout")
+		}
+		expectedPrefix := "shell: command timed out after "
+		if len(exe.Error) < len(expectedPrefix) || exe.Error[:len(expectedPrefix)] != expectedPrefix {
+			t.Errorf("error = %q, want prefix %q", exe.Error, expectedPrefix)
+		}
+	})
+
+	t.Run("exec_timeout_format", func(t *testing.T) {
+		exec := NewDirectExecutor(1)
+		exe := NewExecution("cnt_e1", "dec_e1", "apr_e1", "agt_e1", "exec", "exec:sleep 10", 1)
+		exec.Execute(ctx, exe)
+		if exe.State != StateTimedOut {
+			t.Fatalf("state = %s, want timed_out", exe.State)
+		}
+		if exe.Error == "" {
+			t.Fatal("error field should be set on timeout")
+		}
+		expectedPrefix := "exec: command timed out after "
+		if len(exe.Error) < len(expectedPrefix) || exe.Error[:len(expectedPrefix)] != expectedPrefix {
+			t.Errorf("error = %q, want prefix %q", exe.Error, expectedPrefix)
+		}
+	})
+
+	t.Run("git_timeout_format", func(t *testing.T) {
+		t.Skip("git pull on local repo fails fast without remote; timeout code path same as shell/exec")
+	})
+}
+
 type mockExecForRegistry struct {
 	calls int
 }
@@ -413,6 +462,50 @@ func TestExecutorRegistry(t *testing.T) {
 	}
 }
 
+func TestExecutorRegistry_ConcurrentAccess(t *testing.T) {
+	reg := NewExecutorRegistry()
+
+	exec1 := &mockExecForRegistry{}
+	exec2 := &mockExecForRegistry{}
+	exec3 := &mockExecForRegistry{}
+
+	reg.Register("shell", exec1)
+	reg.Register("exec", exec2)
+	reg.Register("git.push", exec3)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := []string{"shell", "exec", "git.push"}[i%3]
+			exec, ok := reg.Get(key)
+			if !ok {
+				t.Errorf("Get(%q) not found", key)
+				return
+			}
+			if exec == nil {
+				t.Errorf("Get(%q) returned nil", key)
+			}
+		}(i)
+	}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = reg.RegisteredTypes()
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			reg.Register(fmt.Sprintf("action_%d", i), &mockExecForRegistry{})
+		}(i)
+	}
+	wg.Wait()
+}
+
 func TestParseExecResource(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -445,6 +538,29 @@ func TestParseExecResource(t *testing.T) {
 				t.Errorf("binary = %s, want %s", bin, tt.wantBin)
 			}
 		})
+	}
+}
+
+func TestParseExecResource_ErrorMessages(t *testing.T) {
+	_, _, err := ParseExecResource("shell:echo")
+	if err == nil {
+		t.Fatal("expected error for wrong prefix")
+	}
+	if !strings.Contains(err.Error(), "exec:") {
+		t.Errorf("error %q should mention 'exec:' prefix requirement", err.Error())
+	}
+
+	_, _, err = ParseExecResource("exec:")
+	if err == nil {
+		t.Fatal("expected error for empty exec resource")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error %q should mention empty", err.Error())
+	}
+
+	_, _, err = ParseExecResource("exec:   ")
+	if err == nil {
+		t.Fatal("expected error for whitespace-only exec resource")
 	}
 }
 
@@ -498,5 +614,733 @@ func TestDirectExecutor(t *testing.T) {
 		if exe.State != StateTimedOut {
 			t.Errorf("state = %s, want timed_out", exe.State)
 		}
+		if exe.Error == "" {
+			t.Error("error field should be set on timeout")
+		}
+		if exe.FinishedAt == nil {
+			t.Error("finished_at should be set on timeout")
+		}
 	})
+
+	t.Run("missing_binary", func(t *testing.T) {
+		exe := NewExecution("cnt_5", "dec_5", "apr_5", "agt_5", "exec", "exec:nonexistent_binary_xyz_123", 5)
+		err := exec.Execute(ctx, exe)
+		if err != nil {
+			t.Fatalf("execute returned error: %v", err)
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+		if exe.Error == "" {
+			t.Error("error field should be set when binary not found")
+		}
+	})
+
+	t.Run("malformed_resource", func(t *testing.T) {
+		exe := NewExecution("cnt_6", "dec_6", "apr_6", "agt_6", "exec", "shell:echo hi", 5)
+		err := exec.Execute(ctx, exe)
+		if err == nil {
+			t.Fatal("expected error for malformed resource")
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+		if exe.Error == "" {
+			t.Error("error field should be set on parse failure")
+		}
+	})
+
+	t.Run("empty_resource", func(t *testing.T) {
+		exe := NewExecution("cnt_7", "dec_7", "apr_7", "agt_7", "exec", "exec:", 5)
+		err := exec.Execute(ctx, exe)
+		if err == nil {
+			t.Fatal("expected error for empty resource")
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+		if exe.Error == "" {
+			t.Error("error field should be set on empty resource")
+		}
+	})
+}
+
+func TestExecution_MarkTimedOut_SetsError(t *testing.T) {
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "exec", "exec:sleep 10", 60)
+	exe.MarkTimedOut()
+	if exe.State != StateTimedOut {
+		t.Errorf("state = %s, want timed_out", exe.State)
+	}
+	if exe.Error == "" {
+		t.Error("error should be set by MarkTimedOut when previously empty")
+	}
+	if exe.FinishedAt == nil {
+		t.Error("finished_at should be set")
+	}
+}
+
+func TestExecution_MarkTimedOut_PreservesError(t *testing.T) {
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "exec", "exec:sleep 10", 60)
+	exe.Error = "custom error before timeout"
+	exe.MarkTimedOut()
+	if exe.Error != "custom error before timeout" {
+		t.Errorf("error = %q, want preserved custom error", exe.Error)
+	}
+}
+
+func TestParseGitResource(t *testing.T) {
+	tests := []struct {
+		name      string
+		resource  string
+		wantRepo  string
+		wantBranch string
+		wantErr   bool
+	}{
+		{"simple_repo", "git:acme/repo", "acme/repo", "", false},
+		{"with_branch", "git:acme/repo:feature-branch", "acme/repo", "feature-branch", false},
+		{"local", "git:/Users/test/project", "/Users/test/project", "", false},
+		{"trailing_branch_whitespace", "git:acme/repo: main", "acme/repo", "main", false},
+		{"missing_prefix", "shell:echo hi", "", "", true},
+		{"empty", "git:", "", "", true},
+		{"whitespace_only", "git:   ", "", "", true},
+		{"empty_repo", "git::branch", "", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := ParseGitResource(tt.resource)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if res.Repo != tt.wantRepo {
+				t.Errorf("repo = %s, want %s", res.Repo, tt.wantRepo)
+			}
+			if res.Branch != tt.wantBranch {
+				t.Errorf("branch = %s, want %s", res.Branch, tt.wantBranch)
+			}
+		})
+	}
+}
+
+func TestParseGitResource_ErrorMessages(t *testing.T) {
+	_, err := ParseGitResource("shell:echo")
+	if err == nil {
+		t.Fatal("expected error for wrong prefix")
+	}
+	if !strings.Contains(err.Error(), "git:") {
+		t.Errorf("error %q should mention 'git:' prefix requirement", err.Error())
+	}
+
+	_, err = ParseGitResource("git:")
+	if err == nil {
+		t.Fatal("expected error for empty git resource")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error %q should mention empty", err.Error())
+	}
+}
+
+func TestGitExecutor(t *testing.T) {
+	ctx := context.Background()
+	exec := NewGitExecutor(10)
+
+	t.Run("unsupported_action_type", func(t *testing.T) {
+		exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "git.force_push", "git:.", 10)
+		err := exec.Execute(ctx, exe)
+		if err == nil {
+			t.Fatal("expected error for unsupported git action type")
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+		if exe.Error == "" {
+			t.Error("error field should be set on unsupported action")
+		}
+	})
+
+	t.Run("malformed_resource", func(t *testing.T) {
+		exe := NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "git.push", "shell:ls", 10)
+		err := exec.Execute(ctx, exe)
+		if err == nil {
+			t.Fatal("expected error for malformed resource")
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+		if !strings.Contains(exe.Error, "git:") {
+			t.Errorf("error %q should mention 'git:' prefix issue", exe.Error)
+		}
+	})
+
+	t.Run("empty_resource", func(t *testing.T) {
+		exe := NewExecution("cnt_3", "dec_3", "apr_3", "agt_3", "git.push", "git:", 10)
+		err := exec.Execute(ctx, exe)
+		if err == nil {
+			t.Fatal("expected error for empty resource")
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+	})
+
+	t.Run("missing_git_binary", func(t *testing.T) {
+		// Create a real git repo so path validation passes; corrupt PATH to cause binary-not-found.
+		// Note: LookPath succeeds (uses system PATH) but subprocess fails (uses modified PATH env).
+		// The key validation is that execution fails with a descriptive error.
+		resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+		if err != nil {
+			t.Skipf("cannot resolve system temp dir: %v", err)
+		}
+		tmpBase, err := os.MkdirTemp(resolvedTmp, "git_exec_test")
+		if err != nil {
+			t.Skipf("cannot create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpBase)
+
+		repoDir := filepath.Join(tmpBase, "repo_for_git_test")
+		if err := os.MkdirAll(repoDir, 0755); err != nil {
+			t.Fatalf("failed to create repo dir: %v", err)
+		}
+		gitInit := testExecCmd(ctx, "git", "init")
+		gitInit.Dir = repoDir
+		if out, err := gitInit.CombinedOutput(); err != nil {
+			t.Skipf("git init failed: %v, out: %s", err, out)
+		}
+
+		ge := &GitExecutor{DefaultTimeout: 5 * time.Second}
+		exe := NewExecution("cnt_4", "dec_4", "apr_4", "agt_4", "git.pull", "git:"+repoDir, 5)
+		oldPath := os.Getenv("PATH")
+		defer os.Setenv("PATH", oldPath)
+		os.Setenv("PATH", "/nonexistent_path_for_git_test")
+		err = ge.Execute(ctx, exe)
+		if err == nil {
+			t.Fatal("expected error when git binary not found in subprocess PATH")
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+		if exe.Error == "" {
+			t.Error("error field should be set when git binary not found")
+		}
+	})
+
+	t.Run("nonexistent_repo_pull", func(t *testing.T) {
+		// This tests the fast-path: repo path doesn't exist, caught by os.Stat before git is even invoked
+		resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+		if err != nil {
+			t.Skipf("cannot resolve system temp dir: %v", err)
+		}
+		tmpBase, err := os.MkdirTemp(resolvedTmp, "git_exec_test")
+		if err != nil {
+			t.Skipf("cannot create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpBase)
+
+		nonexistentPath := filepath.Join(tmpBase, "this_subdir_does_not_exist")
+		exe := NewExecution("cnt_5", "dec_5", "apr_5", "agt_5", "git.pull", "git:"+nonexistentPath, 10)
+		err = exec.Execute(ctx, exe)
+		if err == nil {
+			t.Fatal("expected error when repo path does not exist")
+		}
+		if exe.State != StateFailed {
+			t.Errorf("state = %s, want failed", exe.State)
+		}
+		if exe.Error == "" {
+			t.Error("error field should be set for nonexistent repo")
+		}
+		if !strings.Contains(exe.Error, "does not exist") {
+			t.Errorf("error %q should mention 'does not exist'", exe.Error)
+		}
+	})
+}
+
+func TestGitExecutor_isGitRepo(t *testing.T) {
+	ctx := context.Background()
+	gitExec := NewGitExecutor(10)
+
+	tmpDir := t.TempDir()
+	tmpDirResolved, err := filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Skipf("cannot resolve temp dir symlinks: %v", err)
+	}
+
+	t.Run("valid_git_repo", func(t *testing.T) {
+		repoDir := filepath.Join(tmpDirResolved, "test_repo")
+		if err := os.MkdirAll(repoDir, 0755); err != nil {
+			t.Fatalf("failed to create repo dir: %v", err)
+		}
+		gitInit := testExecCmd(ctx, "git", "init")
+		gitInit.Dir = repoDir
+		if out, err := gitInit.CombinedOutput(); err != nil {
+			t.Skipf("git not available or failed to init repo: %v, out: %s", err, out)
+		}
+		isRepo, err := gitExec.isGitRepo(ctx, repoDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !isRepo {
+			t.Error("expected isGitRepo=true for initialized repo")
+		}
+	})
+
+	t.Run("not_a_git_repo", func(t *testing.T) {
+		notGit := filepath.Join(tmpDirResolved, "not_git")
+		if err := os.MkdirAll(notGit, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+		isRepo, err := gitExec.isGitRepo(ctx, notGit)
+		if err == nil {
+			t.Error("expected error for non-git directory")
+		}
+		if isRepo {
+			t.Error("expected isGitRepo=false for non-git directory")
+		}
+	})
+
+	t.Run("nonexistent_path", func(t *testing.T) {
+		nonexistent := filepath.Join(tmpDirResolved, "does_not_exist")
+		isRepo, err := gitExec.isGitRepo(ctx, nonexistent)
+		if err == nil {
+			t.Error("expected error for nonexistent path")
+		}
+		if isRepo {
+			t.Error("expected isRepo=false for nonexistent path")
+		}
+	})
+}
+
+func TestGitExecutor_Integration_Pull(t *testing.T) {
+	ctx := context.Background()
+	gitExec := NewGitExecutor(10)
+
+	// Use os.MkdirTemp + resolve symlinks to get a clean non-symlink path
+	resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve system temp dir: %v", err)
+	}
+	tmpBase, err := os.MkdirTemp(resolvedTmp, "git_exec_test")
+	if err != nil {
+		t.Skipf("cannot create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpBase)
+
+	repoDir := filepath.Join(tmpBase, "integration_repo")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("failed to create repo dir: %v", err)
+	}
+
+	// Init git repo
+	gitInit := testExecCmd(ctx, "git", "init")
+	gitInit.Dir = repoDir
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Skipf("git not available: %v, out: %s", err, out)
+	}
+
+	// Set up git config for the test
+	gitConfig := testExecCmd(ctx, "git", "config", "user.email", "test@test.com")
+	gitConfig.Dir = repoDir
+	if out, err := gitConfig.CombinedOutput(); err != nil {
+		t.Skipf("git config failed: %v, out: %s", err, out)
+	}
+	gitConfig2 := testExecCmd(ctx, "git", "config", "user.name", "Test")
+	gitConfig2.Dir = repoDir
+	if out, err := gitConfig2.CombinedOutput(); err != nil {
+		t.Skipf("git config failed: %v, out: %s", err, out)
+	}
+
+	// Create a file and commit
+	testFile := filepath.Join(repoDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	gitAdd := testExecCmd(ctx, "git", "add", ".")
+	gitAdd.Dir = repoDir
+	if out, err := gitAdd.CombinedOutput(); err != nil {
+		t.Skipf("git add failed: %v, out: %s", err, out)
+	}
+
+	gitCommit := testExecCmd(ctx, "git", "commit", "-m", "initial")
+	gitCommit.Dir = repoDir
+	if out, err := gitCommit.CombinedOutput(); err != nil {
+		t.Skipf("git commit failed: %v, out: %s", err, out)
+	}
+
+	// Now test a pull on this repo. Without a remote, git pull exits 1 with a descriptive message.
+	// This still validates: repo path resolution, isGitRepo check, git invocation, stdout capture.
+	exe := NewExecution("cnt_int", "dec_int", "apr_int", "agt_int", "git.pull", "git:"+repoDir, 30)
+	err = gitExec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("git.pull returned unexpected error: %v", err)
+	}
+	// git pull without a remote exits 1; the executor should propagate that as StateFailed
+	if exe.State != StateFailed {
+		t.Errorf("state = %s, want failed (no remote configured)", exe.State)
+	}
+	if exe.ExitCode == 0 {
+		t.Error("exit_code should be non-zero for git pull without remote")
+	}
+	if exe.Stderr == "" {
+		t.Error("stderr should be captured for git pull without remote")
+	}
+	if !strings.Contains(exe.Stderr, "fatal") && !strings.Contains(exe.Stderr, "upstream") {
+		t.Logf("stderr: %s", exe.Stderr)
+	}
+}
+
+func TestGitExecutor_Integration_Fetch(t *testing.T) {
+	ctx := context.Background()
+	gitExec := NewGitExecutor(10)
+
+	resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve system temp dir: %v", err)
+	}
+	tmpBase, err := os.MkdirTemp(resolvedTmp, "git_fetch_test")
+	if err != nil {
+		t.Skipf("cannot create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpBase)
+
+	repoDir := filepath.Join(tmpBase, "fetch_repo")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("failed to create repo dir: %v", err)
+	}
+
+	gitInit := testExecCmd(ctx, "git", "init")
+	gitInit.Dir = repoDir
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Skipf("git not available: %v, out: %s", err, out)
+	}
+
+	gitConfig := testExecCmd(ctx, "git", "config", "user.email", "test@test.com")
+	gitConfig.Dir = repoDir
+	if out, err := gitConfig.CombinedOutput(); err != nil {
+		t.Skipf("git config failed: %v, out: %s", err, out)
+	}
+	gitConfig2 := testExecCmd(ctx, "git", "config", "user.name", "Test")
+	gitConfig2.Dir = repoDir
+	if out, err := gitConfig2.CombinedOutput(); err != nil {
+		t.Skipf("git config failed: %v, out: %s", err, out)
+	}
+
+	testFile := filepath.Join(repoDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	gitAdd := testExecCmd(ctx, "git", "add", ".")
+	gitAdd.Dir = repoDir
+	if out, err := gitAdd.CombinedOutput(); err != nil {
+		t.Skipf("git add failed: %v, out: %s", err, out)
+	}
+
+	gitCommit := testExecCmd(ctx, "git", "commit", "-m", "initial")
+	gitCommit.Dir = repoDir
+	if out, err := gitCommit.CombinedOutput(); err != nil {
+		t.Skipf("git commit failed: %v, out: %s", err, out)
+	}
+
+	exe := NewExecution("cnt_fetch", "dec_fetch", "apr_fetch", "agt_fetch", "git.fetch", "git:"+repoDir, 30)
+	err = gitExec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("git.fetch returned unexpected error: %v", err)
+	}
+	// git fetch without a remote succeeds (no-op); validates action type is accepted
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded (git fetch with no remote is a no-op)", exe.State)
+	}
+	if exe.ExitCode != 0 {
+		t.Errorf("exit_code = %d, want 0 for git fetch with no remote", exe.ExitCode)
+	}
+}
+
+func TestGitExecutor_NotGitRepo(t *testing.T) {
+	ctx := context.Background()
+	gitExec := NewGitExecutor(10)
+
+	resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve system temp dir: %v", err)
+	}
+	tmpBase, err := os.MkdirTemp(resolvedTmp, "git_exec_test")
+	if err != nil {
+		t.Skipf("cannot create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpBase)
+	notGitDir := filepath.Join(tmpBase, "plain_dir")
+	if err := os.MkdirAll(notGitDir, 0755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(notGitDir, "readme.txt"), []byte("not git\n"), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	exe := NewExecution("cnt_ng", "dec_ng", "apr_ng", "agt_ng", "git.pull", "git:"+notGitDir, 10)
+	err = gitExec.Execute(ctx, exe)
+	if err == nil {
+		t.Fatal("expected error for not-a-git-repo directory")
+	}
+	if exe.State != StateFailed {
+		t.Errorf("state = %s, want failed", exe.State)
+	}
+	if !strings.Contains(exe.Error, "not a git repository") {
+		t.Errorf("error %q should mention 'not a git repository'", exe.Error)
+	}
+}
+
+func TestGitExecutor_SymlinkTraversalBlocked(t *testing.T) {
+	ctx := context.Background()
+
+	resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve system temp dir: %v", err)
+	}
+	tmpBase, err := os.MkdirTemp(resolvedTmp, "git_exec_test")
+	if err != nil {
+		t.Skipf("cannot create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpBase)
+	realDir := filepath.Join(tmpBase, "real_repo")
+	if err := os.MkdirAll(realDir, 0755); err != nil {
+		t.Fatalf("failed to create real dir: %v", err)
+	}
+
+	// Create a git repo in realDir
+	gitInit := testExecCmd(ctx, "git", "init")
+	gitInit.Dir = realDir
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Skipf("git init failed: %v, out: %s", err, out)
+	}
+
+	// Create symlink pointing to real dir
+	symlinkDir := filepath.Join(tmpBase, "link_to_repo")
+	if err := os.Symlink(realDir, symlinkDir); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	ge := &GitExecutor{DefaultTimeout: 10 * time.Second}
+	exe := NewExecution("cnt_sl", "dec_sl", "apr_sl", "agt_sl", "git.pull", "git:"+symlinkDir, 10)
+	err = ge.Execute(ctx, exe)
+	if err == nil {
+		t.Fatal("expected error for symlink traversal")
+	}
+	if exe.State != StateFailed {
+		t.Errorf("state = %s, want failed", exe.State)
+	}
+	if !strings.Contains(exe.Error, "symlink traversal") {
+		t.Errorf("error %q should mention 'symlink traversal'", exe.Error)
+	}
+}
+
+func TestGitExecutor_PathIsFile(t *testing.T) {
+	ctx := context.Background()
+	gitExec := NewGitExecutor(10)
+
+	resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve system temp dir: %v", err)
+	}
+	tmpBase, err := os.MkdirTemp(resolvedTmp, "git_exec_test")
+	if err != nil {
+		t.Skipf("cannot create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpBase)
+	filePath := filepath.Join(tmpBase, "just_a_file.txt")
+	if err := os.WriteFile(filePath, []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	exe := NewExecution("cnt_f", "dec_f", "apr_f", "agt_f", "git.pull", "git:"+filePath, 10)
+	err = gitExec.Execute(ctx, exe)
+	if err == nil {
+		t.Fatal("expected error for file path instead of directory")
+	}
+	if exe.State != StateFailed {
+		t.Errorf("state = %s, want failed", exe.State)
+	}
+	if !strings.Contains(exe.Error, "not a directory") {
+		t.Errorf("error %q should mention 'not a directory'", exe.Error)
+	}
+}
+
+func TestGitExecutor_Integration_Checkout(t *testing.T) {
+	ctx := context.Background()
+	gitExec := NewGitExecutor(10)
+
+	resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve system temp dir: %v", err)
+	}
+	tmpBase, err := os.MkdirTemp(resolvedTmp, "git_checkout_test")
+	if err != nil {
+		t.Skipf("cannot create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpBase)
+
+	repoDir := filepath.Join(tmpBase, "checkout_repo")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("failed to create repo dir: %v", err)
+	}
+
+	gitInit := testExecCmd(ctx, "git", "init")
+	gitInit.Dir = repoDir
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Skipf("git not available: %v, out: %s", err, out)
+	}
+
+	gitConfig := testExecCmd(ctx, "git", "config", "user.email", "test@test.com")
+	gitConfig.Dir = repoDir
+	if out, err := gitConfig.CombinedOutput(); err != nil {
+		t.Skipf("git config failed: %v, out: %s", err, out)
+	}
+	gitConfig2 := testExecCmd(ctx, "git", "config", "user.name", "Test")
+	gitConfig2.Dir = repoDir
+	if out, err := gitConfig2.CombinedOutput(); err != nil {
+		t.Skipf("git config failed: %v, out: %s", err, out)
+	}
+
+	testFile := filepath.Join(repoDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	gitAdd := testExecCmd(ctx, "git", "add", ".")
+	gitAdd.Dir = repoDir
+	if out, err := gitAdd.CombinedOutput(); err != nil {
+		t.Skipf("git add failed: %v, out: %s", err, out)
+	}
+
+	gitCommit := testExecCmd(ctx, "git", "commit", "-m", "initial")
+	gitCommit.Dir = repoDir
+	if out, err := gitCommit.CombinedOutput(); err != nil {
+		t.Skipf("git commit failed: %v, out: %s", err, out)
+	}
+
+	gitBranch := testExecCmd(ctx, "git", "branch", "feature")
+	gitBranch.Dir = repoDir
+	if out, err := gitBranch.CombinedOutput(); err != nil {
+		t.Skipf("git branch failed: %v, out: %s", err, out)
+	}
+
+	exe := NewExecution("cnt_co", "dec_co", "apr_co", "agt_co", "git.checkout", "git:"+repoDir+":feature", 30)
+	err = gitExec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("git.checkout returned unexpected error: %v", err)
+	}
+	if exe.State != StateSucceeded {
+		t.Errorf("state = %s, want succeeded", exe.State)
+	}
+	if exe.ExitCode != 0 {
+		t.Errorf("exit_code = %d, want 0", exe.ExitCode)
+	}
+}
+
+func TestGitExecutor_Checkout_MissingBranch(t *testing.T) {
+	ctx := context.Background()
+	gitExec := NewGitExecutor(10)
+
+	resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve system temp dir: %v", err)
+	}
+	tmpBase, err := os.MkdirTemp(resolvedTmp, "git_co_test")
+	if err != nil {
+		t.Skipf("cannot create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpBase)
+
+	repoDir := filepath.Join(tmpBase, "co_repo")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("failed to create repo dir: %v", err)
+	}
+
+	gitInit := testExecCmd(ctx, "git", "init")
+	gitInit.Dir = repoDir
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Skipf("git not available: %v, out: %s", err, out)
+	}
+
+	exe := NewExecution("cnt_co2", "dec_co2", "apr_co2", "agt_co2", "git.checkout", "git:"+repoDir, 30)
+	err = gitExec.Execute(ctx, exe)
+	if err == nil {
+		t.Fatal("expected error for missing branch")
+	}
+	if exe.State != StateFailed {
+		t.Errorf("state = %s, want failed", exe.State)
+	}
+	if !strings.Contains(exe.Error, "branch is required") {
+		t.Errorf("error = %q, want 'branch is required' message", exe.Error)
+	}
+}
+
+func TestGitExecutor_Checkout_NonexistentBranch(t *testing.T) {
+	ctx := context.Background()
+	gitExec := NewGitExecutor(10)
+
+	resolvedTmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve system temp dir: %v", err)
+	}
+	tmpBase, err := os.MkdirTemp(resolvedTmp, "git_co_test")
+	if err != nil {
+		t.Skipf("cannot create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpBase)
+
+	repoDir := filepath.Join(tmpBase, "co_repo2")
+	if err := os.MkdirAll(repoDir, 0755); err != nil {
+		t.Fatalf("failed to create repo dir: %v", err)
+	}
+
+	gitInit := testExecCmd(ctx, "git", "init")
+	gitInit.Dir = repoDir
+	if out, err := gitInit.CombinedOutput(); err != nil {
+		t.Skipf("git not available: %v, out: %s", err, out)
+	}
+
+	gitConfig := testExecCmd(ctx, "git", "config", "user.email", "test@test.com")
+	gitConfig.Dir = repoDir
+	if out, err := gitConfig.CombinedOutput(); err != nil {
+		t.Skipf("git config failed: %v, out: %s", err, out)
+	}
+	gitConfig2 := testExecCmd(ctx, "git", "config", "user.name", "Test")
+	gitConfig2.Dir = repoDir
+	if out, err := gitConfig2.CombinedOutput(); err != nil {
+		t.Skipf("git config failed: %v, out: %s", err, out)
+	}
+
+	testFile := filepath.Join(repoDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello\n"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	gitAdd := testExecCmd(ctx, "git", "add", ".")
+	gitAdd.Dir = repoDir
+	if out, err := gitAdd.CombinedOutput(); err != nil {
+		t.Skipf("git add failed: %v, out: %s", err, out)
+	}
+
+	gitCommit := testExecCmd(ctx, "git", "commit", "-m", "initial")
+	gitCommit.Dir = repoDir
+	if out, err := gitCommit.CombinedOutput(); err != nil {
+		t.Skipf("git commit failed: %v, out: %s", err, out)
+	}
+
+	exe := NewExecution("cnt_co3", "dec_co3", "apr_co3", "agt_co3", "git.checkout", "git:"+repoDir+":nonexistent", 30)
+	err = gitExec.Execute(ctx, exe)
+	if err != nil {
+		t.Fatalf("unexpected Execute error: %v", err)
+	}
+	if exe.State != StateFailed {
+		t.Errorf("state = %s, want failed for nonexistent branch checkout", exe.State)
+	}
+	if exe.ExitCode == 0 {
+		t.Error("exit_code should be non-zero for nonexistent branch")
+	}
 }

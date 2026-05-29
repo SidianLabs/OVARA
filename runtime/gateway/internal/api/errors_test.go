@@ -97,3 +97,33 @@ func TestJSONError_PreservesMessage(t *testing.T) {
 		t.Errorf("error message was not preserved: %s", resp.Error)
 	}
 }
+
+func TestJSONConflict(t *testing.T) {
+	w := httptest.NewRecorder()
+	JSONConflict(w, "state conflict")
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
+
+	var resp ErrorResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Error != "state conflict" {
+		t.Errorf("error = %s, want 'state conflict'", resp.Error)
+	}
+}
+
+func TestJSONUnprocessableEntity(t *testing.T) {
+	w := httptest.NewRecorder()
+	JSONUnprocessableEntity(w, "validation failed")
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnprocessableEntity)
+	}
+
+	var resp ErrorResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Error != "validation failed" {
+		t.Errorf("error = %s, want 'validation failed'", resp.Error)
+	}
+}

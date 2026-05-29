@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -63,6 +65,7 @@ func (h *ContinuationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/continuations/queue/resume", h.handleQueueResume)
 	mux.HandleFunc("POST /v1/continuations/{id}/enqueue", h.handleEnqueue)
 	mux.HandleFunc("POST /v1/continuations/{id}/cancel", h.handleCancel)
+	mux.HandleFunc("POST /v1/continuations/{id}/retry", h.handleRetry)
 	mux.HandleFunc("POST /v1/continuations/{id}/execute", h.handleExecute)
 }
 
@@ -72,20 +75,18 @@ func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	limitStr := r.URL.Query().Get("limit")
-	limit := 100
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
-			if limit > 1000 {
-				limit = 1000
-			}
-		}
-	}
+	limit := parseLimit(r, defaultListLimit, maxListLimit)
 
 	stateFilter := r.URL.Query().Get("state")
 	agentFilter := r.URL.Query().Get("agent_id")
 	decisionFilter := r.URL.Query().Get("decision_id")
+	actionTypeFilter := r.URL.Query().Get("action_type")
+	environmentFilter := r.URL.Query().Get("environment")
+	approvalIDFilter := r.URL.Query().Get("approval_id")
+	retryableFilter := r.URL.Query().Get("retryable")
+	sortOrder := r.URL.Query().Get("sort")
+	createdBefore := r.URL.Query().Get("created_before")
+	createdAfter := r.URL.Query().Get("created_after")
 
 	var continuations []*continuation.Continuation
 
@@ -99,55 +100,143 @@ func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request)
 		continuations = h.store.ListAll()
 	}
 
-	if limit > 0 && len(continuations) > limit {
-		continuations = continuations[len(continuations)-limit:]
+	if approvalIDFilter != "" {
+		filtered := make([]*continuation.Continuation, 0, len(continuations))
+		for _, c := range continuations {
+			if c.ApprovalID == approvalIDFilter {
+				filtered = append(filtered, c)
+			}
+		}
+		continuations = filtered
 	}
 
-	enriched := make([]map[string]any, 0, len(continuations))
+	if environmentFilter != "" {
+		filtered := make([]*continuation.Continuation, 0, len(continuations))
+		for _, c := range continuations {
+			if c.Environment == environmentFilter {
+				filtered = append(filtered, c)
+			}
+		}
+		continuations = filtered
+	}
+
+	if actionTypeFilter != "" {
+		filtered := make([]*continuation.Continuation, 0, len(continuations))
+		for _, c := range continuations {
+			if c.ActionType == actionTypeFilter {
+				filtered = append(filtered, c)
+			}
+		}
+		continuations = filtered
+	}
+
+	if retryableFilter == "true" || retryableFilter == "false" {
+		wantRetryable := retryableFilter == "true"
+		filtered := make([]*continuation.Continuation, 0, len(continuations))
+		for _, c := range continuations {
+			if c.CanRetry() == wantRetryable {
+				filtered = append(filtered, c)
+			}
+		}
+		continuations = filtered
+	}
+
+	if createdBefore != "" {
+		if t, err := time.Parse(time.RFC3339, createdBefore); err == nil {
+			filtered := make([]*continuation.Continuation, 0, len(continuations))
+			for _, c := range continuations {
+				if c.CreatedAt.Before(t) || c.CreatedAt.Equal(t) {
+					filtered = append(filtered, c)
+				}
+			}
+			continuations = filtered
+		}
+	}
+
+	if createdAfter != "" {
+		if t, err := time.Parse(time.RFC3339, createdAfter); err == nil {
+			filtered := make([]*continuation.Continuation, 0, len(continuations))
+			for _, c := range continuations {
+				if c.CreatedAt.After(t) {
+					filtered = append(filtered, c)
+				}
+			}
+			continuations = filtered
+		}
+	}
+
+	// Sort after all filters, before limiting and cursor filtering. The
+	// default order is newest first (deterministic) so the limit window
+	// returns the most recent items reproducibly; sort=oldest reverses it.
+	// ContinuationID is the stable tiebreaker for equal timestamps.
+	ascending := sortAscending(sortOrder)
+	sort.Slice(continuations, func(i, j int) bool {
+		a, b := continuations[i], continuations[j]
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			if ascending {
+				return a.ContinuationID < b.ContinuationID
+			}
+			return a.ContinuationID > b.ContinuationID
+		}
+		if ascending {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return b.CreatedAt.Before(a.CreatedAt)
+	})
+
+	// Apply cursor-based pagination after sorting, before limit.
+	// This ensures the cursor skips the correct position in the full
+	// sorted set, not just within the limited window.
+	var nextCursor string
+	if rawAfter := r.URL.Query().Get("after"); rawAfter != "" {
+		if cur, ok := decodeCursor(rawAfter); ok {
+			continuations = cursorFilter(continuations, cur, ascending,
+				func(c *continuation.Continuation) time.Time { return c.CreatedAt },
+				func(c *continuation.Continuation) string { return c.ContinuationID },
+			)
+		}
+	}
+
+	if continuations == nil {
+		continuations = []*continuation.Continuation{}
+	}
+
+	var executableCount int
 	for _, c := range continuations {
-		m := map[string]any{
-			"continuation_id": c.ContinuationID,
-			"decision_id":     c.DecisionID,
-			"approval_id":     c.ApprovalID,
-			"agent_id":        c.AgentID,
-			"action_type":     c.ActionType,
-			"resource":        c.Resource,
-			"state":           string(c.State),
-			"created_at":      c.CreatedAt,
-			"is_executable":   c.IsExecutable(),
-			"time_to_expiry":   c.TimeToExpiry().Seconds(),
+		if c.IsExecutable() {
+			executableCount++
 		}
-		if c.ApprovedAt != nil {
-			m["approved_at"] = c.ApprovedAt
+	}
+
+	retryableCount := 0
+	for _, c := range continuations {
+		if c.CanRetry() {
+			retryableCount++
 		}
-		if c.ResumedAt != nil {
-			m["resumed_at"] = c.ResumedAt
-		}
-		if c.ExpiresAt != nil {
-			m["expires_at"] = c.ExpiresAt
-		}
-		if c.ResolvedBy != "" {
-			m["resolved_by"] = c.ResolvedBy
-		}
-		enriched = append(enriched, m)
+	}
+
+	if limit > 0 && len(continuations) > limit {
+		// Capture cursor from the item that falls just outside the limit
+		// window — that becomes the next_cursor value for the caller.
+		lastItem := continuations[limit-1]
+		nextCursor = encodeCursor(Cursor{
+			Timestamp: lastItem.CreatedAt,
+			ID:        lastItem.ContinuationID,
+		})
+		continuations = continuations[:limit]
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"continuations": enriched,
-		"count":          len(enriched),
-		"executable":     executableCount(continuations),
-	})
-}
-
-func executableCount(continuations []*continuation.Continuation) int {
-	n := 0
-	for _, c := range continuations {
-		if c.IsExecutable() {
-			n++
-		}
+	resp := map[string]any{
+		"continuations": continuations,
+		"count":         len(continuations),
+		"executable":    executableCount,
+		"retryable":    retryableCount,
 	}
-	return n
+	if nextCursor != "" {
+		resp["next_cursor"] = nextCursor
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ContinuationHandler) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -168,8 +257,13 @@ func (h *ContinuationHandler) handleGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	retryInfo := cnt.RetryInfo()
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(cnt)
+	json.NewEncoder(w).Encode(map[string]any{
+		"continuation": cnt,
+		"retry":       retryInfo,
+	})
 }
 
 func (h *ContinuationHandler) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -251,12 +345,15 @@ func (h *ContinuationHandler) handleEnqueue(w http.ResponseWriter, r *http.Reque
 	}
 
 	if !cnt.CanEnqueue() {
-		api.JSONBadRequest(w, "continuation cannot be enqueued: state="+string(cnt.State))
+		api.JSONConflict(w, "cannot enqueue continuation: invalid state (current="+string(cnt.State)+", required=approved)")
 		return
 	}
 
 	cnt.MarkQueued()
 	h.store.Update(cnt)
+
+	log.Printf("QUEUE enqueue continuation_id=%s decision_id=%s action_type=%s agent_id=%s state=%s",
+		cnt.ContinuationID, cnt.DecisionID, cnt.ActionType, cnt.AgentID, cnt.State)
 
 	if h.eventStore != nil {
 		evt := events.NewEvent("continuation.enqueued").
@@ -300,12 +397,15 @@ func (h *ContinuationHandler) handleCancel(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !cnt.CanCancel() {
-		api.JSONBadRequest(w, "continuation cannot be cancelled: state="+string(cnt.State))
+		api.JSONConflict(w, "cannot cancel continuation: invalid state (current="+string(cnt.State)+")")
 		return
 	}
 
 	cnt.MarkCancelled()
 	h.store.Update(cnt)
+
+	log.Printf("QUEUE cancel continuation_id=%s decision_id=%s action_type=%s agent_id=%s state=%s",
+		cnt.ContinuationID, cnt.DecisionID, cnt.ActionType, cnt.AgentID, cnt.State)
 
 	if h.eventStore != nil {
 		evt := events.NewEvent("continuation.cancelled").
@@ -329,27 +429,99 @@ func (h *ContinuationHandler) handleCancel(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (h *ContinuationHandler) handleRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		api.JSONBadRequest(w, "continuation id is required")
+		return
+	}
+
+	cnt, found := h.store.Get(id)
+	if !found {
+		api.JSONNotFound(w, "continuation not found: "+id)
+		return
+	}
+
+	if !cnt.Retry() {
+		if cnt.State != continuation.StateExecuted && cnt.State != continuation.StateResumed {
+			api.JSONConflict(w, "cannot retry continuation: invalid state (current="+string(cnt.State)+", required=executed)")
+			return
+		}
+		if cnt.MaxRetries <= 0 {
+			api.JSONConflict(w, "cannot retry continuation: max_retries is 0")
+			return
+		}
+		api.JSONConflict(w, "cannot retry continuation: retry limit reached (retry_count="+strconv.Itoa(cnt.RetryCount)+", max_retries="+strconv.Itoa(cnt.MaxRetries)+")")
+		return
+	}
+
+	h.store.Update(cnt)
+
+	log.Printf("QUEUE retry continuation_id=%s decision_id=%s action_type=%s agent_id=%s retry_count=%d",
+		cnt.ContinuationID, cnt.DecisionID, cnt.ActionType, cnt.AgentID, cnt.RetryCount)
+
+	if h.eventStore != nil {
+		evt := events.NewEvent("continuation.retried").
+			WithGatewayID(h.gatewayID).
+			WithDecisionID(cnt.DecisionID).
+			WithApprovalID(cnt.ApprovalID).
+			WithAgentID(cnt.AgentID).
+			WithContinuationID(cnt.ContinuationID).
+			WithPayload(map[string]any{
+				"continuation_id": cnt.ContinuationID,
+				"state":          string(cnt.State),
+				"retry_count":    cnt.RetryCount,
+			})
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]any{
+		"continuation_id": cnt.ContinuationID,
+		"state":          string(cnt.State),
+		"retry_count":    cnt.RetryCount,
+		"max_retries":   cnt.MaxRetries,
+		"message":       "continuation marked for retry",
+	})
+}
+
 func (h *ContinuationHandler) handleQueue(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		api.JSONMethodNotAllowed(w)
 		return
 	}
 
-	limitStr := r.URL.Query().Get("limit")
-	limit := 100
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
-			if limit > 1000 {
-				limit = 1000
-			}
-		}
-	}
+	limit := parseLimit(r, defaultListLimit, maxListLimit)
 
 	queued := h.store.ListByState(continuation.StateQueued)
 
+	// A queue is naturally FIFO: order by when each item was queued (oldest
+	// first), falling back to creation time, with ContinuationID as a stable
+	// tiebreaker. This makes the listing deterministic instead of relying on
+	// map iteration order.
+	sort.Slice(queued, func(i, j int) bool {
+		a, b := queued[i], queued[j]
+		at, bt := a.CreatedAt, b.CreatedAt
+		if a.QueuedAt != nil {
+			at = *a.QueuedAt
+		}
+		if b.QueuedAt != nil {
+			bt = *b.QueuedAt
+		}
+		if at.Equal(bt) {
+			return a.ContinuationID < b.ContinuationID
+		}
+		return at.Before(bt)
+	})
+
 	if limit > 0 && len(queued) > limit {
-		queued = queued[len(queued)-limit:]
+		queued = queued[:limit]
 	}
 
 	enriched := make([]map[string]any, 0, len(queued))
@@ -364,7 +536,7 @@ func (h *ContinuationHandler) handleQueue(w http.ResponseWriter, r *http.Request
 			"state":           string(c.State),
 			"created_at":      c.CreatedAt,
 			"approved_at":     c.ApprovedAt,
-			"queued_at":      c.ApprovedAt,
+			"queued_at":      c.QueuedAt,
 		}
 		enriched = append(enriched, m)
 	}
@@ -398,6 +570,8 @@ func (h *ContinuationHandler) handleQueuePause(w http.ResponseWriter, r *http.Re
 
 	h.orchestrator.Pause()
 
+	log.Printf("QUEUE pause")
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"queue_paused": true,
@@ -417,6 +591,8 @@ func (h *ContinuationHandler) handleQueueResume(w http.ResponseWriter, r *http.R
 	}
 
 	h.orchestrator.Resume()
+
+	log.Printf("QUEUE resume")
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -460,7 +636,7 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 	}
 
 	if !cnt.CanExecute() {
-		api.JSONBadRequest(w, "continuation not in executable state: current state="+string(cnt.State))
+		api.JSONConflict(w, "continuation not in executable state: current state="+string(cnt.State))
 		return
 	}
 

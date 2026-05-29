@@ -187,6 +187,9 @@ func (m *mockApprovalStore) Get(id string) (*approval.ApprovalRequest, error) {
 func (m *mockApprovalStore) Update(req *approval.ApprovalRequest) error {
 	return nil
 }
+func (m *mockApprovalStore) ListAll() []*approval.ApprovalRequest {
+	return m.pending
+}
 func (m *mockApprovalStore) ListByStatus(status approval.Status) []*approval.ApprovalRequest {
 	if status == approval.StatusPending {
 		return m.pending

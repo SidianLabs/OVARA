@@ -12,10 +12,10 @@ import (
 )
 
 type FileBackedStore struct {
-	*InMemoryStore
 	path          string
 	file          *os.File
 	mu            sync.RWMutex
+	continuations map[string]*Continuation
 	maxSize       int
 	loadedCount   int
 	retentionDays int
@@ -39,11 +39,11 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 	}
 
 	store := &FileBackedStore{
-		InMemoryStore: NewInMemoryStore(),
 		path:          path,
 		maxSize:       maxSize,
 		retentionDays: retentionDays,
 		maxRecords:    maxRecords,
+		continuations: make(map[string]*Continuation),
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -133,6 +133,13 @@ func (s *FileBackedStore) Create(c *Continuation) error {
 	return nil
 }
 
+func (s *FileBackedStore) Get(id string) (*Continuation, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.continuations[id]
+	return c, ok
+}
+
 func (s *FileBackedStore) Update(c *Continuation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,6 +164,86 @@ func (s *FileBackedStore) Update(c *Continuation) error {
 	return nil
 }
 
+func (s *FileBackedStore) ListByState(state State) []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if c.State == state {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListByDecision(decisionID string) []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if c.DecisionID == decisionID {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListByAgent(agentID string) []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if c.AgentID == agentID {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListByApprovalID(approvalID string) []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if c.ApprovalID == approvalID {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListAll() []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		result = append(result, c)
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListNonTerminal() []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if !c.IsTerminal() {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) CountByState() map[State]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	counts := make(map[State]int)
+	for _, c := range s.continuations {
+		counts[c.State]++
+	}
+	return counts
+}
+
 func (s *FileBackedStore) LoadedCount() int {
 	return s.loadedCount
 }
@@ -170,16 +257,6 @@ func (s *FileBackedStore) Close() error {
 		return s.file.Close()
 	}
 	return nil
-}
-
-func (s *FileBackedStore) CountByState() map[State]int {
-	s.InMemoryStore.mu.RLock()
-	defer s.InMemoryStore.mu.RUnlock()
-	counts := make(map[State]int)
-	for _, c := range s.continuations {
-		counts[c.State]++
-	}
-	return counts
 }
 
 func (s *FileBackedStore) RetentionDays() int {
@@ -256,66 +333,58 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 func (s *FileBackedStore) Compact() error {
 	s.mu.Lock()
 	stale := s.staleIDs
-	s.mu.Unlock()
-
-	if len(stale) == 0 {
-		return nil
-	}
-
 	staleSet := make(map[string]bool, len(stale))
 	for _, id := range stale {
 		staleSet[id] = true
+	}
+	keptConts := make([]*Continuation, 0, len(s.continuations)-len(stale))
+	for _, cnt := range s.continuations {
+		if staleSet[cnt.ContinuationID] {
+			continue
+		}
+		keptConts = append(keptConts, cnt)
 	}
 
 	tmpPath := s.path + ".compact.tmp"
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to open compact tmp file: %w", err)
 	}
 
-	var keptConts []*Continuation
-
-	s.mu.RLock()
-	for _, cnt := range s.continuations {
-		if staleSet[cnt.ContinuationID] {
-			continue
-		}
+	for _, cnt := range keptConts {
 		data, err := json.Marshal(cnt)
 		if err != nil {
 			tmpFile.Close()
 			os.Remove(tmpPath)
-			s.mu.RUnlock()
+			s.mu.Unlock()
 			return fmt.Errorf("failed to marshal continuation during compact: %w", err)
 		}
 		if _, err := tmpFile.Write(append(data, '\n')); err != nil {
 			tmpFile.Close()
 			os.Remove(tmpPath)
-			s.mu.RUnlock()
+			s.mu.Unlock()
 			return fmt.Errorf("failed to write continuation during compact: %w", err)
 		}
-		keptConts = append(keptConts, cnt)
 	}
-	s.mu.RUnlock()
 
 	if err := tmpFile.Sync(); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
+		s.mu.Unlock()
 		return fmt.Errorf("failed to sync compact file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpPath)
+		s.mu.Unlock()
 		return fmt.Errorf("failed to close compact file: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, s.path); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to rename compact file: %w", err)
 	}
 
-	s.mu.Lock()
-	for _, id := range stale {
-		delete(s.continuations, id)
-	}
-	s.staleIDs = nil
 	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		s.mu.Unlock()
@@ -323,6 +392,11 @@ func (s *FileBackedStore) Compact() error {
 	}
 	oldFile := s.file
 	s.file = newFile
+	s.continuations = make(map[string]*Continuation)
+	for _, cnt := range keptConts {
+		s.continuations[cnt.ContinuationID] = cnt
+	}
+	s.staleIDs = nil
 	s.mu.Unlock()
 
 	oldFile.Close()

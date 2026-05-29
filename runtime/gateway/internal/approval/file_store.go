@@ -97,6 +97,16 @@ func (s *FileBackedStore) Update(req *ApprovalRequest) error {
 	return s.persist(all)
 }
 
+func (s *FileBackedStore) ListAll() []*ApprovalRequest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*ApprovalRequest, 0, len(s.items))
+	for _, req := range s.items {
+		result = append(result, req)
+	}
+	return result
+}
+
 func (s *FileBackedStore) ListByStatus(status Status) []*ApprovalRequest {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

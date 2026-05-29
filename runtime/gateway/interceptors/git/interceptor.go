@@ -25,12 +25,13 @@ func New(gatewayURL, agentID string) *Interceptor {
 }
 
 type Action struct {
-	Command  string
-	Args     []string
-	Repo     string
-	Branch   string
-	Remote   string
-	Metadata map[string]any
+	Command        string
+	Args           []string
+	Repo           string
+	Branch         string
+	CheckoutBranch string
+	Remote         string
+	Metadata       map[string]any
 }
 
 func (i *Interceptor) normaliseAction(cmd string, args []string, opts ...ActionOption) (*models.ActionRequest, error) {
@@ -44,7 +45,10 @@ func (i *Interceptor) normaliseAction(cmd string, args []string, opts ...ActionO
 	if resource == "" {
 		resource = "git:local"
 	}
-	if action.Branch != "" {
+
+	if action.CheckoutBranch != "" {
+		resource += ":" + action.CheckoutBranch
+	} else if action.Branch != "" {
 		resource += ":branch/" + action.Branch
 	}
 
@@ -64,6 +68,10 @@ func resolveGitActionType(cmd string, args []string) models.ActionType {
 		return models.ActionTypeGitPush
 	case "pull":
 		return models.ActionTypeGitPull
+	case "fetch":
+		return models.ActionTypeGitFetch
+	case "checkout":
+		return models.ActionTypeGitCheckout
 	default:
 		return models.ActionType("git." + cmd)
 	}
@@ -89,6 +97,12 @@ func WithRepo(repo string) ActionOption {
 func WithBranch(branch string) ActionOption {
 	return func(a *Action) {
 		a.Branch = branch
+	}
+}
+
+func WithCheckout(branch string) ActionOption {
+	return func(a *Action) {
+		a.CheckoutBranch = branch
 	}
 }
 

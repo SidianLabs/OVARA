@@ -1,8 +1,10 @@
 package continuation
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -224,4 +226,133 @@ func TestFileBackedStore_MarkDeniedAndReload(t *testing.T) {
 			t.Fatalf("expected deny reason 'too dangerous', got %s", list[0].DenyReason)
 		}
 	}
+}
+
+func TestFileBackedStore_ConcurrentCreateAndGet(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	var created []*Continuation
+	for i := 0; i < 50; i++ {
+		c := NewContinuation(fmt.Sprintf("dec_created_%d", i), "shell", "echo test").
+			WithAgentID(fmt.Sprintf("agt_%d", i))
+		if err := store.Create(c); err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
+		created = append(created, c)
+	}
+
+	var wg sync.WaitGroup
+	for _, c := range created {
+		wg.Add(1)
+		go func(cnt *Continuation) {
+			defer wg.Done()
+			got, ok := store.Get(cnt.ContinuationID)
+			if !ok {
+				t.Errorf("Get(%s) not found", cnt.ContinuationID)
+				return
+			}
+			if got.DecisionID != cnt.DecisionID {
+				t.Errorf("Get(%s) decision_id mismatch", cnt.ContinuationID)
+			}
+		}(c)
+	}
+
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			c := NewContinuation(fmt.Sprintf("dec_new_%d", i), "shell", "echo new").
+				WithAgentID(fmt.Sprintf("agt_new_%d", i))
+			store.Create(c)
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func TestFileBackedStore_ConcurrentListByState(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	for i := 0; i < 30; i++ {
+		c := NewContinuation(fmt.Sprintf("dec_state_%d", i), "shell", "echo test").
+			WithAgentID(fmt.Sprintf("agt_%d", i))
+		store.Create(c)
+		c.MarkApproved(fmt.Sprintf("op_%d", i))
+		store.Update(c)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			list := store.ListByState(StateApproved)
+			if len(list) != 30 {
+				t.Errorf("ListByState(Approved) = %d, want 30", len(list))
+			}
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			c := NewContinuation(fmt.Sprintf("dec_new_%d", i), "shell", "echo new").
+				WithAgentID(fmt.Sprintf("agt_new_%d", i))
+			store.Create(c)
+		}(i)
+	}
+	wg.Wait()
+}
+
+func TestFileBackedStore_ConcurrentCreateAndListAll(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	for i := 0; i < 40; i++ {
+		c := NewContinuation(fmt.Sprintf("dec_all_%d", i), "shell", "echo test").
+			WithAgentID(fmt.Sprintf("agt_%d", i))
+		store.Create(c)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			list := store.ListAll()
+			if len(list) < 40 {
+				t.Errorf("ListAll() = %d, want >= 40", len(list))
+			}
+		}()
+	}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			c := NewContinuation(fmt.Sprintf("dec_concurrent_%d", i), "shell", "echo concurrent").
+				WithAgentID(fmt.Sprintf("agt_conc_%d", i))
+			store.Create(c)
+		}(i)
+	}
+	wg.Wait()
 }

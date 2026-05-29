@@ -16,6 +16,31 @@ type TrackedLease struct {
 	LastSeenAt       *time.Time
 }
 
+func (t *TrackedLease) Clone() *TrackedLease {
+	cloned := &TrackedLease{
+		CreatedAt:        t.CreatedAt,
+		RevocationReason: t.RevocationReason,
+		GatewayID:        t.GatewayID,
+	}
+	if t.Lease != nil {
+		clonedLease := *t.Lease
+		if len(t.Lease.AllowedActions) > 0 {
+			clonedLease.AllowedActions = make([]string, len(t.Lease.AllowedActions))
+			copy(clonedLease.AllowedActions, t.Lease.AllowedActions)
+		}
+		cloned.Lease = &clonedLease
+	}
+	if t.RevokedAt != nil {
+		revoked := *t.RevokedAt
+		cloned.RevokedAt = &revoked
+	}
+	if t.LastSeenAt != nil {
+		lastSeen := *t.LastSeenAt
+		cloned.LastSeenAt = &lastSeen
+	}
+	return cloned
+}
+
 type LeaseHistoryEntry struct {
 	LeaseID    string    `json:"lease_id"`
 	Event      string    `json:"event"`

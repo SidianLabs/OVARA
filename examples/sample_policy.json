@@ -2,16 +2,28 @@
   "version": "v1",
   "rules": [
     {
-      "action_type": "ci.build_trigger",
-      "environment": "*",
-      "allow": true,
-      "description": "CI build triggers are allowed in any environment"
-    },
-    {
       "action_type": "git.pull",
       "environment": "*",
       "allow": true,
-      "description": "Read-only git pull is always safe"
+      "description": "Read-only git pull is always safe in any environment"
+    },
+    {
+      "action_type": "git.fetch",
+      "environment": "*",
+      "allow": true,
+      "description": "Read-only git fetch is always safe in any environment"
+    },
+    {
+      "action_type": "git.checkout",
+      "environment": "*",
+      "escalate": true,
+      "description": "Git checkout modifies working tree — requires approval to prevent accidental overwrites"
+    },
+    {
+      "action_type": "exec",
+      "environment": "*",
+      "escalate": true,
+      "description": "Direct subprocess execution requires approval in all environments"
     },
     {
       "action_type": "shell",
@@ -25,27 +37,14 @@
       "escalate": true,
       "conditions": {
         "patterns": ["curl |sh", "rm -rf /", "mkfs", ":(){:|:&};"]
-      }
+      },
+      "description": "Dangerous shell patterns in dev escalate for safety review"
     },
     {
-      "action_type": "git.force_push",
-      "environment": "*",
-      "escalate": true
-    },
-    {
-      "action_type": "git.branch_delete",
-      "environment": "*",
-      "escalate": true
-    },
-    {
-      "action_type": "github.merge",
-      "environment": "*",
-      "escalate": true
-    },
-    {
-      "action_type": "ci.deploy",
-      "environment": "*",
-      "escalate": true
+      "action_type": "shell",
+      "environment": "local",
+      "allow": true,
+      "description": "Shell in local environment is allowed for development"
     },
     {
       "action_type": "*",
@@ -53,7 +52,8 @@
       "escalate": true,
       "conditions": {
         "require_explicit_approval": true
-      }
+      },
+      "description": "Catch-all: all actions in production require explicit approval"
     }
   ]
 }

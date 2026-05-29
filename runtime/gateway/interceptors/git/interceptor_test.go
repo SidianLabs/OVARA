@@ -73,6 +73,36 @@ func TestInterceptor_normaliseAction_WithBranch(t *testing.T) {
 	}
 }
 
+func TestInterceptor_normaliseAction_Checkout(t *testing.T) {
+	i := New("http://localhost:8080", "test-agent")
+
+	req, err := i.normaliseAction("checkout", []string{"feature"}, WithRepo("git:/home/user/repo"), WithCheckout("feature"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.ActionType != models.ActionTypeGitCheckout {
+		t.Errorf("action_type = %v, want git.checkout", req.ActionType)
+	}
+	if req.Resource != "git:/home/user/repo:feature" {
+		t.Errorf("resource = %v, want git:/home/user/repo:feature", req.Resource)
+	}
+}
+
+func TestInterceptor_normaliseAction_CheckoutMain(t *testing.T) {
+	i := New("http://localhost:8080", "test-agent")
+
+	req, err := i.normaliseAction("checkout", []string{"main"}, WithCheckout("main"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.ActionType != models.ActionTypeGitCheckout {
+		t.Errorf("action_type = %v, want git.checkout", req.ActionType)
+	}
+	if req.Resource != "git:local:main" {
+		t.Errorf("resource = %v, want git:local:main", req.Resource)
+	}
+}
+
 func TestInterceptor_Execute_Allow(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := models.DecisionResponse{
@@ -160,6 +190,12 @@ func TestResolveGitActionType(t *testing.T) {
 		{"push", []string{"--force", "origin"}, models.ActionTypeGitForcePush},
 		{"push", []string{"-f", "origin"}, models.ActionTypeGitForcePush},
 		{"pull", []string{}, models.ActionTypeGitPull},
+		{"fetch", []string{}, models.ActionTypeGitFetch},
+		{"fetch", []string{"origin"}, models.ActionTypeGitFetch},
+		{"fetch", []string{"origin", "main"}, models.ActionTypeGitFetch},
+		{"checkout", []string{"feature"}, models.ActionTypeGitCheckout},
+		{"checkout", []string{"main"}, models.ActionTypeGitCheckout},
+		{"checkout", []string{"-b", "new-branch"}, models.ActionTypeGitCheckout},
 		{"clone", []string{}, models.ActionType("git.clone")},
 	}
 

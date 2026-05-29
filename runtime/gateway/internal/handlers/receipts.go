@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 
 	"ovara.runtime.gateway/internal/api"
@@ -84,24 +83,3 @@ func (h *ReceiptHandler) handleListByDecision(w http.ResponseWriter, r *http.Req
 	})
 }
 
-func (h *ReceiptHandler) handlePut(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		api.JSONMethodNotAllowed(w)
-		return
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		api.JSONBadRequest(w, "failed to read body")
-		return
-	}
-	defer r.Body.Close()
-
-	var receipt map[string]any
-	if err := json.Unmarshal(body, &receipt); err != nil {
-		api.JSONBadRequest(w, "invalid receipt: "+err.Error())
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
-}

@@ -12,10 +12,11 @@ import (
 )
 
 type FileBackedStore struct {
-	*InMemoryStore
 	path          string
 	file          *os.File
 	mu            sync.RWMutex
+	events        []*Event
+	maxLen        int
 	maxEvents     int
 	loadedCount   int
 	retentionDays int
@@ -39,8 +40,8 @@ func NewFileBackedStoreWithRetention(path string, maxEvents int, retentionDays i
 	}
 
 	store := &FileBackedStore{
-		InMemoryStore: NewInMemoryStore(maxEvents),
 		path:          path,
+		maxLen:        maxEvents,
 		maxEvents:     maxEvents,
 		retentionDays: retentionDays,
 		maxRecords:    maxRecords,
@@ -104,7 +105,7 @@ func (s *FileBackedStore) load() error {
 			continue
 		}
 		s.loadedCount++
-		s.InMemoryStore.Append(&evt)
+		s.events = append(s.events, &evt)
 	}
 	return scanner.Err()
 }
@@ -119,7 +120,10 @@ func (s *FileBackedStore) Append(event *Event) {
 		s.file.Sync()
 	}
 
-	s.InMemoryStore.Append(event)
+	s.events = append(s.events, event)
+	if len(s.events) > s.maxLen {
+		s.events = s.events[len(s.events)-s.maxLen:]
+	}
 }
 
 func (s *FileBackedStore) Close() error {
@@ -219,59 +223,58 @@ func (s *FileBackedStore) removeByIDsInMemory(ids []string) {
 func (s *FileBackedStore) Compact() error {
 	s.mu.Lock()
 	stale := s.staleEvents
-	s.mu.Unlock()
-
-	staleSet := make(map[string]bool)
+	staleSet := make(map[string]bool, len(stale))
 	for _, id := range stale {
 		staleSet[id] = true
+	}
+	keptEvents := make([]*Event, 0, len(s.events)-len(stale))
+	for _, evt := range s.events {
+		if staleSet[evt.EventID] {
+			continue
+		}
+		keptEvents = append(keptEvents, evt)
 	}
 
 	tmpPath := s.path + ".compact.tmp"
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to open compact tmp file: %w", err)
 	}
 
-	var keptEvents []*Event
-
-	s.mu.RLock()
-	for _, evt := range s.events {
-		if staleSet[evt.EventID] {
-			continue
-		}
+	for _, evt := range keptEvents {
 		data, err := json.Marshal(evt)
 		if err != nil {
 			tmpFile.Close()
 			os.Remove(tmpPath)
-			s.mu.RUnlock()
+			s.mu.Unlock()
 			return fmt.Errorf("failed to marshal event during compact: %w", err)
 		}
 		if _, err := tmpFile.Write(append(data, '\n')); err != nil {
 			tmpFile.Close()
 			os.Remove(tmpPath)
-			s.mu.RUnlock()
+			s.mu.Unlock()
 			return fmt.Errorf("failed to write event during compact: %w", err)
 		}
-		keptEvents = append(keptEvents, evt)
 	}
-	s.mu.RUnlock()
 
 	if err := tmpFile.Sync(); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
+		s.mu.Unlock()
 		return fmt.Errorf("failed to sync compact file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpPath)
+		s.mu.Unlock()
 		return fmt.Errorf("failed to close compact file: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, s.path); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to rename compact file: %w", err)
 	}
 
-	s.mu.Lock()
-	s.staleEvents = nil
 	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		s.mu.Unlock()
@@ -280,6 +283,7 @@ func (s *FileBackedStore) Compact() error {
 	oldFile := s.file
 	s.file = newFile
 	s.events = keptEvents
+	s.staleEvents = nil
 	s.mu.Unlock()
 
 	oldFile.Close()
@@ -295,20 +299,18 @@ func (s *FileBackedStore) FileSizeBytes() (int64, error) {
 }
 
 func (s *FileBackedStore) List(limit int) []*Event {
-	s.mu.Lock()
-	staleSet := make(map[string]bool)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	staleSet := make(map[string]bool, len(s.staleEvents))
 	for _, id := range s.staleEvents {
 		staleSet[id] = true
 	}
-	s.mu.Unlock()
-
-	s.InMemoryStore.mu.RLock()
-	defer s.InMemoryStore.mu.RUnlock()
 
 	var result []*Event
 	count := 0
-	for i := len(s.InMemoryStore.events) - 1; i >= 0; i-- {
-		evt := s.InMemoryStore.events[i]
+	for i := len(s.events) - 1; i >= 0; i-- {
+		evt := s.events[i]
 		if staleSet[evt.EventID] {
 			continue
 		}
@@ -324,6 +326,23 @@ func (s *FileBackedStore) List(limit int) []*Event {
 		reversed[i], reversed[j] = result[j], result[i]
 	}
 	return reversed
+}
+
+func (s *FileBackedStore) Get(eventID string) (*Event, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := len(s.events) - 1; i >= 0; i-- {
+		if s.events[i].EventID == eventID {
+			return s.events[i], true
+		}
+	}
+	return nil, false
+}
+
+func (s *FileBackedStore) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.events)
 }
 
 func (s *FileBackedStore) Stats() (total, cleanupPending int) {

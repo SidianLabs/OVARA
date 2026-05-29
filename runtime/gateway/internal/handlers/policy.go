@@ -64,7 +64,7 @@ func (h *PolicyHandler) handleValidate(w http.ResponseWriter, r *http.Request) {
 
 	var req ValidateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -124,7 +124,7 @@ func (h *PolicyHandler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 
 	var req SimulateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -193,7 +193,7 @@ func (h *PolicyHandler) handleSimulateBatch(w http.ResponseWriter, r *http.Reque
 
 	var req SimulateBatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -243,7 +243,7 @@ func (h *PolicyHandler) handlePolicyDiff(w http.ResponseWriter, r *http.Request)
 	var req DiffRequest
 	if r.Method == http.MethodPost {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+			api.JSONBadRequest(w, "invalid request body: "+err.Error())
 			return
 		}
 	} else {
@@ -313,7 +313,7 @@ func (h *PolicyHandler) handleCandidateLoad(w http.ResponseWriter, r *http.Reque
 
 	var req LoadCandidateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		api.JSONBadRequest(w, "invalid JSON: "+err.Error())
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
@@ -466,13 +466,13 @@ func (h *PolicyHandler) handleGetHistoryEntry(w http.ResponseWriter, r *http.Req
 
 	id := r.URL.Query().Get("id")
 	if id == "" {
-		api.JSONBadRequest(w, "id is required")
+		api.JSONBadRequest(w, "id query parameter is required")
 		return
 	}
 
 	entry, ok := h.history.Get(id)
 	if !ok {
-		api.JSONBadRequest(w, "history entry not found: "+id)
+		api.JSONNotFound(w, "policy history entry not found: "+id)
 		return
 	}
 
@@ -541,7 +541,7 @@ func (h *PolicyHandler) handleRestore(w http.ResponseWriter, r *http.Request) {
 
 	entry, ok := h.history.Get(id)
 	if !ok {
-		api.JSONBadRequest(w, "history entry not found: "+id)
+		api.JSONNotFound(w, "policy history entry not found: "+id)
 		return
 	}
 

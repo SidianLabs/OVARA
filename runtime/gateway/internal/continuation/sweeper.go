@@ -1,6 +1,7 @@
 package continuation
 
 import (
+	"log"
 	"sync"
 	"time"
 
@@ -110,6 +111,8 @@ func (s *Sweeper) runSweep() {
 			})
 		s.eventStore.Append(evt)
 	}
+
+	log.Printf("SWEEP continuations scanned=%d expired=%d", len(candidates), expiredCount)
 }
 
 func (s *Sweeper) SweepNow() int {
