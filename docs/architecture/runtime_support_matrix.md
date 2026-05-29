@@ -7,6 +7,26 @@ Quick reference for what the Ovara Runtime Gateway V1 supports and how it behave
 
 ---
 
+## Operator Authentication
+
+The gateway supports optional, local-first bearer-token auth for operator API access,
+enforced by a single middleware wrapping all routes. See
+[runtime_auth.md](runtime_auth.md) for full detail.
+
+| Config | JSON key | Default | Effect |
+|--------|----------|---------|--------|
+| `AuthEnabled` | `auth_enabled` | `false` | Master switch |
+| `OperatorTokens` | `operator_tokens` | `[]` | Accepted `Bearer` tokens |
+
+- When `auth_enabled=true` with tokens configured, all endpoints require
+  `Authorization: Bearer <token>` except `/health`, `/ready`, and `/v1/runtime/status`.
+- Tokens are compared in constant time and never logged.
+- `auth_enabled=false` (default) runs open; `auth_enabled=true` with no tokens runs open
+  with a loud startup warning (treated as misconfiguration).
+- Errors: `401` with a JSON `{"error":...}` body for missing/invalid/empty tokens.
+
+---
+
 ## Supported Action Types
 
 | Action Type | Executor | Resource Format | Behavior |

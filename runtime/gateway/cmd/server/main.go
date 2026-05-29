@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ovara.runtime.gateway/internal/approval"
+	"ovara.runtime.gateway/internal/auth"
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
@@ -275,6 +276,8 @@ func main() {
 
 	eventHandler := handlers.NewEventHandler(eventStore)
 
+	continuationHandler := handlers.NewContinuationHandler(continuationStore)
+
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 	policyHandler.RegisterRoutes(mux)
@@ -283,9 +286,6 @@ func main() {
 	receiptHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)
 	eventHandler.RegisterRoutes(mux)
-
-	continuationHandler := handlers.NewContinuationHandler(continuationStore)
-	continuationHandler.RegisterRoutes(mux)
 
 	var execStore execution.Store
 	execStore = execution.NewInMemoryStore()
@@ -307,7 +307,7 @@ func main() {
 	} else {
 		log.Printf("execution store in-memory (no persistence configured)")
 	}
-		h.SetExecutionStore(execStore)
+	h.SetExecutionStore(execStore)
 	h.SetCapabilitiesStore(capabilitiesStore)
 
 	checker := integrity.NewChecker()
@@ -337,7 +337,6 @@ func main() {
 	execHandler := handlers.NewExecutionHandler(execStore)
 	execHandler.SetExecutor(shellExec)
 	execHandler.SetContinuationStore(continuationStore)
-	execHandler.RegisterRoutes(mux)
 
 	execRegistry := execution.NewExecutorRegistry()
 	execRegistry.Register("shell", shellExec)
@@ -391,7 +390,21 @@ func main() {
 	adminHandler.SetEventStore(eventStore)
 	adminHandler.SetExecutionStore(execStore)
 	adminHandler.SetContinuationSweeper(sweeper)
+
+	continuationHandler.RegisterRoutes(mux)
+	execHandler.RegisterRoutes(mux)
 	adminHandler.RegisterRoutes(mux)
+
+	authMw := auth.NewMiddleware(cfg.OperatorTokens, cfg.AuthEnabled)
+	switch {
+	case cfg.AuthEnabled && len(cfg.OperatorTokens) > 0:
+		log.Printf("AUTH: auth_enabled=true with %d operator token(s) configured", len(cfg.OperatorTokens))
+	case cfg.AuthEnabled && len(cfg.OperatorTokens) == 0:
+		log.Printf("AUTH WARNING: auth_enabled=true but operator_tokens is empty — gateway is running OPEN (no auth enforced). Configure operator_tokens to lock down.")
+	default:
+		log.Printf("AUTH: auth_enabled=false — gateway open (set auth_enabled=true and configure operator_tokens to lock down)")
+	}
+	wrappedMux := authMw.Authenticate(mux)
 
 	addr := ":" + cfg.ServerPort
 	log.Printf("ovara runtime gateway v%s listening on %s", cfg.GatewayVersion, addr)
@@ -445,7 +458,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := http.ListenAndServe(addr, wrappedMux); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
