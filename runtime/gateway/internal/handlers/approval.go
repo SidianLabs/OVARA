@@ -321,6 +321,7 @@ func (h *ApprovalHandler) handleListApprovals(w http.ResponseWriter, r *http.Req
 	sortOrder := r.URL.Query().Get("sort")
 	createdBefore := r.URL.Query().Get("created_before")
 	createdAfter := r.URL.Query().Get("created_after")
+	rawAfter := r.URL.Query().Get("after")
 
 	limit := parseLimit(r, defaultListLimit, maxListLimit)
 
@@ -378,10 +379,6 @@ func (h *ApprovalHandler) handleListApprovals(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	// Sort after all filters, before limiting. Default order is newest first
-	// (deterministic) so the limit window returns the most recent approvals
-	// reproducibly; sort=oldest reverses it. ApprovalID is the stable
-	// tiebreaker for equal timestamps.
 	ascending := sortAscending(sortOrder)
 	sort.Slice(approvals, func(i, j int) bool {
 		a, b := approvals[i], approvals[j]
@@ -397,19 +394,25 @@ func (h *ApprovalHandler) handleListApprovals(w http.ResponseWriter, r *http.Req
 		return b.CreatedAt.Before(a.CreatedAt)
 	})
 
-	if limit > 0 && len(approvals) > limit {
-		approvals = approvals[:limit]
-	}
+	result := buildListedItems(approvals, limit, rawAfter, SortSpec[approval.ApprovalRequest]{
+		Ascending:    ascending,
+		GetTimestamp: func(a approval.ApprovalRequest) time.Time { return a.CreatedAt },
+		GetID:        func(a approval.ApprovalRequest) string { return a.ApprovalID },
+	})
 
-	if approvals == nil {
-		approvals = []*approval.ApprovalRequest{}
+	if result.Items == nil {
+		result.Items = []*approval.ApprovalRequest{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"approvals": approvals,
-		"count":     len(approvals),
-	})
+	resp := map[string]any{
+		"approvals": result.Items,
+		"count":     result.Count,
+	}
+	if result.NextCursor != "" {
+		resp["next_cursor"] = result.NextCursor
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {

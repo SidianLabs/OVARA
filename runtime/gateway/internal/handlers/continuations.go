@@ -87,97 +87,16 @@ func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request)
 	limit := parseLimit(r, defaultListLimit, maxListLimit)
 
 	stateFilter := r.URL.Query().Get("state")
-	agentFilter := r.URL.Query().Get("agent_id")
-	decisionFilter := r.URL.Query().Get("decision_id")
 	actionTypeFilter := r.URL.Query().Get("action_type")
 	environmentFilter := r.URL.Query().Get("environment")
-	approvalIDFilter := r.URL.Query().Get("approval_id")
 	retryableFilter := r.URL.Query().Get("retryable")
 	sortOrder := r.URL.Query().Get("sort")
 	createdBefore := r.URL.Query().Get("created_before")
 	createdAfter := r.URL.Query().Get("created_after")
+	rawAfter := r.URL.Query().Get("after")
 
-	var continuations []*continuation.Continuation
+	continuations := h.buildFilteredList(r, stateFilter, actionTypeFilter, environmentFilter, retryableFilter, createdBefore, createdAfter, sortOrder)
 
-	if decisionFilter != "" {
-		continuations = h.store.ListByDecision(decisionFilter)
-	} else if agentFilter != "" {
-		continuations = h.store.ListByAgent(agentFilter)
-	} else if stateFilter != "" {
-		continuations = h.store.ListByState(continuation.State(stateFilter))
-	} else {
-		continuations = h.store.ListAll()
-	}
-
-	if approvalIDFilter != "" {
-		filtered := make([]*continuation.Continuation, 0, len(continuations))
-		for _, c := range continuations {
-			if c.ApprovalID == approvalIDFilter {
-				filtered = append(filtered, c)
-			}
-		}
-		continuations = filtered
-	}
-
-	if environmentFilter != "" {
-		filtered := make([]*continuation.Continuation, 0, len(continuations))
-		for _, c := range continuations {
-			if c.Environment == environmentFilter {
-				filtered = append(filtered, c)
-			}
-		}
-		continuations = filtered
-	}
-
-	if actionTypeFilter != "" {
-		filtered := make([]*continuation.Continuation, 0, len(continuations))
-		for _, c := range continuations {
-			if c.ActionType == actionTypeFilter {
-				filtered = append(filtered, c)
-			}
-		}
-		continuations = filtered
-	}
-
-	if retryableFilter == "true" || retryableFilter == "false" {
-		wantRetryable := retryableFilter == "true"
-		filtered := make([]*continuation.Continuation, 0, len(continuations))
-		for _, c := range continuations {
-			if c.CanRetry() == wantRetryable {
-				filtered = append(filtered, c)
-			}
-		}
-		continuations = filtered
-	}
-
-	if createdBefore != "" {
-		if t, err := time.Parse(time.RFC3339, createdBefore); err == nil {
-			filtered := make([]*continuation.Continuation, 0, len(continuations))
-			for _, c := range continuations {
-				if c.CreatedAt.Before(t) || c.CreatedAt.Equal(t) {
-					filtered = append(filtered, c)
-				}
-			}
-			continuations = filtered
-		}
-	}
-
-	if createdAfter != "" {
-		if t, err := time.Parse(time.RFC3339, createdAfter); err == nil {
-			filtered := make([]*continuation.Continuation, 0, len(continuations))
-			for _, c := range continuations {
-				if c.CreatedAt.After(t) {
-					filtered = append(filtered, c)
-				}
-			}
-			continuations = filtered
-		}
-	}
-
-	// Sort after all filters, before limiting and cursor filtering. The
-	// default order is newest first (deterministic) so the limit window
-	// returns the most recent items reproducibly; sort=oldest reverses it.
-	// ContinuationID is the stable tiebreaker for equal timestamps.
 	ascending := sortAscending(sortOrder)
 	sort.Slice(continuations, func(i, j int) bool {
 		a, b := continuations[i], continuations[j]
@@ -193,57 +112,35 @@ func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request)
 		return b.CreatedAt.Before(a.CreatedAt)
 	})
 
-	// Apply cursor-based pagination after sorting, before limit.
-	// This ensures the cursor skips the correct position in the full
-	// sorted set, not just within the limited window.
-	var nextCursor string
-	if rawAfter := r.URL.Query().Get("after"); rawAfter != "" {
-		if cur, ok := decodeCursor(rawAfter); ok {
-			continuations = cursorFilter(continuations, cur, ascending,
-				func(c *continuation.Continuation) time.Time { return c.CreatedAt },
-				func(c *continuation.Continuation) string { return c.ContinuationID },
-			)
-		}
+	result := buildListedItems(continuations, limit, rawAfter, SortSpec[continuation.Continuation]{
+		Ascending:    ascending,
+		GetTimestamp: func(c continuation.Continuation) time.Time { return c.CreatedAt },
+		GetID:        func(c continuation.Continuation) string { return c.ContinuationID },
+	})
+
+	if result.Items == nil {
+		result.Items = []*continuation.Continuation{}
 	}
 
-	if continuations == nil {
-		continuations = []*continuation.Continuation{}
-	}
-
-	var executableCount int
-	for _, c := range continuations {
+	var executableCount, retryableCount int
+	for _, c := range result.Items {
 		if c.IsExecutable() {
 			executableCount++
 		}
-	}
-
-	retryableCount := 0
-	for _, c := range continuations {
 		if c.CanRetry() {
 			retryableCount++
 		}
 	}
 
-	if limit > 0 && len(continuations) > limit {
-		// Capture cursor from the item that falls just outside the limit
-		// window — that becomes the next_cursor value for the caller.
-		lastItem := continuations[limit-1]
-		nextCursor = encodeCursor(Cursor{
-			Timestamp: lastItem.CreatedAt,
-			ID:        lastItem.ContinuationID,
-		})
-		continuations = continuations[:limit]
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]any{
-		"continuations": continuations,
-		"count":         len(continuations),
+		"continuations": result.Items,
+		"count":          result.Count,
 		"executable":    executableCount,
-		"retryable":    retryableCount,
+		"retryable":     retryableCount,
 	}
-	if nextCursor != "" {
-		resp["next_cursor"] = nextCursor
+	if result.NextCursor != "" {
+		resp["next_cursor"] = result.NextCursor
 	}
 	json.NewEncoder(w).Encode(resp)
 }
