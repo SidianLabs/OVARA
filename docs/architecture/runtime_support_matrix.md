@@ -242,9 +242,13 @@ The `next_cursor` field is only present when `limit` was applied and additional 
 
 **`GET /v1/executions` filters:**
 - Primary (mutually exclusive): `continuation_id`, `state`, `decision_id`
-- Secondary (composable): `action_type`
+- Secondary (composable): `action_type`, `after`
 - `sort` — `oldest` or `newest` by execution start time; default is `newest` (most recently started first)
 - `limit` — Max results (1–1000, default 100). Applied after filtering and sorting, so the default window returns the most recent `limit` executions deterministically.
+- `after` — Cursor for pagination; value is a base64-encoded string from a prior response's `next_cursor` field. When provided, returns only items that appear after the cursor position in the sorted order.
+
+**Pagination:**
+List results are sorted deterministically (newest first by default, or oldest first with `sort=oldest`). When `limit` is applied and more items exist, the response includes a `next_cursor` field encoding the `StartedAt` timestamp and `ExecutionID` of the last returned item. Pass this value as the `after` parameter to fetch the next page.
 
 **`GET /v1/executions` response:**
 ```json
@@ -257,9 +261,12 @@ The `next_cursor` field is only present when `limit` was applied and additional 
     "failed": 15,
     "running": 3,
     "timed_out": 2
-  }
+  },
+  "next_cursor": "MjAyNi0wNS0yOVQxNDozODo0Ni4xNzY0NDVaOmV4ZV9hYmMxMjM="
 }
 ```
+
+The `next_cursor` field is only present when `limit` was applied and additional items exist. Its value is a base64-encoded string containing the timestamp and ID of the last returned item, suitable for passing as the `after` parameter to fetch subsequent pages.
 
 **`GET /v1/executions/{id}` response:**
 ```json

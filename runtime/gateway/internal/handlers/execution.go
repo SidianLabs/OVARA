@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"time"
 
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/continuation"
@@ -48,6 +49,7 @@ func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	decisionFilter := r.URL.Query().Get("decision_id")
 	actionTypeFilter := r.URL.Query().Get("action_type")
 	sortOrder := r.URL.Query().Get("sort")
+	rawAfter := r.URL.Query().Get("after")
 
 	var execs []*execution.Execution
 	if continuationFilter != "" {
@@ -70,8 +72,8 @@ func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		execs = filtered
 	}
 
-	// Sort after filters, before limiting. Default order is newest first
-	// (deterministic) so the limit window returns the most recent executions
+	// Sort after filters, before cursor and limit. Default order is newest
+	// first (deterministic) so the limit window returns the most recent executions
 	// reproducibly; sort=oldest reverses it. Executions are ordered by
 	// StartedAt, with ExecutionID as the stable tiebreaker (also covering
 	// pending executions whose StartedAt is still zero).
@@ -90,18 +92,41 @@ func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		return b.StartedAt.Before(a.StartedAt)
 	})
 
-	if limit > 0 && len(execs) > limit {
-		execs = execs[:limit]
+	// Apply cursor-based pagination after sorting, before limit.
+	var nextCursor string
+	if rawAfter != "" {
+		if cur, ok := decodeCursor(rawAfter); ok {
+			execs = cursorFilter(execs, cur, ascending,
+				func(e *execution.Execution) time.Time { return e.StartedAt },
+				func(e *execution.Execution) string { return e.ExecutionID },
+			)
+		}
 	}
 
 	if execs == nil {
 		execs = []*execution.Execution{}
 	}
 
+	var executableCount int
+	for _, e := range execs {
+		if e.State == execution.StateRunning {
+			executableCount++
+		}
+	}
+
+	if limit > 0 && len(execs) > limit {
+		lastItem := execs[limit-1]
+		nextCursor = encodeCursor(Cursor{
+			Timestamp: lastItem.StartedAt,
+			ID:        lastItem.ExecutionID,
+		})
+		execs = execs[:limit]
+	}
+
 	total, succeeded, failed, running, timedOut := h.store.Stats()
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	resp := map[string]any{
 		"executions": execs,
 		"count":      len(execs),
 		"summary": map[string]int{
@@ -111,7 +136,11 @@ func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
 			"running":    running,
 			"timed_out":   timedOut,
 		},
-	})
+	}
+	if nextCursor != "" {
+		resp["next_cursor"] = nextCursor
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ExecutionHandler) handleStats(w http.ResponseWriter, r *http.Request) {
