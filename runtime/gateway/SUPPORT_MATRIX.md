@@ -83,12 +83,52 @@ The environment is passed in the `environment` field of the action request and m
 | `escalated` | Created from escalate; awaiting approval |
 | `approved` | Human approved |
 | `queued` | Enqueued for execution |
-| `ready` | Orchestrator picked up |
+| `ready` | Orchestrator picked up (via atomic claim) |
 | `executed` | Execution completed |
 | `denied` | Human denied |
 | `expired` | Past expiry time |
 | `cancelled` | Explicitly cancelled |
 | `resumed` | Retry after failure |
+
+---
+
+## Execution Claim Model
+
+The gateway uses atomic claiming to prevent duplicate executions when multiple paths (orchestrator, HTTP endpoint) race on the same continuation.
+
+### Claim Methods
+
+| Method | Valid Source States | Target State | Use Case |
+|--------|---------------------|--------------|----------|
+| `ClaimForExecution` | `queued`, `resumed` | `ready` | First-run execution pickup |
+| `ClaimForRetry` | `resumed` | `ready` | Retry-path execution pickup |
+
+### State Transitions
+
+```
+First-run (Queued):
+  Queued -> ClaimForExecution -> Ready -> Executed
+First-run (Approved via HTTP):
+  Approved -> (MarkReady) -> Ready -> Executed
+
+Retry:
+  Executed -> Retry() -> Resumed -> ClaimForRetry -> Ready -> Executed
+```
+
+### Atomicity Guarantees
+
+- `ClaimForExecution` and `ClaimForRetry` are atomic under the store's lock
+- Only ONE caller wins; all others receive `false` / a 409 Conflict response
+- The store-level race test (`TestInMemoryStore_ClaimForExecution_RaceProof_OnlyOneWins`) verifies that with 10 concurrent claimers on the same continuation ID, exactly 1 wins
+- Integration-level tests verify the same guarantee at the handler level
+
+### Race Path: Orchestrator vs HTTP Endpoint
+
+Both paths (`POST /v1/continuations/{id}/execute` and `Orchestrator.executeOne`) may race on the same continuation:
+
+1. First to call `ClaimForExecution` wins and proceeds
+2. Loser receives 409 Conflict (HTTP) or no-op (orchestrator re-poll)
+3. Exactly one execution record is created
 
 ---
 
