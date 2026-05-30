@@ -234,6 +234,34 @@ func (s *FileBackedStore) ListNonTerminal() []*Continuation {
 	return result
 }
 
+func (s *FileBackedStore) ClaimForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State == StateQueued || c.State == StateResumed {
+		c.State = StateReady
+		return c, true
+	}
+	return nil, false
+}
+
+func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State == StateResumed {
+		c.State = StateReady
+		return c, true
+	}
+	return nil, false
+}
+
 func (s *FileBackedStore) CountByState() map[State]int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

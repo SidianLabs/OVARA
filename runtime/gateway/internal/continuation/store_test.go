@@ -1,6 +1,8 @@
 package continuation
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -385,5 +387,87 @@ func TestInMemoryStore_ListAll(t *testing.T) {
 	all := store.ListAll()
 	if len(all) != 3 {
 		t.Errorf("count = %d, want 3", len(all))
+	}
+}
+
+func TestInMemoryStore_ClaimForExecution_ClaimsExecutableContinuation(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_1", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	c.MarkQueued()
+	store.Create(c)
+
+	claimed, ok := store.ClaimForExecution(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected claim to succeed for queued continuation")
+	}
+	if claimed.State != StateReady {
+		t.Errorf("state after claim = %v, want ready", claimed.State)
+	}
+
+	updated, _ := store.Get(c.ContinuationID)
+	if updated.State != StateReady {
+		t.Errorf("state in store after claim = %v, want ready", updated.State)
+	}
+}
+
+func TestInMemoryStore_ClaimForExecution_RejectsNonExecutable(t *testing.T) {
+	store := NewInMemoryStore()
+
+	c := NewContinuation("dec_escalated", "shell", "shell:ls")
+	store.Create(c)
+	_, ok := store.ClaimForExecution(c.ContinuationID)
+	if ok {
+		t.Error("expected claim to fail for escalated continuation")
+	}
+
+	c2 := NewContinuation("dec_denied", "shell", "shell:ls")
+	c2.MarkDenied("admin", "risky")
+	store.Create(c2)
+	_, ok = store.ClaimForExecution(c2.ContinuationID)
+	if ok {
+		t.Error("expected claim to fail for denied continuation")
+	}
+}
+
+func TestInMemoryStore_ClaimForExecution_RaceProof_OnlyOneWins(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_race", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	c.MarkQueued()
+	store.Create(c)
+
+	var won int32
+	var lost int32
+	const n = 10
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, ok := store.ClaimForExecution(c.ContinuationID)
+			if ok {
+				atomic.AddInt32(&won, 1)
+			} else {
+				atomic.AddInt32(&lost, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if won != 1 {
+		t.Errorf("exactly one claim should win, got won=%d lost=%d", won, lost)
+	}
+	if lost != n-1 {
+		t.Errorf("all other claims should lose, got won=%d lost=%d", won, lost)
+	}
+}
+
+func TestInMemoryStore_ClaimForExecution_NotFound(t *testing.T) {
+	store := NewInMemoryStore()
+	_, ok := store.ClaimForExecution("cnt_nonexistent")
+	if ok {
+		t.Error("expected claim to fail for nonexistent id")
 	}
 }

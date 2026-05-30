@@ -88,6 +88,14 @@ func (m *mockContinuationStore) ListNonTerminal() []*continuation.Continuation {
 	return result
 }
 
+func (m *mockContinuationStore) ClaimForExecution(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) ClaimForRetry(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
 type mockExecutionStore struct {
 	executions []*execution.Execution
 	stats     (func() (total, succeeded, failed, running, timedOut int))

@@ -125,21 +125,26 @@ func (o *Orchestrator) drainQueue() {
 }
 
 func (o *Orchestrator) executeOne(cnt *Continuation) {
+	c, claimed := o.store.ClaimForExecution(cnt.ContinuationID)
+	if !claimed {
+		return
+	}
+	cnt = c
+
 	if !cnt.CanExecute() {
 		return
 	}
 
 	if o.registry != nil {
 		if _, ok := o.registry.Get(cnt.ActionType); !ok {
+			cnt.State = StateQueued
+			o.store.Update(cnt)
 			o.logf("SKIP no executor registered for action_type=%s continuation_id=%s", cnt.ActionType, cnt.ContinuationID)
 			return
 		}
 	}
 
 	o.logf("EXEC pickup action_type=%s continuation_id=%s resource=%q", cnt.ActionType, cnt.ContinuationID, cnt.Resource)
-
-	cnt.State = StateReady
-	o.store.Update(cnt)
 
 	timeout := 60
 	if cnt.ExpiresAt != nil {

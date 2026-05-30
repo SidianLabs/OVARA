@@ -341,6 +341,8 @@ type Store interface {
 	ListByApprovalID(approvalID string) []*Continuation
 	ListAll() []*Continuation
 	ListNonTerminal() []*Continuation
+	ClaimForExecution(id string) (*Continuation, bool)
+	ClaimForRetry(id string) (*Continuation, bool)
 }
 
 type InMemoryStore struct {
@@ -449,4 +451,32 @@ func (s *InMemoryStore) ListNonTerminal() []*Continuation {
 		}
 	}
 	return result
+}
+
+func (s *InMemoryStore) ClaimForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State == StateQueued || c.State == StateResumed {
+		c.State = StateReady
+		return c, true
+	}
+	return nil, false
+}
+
+func (s *InMemoryStore) ClaimForRetry(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State == StateResumed {
+		c.State = StateReady
+		return c, true
+	}
+	return nil, false
 }

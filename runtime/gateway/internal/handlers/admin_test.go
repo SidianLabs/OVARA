@@ -44,6 +44,14 @@ func (m *mockContinuationStore) ListNonTerminal() []*continuation.Continuation {
 	return m.nonTerminal
 }
 
+func (m *mockContinuationStore) ClaimForExecution(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) ClaimForRetry(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
 func (m *mockContinuationStore) MarkExpired(id string) error {
 	return nil
 }
