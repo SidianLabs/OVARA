@@ -102,6 +102,8 @@ The gateway uses atomic claiming to prevent duplicate executions when multiple p
 |--------|---------------------|--------------|----------|
 | `ClaimForExecution` | `queued`, `resumed` | `ready` | First-run execution pickup |
 | `ClaimForRetry` | `resumed` | `ready` | Retry-path execution pickup |
+| `RetryForExecution` | `executed`, `resumed` (retries remaining) | `resumed` (retry_count++) | Atomic retry transition for single + bulk retry |
+| `CancelForOperation` | `queued`, `ready`, `resumed` | `cancelled` | Atomic cancel transition for single + bulk cancel |
 
 ### State Transitions
 
@@ -112,15 +114,34 @@ First-run (Approved via HTTP):
   Approved -> (MarkReady) -> Ready -> Executed
 
 Retry:
-  Executed -> Retry() -> Resumed -> ClaimForRetry -> Ready -> Executed
+  Executed -> RetryForExecution -> Resumed -> ClaimForRetry -> Ready -> Executed
+
+Cancel:
+  Queued/Ready/Resumed -> CancelForOperation -> Cancelled
 ```
 
 ### Atomicity Guarantees
 
-- `ClaimForExecution` and `ClaimForRetry` are atomic under the store's lock
-- Only ONE caller wins; all others receive `false` / a 409 Conflict response
-- The store-level race test (`TestInMemoryStore_ClaimForExecution_RaceProof_OnlyOneWins`) verifies that with 10 concurrent claimers on the same continuation ID, exactly 1 wins
-- Integration-level tests verify the same guarantee at the handler level
+- `ClaimForExecution`, `ClaimForRetry`, `RetryForExecution`, and `CancelForOperation`
+  perform their state check and mutation atomically under the store's lock.
+- Only ONE caller wins a given transition; all others receive `false` / a 409 Conflict.
+- The store-level race test (`TestInMemoryStore_ClaimForExecution_RaceProof_OnlyOneWins`)
+  verifies that with 10 concurrent claimers on the same continuation ID, exactly 1 wins.
+- Handler-level concurrency tests (`TestBulkRetry_ConcurrentWithSingleOp`,
+  `TestBulkCancel_ConcurrentWithSingleOp`) verify that concurrent single-item and bulk
+  operations on the same continuation do not race and do not double-apply.
+
+### Read Isolation (snapshots)
+
+- Store read methods (`Get`-derived list methods: `ListAll`, `ListByState`,
+  `ListByDecision`, `ListByAgent`, `ListByApprovalID`) and the atomic transition methods
+  return **snapshot copies** of continuations, taken while holding the store lock.
+- Handlers therefore filter, scan, sort, and serialize over stable copies and never read
+  fields off the live stored object while another goroutine mutates it. This eliminates
+  the read/write data race between the bulk-selection scan and concurrent single-item
+  state transitions.
+- Mutations always go back through an atomic store method keyed by ID, never by writing
+  to a list-returned object directly.
 
 ### Race Path: Orchestrator vs HTTP Endpoint
 

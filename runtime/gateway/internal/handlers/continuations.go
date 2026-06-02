@@ -296,19 +296,16 @@ func (h *ContinuationHandler) handleCancel(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	cnt, found := h.store.Get(id)
-	if !found {
-		api.JSONNotFound(w, "continuation not found: "+id)
+	cnt, ok := h.store.CancelForOperation(id)
+	if !ok {
+		existing, found := h.store.Get(id)
+		if !found {
+			api.JSONNotFound(w, "continuation not found: "+id)
+			return
+		}
+		api.JSONConflict(w, "cannot cancel continuation: invalid state (current="+string(existing.State)+")")
 		return
 	}
-
-	if !cnt.CanCancel() {
-		api.JSONConflict(w, "cannot cancel continuation: invalid state (current="+string(cnt.State)+")")
-		return
-	}
-
-	cnt.MarkCancelled()
-	h.store.Update(cnt)
 
 	log.Printf("QUEUE cancel continuation_id=%s decision_id=%s action_type=%s agent_id=%s state=%s",
 		cnt.ContinuationID, cnt.DecisionID, cnt.ActionType, cnt.AgentID, cnt.State)
@@ -347,13 +344,13 @@ func (h *ContinuationHandler) handleRetry(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	cnt, found := h.store.Get(id)
-	if !found {
-		api.JSONNotFound(w, "continuation not found: "+id)
-		return
-	}
-
-	if !cnt.Retry() {
+	cnt, ok := h.store.RetryForExecution(id)
+	if !ok {
+		cnt, found := h.store.Get(id)
+		if !found {
+			api.JSONNotFound(w, "continuation not found: "+id)
+			return
+		}
 		if cnt.State != continuation.StateExecuted && cnt.State != continuation.StateResumed {
 			api.JSONConflict(w, "cannot retry continuation: invalid state (current="+string(cnt.State)+", required=executed)")
 			return
@@ -365,8 +362,6 @@ func (h *ContinuationHandler) handleRetry(w http.ResponseWriter, r *http.Request
 		api.JSONConflict(w, "cannot retry continuation: retry limit reached (retry_count="+strconv.Itoa(cnt.RetryCount)+", max_retries="+strconv.Itoa(cnt.MaxRetries)+")")
 		return
 	}
-
-	h.store.Update(cnt)
 
 	log.Printf("QUEUE retry continuation_id=%s decision_id=%s action_type=%s agent_id=%s retry_count=%d",
 		cnt.ContinuationID, cnt.DecisionID, cnt.ActionType, cnt.AgentID, cnt.RetryCount)
@@ -775,12 +770,10 @@ func (h *ContinuationHandler) handleBulkRetry(w http.ResponseWriter, r *http.Req
 	}
 
 	for _, item := range acted {
-		cnt, found := h.store.Get(item.ContinuationID)
-		if !found {
+		cnt, ok := h.store.RetryForExecution(item.ContinuationID)
+		if !ok {
 			continue
 		}
-		cnt.Retry()
-		h.store.Update(cnt)
 
 		if h.eventStore != nil {
 			evt := events.NewEvent(events.EventTypeBatchRetryExecuted).
@@ -920,12 +913,10 @@ func (h *ContinuationHandler) handleBulkCancel(w http.ResponseWriter, r *http.Re
 	}
 
 	for _, item := range acted {
-		cnt, found := h.store.Get(item.ContinuationID)
-		if !found {
+		cnt, ok := h.store.CancelForOperation(item.ContinuationID)
+		if !ok {
 			continue
 		}
-		cnt.MarkCancelled()
-		h.store.Update(cnt)
 
 		if h.eventStore != nil {
 			evt := events.NewEvent(events.EventTypeBatchCancelExecuted).

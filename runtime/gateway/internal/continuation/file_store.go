@@ -170,7 +170,7 @@ func (s *FileBackedStore) ListByState(state State) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.State == state {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -182,7 +182,7 @@ func (s *FileBackedStore) ListByDecision(decisionID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.DecisionID == decisionID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -194,7 +194,7 @@ func (s *FileBackedStore) ListByAgent(agentID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.AgentID == agentID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -206,7 +206,7 @@ func (s *FileBackedStore) ListByApprovalID(approvalID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.ApprovalID == approvalID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -217,7 +217,7 @@ func (s *FileBackedStore) ListAll() []*Continuation {
 	defer s.mu.RUnlock()
 	var result []*Continuation
 	for _, c := range s.continuations {
-		result = append(result, c)
+		result = append(result, c.snapshot())
 	}
 	return result
 }
@@ -260,6 +260,64 @@ func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
 		return c, true
 	}
 	return nil, false
+}
+
+// RetryForExecution atomically transitions an executed/resumed continuation
+// into a retry (StateResumed, RetryCount incremented) when retries remain.
+// The whole check-and-mutate happens under the store lock so concurrent
+// retry callers (e.g. single retry vs bulk retry) cannot double-apply.
+func (s *FileBackedStore) RetryForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State != StateExecuted && c.State != StateResumed {
+		return nil, false
+	}
+	if c.MaxRetries <= 0 {
+		return nil, false
+	}
+	if c.RetryCount >= c.MaxRetries {
+		return nil, false
+	}
+	c.State = StateResumed
+	c.RetryCount++
+	now := time.Now().UTC()
+	c.ResumedAt = &now
+
+	// Persist the retry transition inline (cannot call Update: it re-locks s.mu).
+	// A best-effort write keeps the incremented RetryCount durable across restarts;
+	// the in-memory transition has already been applied under the lock.
+	if data, err := json.Marshal(c); err == nil {
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
+	}
+	return c.snapshot(), true
+}
+
+// CancelForOperation atomically cancels a cancellable continuation under the
+// store lock and returns a snapshot. The cancel transition is persisted inline
+// so it survives restarts.
+func (s *FileBackedStore) CancelForOperation(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.CanCancel() {
+		return nil, false
+	}
+	c.MarkCancelled()
+	if data, err := json.Marshal(c); err == nil {
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
+	}
+	return c.snapshot(), true
 }
 
 func (s *FileBackedStore) CountByState() map[State]int {

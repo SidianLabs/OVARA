@@ -52,6 +52,14 @@ func (m *mockContinuationStore) ClaimForRetry(id string) (*continuation.Continua
 	return nil, false
 }
 
+func (m *mockContinuationStore) RetryForExecution(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) CancelForOperation(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
 func (m *mockContinuationStore) MarkExpired(id string) error {
 	return nil
 }

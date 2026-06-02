@@ -55,6 +55,16 @@ type Continuation struct {
 	MaxRetries    int       `json:"max_retries,omitempty"`
 }
 
+// snapshot returns a shallow copy of the continuation. Store methods return a
+// snapshot (taken while holding the store lock) so callers can read fields
+// without racing concurrent mutations on the live stored object. Shared
+// reference fields (AnomalyCodes, Metadata, time pointers) are intentionally
+// shared — callers must treat the snapshot as read-only.
+func (c *Continuation) snapshot() *Continuation {
+	cp := *c
+	return &cp
+}
+
 func (c *Continuation) CanResume() bool {
 	return c.State == StateApproved || c.State == StateReady
 }
@@ -343,6 +353,8 @@ type Store interface {
 	ListNonTerminal() []*Continuation
 	ClaimForExecution(id string) (*Continuation, bool)
 	ClaimForRetry(id string) (*Continuation, bool)
+	RetryForExecution(id string) (*Continuation, bool)
+	CancelForOperation(id string) (*Continuation, bool)
 }
 
 type InMemoryStore struct {
@@ -389,7 +401,7 @@ func (s *InMemoryStore) ListByState(state State) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.State == state {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -401,7 +413,7 @@ func (s *InMemoryStore) ListByDecision(decisionID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.DecisionID == decisionID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -413,7 +425,7 @@ func (s *InMemoryStore) ListByAgent(agentID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.AgentID == agentID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -425,7 +437,7 @@ func (s *InMemoryStore) ListByApprovalID(approvalID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.ApprovalID == approvalID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -436,7 +448,7 @@ func (s *InMemoryStore) ListAll() []*Continuation {
 	defer s.mu.RUnlock()
 	var result []*Continuation
 	for _, c := range s.continuations {
-		result = append(result, c)
+		result = append(result, c.snapshot())
 	}
 	return result
 }
@@ -479,4 +491,44 @@ func (s *InMemoryStore) ClaimForRetry(id string) (*Continuation, bool) {
 		return c, true
 	}
 	return nil, false
+}
+func (s *InMemoryStore) RetryForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State != StateExecuted && c.State != StateResumed {
+		return nil, false
+	}
+	if c.MaxRetries <= 0 {
+		return nil, false
+	}
+	if c.RetryCount >= c.MaxRetries {
+		return nil, false
+	}
+	c.State = StateResumed
+	c.RetryCount++
+	now := time.Now().UTC()
+	c.ResumedAt = &now
+	return c.snapshot(), true
+}
+
+// CancelForOperation atomically cancels a cancellable continuation under the
+// store lock and returns a snapshot. Centralizing the CanCancel check and the
+// MarkCancelled mutation here prevents concurrent cancel callers (single vs
+// bulk) from racing on the shared continuation object.
+func (s *InMemoryStore) CancelForOperation(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.CanCancel() {
+		return nil, false
+	}
+	c.MarkCancelled()
+	return c.snapshot(), true
 }
