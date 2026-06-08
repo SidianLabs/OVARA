@@ -19,7 +19,7 @@ const (
 	EventTypeShieldRestrictionChanged   = "shield.restriction_changed"
 	EventTypeEnrollmentHeartbeat        = "enrollment.heartbeat"
 	EventTypeContinuationCreated        = "continuation.created"
-	EventTypeContinuationReady          = "continuation.ready"
+	EventTypeContinuationQueued         = "continuation.queued"
 	EventTypeContinuationDenied        = "continuation.denied"
 	EventTypeContinuationResumed       = "continuation.resumed"
 	EventTypeContinuationExpired        = "continuation.expired"

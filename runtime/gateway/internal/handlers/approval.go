@@ -188,7 +188,7 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 			_ = h.continuationStore.Update(cnt)
 
 			if h.eventStore != nil {
-				evt := events.NewEvent(events.EventTypeContinuationReady).
+				evt := events.NewEvent(events.EventTypeContinuationQueued).
 					WithGatewayID(h.gatewayID).
 					WithApprovalID(id).
 					WithDecisionID(cnt.DecisionID).
