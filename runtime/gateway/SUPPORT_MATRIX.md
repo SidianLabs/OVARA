@@ -84,7 +84,6 @@ The environment is passed in the `environment` field of the action request and m
 | `approved` | Human approved |
 | `queued` | Enqueued for execution |
 | `executing` | Claimed and actively running; never a resting state. Orphaned on restart → swept to `executed`. |
-| `ready` | Legacy state; superseded by `executing` for claim flows |
 | `executed` | Execution completed |
 | `denied` | Human denied |
 | `expired` | Past expiry time |
@@ -101,17 +100,17 @@ The gateway uses atomic claiming to prevent duplicate executions when multiple p
 
 | Method | Valid Source States | Target State | Use Case |
 |--------|---------------------|--------------|----------|
-| `ClaimForExecution` | `approved`, `queued`, `ready`, `resumed` | `executing` | First-run execution pickup |
+| `ClaimForExecution` | `approved`, `queued`, `resumed` | `executing` | First-run execution pickup |
 | `ClaimForRetry` | `resumed` | `executing` | Retry-path execution pickup |
 | `RetryForExecution` | `executed`, `resumed` (retries remaining) | `resumed` (retry_count++) | Atomic retry transition for single + bulk retry |
-| `CancelForOperation` | `queued`, `ready`, `resumed` | `cancelled` | Atomic cancel transition for single + bulk cancel |
+| `CancelForOperation` | `queued`, `resumed` | `cancelled` | Atomic cancel transition for single + bulk cancel |
 | `RecoverFromExecuting` | `executing` | `executed` | Operator recovery of stuck executions |
 
 ### State Transitions
 
 ```
 First-run:
-  Approved/Queued/Ready -> ClaimForExecution -> Executing -> (success) MarkExecuted -> Executed
+  Approved/Queued -> ClaimForExecution -> Executing -> (success) MarkExecuted -> Executed
                                                            -> (fail/timeout) MarkExecutionFailed -> Executed
 Direct execute:
   Approved -> ClaimForExecution -> Executing -> (same as above)
