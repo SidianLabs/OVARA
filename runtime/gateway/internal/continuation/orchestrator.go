@@ -2,6 +2,7 @@ package continuation
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -203,12 +204,26 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 		timeout,
 	)
 
-	ctx := context.Background()
-	if o.registry != nil {
-		if exec, ok := o.registry.Get(cnt.ActionType); ok {
-			exec.Execute(ctx, exe)
+	// Recover from executor panics so the continuation does not remain
+	// stuck in StateExecuting forever. A panic is treated as a failed
+	// execution: the continuation is marked executed (retryable), the
+	// execution record is created with StateFailed, and the event is
+	// emitted so the operator can diagnose.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				exe.MarkFailed(fmt.Sprintf("executor panic: %v", r), 1)
+				o.logf("EXEC completed=panic action_type=%s continuation_id=%s execution_id=%s panic=%v",
+					cnt.ActionType, cnt.ContinuationID, exe.ExecutionID, r)
+			}
+		}()
+		ctx := context.Background()
+		if o.registry != nil {
+			if exec, ok := o.registry.Get(cnt.ActionType); ok {
+				exec.Execute(ctx, exe)
+			}
 		}
-	}
+	}()
 
 	if o.execStore != nil {
 		o.execStore.Create(exe)
