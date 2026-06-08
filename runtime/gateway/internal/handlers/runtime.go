@@ -21,6 +21,7 @@ import (
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
+	"ovara.runtime.gateway/internal/receipt"
 	"ovara.runtime.gateway/internal/receipts"
 )
 
@@ -29,6 +30,7 @@ type Handler struct {
 	logger             *logging.DecisionLogger
 	config             *config.Config
 	receiptsStore      receipts.Store
+	receiptSigner      *receipt.Signer
 	decisionCache      *decisionCache
 	enrollmentSvc      enrollment.Service
 	approvalSvc        *approval.Service
@@ -90,6 +92,10 @@ func (h *Handler) SetIntegrityChecker(checker *integrity.Checker) {
 
 func (h *Handler) SetMaintenanceMode(enabled bool) {
 	h.maintenanceMode = enabled
+}
+
+func (h *Handler) SetReceiptSigner(signer *receipt.Signer) {
+	h.receiptSigner = signer
 }
 
 func (h *Handler) SetCapabilitiesStore(store capabilities.Store) {
@@ -340,6 +346,9 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 		receipt.AnomalySignals = resp.TrustContext.AnomalySignals
 	}
 	receipt.Signature = "sig_v1_local:" + resp.ReceiptStub.ReceiptID
+	if h.receiptSigner != nil {
+		receipt.Signature = h.receiptSigner.Sign(receipt)
+	}
 	return receipt
 }
 

@@ -24,6 +24,7 @@ import (
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
+	"ovara.runtime.gateway/internal/receipt"
 	"ovara.runtime.gateway/internal/receipts"
 	"ovara.runtime.gateway/internal/trust"
 
@@ -264,6 +265,13 @@ func main() {
 	h.SetShieldStats(shieldStore.Stats)
 	h.SetEventStore(eventStore)
 	h.SetContinuationStore(continuationStore)
+
+	signingKey := cfg.ReceiptSigningKey
+	if signingKey == "" {
+		signingKey = cfg.GatewayID
+	}
+	h.SetReceiptSigner(receipt.NewSigner([]byte(signingKey)))
+	log.Printf("receipt signer configured (sig_v1, hmac-sha256)")
 
 	approvalHandler.SetEventStore(eventStore)
 	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
