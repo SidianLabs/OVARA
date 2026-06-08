@@ -157,3 +157,21 @@ func TestContinuation_RetryInfo_QueuedState(t *testing.T) {
 		t.Errorf("Status = %s, want not_needed", info.Status)
 	}
 }
+
+func TestContinuation_RetryInfo_Executing(t *testing.T) {
+	c := NewContinuation("dec_1", "shell", "shell:ls")
+	c.State = StateExecuting
+	c.MaxRetries = 3
+	c.RetryCount = 0
+
+	info := c.RetryInfo()
+	if info.CanRetry {
+		t.Error("CanRetry should be false for executing")
+	}
+	if info.Status != "in_progress" {
+		t.Errorf("Status = %s, want in_progress", info.Status)
+	}
+	if info.RetriesRemaining != 3 {
+		t.Errorf("RetriesRemaining = %d, want 3", info.RetriesRemaining)
+	}
+}

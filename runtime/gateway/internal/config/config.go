@@ -53,9 +53,13 @@ type Config struct {
 	BulkMaxBatchCap             int      `json:"bulk_max_batch_cap"`
 	BulkDefaultBatch            int      `json:"bulk_default_batch"`
 
+	StuckExecutingSweepIntervalSec     int `json:"stuck_executing_sweep_interval_secs"`
+	StuckExecutingRecoveryThresholdMin int `json:"stuck_executing_recovery_threshold_min"`
+
 	SLAApprovalMaxAgeMin          int              `json:"sla_approval_max_age_min"`
 	SLARetryableMaxAgeMin         int              `json:"sla_retryable_max_age_min"`
 	SLAPendingApprovalMaxAgeMin   int              `json:"sla_pending_approval_max_age_min"`
+	SLAExecutingMaxAgeMin         int              `json:"sla_executing_max_age_min"`
 	SLAThresholds                 map[string]int   `json:"sla_thresholds"`
 }
 
@@ -128,9 +132,13 @@ func Default() *Config {
 		BulkMaxBatchCap:          100,
 		BulkDefaultBatch:         20,
 
+		StuckExecutingSweepIntervalSec:     0,
+		StuckExecutingRecoveryThresholdMin: 30,
+
 		SLAApprovalMaxAgeMin:        30,
 		SLARetryableMaxAgeMin:       60,
-		SLAPendingApprovalMaxAgeMin:  30,
+		SLAPendingApprovalMaxAgeMin: 30,
+		SLAExecutingMaxAgeMin:       5,
 		SLAThresholds:               map[string]int{},
 	}
 }

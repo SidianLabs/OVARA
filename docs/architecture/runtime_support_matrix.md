@@ -240,6 +240,8 @@ The `next_cursor` field is only present when `limit` was applied and additional 
 | `POST /v1/continuations/{id}/cancel` | Cancel a queued, ready, or resumed continuation |
 | `POST /v1/continuations/{id}/retry` | Retry a failed or completed continuation |
 | `POST /v1/continuations/{id}/execute` | Execute a continuation directly (bypasses orchestrator) |
+| `POST /v1/continuations/recover-executing` | Force-recover all continuations stuck in `executing` to `executed` |
+| `POST /v1/continuations/{id}/recover-executing` | Force-recover a single continuation from `executing` to `executed` |
 | `POST /v1/continuations/queue/pause` | Pause the execution queue |
 | `POST /v1/continuations/queue/resume` | Resume the execution queue |
 
@@ -251,6 +253,48 @@ The `next_cursor` field is only present when `limit` was applied and additional 
   - State is not `executed` or `resumed`
   - `max_retries` is 0
   - `retry_count >= max_retries`
+
+**`POST /v1/continuations/recover-executing`:**
+- Atomically transitions every continuation currently in `StateExecuting` to `StateExecuted`, making them retryable
+- Intended for live recovery of hung executions where the executor is stuck but the gateway is still running
+- The orchestrator's startup sweep handles post-crash recovery; this endpoint handles runtime recovery
+- Supports `?dry_run=true` to enumerate candidates without mutating state
+- Supports `?older_than_minutes=N` to only recover items that have been in `executing` for longer than N minutes; useful for targeting genuinely stuck work without catching items that are still young
+- Each successfully recovered item emits a `continuation.recovered_executing` event
+- Response shape:
+  ```json
+  {
+    "scanned": 3,
+    "recovered": 3,
+    "skipped": 0,
+    "dry_run": false,
+    "items": [
+      {
+        "continuation_id": "cnt_abc123",
+        "action_type": "shell",
+        "age_seconds": 612,
+        "state": "executed"
+      }
+    ]
+  }
+  ```
+- `scanned` is the number of items in `executing` at the time of the call
+- `recovered` is the number actually transitioned (items that finished concurrently are counted as `skipped`)
+- `items[].age_seconds` is how long each item had been in `executing` (measured from `created_at`)
+
+**`POST /v1/continuations/{id}/recover-executing`:**
+- Transitions a single continuation from `StateExecuting` to `StateExecuted`, making it retryable
+- Returns 404 if the continuation is not found
+- Returns 409 Conflict if the continuation is not in `StateExecuting`
+- Emits a `continuation.recovered_executing` event on success
+- Response shape:
+  ```json
+  {
+    "continuation_id": "cnt_abc123",
+    "state": "executed",
+    "message": "continuation recovered from executing for retry"
+  }
+  ```
 
 ### Execution Inspection Endpoints
 
@@ -390,8 +434,17 @@ Fields are conditionally present based on what services are wired into the handl
 **Continuation summary fields:**
 - `executable` — continuations in `approved`, `queued`, or `ready` state, ready to be picked up by the orchestrator
 - `retryable` — continuations in `executed` or `resumed` state with `retry_count < max_retries`, eligible for retry
+- `executing` — continuations currently in `executing` state (claimed and actively running); informational, not actionable via enqueue/retry/cancel
 - `oldest_executable_at` — RFC3339 timestamp of the oldest executable continuation (omitted if no executable continuations)
 - `oldest_retryable_at` — RFC3339 timestamp of the oldest retryable continuation (omitted if no retryable continuations)
+- `oldest_executing_at` — RFC3339 timestamp of the oldest currently-executing continuation (omitted if no executing continuations)
+
+**Top-level executing observability:**
+When the orchestrator is configured, the status response also includes:
+- `executing` — top-level count of continuations in `executing` state (mirrors `continuations.executing` for convenience at the root)
+- `oldest_executing_at` — only present at the root when there is at least one executing continuation
+
+Stuck-executing detection should combine the `executing` count, `oldest_executing_at`, and the `executing_breaching` SLA breach count (below) to determine whether live operator recovery is needed.
 
 **Approval summary fields:**
 - `oldest_pending_at` — RFC3339 timestamp of the oldest pending approval (omitted if no pending approvals)
@@ -407,7 +460,10 @@ The runtime tracks SLA health via configurable thresholds and exposes breach cou
 | `SLAApprovalMaxAgeMin` | `sla_approval_max_age_min` | `30` | Max age (minutes) for pending approvals before breaching |
 | `SLARetryableMaxAgeMin` | `sla_retryable_max_age_min` | `60` | Max age (minutes) for retryable continuations before breaching |
 | `SLAPendingApprovalMaxAgeMin` | `sla_pending_approval_max_age_min` | `30` | Alias for `SLAApprovalMaxAgeMin` |
+| `SLAExecutingMaxAgeMin` | `sla_executing_max_age_min` | `5` | Max age (minutes) for a continuation in `executing` state before breaching. `executing` is normally a short-lived transient claim; values above the threshold indicate hung executions. |
 | `SLAThresholds` | `sla_thresholds` | `{}` | Per-environment or per-action_type override map (future) |
+| `StuckExecutingSweepIntervalSec` | `stuck_executing_sweep_interval_secs` | `0` | Interval (seconds) for the periodic stuck-executing recovery sweep. `0` disables automatic recovery. When enabled, the sweep runs on this interval and recovers continuations in `executing` state older than `stuck_executing_recovery_threshold_min`. |
+| `StuckExecutingRecoveryThresholdMin` | `stuck_executing_recovery_threshold_min` | `30` | Minimum age (minutes) for a continuation in `executing` state before the periodic sweep will recover it. Must be significantly larger than `sla_executing_max_age_min` to avoid false positives. Only effective when `stuck_executing_sweep_interval_secs > 0`. |
 
 #### GET /v1/runtime/status — `sla` section
 
@@ -418,16 +474,20 @@ When the gateway config has SLA thresholds configured (or defaults are in effect
   "sla": {
     "approvals_breaching": 2,
     "retryable_breaching": 1,
+    "executing_breaching": 1,
     "approval_threshold_min": 30,
-    "retryable_threshold_min": 60
+    "retryable_threshold_min": 60,
+    "executing_threshold_min": 5
   }
 }
 ```
 
 - `approvals_breaching` — count of pending approvals older than `sla_approval_max_age_min`
 - `retryable_breaching` — count of retryable continuations (executed/resumed with retries remaining) older than `sla_retryable_max_age_min`
+- `executing_breaching` — count of continuations in `executing` state older than `sla_executing_max_age_min`
 - `approval_threshold_min` — effective approval threshold in minutes
 - `retryable_threshold_min` — effective retryable threshold in minutes
+- `executing_threshold_min` — effective executing threshold in minutes
 
 #### GET /v1/runtime/health — focused health view
 
@@ -465,6 +525,7 @@ A continuation represents an action in-flight after an `escalate` decision.
 | `approved` | Human approved; ready for execution |
 | `queued` | Enqueued for execution by the orchestrator |
 | `ready` | Orchestrator has picked it up |
+| `executing` | Claimed and actively running; never a resting state. On gateway restart, orphaned executing continuations are swept to `executed` for operator recovery via retry. Operators can also force-recover via `POST /v1/continuations/recover-executing` if a live execution hangs. |
 | `executed` | Execution completed (success, timeout, or failure) |
 | `denied` | Human denied |
 | `expired` | Past expiry time without execution |
@@ -497,6 +558,48 @@ A continuation represents an action in-flight after an `escalate` decision.
 | `approval not approved` | Calling resume on a non-approved approval | Approval must be `approved` status before resume |
 | `gateway timeout: context deadline exceeded` | Gateway did not respond within the HTTP client timeout | Check gateway process is running; check gateway logs |
 | Decision is `deny` but no reason given | Policy denied the action silently | Check policy rules for matching deny rule; check `reason_codes` in response |
+| Continuations stuck in `executing` after restart | Gateway crashed mid-execution leaving continuations in claimed state | Orchestrator sweeps them on startup — check `RECOVER stuck-executing` log lines; stuck items become executed and retryable |
+| Continuations stuck in `executing` while gateway is running | Executor hung mid-execution (live, not crash) | Use `POST /v1/continuations/recover-executing` to force-recover; check `RECOVER executing` log lines; `executing_breaching` SLA count will be > 0 above `sla_executing_max_age_min`. If `stuck_executing_sweep_interval_secs` is configured, the periodic sweep will auto-recover items older than `stuck_executing_recovery_threshold_min`. |
+
+---
+
+## Automatic Stuck Executing Recovery
+
+The gateway has two mechanisms for recovering continuations stuck in `StateExecuting`:
+
+### Startup Sweep
+
+On every gateway startup, the orchestrator runs `sweepStuckExecuting()` which unconditionally transitions **all** continuations in `StateExecuting` to `StateExecuted`. This handles the case where a previous gateway process crashed mid-execution, leaving continuations in the claimed state. Since the previous process is no longer running, those continuations are orphaned and safe to recover.
+
+Startup sweep is always enabled and runs once at startup before the queue poll loop begins.
+
+### Periodic Sweep (Optional)
+
+For long-running gateways, a periodic sweep can be enabled to automatically recover continuations that become stuck during operation (e.g., due to a hung executor). This sweep is **disabled by default** and must be explicitly configured:
+
+```json
+{
+  "stuck_executing_sweep_interval_secs": 600,
+  "stuck_executing_recovery_threshold_min": 30
+}
+```
+
+- `stuck_executing_sweep_interval_secs=600` — sweep runs every 10 minutes
+- `stuck_executing_recovery_threshold_min=30` — only recover items that have been in `executing` for > 30 minutes
+
+**Why a separate threshold from SLA?**
+- `sla_executing_max_age_min` (default: 5 min) is a *detection* threshold for the SLA breach counter — it flags items that might be stuck so the operator can investigate
+- `stuck_executing_recovery_threshold_min` (default: 30 min) is a *recovery* threshold — it is intentionally much higher to avoid recovering items that are still legitimately in-flight but slow
+
+**Design caution:** The periodic sweep is conservative by design. A slow but valid execution (e.g., a long-running git push) should not be auto-recovered. Only items that have been stuck for a very long time (well above the SLA threshold) are auto-recovered.
+
+**Log output:**
+- `RECOVER stale-executing continuation_id=cnt_abc123 action_type=shell age=45m0s — marked executed for retry` — per-item recovery
+- `RECOVER stale-executing sweep completed recovered=N threshold=30m0s` — sweep summary (only when `recovered > 0`)
+
+**If the periodic sweep is disabled** (default), operators must manually recover stuck items using:
+- `POST /v1/continuations/recover-executing` — bulk recovery with optional `?older_than_minutes=N`
+- `POST /v1/continuations/{id}/recover-executing` — per-item recovery
 
 ---
 
@@ -532,6 +635,9 @@ Using an unimplemented action type in a policy is harmless (it simply never matc
 | `QUEUE pause` | Continuation handler | `QUEUE pause` |
 | `QUEUE resume` | Continuation handler | `QUEUE resume` |
 | `SWEEP` | Sweepers | `SWEEP continuations scanned=50 expired=3` or `SWEEP execution removed=12` |
+| `RECOVER stuck-executing` | Orchestrator (startup sweep) | `RECOVER stuck-executing continuation_id=cnt_abc123 action_type=shell — marked executed for retry` |
+| `RECOVER stale-executing` | Orchestrator (periodic sweep) | `RECOVER stale-executing continuation_id=cnt_abc123 action_type=shell age=45m0s — marked executed for retry` (per-item) or `RECOVER stale-executing sweep completed recovered=N threshold=30m0s` (summary) |
+| `RECOVER executing` | Operator recovery endpoint / orchestrator | `RECOVER executing dry_run=false scanned=3 recovered=3 skipped=0` (endpoint) or `RECOVER executing continuation_id=cnt_abc123 action_type=shell — marked executed for retry` (per-item) |
 
 Decision logs are written to `var/log/decisions.jsonl` (or configured path) as JSON lines, separate from stdout/stderr operational logs.
 

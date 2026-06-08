@@ -234,6 +234,10 @@ func (s *FileBackedStore) ListNonTerminal() []*Continuation {
 	return result
 }
 
+// ClaimForExecution atomically transitions an executable continuation into
+// StateExecuting. Accepts Approved, Queued, Ready, or Resumed. Returns a
+// snapshot (taken under the store lock) so the caller can read fields without
+// racing concurrent mutations.
 func (s *FileBackedStore) ClaimForExecution(id string) (*Continuation, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -241,13 +245,18 @@ func (s *FileBackedStore) ClaimForExecution(id string) (*Continuation, bool) {
 	if !ok {
 		return nil, false
 	}
-	if c.State == StateQueued || c.State == StateResumed {
-		c.State = StateReady
-		return c, true
+	if c.State == StateExecuting {
+		return nil, false
+	}
+	if c.State == StateApproved || c.State == StateQueued || c.State == StateReady || c.State == StateResumed {
+		c.State = StateExecuting
+		return c.snapshot(), true
 	}
 	return nil, false
 }
 
+// ClaimForRetry atomically transitions a Resumed continuation into
+// StateExecuting. Returns a snapshot.
 func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -255,11 +264,52 @@ func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
 	if !ok {
 		return nil, false
 	}
+	if c.State == StateExecuting {
+		return nil, false
+	}
 	if c.State == StateResumed {
-		c.State = StateReady
-		return c, true
+		c.State = StateExecuting
+		return c.snapshot(), true
 	}
 	return nil, false
+}
+
+// RecoverFromExecuting atomically transitions an Executing continuation back
+// to StateExecuted so it becomes retryable. Used for operator-driven recovery
+// of stuck executions. Persists the transition inline (cannot call Update:
+// it re-locks s.mu).
+func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State != StateExecuting {
+		return nil, false
+	}
+	c.State = StateExecuted
+	if data, err := json.Marshal(c); err == nil {
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
+	}
+	return c.snapshot(), true
+}
+
+// ListExecutingIDs returns the IDs of all continuations currently in
+// StateExecuting. Used by operator recovery flows to enumerate stuck work
+// without exposing the full continuations payload.
+func (s *FileBackedStore) ListExecutingIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]string, 0)
+	for id, c := range s.continuations {
+		if c.State == StateExecuting {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // RetryForExecution atomically transitions an executed/resumed continuation

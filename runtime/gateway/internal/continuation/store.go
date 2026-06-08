@@ -12,15 +12,16 @@ import (
 type State string
 
 const (
-	StateEscalated   State = "escalated"
-	StateApproved    State = "approved"
-	StateQueued      State = "queued"
-	StateReady       State = "ready"
-	StateDenied      State = "denied"
-	StateResumed     State = "resumed"
-	StateExpired     State = "expired"
-	StateExecuted    State = "executed"
-	StateCancelled   State = "cancelled"
+	StateEscalated  State = "escalated"
+	StateApproved   State = "approved"
+	StateQueued     State = "queued"
+	StateReady      State = "ready"
+	StateExecuting  State = "executing" // claimed and actively running; never a resting state
+	StateDenied     State = "denied"
+	StateResumed    State = "resumed"
+	StateExpired    State = "expired"
+	StateExecuted   State = "executed"
+	StateCancelled  State = "cancelled"
 )
 
 const DefaultExpirationMinutes = 60
@@ -53,6 +54,7 @@ type Continuation struct {
 	Metadata      map[string]any `json:"metadata,omitempty"`
 	RetryCount    int       `json:"retry_count,omitempty"`
 	MaxRetries    int       `json:"max_retries,omitempty"`
+	LastSkippedAt *time.Time `json:"last_skipped_at,omitempty"`
 }
 
 // snapshot returns a shallow copy of the continuation. Store methods return a
@@ -193,7 +195,16 @@ func (c *Continuation) Retry() bool {
 }
 
 func (c *Continuation) MarkExecuted() {
-	if c.State != StateResumed && c.State != StateReady {
+	if c.State != StateResumed && c.State != StateReady && c.State != StateExecuting {
+		return
+	}
+	c.State = StateExecuted
+}
+
+// MarkExecutionFailed transitions a claimed continuation back to StateExecuted
+// so it can be retried. Called after a failed or timed-out execution.
+func (c *Continuation) MarkExecutionFailed() {
+	if c.State != StateExecuting && c.State != StateReady {
 		return
 	}
 	c.State = StateExecuted
@@ -201,6 +212,20 @@ func (c *Continuation) MarkExecuted() {
 
 func (c *Continuation) MarkQueued() {
 	if c.State == StateApproved || c.State == StateReady {
+		c.State = StateQueued
+		now := time.Now().UTC()
+		c.QueuedAt = &now
+	}
+}
+
+// MarkRequeue returns a claimed (StateExecuting) or briefly-held (StateReady)
+// continuation back to StateQueued so it can be picked up by the orchestrator
+// again. Used by paths that successfully claimed a continuation but cannot
+// execute it (e.g. unknown action type in the executor registry). Only
+// requeues from transient claim states — never from terminal, approved, or
+// escalated states.
+func (c *Continuation) MarkRequeue() {
+	if c.State == StateExecuting || c.State == StateReady {
 		c.State = StateQueued
 		now := time.Now().UTC()
 		c.QueuedAt = &now
@@ -259,6 +284,9 @@ func (c *Continuation) RetryInfo() RetryInfo {
 	case c.State == StateDenied || c.State == StateExpired || c.State == StateCancelled:
 		info.Status = "terminal"
 		info.Reason = "continuation is in terminal state: " + string(c.State)
+	case c.State == StateExecuting:
+		info.Status = "in_progress"
+		info.Reason = "continuation is currently executing; retry only available after completion or failure"
 	case c.State == StateExecuted || c.State == StateResumed:
 		if c.MaxRetries <= 0 {
 			info.Status = "disabled"
@@ -318,7 +346,8 @@ func (c *Continuation) IsExecutable() bool {
 	if c.State != StateApproved && c.State != StateReady && c.State != StateQueued {
 		return false
 	}
-	if c.State == StateExecuted || c.State == StateCancelled {
+	// StateExecuting means already claimed by another path — not available
+	if c.State == StateExecuted || c.State == StateCancelled || c.State == StateExecuting {
 		return false
 	}
 	if c.ExpiresAt != nil && time.Now().UTC().After(*c.ExpiresAt) {
@@ -328,7 +357,11 @@ func (c *Continuation) IsExecutable() bool {
 }
 
 func (c *Continuation) CanExecute() bool {
-	if c.State != StateQueued && c.State != StateReady && c.State != StateResumed {
+	// StateExecuting means already claimed; never allow a second claim
+	if c.State == StateExecuting {
+		return false
+	}
+	if c.State != StateQueued && c.State != StateReady && c.State != StateResumed && c.State != StateApproved {
 		return false
 	}
 	return true
@@ -355,6 +388,8 @@ type Store interface {
 	ClaimForRetry(id string) (*Continuation, bool)
 	RetryForExecution(id string) (*Continuation, bool)
 	CancelForOperation(id string) (*Continuation, bool)
+	RecoverFromExecuting(id string) (*Continuation, bool)
+	ListExecutingIDs() []string
 }
 
 type InMemoryStore struct {
@@ -382,7 +417,10 @@ func (s *InMemoryStore) Get(id string) (*Continuation, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c, ok := s.continuations[id]
-	return c, ok
+	if !ok {
+		return nil, false
+	}
+	return c.snapshot(), true
 }
 
 func (s *InMemoryStore) Update(c *Continuation) error {
@@ -472,9 +510,9 @@ func (s *InMemoryStore) ClaimForExecution(id string) (*Continuation, bool) {
 	if !ok {
 		return nil, false
 	}
-	if c.State == StateQueued || c.State == StateResumed {
-		c.State = StateReady
-		return c, true
+	if c.State == StateApproved || c.State == StateQueued || c.State == StateReady || c.State == StateResumed {
+		c.State = StateExecuting
+		return c.snapshot(), true
 	}
 	return nil, false
 }
@@ -487,8 +525,8 @@ func (s *InMemoryStore) ClaimForRetry(id string) (*Continuation, bool) {
 		return nil, false
 	}
 	if c.State == StateResumed {
-		c.State = StateReady
-		return c, true
+		c.State = StateExecuting
+		return c.snapshot(), true
 	}
 	return nil, false
 }
@@ -531,4 +569,37 @@ func (s *InMemoryStore) CancelForOperation(id string) (*Continuation, bool) {
 	}
 	c.MarkCancelled()
 	return c.snapshot(), true
+}
+
+// RecoverFromExecuting atomically transitions a continuation in StateExecuting
+// back to StateExecuted so it becomes retryable. Used for operator-driven
+// recovery of stuck executions. Returns a snapshot or (nil, false) if the
+// continuation is missing or not in StateExecuting.
+func (s *InMemoryStore) RecoverFromExecuting(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State != StateExecuting {
+		return nil, false
+	}
+	c.State = StateExecuted
+	return c.snapshot(), true
+}
+
+// ListExecutingIDs returns the IDs of all continuations currently in
+// StateExecuting. Used by operator recovery flows to enumerate stuck work
+// without exposing the full continuations payload.
+func (s *InMemoryStore) ListExecutingIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]string, 0, len(s.continuations))
+	for id, c := range s.continuations {
+		if c.State == StateExecuting {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }

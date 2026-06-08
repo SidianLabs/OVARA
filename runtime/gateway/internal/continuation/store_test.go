@@ -401,13 +401,13 @@ func TestInMemoryStore_ClaimForExecution_ClaimsExecutableContinuation(t *testing
 	if !ok {
 		t.Fatal("expected claim to succeed for queued continuation")
 	}
-	if claimed.State != StateReady {
-		t.Errorf("state after claim = %v, want ready", claimed.State)
+	if claimed.State != StateExecuting {
+		t.Errorf("state after claim = %v, want executing", claimed.State)
 	}
 
 	updated, _ := store.Get(c.ContinuationID)
-	if updated.State != StateReady {
-		t.Errorf("state in store after claim = %v, want ready", updated.State)
+	if updated.State != StateExecuting {
+		t.Errorf("state in store after claim = %v, want executing", updated.State)
 	}
 }
 
@@ -469,5 +469,312 @@ func TestInMemoryStore_ClaimForExecution_NotFound(t *testing.T) {
 	_, ok := store.ClaimForExecution("cnt_nonexistent")
 	if ok {
 		t.Error("expected claim to fail for nonexistent id")
+	}
+}
+
+func TestContinuation_StateExecuting_NotAsRestingState(t *testing.T) {
+	c := NewContinuation("dec_exec", "shell", "shell:ls")
+	c.State = StateExecuting
+
+	if c.IsTerminal() {
+		t.Error("executing should not be terminal")
+	}
+	if c.IsReady() {
+		t.Error("executing should not be ready")
+	}
+	if c.CanEnqueue() {
+		t.Error("executing should not be enqueueable")
+	}
+	if c.CanCancel() {
+		t.Error("executing should not be cancellable while running")
+	}
+}
+
+func TestContinuation_MarkExecuted_FromExecuting(t *testing.T) {
+	c := NewContinuation("dec_exec", "shell", "shell:ls")
+	c.State = StateExecuting
+
+	c.MarkExecuted()
+	if c.State != StateExecuted {
+		t.Errorf("state = %v, want executed", c.State)
+	}
+}
+
+func TestContinuation_MarkExecuted_RejectsNonExecuting(t *testing.T) {
+	c := NewContinuation("dec_esc", "shell", "shell:ls")
+	c.State = StateEscalated
+
+	c.MarkExecuted()
+	if c.State != StateEscalated {
+		t.Errorf("state = %v, want escalated (unchanged)", c.State)
+	}
+}
+
+func TestContinuation_MarkExecutionFailed_FromExecuting(t *testing.T) {
+	c := NewContinuation("dec_exec", "shell", "shell:ls")
+	c.State = StateExecuting
+
+	c.MarkExecutionFailed()
+	if c.State != StateExecuted {
+		t.Errorf("state = %v, want executed", c.State)
+	}
+}
+
+func TestContinuation_MarkExecutionFailed_FromReady(t *testing.T) {
+	c := NewContinuation("dec_ready", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	c.MarkReady()
+
+	c.MarkExecutionFailed()
+	if c.State != StateExecuted {
+		t.Errorf("state = %v, want executed", c.State)
+	}
+}
+
+func TestContinuation_MarkExecutionFailed_RejectsNonExecuting(t *testing.T) {
+	c := NewContinuation("dec_esc", "shell", "shell:ls")
+	c.State = StateEscalated
+
+	c.MarkExecutionFailed()
+	if c.State != StateEscalated {
+		t.Errorf("state = %v, want escalated (unchanged)", c.State)
+	}
+}
+
+func TestContinuation_Retry_FromExecutedAfterMarkExecutionFailed(t *testing.T) {
+	c := NewContinuation("dec_retry", "shell", "shell:ls")
+	c.State = StateExecuting
+	c.MaxRetries = 3
+	c.RetryCount = 0
+
+	c.MarkExecutionFailed()
+	if c.State != StateExecuted {
+		t.Fatalf("state = %v, want executed", c.State)
+	}
+
+	ok := c.Retry()
+	if !ok {
+		t.Error("expected Retry() to succeed after MarkExecutionFailed → Executed")
+	}
+	if c.State != StateResumed {
+		t.Errorf("state = %v, want resumed", c.State)
+	}
+	if c.RetryCount != 1 {
+		t.Errorf("retry_count = %v, want 1", c.RetryCount)
+	}
+}
+
+func TestContinuation_CanExecute_RejectsExecuting(t *testing.T) {
+	c := NewContinuation("dec_exec", "shell", "shell:ls")
+	c.State = StateExecuting
+
+	if c.CanExecute() {
+		t.Error("CanExecute should return false for executing state")
+	}
+}
+
+func TestContinuation_IsExecutable_RejectsExecuting(t *testing.T) {
+	c := NewContinuation("dec_exec", "shell", "shell:ls")
+	c.State = StateExecuting
+
+	if c.IsExecutable() {
+		t.Error("IsExecutable should return false for executing state")
+	}
+}
+
+func TestContinuation_CanExecute_Approved(t *testing.T) {
+	c := NewContinuation("dec_approved", "shell", "shell:ls")
+	c.MarkApproved("admin")
+
+	if !c.CanExecute() {
+		t.Error("CanExecute should return true for approved state")
+	}
+}
+
+func TestInMemoryStore_ClaimForExecution_Approved(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_approved", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	store.Create(c)
+
+	claimed, ok := store.ClaimForExecution(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected claim to succeed for approved continuation")
+	}
+	if claimed.State != StateExecuting {
+		t.Errorf("state after claim = %v, want executing", claimed.State)
+	}
+}
+
+func TestInMemoryStore_ClaimForExecution_RejectsExecuting(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_exec", "shell", "shell:ls")
+	c.State = StateExecuting
+	store.Create(c)
+
+	_, ok := store.ClaimForExecution(c.ContinuationID)
+	if ok {
+		t.Error("expected claim to fail for already-executing continuation")
+	}
+}
+
+func TestInMemoryStore_ClaimForRetry_RejectsExecuting(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_exec", "shell", "shell:ls")
+	c.State = StateExecuting
+	store.Create(c)
+
+	_, ok := store.ClaimForRetry(c.ContinuationID)
+	if ok {
+		t.Error("expected claim to fail for executing continuation")
+	}
+}
+
+func TestInMemoryStore_ClaimForExecution_Ready(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_ready", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	c.MarkReady()
+	store.Create(c)
+
+	claimed, ok := store.ClaimForExecution(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected claim to succeed for ready continuation")
+	}
+	if claimed.State != StateExecuting {
+		t.Errorf("state after claim = %v, want executing", claimed.State)
+	}
+}
+
+func TestInMemoryStore_ClaimForExecution_Resumed(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_resumed", "shell", "shell:ls")
+	c.State = StateResumed
+	store.Create(c)
+
+	claimed, ok := store.ClaimForExecution(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected claim to succeed for resumed continuation")
+	}
+	if claimed.State != StateExecuting {
+		t.Errorf("state after claim = %v, want executing", claimed.State)
+	}
+}
+
+func TestInMemoryStore_RecoverFromExecuting_Success(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_recover", "shell", "shell:ls")
+	c.State = StateExecuting
+	c.MaxRetries = 3
+	store.Create(c)
+
+	rec, ok := store.RecoverFromExecuting(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected RecoverFromExecuting to succeed")
+	}
+	if rec.State != StateExecuted {
+		t.Errorf("state after recovery = %v, want executed", rec.State)
+	}
+	if !rec.CanRetry() {
+		t.Error("recovered continuation should be retryable")
+	}
+
+	stored, _ := store.Get(c.ContinuationID)
+	if stored.State != StateExecuted {
+		t.Errorf("state in store after recovery = %v, want executed", stored.State)
+	}
+}
+
+func TestInMemoryStore_RecoverFromExecuting_RejectsNonExecuting(t *testing.T) {
+	store := NewInMemoryStore()
+	c := NewContinuation("dec_recover", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	store.Create(c)
+
+	_, ok := store.RecoverFromExecuting(c.ContinuationID)
+	if ok {
+		t.Error("expected RecoverFromExecuting to reject non-executing continuation")
+	}
+}
+
+func TestInMemoryStore_RecoverFromExecuting_NotFound(t *testing.T) {
+	store := NewInMemoryStore()
+	_, ok := store.RecoverFromExecuting("cnt_nonexistent")
+	if ok {
+		t.Error("expected RecoverFromExecuting to fail for nonexistent id")
+	}
+}
+
+func TestInMemoryStore_ListExecutingIDs(t *testing.T) {
+	store := NewInMemoryStore()
+
+	c1 := NewContinuation("dec_e1", "shell", "shell:ls")
+	c1.State = StateExecuting
+	store.Create(c1)
+
+	c2 := NewContinuation("dec_e2", "shell", "shell:ls")
+	c2.State = StateExecuting
+	store.Create(c2)
+
+	c3 := NewContinuation("dec_e3", "shell", "shell:ls")
+	c3.MarkApproved("admin")
+	store.Create(c3)
+
+	ids := store.ListExecutingIDs()
+	if len(ids) != 2 {
+		t.Errorf("ListExecutingIDs returned %d ids, want 2", len(ids))
+	}
+
+	// Recover one, ensure list reflects it
+	if _, ok := store.RecoverFromExecuting(c1.ContinuationID); !ok {
+		t.Fatal("expected recovery to succeed")
+	}
+	ids = store.ListExecutingIDs()
+	if len(ids) != 1 {
+		t.Errorf("ListExecutingIDs after recovery = %d, want 1", len(ids))
+	}
+}
+
+func TestContinuation_MarkRequeue_FromExecuting(t *testing.T) {
+	c := NewContinuation("dec_requeue", "shell", "shell:ls")
+	c.State = StateExecuting
+
+	c.MarkRequeue()
+	if c.State != StateQueued {
+		t.Errorf("state = %v, want queued", c.State)
+	}
+	if c.QueuedAt == nil {
+		t.Error("QueuedAt should be set after MarkRequeue")
+	}
+}
+
+func TestContinuation_MarkRequeue_FromReady(t *testing.T) {
+	c := NewContinuation("dec_requeue", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	c.MarkReady()
+
+	c.MarkRequeue()
+	if c.State != StateQueued {
+		t.Errorf("state = %v, want queued", c.State)
+	}
+}
+
+func TestContinuation_MarkRequeue_RejectsApproved(t *testing.T) {
+	c := NewContinuation("dec_requeue", "shell", "shell:ls")
+	c.MarkApproved("admin")
+
+	c.MarkRequeue()
+	if c.State != StateApproved {
+		t.Errorf("state = %v, want approved (unchanged)", c.State)
+	}
+}
+
+func TestContinuation_MarkRequeue_RejectsTerminal(t *testing.T) {
+	c := NewContinuation("dec_requeue", "shell", "shell:ls")
+	c.State = StateExecuted
+
+	c.MarkRequeue()
+	if c.State != StateExecuted {
+		t.Errorf("state = %v, want executed (unchanged)", c.State)
 	}
 }

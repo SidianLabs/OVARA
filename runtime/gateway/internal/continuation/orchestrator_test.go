@@ -291,7 +291,7 @@ func TestOrchestrator_UnknownActionType_SkipsExecution(t *testing.T) {
 	reg.Register("shell", exec)
 
 	orch := NewOrchestrator(store, execStore, reg)
-	orch.pollInterval = 100 * time.Millisecond
+	orch.pollInterval = 200 * time.Millisecond
 	orch.Start()
 	defer orch.Stop()
 
@@ -300,7 +300,7 @@ func TestOrchestrator_UnknownActionType_SkipsExecution(t *testing.T) {
 	cnt.MarkQueued()
 	store.Create(cnt)
 
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	updated, _ := store.Get(cnt.ContinuationID)
 	if updated.State != StateQueued {
@@ -308,5 +308,329 @@ func TestOrchestrator_UnknownActionType_SkipsExecution(t *testing.T) {
 	}
 	if exec.Calls() != 0 {
 		t.Errorf("executor calls = %d, want 0 (unknown action type)", exec.Calls())
+	}
+}
+
+func TestOrchestrator_StartupSweepStuckExecuting(t *testing.T) {
+	store := NewInMemoryStore()
+
+	stuck := NewContinuation("dec_stuck", "shell", "shell:sleep 10")
+	stuck.State = StateExecuting
+	stuck.MaxRetries = 3
+	stuck.RetryCount = 0
+	store.Create(stuck)
+
+	execStore := &mockExecStore{}
+	reg := execution.NewExecutorRegistry()
+
+	orch := NewOrchestrator(store, execStore, reg)
+	orch.pollInterval = 500 * time.Millisecond
+	orch.Start()
+	defer orch.Stop()
+
+	updated, _ := store.Get(stuck.ContinuationID)
+	if updated.State != StateExecuted {
+		t.Errorf("stuck executing should be swept to executed on startup, got %v", updated.State)
+	}
+	if !updated.CanRetry() {
+		t.Error("swept continuation should be retryable")
+	}
+}
+
+func TestOrchestrator_StartupSweepIdempotent(t *testing.T) {
+	store := NewInMemoryStore()
+
+	normal := NewContinuation("dec_normal", "shell", "shell:ls")
+	normal.State = StateExecuted
+	store.Create(normal)
+
+	queued := NewContinuation("dec_queued", "shell", "shell:pwd")
+	queued.MarkApproved("admin")
+	queued.MarkQueued()
+	store.Create(queued)
+
+	execStore := &mockExecStore{}
+	reg := execution.NewExecutorRegistry()
+
+	orch := NewOrchestrator(store, execStore, reg)
+	orch.pollInterval = 500 * time.Millisecond
+	orch.Start()
+	defer orch.Stop()
+
+	updatedNormal, _ := store.Get(normal.ContinuationID)
+	if updatedNormal.State != StateExecuted {
+		t.Errorf("executed continuation should be unaffected, got %v", updatedNormal.State)
+	}
+
+	updatedQueued, _ := store.Get(queued.ContinuationID)
+	if updatedQueued.State != StateQueued {
+		t.Errorf("queued continuation should be unaffected, got %v", updatedQueued.State)
+	}
+}
+
+func TestOrchestrator_SkipNoExecutor_UsesMarkRequeue(t *testing.T) {
+	store := NewInMemoryStore()
+	execStore := &mockExecStore{}
+	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
+
+	orch := NewOrchestrator(store, execStore, reg)
+	orch.pollInterval = 200 * time.Millisecond
+	orch.Start()
+	defer orch.Stop()
+
+	cnt := NewContinuation("dec_skip", "git.push", "git:origin main")
+	cnt.MarkApproved("admin")
+	cnt.MarkQueued()
+	store.Create(cnt)
+
+	time.Sleep(600 * time.Millisecond)
+
+	updated, _ := store.Get(cnt.ContinuationID)
+	if updated.State != StateQueued {
+		t.Errorf("state after skip = %v, want queued (requeued, not stuck in executing)", updated.State)
+	}
+	if updated.QueuedAt == nil {
+		t.Error("QueuedAt should be set after MarkRequeue")
+	}
+	if exec.Calls() != 0 {
+		t.Errorf("executor calls = %d, want 0 (no executor for git.push)", exec.Calls())
+	}
+}
+
+func TestOrchestrator_RecoverAllExecuting(t *testing.T) {
+	store := NewInMemoryStore()
+
+	c1 := NewContinuation("dec_r1", "shell", "shell:ls")
+	c1.State = StateExecuting
+	c1.MaxRetries = 3
+	store.Create(c1)
+
+	c2 := NewContinuation("dec_r2", "shell", "shell:pwd")
+	c2.State = StateExecuting
+	c2.MaxRetries = 3
+	store.Create(c2)
+
+	c3 := NewContinuation("dec_r3", "shell", "shell:whoami")
+	c3.MarkApproved("admin")
+	store.Create(c3)
+
+	execStore := &mockExecStore{}
+	reg := execution.NewExecutorRegistry()
+
+	orch := NewOrchestrator(store, execStore, reg)
+	orch.pollInterval = 500 * time.Millisecond
+
+	recovered := orch.RecoverAllExecuting()
+	if recovered != 2 {
+		t.Errorf("recovered = %d, want 2", recovered)
+	}
+
+	updated1, _ := store.Get(c1.ContinuationID)
+	if updated1.State != StateExecuted {
+		t.Errorf("c1 state = %v, want executed", updated1.State)
+	}
+	if !updated1.CanRetry() {
+		t.Error("c1 should be retryable after recovery")
+	}
+
+	updated3, _ := store.Get(c3.ContinuationID)
+	if updated3.State != StateApproved {
+		t.Errorf("c3 state = %v, want approved (untouched)", updated3.State)
+	}
+
+	if orch.ExecutingCount() != 0 {
+		t.Errorf("ExecutingCount after recovery = %d, want 0", orch.ExecutingCount())
+	}
+}
+
+func TestOrchestrator_ExecutingCount(t *testing.T) {
+	store := NewInMemoryStore()
+
+	c1 := NewContinuation("dec_e1", "shell", "shell:ls")
+	c1.State = StateExecuting
+	store.Create(c1)
+
+	c2 := NewContinuation("dec_e2", "shell", "shell:pwd")
+	c2.State = StateExecuting
+	store.Create(c2)
+
+	c3 := NewContinuation("dec_e3", "shell", "shell:whoami")
+	c3.MarkApproved("admin")
+	store.Create(c3)
+
+	orch := NewOrchestrator(store, &mockExecStore{}, execution.NewExecutorRegistry())
+	if got := orch.ExecutingCount(); got != 2 {
+		t.Errorf("ExecutingCount = %d, want 2", got)
+	}
+}
+
+func TestOrchestrator_OldestExecutingAt(t *testing.T) {
+	store := NewInMemoryStore()
+
+	now := time.Now().UTC()
+	old := now.Add(-10 * time.Minute)
+	mid := now.Add(-5 * time.Minute)
+
+	c1 := NewContinuation("dec_old", "shell", "shell:ls")
+	c1.State = StateExecuting
+	c1.CreatedAt = old
+	store.Create(c1)
+
+	c2 := NewContinuation("dec_mid", "shell", "shell:pwd")
+	c2.State = StateExecuting
+	c2.CreatedAt = mid
+	store.Create(c2)
+
+	c3 := NewContinuation("dec_other", "shell", "shell:whoami")
+	c3.MarkApproved("admin")
+	c3.CreatedAt = now.Add(-1 * time.Hour)
+	store.Create(c3)
+
+	orch := NewOrchestrator(store, &mockExecStore{}, execution.NewExecutorRegistry())
+	oldest := orch.OldestExecutingAt()
+	if !oldest.Equal(old) {
+		t.Errorf("OldestExecutingAt = %v, want %v", oldest, old)
+	}
+}
+
+func TestOrchestrator_OldestExecutingAt_Empty(t *testing.T) {
+	store := NewInMemoryStore()
+	orch := NewOrchestrator(store, &mockExecStore{}, execution.NewExecutorRegistry())
+	if !orch.OldestExecutingAt().IsZero() {
+		t.Error("OldestExecutingAt should be zero when no executing continuations exist")
+	}
+}
+
+func TestOrchestrator_SetStuckExecutingSweep(t *testing.T) {
+	store := NewInMemoryStore()
+	orch := NewOrchestrator(store, &mockExecStore{}, execution.NewExecutorRegistry())
+
+	orch.SetStuckExecutingSweep(0, 30)
+	if orch.stuckSweepInterval != 0 {
+		t.Errorf("interval with 0 should be disabled, got %v", orch.stuckSweepInterval)
+	}
+
+	orch.SetStuckExecutingSweep(600, 30)
+	if orch.stuckSweepInterval != 10*time.Minute {
+		t.Errorf("interval = %v, want 10m", orch.stuckSweepInterval)
+	}
+	if orch.stuckRecoveryThreshold != 30*time.Minute {
+		t.Errorf("threshold = %v, want 30m", orch.stuckRecoveryThreshold)
+	}
+
+	orch.SetStuckExecutingSweep(600, 0)
+	if orch.stuckRecoveryThreshold != 30*time.Minute {
+		t.Errorf("threshold should default to 30m when 0, got %v", orch.stuckRecoveryThreshold)
+	}
+}
+
+func TestOrchestrator_SweepStuckExecutingThreshold_RecoversOld(t *testing.T) {
+	store := NewInMemoryStore()
+
+	c1 := NewContinuation("dec_old", "shell", "shell:ls")
+	c1.State = StateExecuting
+	c1.MaxRetries = 3
+	c1.CreatedAt = time.Now().UTC().Add(-45 * time.Minute)
+	store.Create(c1)
+
+	c2 := NewContinuation("dec_young", "shell", "shell:pwd")
+	c2.State = StateExecuting
+	c2.MaxRetries = 3
+	c2.CreatedAt = time.Now().UTC().Add(-5 * time.Minute)
+	store.Create(c2)
+
+	orch := NewOrchestrator(store, &mockExecStore{}, execution.NewExecutorRegistry())
+	orch.SetStuckExecutingSweep(600, 30)
+	orch.sweepStuckExecutingThreshold()
+
+	updated1, _ := store.Get(c1.ContinuationID)
+	if updated1.State != StateExecuted {
+		t.Errorf("old item should be recovered, got %v", updated1.State)
+	}
+	if !updated1.CanRetry() {
+		t.Error("recovered item should be retryable")
+	}
+
+	updated2, _ := store.Get(c2.ContinuationID)
+	if updated2.State != StateExecuting {
+		t.Errorf("young item should NOT be recovered, got %v", updated2.State)
+	}
+}
+
+func TestOrchestrator_SweepStuckExecutingThreshold_SkipsYoung(t *testing.T) {
+	store := NewInMemoryStore()
+
+	c := NewContinuation("dec_young", "shell", "shell:ls")
+	c.State = StateExecuting
+	c.MaxRetries = 3
+	c.CreatedAt = time.Now().UTC().Add(-10 * time.Minute)
+	store.Create(c)
+
+	orch := NewOrchestrator(store, &mockExecStore{}, execution.NewExecutorRegistry())
+	orch.SetStuckExecutingSweep(600, 30)
+	orch.sweepStuckExecutingThreshold()
+
+	updated, _ := store.Get(c.ContinuationID)
+	if updated.State != StateExecuting {
+		t.Errorf("item younger than threshold should not be recovered, got %v", updated.State)
+	}
+}
+
+func TestOrchestrator_SweepStuckExecutingThreshold_Disabled(t *testing.T) {
+	store := NewInMemoryStore()
+
+	c := NewContinuation("dec_old", "shell", "shell:ls")
+	c.State = StateExecuting
+	c.MaxRetries = 3
+	c.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	store.Create(c)
+
+	orch := NewOrchestrator(store, &mockExecStore{}, execution.NewExecutorRegistry())
+	orch.SetStuckExecutingSweep(0, 30)
+	orch.sweepStuckExecutingThreshold()
+
+	updated, _ := store.Get(c.ContinuationID)
+	if updated.State != StateExecuting {
+		t.Errorf("when disabled, nothing should be recovered, got %v", updated.State)
+	}
+}
+
+func TestOrchestrator_SweepStuckExecutingThreshold_Empty(t *testing.T) {
+	store := NewInMemoryStore()
+	orch := NewOrchestrator(store, &mockExecStore{}, execution.NewExecutorRegistry())
+	orch.SetStuckExecutingSweep(600, 30)
+	orch.sweepStuckExecutingThreshold()
+}
+
+func TestOrchestrator_PeriodicSweep_RunsAndRecovers(t *testing.T) {
+	store := NewInMemoryStore()
+
+	c := NewContinuation("dec_stuck", "shell", "shell:sleep 10")
+	c.State = StateExecuting
+	c.MaxRetries = 3
+	c.CreatedAt = time.Now().UTC().Add(-45 * time.Minute)
+	store.Create(c)
+
+	execStore := &mockExecStore{}
+	exec := &mockExecutor{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", exec)
+
+	orch := NewOrchestrator(store, execStore, reg)
+	orch.pollInterval = 100 * time.Millisecond
+	orch.SetStuckExecutingSweep(100, 30)
+	orch.Start()
+	defer orch.Stop()
+
+	time.Sleep(250 * time.Millisecond)
+
+	updated, _ := store.Get(c.ContinuationID)
+	if updated.State != StateExecuted {
+		t.Errorf("periodic sweep should have recovered stuck item, got %v", updated.State)
+	}
+	if !updated.CanRetry() {
+		t.Error("recovered item should be retryable")
 	}
 }

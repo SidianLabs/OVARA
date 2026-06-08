@@ -68,6 +68,8 @@ func (h *ContinuationHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/continuations/stats", h.handleStats)
 	mux.HandleFunc("GET /v1/continuations/queue", h.handleQueue)
 	mux.HandleFunc("POST /v1/continuations/sweep", h.handleSweep)
+	mux.HandleFunc("POST /v1/continuations/recover-executing", h.handleRecoverExecuting)
+	mux.HandleFunc("POST /v1/continuations/{id}/recover-executing", h.handleRecoverExecutingItem)
 	mux.HandleFunc("POST /v1/continuations/queue/pause", h.handleQueuePause)
 	mux.HandleFunc("POST /v1/continuations/queue/resume", h.handleQueueResume)
 	mux.HandleFunc("POST /v1/continuations/{id}/enqueue", h.handleEnqueue)
@@ -98,19 +100,6 @@ func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request)
 	continuations := h.buildFilteredList(r, stateFilter, actionTypeFilter, environmentFilter, retryableFilter, createdBefore, createdAfter, sortOrder)
 
 	ascending := sortAscending(sortOrder)
-	sort.Slice(continuations, func(i, j int) bool {
-		a, b := continuations[i], continuations[j]
-		if a.CreatedAt.Equal(b.CreatedAt) {
-			if ascending {
-				return a.ContinuationID < b.ContinuationID
-			}
-			return a.ContinuationID > b.ContinuationID
-		}
-		if ascending {
-			return a.CreatedAt.Before(b.CreatedAt)
-		}
-		return b.CreatedAt.Before(a.CreatedAt)
-	})
 
 	result := buildListedItems(continuations, limit, rawAfter, SortSpec[continuation.Continuation]{
 		Ascending:    ascending,
@@ -402,10 +391,6 @@ func (h *ContinuationHandler) handleQueue(w http.ResponseWriter, r *http.Request
 
 	queued := h.store.ListByState(continuation.StateQueued)
 
-	// A queue is naturally FIFO: order by when each item was queued (oldest
-	// first), falling back to creation time, with ContinuationID as a stable
-	// tiebreaker. This makes the listing deterministic instead of relying on
-	// map iteration order.
 	sort.Slice(queued, func(i, j int) bool {
 		a, b := queued[i], queued[j]
 		at, bt := a.CreatedAt, b.CreatedAt
@@ -514,35 +499,25 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	cnt, found := h.store.Get(id)
-	if !found {
-		api.JSONNotFound(w, "continuation not found: "+id)
-		return
-	}
-
-	if cnt.State == continuation.StateApproved {
-		cnt.MarkReady()
-	}
-
-	if cnt.State == continuation.StateQueued {
-		cnt.State = continuation.StateReady
-	}
-
-	if cnt.State == continuation.StateResumed {
-		if !cnt.CanRetry() {
-			api.JSONBadRequest(w, "continuation retry limit reached: retry_count="+strconv.Itoa(cnt.RetryCount)+", max_retries="+strconv.Itoa(cnt.MaxRetries))
+	cnt, claimed := h.store.ClaimForExecution(id)
+	if !claimed {
+		cnt, found := h.store.Get(id)
+		if !found {
+			api.JSONNotFound(w, "continuation not found: "+id)
 			return
 		}
-		cnt.RetryCount++
-	}
-
-	if !cnt.CanExecute() {
+		if cnt.State == continuation.StateExecuting {
+			api.JSONConflict(w, "continuation is already claimed for execution")
+			return
+		}
 		api.JSONConflict(w, "continuation not in executable state: current state="+string(cnt.State))
 		return
 	}
 
 	if h.registry != nil {
 		if _, ok := h.registry.Get(cnt.ActionType); !ok {
+			cnt.MarkRequeue()
+			h.store.Update(cnt)
 			api.JSONBadRequest(w, "no executor registered for action type: "+cnt.ActionType)
 			return
 		}
@@ -576,12 +551,20 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		h.execStore.Create(exe)
 	}
 
+	switch exe.State {
+	case execution.StateSucceeded:
+		cnt.MarkExecuted()
+	case execution.StateTimedOut, execution.StateFailed:
+		cnt.MarkExecutionFailed()
+	default:
+		cnt.MarkExecutionFailed()
+	}
+
 	if h.eventStore != nil {
 		var evtType string
 		switch exe.State {
 		case execution.StateSucceeded:
 			evtType = events.EventTypeExecutionSucceeded
-			cnt.MarkExecuted()
 		case execution.StateTimedOut:
 			evtType = events.EventTypeExecutionTimedOut
 		default:
@@ -638,6 +621,187 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 	json.NewEncoder(w).Encode(resp)
 }
 
+type recoverExecutingResult struct {
+	ContinuationID string `json:"continuation_id"`
+	ActionType     string `json:"action_type"`
+	AgeSeconds     int64  `json:"age_seconds"`
+	State          string `json:"state"`
+}
+
+type recoverExecutingResponse struct {
+	Scanned    int                       `json:"scanned"`
+	Recovered  int                       `json:"recovered"`
+	Skipped    int                       `json:"skipped"`
+	DryRun     bool                      `json:"dry_run"`
+	Items      []recoverExecutingResult  `json:"items,omitempty"`
+}
+
+func (h *ContinuationHandler) handleRecoverExecuting(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+
+	var olderThanMins int
+	if ot := r.URL.Query().Get("older_than_minutes"); ot != "" {
+		if t, err := strconv.Atoi(ot); err == nil && t > 0 {
+			olderThanMins = t
+		}
+	}
+
+	ids := h.store.ListExecutingIDs()
+	scanned := len(ids)
+	items := make([]recoverExecutingResult, 0, scanned)
+	skipped := 0
+	recovered := 0
+	now := time.Now().UTC()
+	ageThreshold := time.Duration(olderThanMins) * time.Minute
+
+	for _, id := range ids {
+		snap, ok := h.store.Get(id)
+		if !ok {
+			skipped++
+			continue
+		}
+
+		ageSeconds := int64(0)
+		if !snap.CreatedAt.IsZero() {
+			ageSeconds = int64(now.Sub(snap.CreatedAt).Seconds())
+		}
+
+		if olderThanMins > 0 {
+			itemAge := time.Duration(ageSeconds) * time.Second
+			if itemAge <= ageThreshold {
+				skipped++
+				continue
+			}
+		}
+
+		if dryRun {
+			items = append(items, recoverExecutingResult{
+				ContinuationID: snap.ContinuationID,
+				ActionType:     snap.ActionType,
+				AgeSeconds:     ageSeconds,
+				State:          string(snap.State),
+			})
+			continue
+		}
+
+		rec, ok := h.store.RecoverFromExecuting(id)
+		if !ok {
+			skipped++
+			continue
+		}
+		recovered++
+
+		items = append(items, recoverExecutingResult{
+			ContinuationID: rec.ContinuationID,
+			ActionType:     rec.ActionType,
+			AgeSeconds:     ageSeconds,
+			State:          string(rec.State),
+		})
+
+		if h.eventStore != nil {
+			evt := events.NewEvent("continuation.recovered_executing").
+				WithGatewayID(h.gatewayID).
+				WithDecisionID(rec.DecisionID).
+				WithApprovalID(rec.ApprovalID).
+				WithAgentID(rec.AgentID).
+				WithContinuationID(rec.ContinuationID).
+				WithPayload(map[string]any{
+					"continuation_id":  rec.ContinuationID,
+					"state":           string(rec.State),
+					"trigger":         "operator_recover_executing",
+					"older_than_mins":  olderThanMins,
+				})
+			h.eventStore.Append(evt)
+		}
+	}
+
+	if !dryRun && h.eventStore != nil {
+		evt := events.NewEvent("continuation.recovered_executing").
+			WithGatewayID(h.gatewayID).
+			WithPayload(map[string]any{
+				"action":     "recover_executing",
+				"dry_run":    false,
+				"scanned":    scanned,
+				"recovered":  recovered,
+				"skipped":    skipped,
+				"continuation_ids": func() []string {
+					ids := make([]string, 0, len(items))
+					for _, it := range items {
+						ids = append(ids, it.ContinuationID)
+					}
+					return ids
+				}(),
+			})
+		h.eventStore.Append(evt)
+	}
+
+	log.Printf("RECOVER executing dry_run=%t scanned=%d recovered=%d skipped=%d",
+		dryRun, scanned, recovered, skipped)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(recoverExecutingResponse{
+		Scanned:   scanned,
+		Recovered: recovered,
+		Skipped:   skipped,
+		DryRun:    dryRun,
+		Items:     items,
+	})
+}
+
+func (h *ContinuationHandler) handleRecoverExecutingItem(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		api.JSONBadRequest(w, "continuation id is required")
+		return
+	}
+
+	cnt, ok := h.store.RecoverFromExecuting(id)
+	if !ok {
+		existing, found := h.store.Get(id)
+		if !found {
+			api.JSONNotFound(w, "continuation not found: "+id)
+			return
+		}
+		api.JSONConflict(w, "cannot recover continuation: invalid state (current="+string(existing.State)+", required=executing)")
+		return
+	}
+
+	log.Printf("RECOVER executing item continuation_id=%s decision_id=%s action_type=%s",
+		cnt.ContinuationID, cnt.DecisionID, cnt.ActionType)
+
+	if h.eventStore != nil {
+		evt := events.NewEvent("continuation.recovered_executing").
+			WithGatewayID(h.gatewayID).
+			WithDecisionID(cnt.DecisionID).
+			WithApprovalID(cnt.ApprovalID).
+			WithAgentID(cnt.AgentID).
+			WithContinuationID(cnt.ContinuationID).
+			WithPayload(map[string]any{
+				"continuation_id": cnt.ContinuationID,
+				"state":          string(cnt.State),
+				"trigger":        "operator_recover_executing_item",
+			})
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"continuation_id": cnt.ContinuationID,
+		"state":          string(cnt.State),
+		"message":        "continuation recovered from executing for retry",
+	})
+}
+
 type bulkRetryResult struct {
 	ContinuationID string `json:"continuation_id"`
 	DecisionID     string `json:"decision_id"`
@@ -665,6 +829,7 @@ type bulkRetryResponse struct {
 type bulkCancelResult struct {
 	ContinuationID string `json:"continuation_id"`
 	DecisionID     string `json:"decision_id"`
+	ActionType     string `json:"action_type"`
 	State          string `json:"state"`
 }
 
@@ -895,6 +1060,7 @@ func (h *ContinuationHandler) handleBulkCancel(w http.ResponseWriter, r *http.Re
 		acted = append(acted, bulkCancelResult{
 			ContinuationID: cnt.ContinuationID,
 			DecisionID:     cnt.DecisionID,
+			ActionType:     cnt.ActionType,
 			State:          string(cnt.State),
 		})
 	}

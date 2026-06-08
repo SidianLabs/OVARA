@@ -401,3 +401,139 @@ func TestRuntimeStatus_SLABreach_SomeItemsNotBreaching(t *testing.T) {
 		t.Errorf("retryable_breaching = %v, want 1 (only c2 > 30min)", sla["retryable_breaching"])
 	}
 }
+func TestRuntimeStatus_SLABreach_Executing_BreachCounted(t *testing.T) {
+	cfg := config.Default()
+	cfg.SLAExecutingMaxAgeMin = 5
+
+	policyStore := policy.NewStore("test-sla-exec")
+	shieldStore := trust.NewShieldStore()
+	eval := evaluator.NewWithShield(policyStore, shieldStore)
+	receiptsStore := receipts.NewInMemoryStore()
+	h := New(eval, nil, cfg, receiptsStore)
+
+	contStore := continuation.NewInMemoryStore()
+	h.SetContinuationStore(contStore)
+
+	// One stuck execution > 5 min old
+	c1 := continuation.NewContinuation("dec_stuck_1", "shell", "shell:ls")
+	c1.State = continuation.StateExecuting
+	c1.CreatedAt = time.Now().UTC().Add(-10 * time.Minute)
+	contStore.Create(c1)
+
+	// One fresh execution (< 5 min) — not breaching
+	c2 := continuation.NewContinuation("dec_stuck_2", "shell", "shell:pwd")
+	c2.State = continuation.StateExecuting
+	c2.CreatedAt = time.Now().UTC().Add(-1 * time.Minute)
+	contStore.Create(c2)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/runtime/status", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	sla, ok := resp["sla"].(map[string]any)
+	if !ok {
+		t.Fatal("sla section missing from status response")
+	}
+	if sla["executing_breaching"].(float64) != 1 {
+		t.Errorf("executing_breaching = %v, want 1 (only c1 is > 5 min old)", sla["executing_breaching"])
+	}
+	if sla["executing_threshold_min"].(float64) != 5 {
+		t.Errorf("executing_threshold_min = %v, want 5", sla["executing_threshold_min"])
+	}
+}
+
+func TestRuntimeStatus_Executing_VisibleInContinuationStats(t *testing.T) {
+	cfg := config.Default()
+	policyStore := policy.NewStore("test-exec-visible")
+	shieldStore := trust.NewShieldStore()
+	eval := evaluator.NewWithShield(policyStore, shieldStore)
+	receiptsStore := receipts.NewInMemoryStore()
+	h := New(eval, nil, cfg, receiptsStore)
+
+	contStore := continuation.NewInMemoryStore()
+	h.SetContinuationStore(contStore)
+
+	// Two executing
+	c1 := continuation.NewContinuation("dec_e1", "shell", "shell:ls")
+	c1.State = continuation.StateExecuting
+	c1.CreatedAt = time.Now().UTC().Add(-3 * time.Minute)
+	contStore.Create(c1)
+
+	c2 := continuation.NewContinuation("dec_e2", "shell", "shell:pwd")
+	c2.State = continuation.StateExecuting
+	c2.CreatedAt = time.Now().UTC().Add(-1 * time.Minute)
+	contStore.Create(c2)
+
+	// One approved (not executing)
+	c3 := continuation.NewContinuation("dec_e3", "shell", "shell:whoami")
+	c3.MarkApproved("admin")
+	contStore.Create(c3)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/runtime/status", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	conts, ok := resp["continuations"].(map[string]any)
+	if !ok {
+		t.Fatal("continuations section missing")
+	}
+	if conts["executing"].(float64) != 2 {
+		t.Errorf("continuations.executing = %v, want 2", conts["executing"])
+	}
+	byState := conts["by_state"].(map[string]any)
+	if byState["executing"].(float64) != 2 {
+		t.Errorf("by_state.executing = %v, want 2", byState["executing"])
+	}
+	if _, ok := conts["oldest_executing_at"].(string); !ok {
+		t.Error("oldest_executing_at should be present when there are executing continuations")
+	}
+}
+
+func TestRuntimeStatus_Executing_NoExecuting_OmitsField(t *testing.T) {
+	cfg := config.Default()
+	policyStore := policy.NewStore("test-exec-empty")
+	shieldStore := trust.NewShieldStore()
+	eval := evaluator.NewWithShield(policyStore, shieldStore)
+	receiptsStore := receipts.NewInMemoryStore()
+	h := New(eval, nil, cfg, receiptsStore)
+
+	contStore := continuation.NewInMemoryStore()
+	h.SetContinuationStore(contStore)
+
+	c := continuation.NewContinuation("dec_a", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	contStore.Create(c)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/runtime/status", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	conts, ok := resp["continuations"].(map[string]any)
+	if !ok {
+		t.Fatal("continuations section missing")
+	}
+	if conts["executing"].(float64) != 0 {
+		t.Errorf("continuations.executing = %v, want 0", conts["executing"])
+	}
+	if _, present := conts["oldest_executing_at"]; present {
+		t.Error("oldest_executing_at should be omitted when no executing continuations exist")
+	}
+}

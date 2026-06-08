@@ -361,11 +361,16 @@ func main() {
 	orchestrator := continuation.NewOrchestrator(continuationStore, execStore, execRegistry)
 	orchestrator.SetEventStore(eventStore)
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	orchestrator.SetStuckExecutingSweep(cfg.StuckExecutingSweepIntervalSec, cfg.StuckExecutingRecoveryThresholdMin)
 	orchestrator.Start()
 	continuationHandler.SetOrchestrator(orchestrator)
 	continuationHandler.SetBulkConfig(cfg.BulkMaxBatchCap, cfg.BulkDefaultBatch)
 	h.SetOrchestrator(orchestrator)
-	log.Printf("execution orchestrator started (poll_interval=2s, action_types=[shell, exec, git.push, git.pull, git.fetch, git.checkout])")
+	stuckSweepDesc := "disabled"
+	if cfg.StuckExecutingSweepIntervalSec > 0 {
+		stuckSweepDesc = fmt.Sprintf("interval=%ds threshold=%dmin", cfg.StuckExecutingSweepIntervalSec, cfg.StuckExecutingRecoveryThresholdMin)
+	}
+	log.Printf("execution orchestrator started (poll_interval=2s, stuck_sweep=%s, action_types=[shell, exec, git.push, git.pull, git.fetch, git.checkout])", stuckSweepDesc)
 
 	execSweeper := execution.NewSweeper(execStore)
 	execSweeper.Start(cfg.ExecutionSweepIntervalSec)

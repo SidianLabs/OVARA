@@ -356,3 +356,195 @@ func TestFileBackedStore_ConcurrentCreateAndListAll(t *testing.T) {
 	}
 	wg.Wait()
 }
+func TestFileBackedStore_ClaimForExecution_TransitionsToExecuting(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore: %v", err)
+	}
+	defer store.Close()
+
+	c := NewContinuation("dec_claim", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	c.MarkQueued()
+	store.Create(c)
+
+	claimed, ok := store.ClaimForExecution(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected claim to succeed for queued continuation")
+	}
+	if claimed.State != StateExecuting {
+		t.Errorf("state after claim = %v, want executing", claimed.State)
+	}
+
+	stored, _ := store.Get(c.ContinuationID)
+	if stored.State != StateExecuting {
+		t.Errorf("state in store after claim = %v, want executing", stored.State)
+	}
+}
+
+func TestFileBackedStore_ClaimForExecution_AllowsApproved(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore: %v", err)
+	}
+	defer store.Close()
+
+	c := NewContinuation("dec_approved", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	store.Create(c)
+
+	claimed, ok := store.ClaimForExecution(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected claim to succeed for approved continuation")
+	}
+	if claimed.State != StateExecuting {
+		t.Errorf("state after claim = %v, want executing", claimed.State)
+	}
+}
+
+func TestFileBackedStore_ClaimForExecution_RejectsExecuting(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore: %v", err)
+	}
+	defer store.Close()
+
+	c := NewContinuation("dec_exec", "shell", "shell:ls")
+	c.State = StateExecuting
+	store.Create(c)
+
+	_, ok := store.ClaimForExecution(c.ContinuationID)
+	if ok {
+		t.Error("expected claim to fail for already-executing continuation")
+	}
+}
+
+func TestFileBackedStore_ClaimForExecution_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore: %v", err)
+	}
+	defer store.Close()
+
+	_, ok := store.ClaimForExecution("cnt_nonexistent")
+	if ok {
+		t.Error("expected claim to fail for nonexistent id")
+	}
+}
+
+func TestFileBackedStore_ClaimForRetry_TransitionsToExecuting(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore: %v", err)
+	}
+	defer store.Close()
+
+	c := NewContinuation("dec_retry", "shell", "shell:ls")
+	c.State = StateResumed
+	store.Create(c)
+
+	claimed, ok := store.ClaimForRetry(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected retry-claim to succeed for resumed continuation")
+	}
+	if claimed.State != StateExecuting {
+		t.Errorf("state after retry-claim = %v, want executing", claimed.State)
+	}
+}
+
+func TestFileBackedStore_RecoverFromExecuting_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore: %v", err)
+	}
+	defer store.Close()
+
+	c := NewContinuation("dec_recover", "shell", "shell:ls")
+	c.State = StateExecuting
+	c.MaxRetries = 3
+	store.Create(c)
+
+	rec, ok := store.RecoverFromExecuting(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected RecoverFromExecuting to succeed")
+	}
+	if rec.State != StateExecuted {
+		t.Errorf("state after recovery = %v, want executed", rec.State)
+	}
+	if !rec.CanRetry() {
+		t.Error("recovered continuation should be retryable")
+	}
+
+	store.Close()
+	reopened, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+
+	stored, ok := reopened.Get(c.ContinuationID)
+	if !ok {
+		t.Fatal("expected continuation to be reloaded")
+	}
+	if stored.State != StateExecuted {
+		t.Errorf("reloaded state = %v, want executed (recovery should be persisted)", stored.State)
+	}
+}
+
+func TestFileBackedStore_RecoverFromExecuting_RejectsNonExecuting(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore: %v", err)
+	}
+	defer store.Close()
+
+	c := NewContinuation("dec_recover", "shell", "shell:ls")
+	c.MarkApproved("admin")
+	store.Create(c)
+
+	_, ok := store.RecoverFromExecuting(c.ContinuationID)
+	if ok {
+		t.Error("expected RecoverFromExecuting to reject non-executing continuation")
+	}
+}
+
+func TestFileBackedStore_ListExecutingIDs(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "continuations.jsonl")
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("NewFileBackedStore: %v", err)
+	}
+	defer store.Close()
+
+	c1 := NewContinuation("dec_e1", "shell", "shell:ls")
+	c1.State = StateExecuting
+	store.Create(c1)
+
+	c2 := NewContinuation("dec_e2", "shell", "shell:ls")
+	c2.State = StateExecuting
+	store.Create(c2)
+
+	c3 := NewContinuation("dec_e3", "shell", "shell:ls")
+	c3.MarkApproved("admin")
+	store.Create(c3)
+
+	ids := store.ListExecutingIDs()
+	if len(ids) != 2 {
+		t.Errorf("ListExecutingIDs = %d, want 2", len(ids))
+	}
+}
