@@ -248,7 +248,7 @@ func (s *FileBackedStore) ClaimForExecution(id string) (*Continuation, bool) {
 	if c.State == StateExecuting {
 		return nil, false
 	}
-	if c.State == StateApproved || c.State == StateQueued || c.State == StateReady || c.State == StateResumed {
+	if c.State == StateApproved || c.State == StateQueued || c.State == StateResumed {
 		c.State = StateExecuting
 		return c.snapshot(), true
 	}

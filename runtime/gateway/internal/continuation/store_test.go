@@ -60,7 +60,7 @@ func TestContinuation_IsTerminal(t *testing.T) {
 
 	c2 := NewContinuation("dec_2", "shell", "shell:ls")
 	c2.MarkApproved("admin")
-	c2.MarkReady()
+	c2.MarkQueued()
 	c2.MarkResumed()
 	if c2.IsTerminal() {
 		t.Error("resumed should NOT be terminal (it is a retry intermediate state)")
@@ -100,7 +100,7 @@ func TestContinuation_IsExecutable(t *testing.T) {
 	c2.MarkApproved("admin")
 	c2.MarkReady()
 	if !c2.IsExecutable() {
-		t.Error("ready should be executable")
+		t.Error("queued should be executable (MarkReady now transitions to queued)")
 	}
 
 	c3 := NewContinuation("dec_3", "shell", "shell:ls").WithExpiration(1)
@@ -108,7 +108,7 @@ func TestContinuation_IsExecutable(t *testing.T) {
 	c3.MarkReady()
 	c3.State = StateEscalated
 	if c3.IsExecutable() {
-		t.Error("escalated should not be executable even if was previously approved/ready")
+		t.Error("escalated should not be executable even if was previously approved/queued")
 	}
 
 	c4 := NewContinuation("dec_4", "shell", "shell:ls")
@@ -153,8 +153,8 @@ func TestContinuation_MarkReady(t *testing.T) {
 	c.MarkApproved("admin")
 	c.MarkReady()
 
-	if c.State != StateReady {
-		t.Errorf("state = %s, want ready", c.State)
+	if c.State != StateQueued {
+		t.Errorf("state = %s, want queued (MarkReady now transitions to queued)", c.State)
 	}
 
 	c2 := NewContinuation("dec_2", "shell", "shell:ls")
@@ -250,8 +250,8 @@ func TestContinuation_StateTransitionFlow(t *testing.T) {
 	}
 
 	c.MarkReady()
-	if c.State != StateReady {
-		t.Fatalf("after mark ready: state should be ready, got %s", c.State)
+	if c.State != StateQueued {
+		t.Fatalf("after mark ready: state should be queued (MarkReady now transitions to queued), got %s", c.State)
 	}
 
 	c.MarkResumed()
@@ -520,14 +520,14 @@ func TestContinuation_MarkExecutionFailed_FromExecuting(t *testing.T) {
 	}
 }
 
-func TestContinuation_MarkExecutionFailed_FromReady(t *testing.T) {
-	c := NewContinuation("dec_ready", "shell", "shell:ls")
+func TestContinuation_MarkExecutionFailed_FromQueued(t *testing.T) {
+	c := NewContinuation("dec_queued", "shell", "shell:ls")
 	c.MarkApproved("admin")
 	c.MarkReady()
 
 	c.MarkExecutionFailed()
-	if c.State != StateExecuted {
-		t.Errorf("state = %v, want executed", c.State)
+	if c.State != StateQueued {
+		t.Errorf("state = %v, want queued (MarkExecutionFailed only transitions from StateExecuting, not from queued)", c.State)
 	}
 }
 

@@ -476,7 +476,9 @@ func TestContinuationHandler_Execute_DuplicateBlocked(t *testing.T) {
 
 	cnt := continuation.NewContinuation("dec_1", "shell", "shell:echo hello")
 	cnt.MarkApproved("admin")
-	cnt.MarkReady()
+	cnt.MarkQueued()
+	cnt.State = continuation.StateResumed
+	cnt.MarkExecuted()
 	contStore.Create(cnt)
 
 	exec1 := execution.NewExecution(cnt.ContinuationID, cnt.DecisionID, cnt.ApprovalID, cnt.AgentID, "shell", "shell:echo hello", 60)
@@ -1054,13 +1056,13 @@ func TestContinuation_CanExecute_Semantics(t *testing.T) {
 		action   string
 		expected bool
 	}{
-		{"ready_shell", continuation.StateReady, "shell", true},
+		{"ready_shell", continuation.StateQueued, "shell", true},
 		{"approved_shell", continuation.StateApproved, "shell", true},
 		{"executed_shell", continuation.StateExecuted, "shell", false},
 		{"resumed_shell", continuation.StateResumed, "shell", true},
 		{"denied_shell", continuation.StateDenied, "shell", false},
 		{"expired_shell", continuation.StateExpired, "shell", false},
-		{"ready_non_shell", continuation.StateReady, "git.push", true},
+		{"queued_non_shell", continuation.StateQueued, "git.push", true},
 		{"escalated_shell", continuation.StateEscalated, "shell", false},
 	}
 

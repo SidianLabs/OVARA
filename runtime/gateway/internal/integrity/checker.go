@@ -209,7 +209,7 @@ func (c *Checker) checkContinuationStore(r *Result) {
 		stateCounts[cnt.State]++
 
 		if cnt.ApprovalID != "" {
-			if cnt.State != continuation.StateApproved && cnt.State != continuation.StateReady &&
+			if cnt.State != continuation.StateApproved &&
 				cnt.State != continuation.StateEscalated && cnt.State != continuation.StateResumed {
 				orphanedApprovals = append(orphanedApprovals, cnt.ContinuationID+"[approval="+cnt.ApprovalID+"]")
 			}
