@@ -83,7 +83,8 @@ The environment is passed in the `environment` field of the action request and m
 | `escalated` | Created from escalate; awaiting approval |
 | `approved` | Human approved |
 | `queued` | Enqueued for execution |
-| `ready` | Orchestrator picked up (via atomic claim) |
+| `executing` | Claimed and actively running; never a resting state. Orphaned on restart → swept to `executed`. |
+| `ready` | Legacy state; superseded by `executing` for claim flows |
 | `executed` | Execution completed |
 | `denied` | Human denied |
 | `expired` | Past expiry time |
@@ -100,24 +101,29 @@ The gateway uses atomic claiming to prevent duplicate executions when multiple p
 
 | Method | Valid Source States | Target State | Use Case |
 |--------|---------------------|--------------|----------|
-| `ClaimForExecution` | `queued`, `resumed` | `ready` | First-run execution pickup |
-| `ClaimForRetry` | `resumed` | `ready` | Retry-path execution pickup |
+| `ClaimForExecution` | `approved`, `queued`, `ready`, `resumed` | `executing` | First-run execution pickup |
+| `ClaimForRetry` | `resumed` | `executing` | Retry-path execution pickup |
 | `RetryForExecution` | `executed`, `resumed` (retries remaining) | `resumed` (retry_count++) | Atomic retry transition for single + bulk retry |
 | `CancelForOperation` | `queued`, `ready`, `resumed` | `cancelled` | Atomic cancel transition for single + bulk cancel |
+| `RecoverFromExecuting` | `executing` | `executed` | Operator recovery of stuck executions |
 
 ### State Transitions
 
 ```
-First-run (Queued):
-  Queued -> ClaimForExecution -> Ready -> Executed
-First-run (Approved via HTTP):
-  Approved -> (MarkReady) -> Ready -> Executed
+First-run:
+  Approved/Queued/Ready -> ClaimForExecution -> Executing -> (success) MarkExecuted -> Executed
+                                                           -> (fail/timeout) MarkExecutionFailed -> Executed
+Direct execute:
+  Approved -> ClaimForExecution -> Executing -> (same as above)
 
 Retry:
-  Executed -> RetryForExecution -> Resumed -> ClaimForRetry -> Ready -> Executed
+  Executed -> RetryForExecution -> Resumed -> ClaimForExecution -> Executing -> Executed
 
 Cancel:
   Queued/Ready/Resumed -> CancelForOperation -> Cancelled
+
+Recovery:
+  Executing -> RecoverFromExecuting -> Executed (retryable)
 ```
 
 ### Atomicity Guarantees
@@ -205,4 +211,7 @@ Using these in policy is harmless (they never match a registered executor). Usin
 | `SKIP no executor` | No executor for action type |
 | `APPROVAL created/approved/denied/resumed` | Approval lifecycle |
 | `QUEUE enqueue/cancel/pause/resume` | Queue operations |
+| `RECOVER stuck-executing` | Startup sweep of orphaned executing continuations |
+| `RECOVER stale-executing` | Periodic sweep of long-stuck executing continuations |
+| `RECOVER executing` | Operator-triggered recovery of stuck executions |
 | `SWEEP` | Background cleanup |

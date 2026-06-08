@@ -25,6 +25,9 @@ APPROVAL resumed      → approved action was resumed
 QUEUE enqueue         → continuation was enqueued
 QUEUE cancel          → continuation was cancelled
 QUEUE pause/resume    → queue was paused/resumed
+RECOVER stuck-executing → orphaned executing continuation swept on startup
+RECOVER stale-executing → long-stuck executing continuation recovered by periodic sweep
+RECOVER executing     → operator-triggered recovery of executing continuation
 SWEEP                 → background cleanup ran
 ```
 
