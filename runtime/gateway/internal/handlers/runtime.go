@@ -532,8 +532,8 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	if h.continuationStore != nil {
 		all := h.continuationStore.ListAll()
 		stateCounts := make(map[string]int)
-		var executableCount, retryableCount int
-		var oldestExecutable, oldestRetryable time.Time
+		var executableCount, retryableCount, executingCount int
+		var oldestExecutable, oldestRetryable, oldestExecuting time.Time
 		for _, c := range all {
 			stateCounts[string(c.State)]++
 			if c.IsExecutable() {
@@ -548,18 +548,28 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 					oldestRetryable = c.CreatedAt
 				}
 			}
+			if c.State == continuation.StateExecuting {
+				executingCount++
+				if oldestExecuting.IsZero() || c.CreatedAt.Before(oldestExecuting) {
+					oldestExecuting = c.CreatedAt
+				}
+			}
 		}
 		contStats := map[string]any{
 			"count":       len(all),
 			"by_state":    stateCounts,
 			"executable":  executableCount,
 			"retryable":   retryableCount,
+			"executing":   executingCount,
 		}
 		if executableCount > 0 {
 			contStats["oldest_executable_at"] = oldestExecutable
 		}
 		if retryableCount > 0 {
 			contStats["oldest_retryable_at"] = oldestRetryable
+		}
+		if executingCount > 0 {
+			contStats["oldest_executing_at"] = oldestExecuting
 		}
 		if fb, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
 			contStats["storage_mode"] = "file_backed"
@@ -582,6 +592,13 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		status["queue_stats"] = map[string]int{
 			"queued":   queued,
 			"running": running,
+		}
+		executing := h.orchestrator.ExecutingCount()
+		status["executing"] = executing
+		if executing > 0 {
+			if oldest := h.orchestrator.OldestExecutingAt(); !oldest.IsZero() {
+				status["oldest_executing_at"] = oldest
+			}
 		}
 	}
 
@@ -629,6 +646,7 @@ func (h *Handler) addSLABreaches(status map[string]any) {
 
 	var approvalBreachCount int
 	var retryableBreachCount int
+	var executingBreachCount int
 
 	approvalThreshold := h.config.SLAApprovalMaxAgeMin
 	if approvalThreshold <= 0 {
@@ -644,6 +662,12 @@ func (h *Handler) addSLABreaches(status map[string]any) {
 		retryableThreshold = 60
 	}
 	retryableDuration := time.Duration(retryableThreshold) * time.Minute
+
+	executingThreshold := h.config.SLAExecutingMaxAgeMin
+	if executingThreshold <= 0 {
+		executingThreshold = 5
+	}
+	executingDuration := time.Duration(executingThreshold) * time.Minute
 
 	now := time.Now().UTC()
 
@@ -662,14 +686,19 @@ func (h *Handler) addSLABreaches(status map[string]any) {
 			if c.CanRetry() && now.Sub(c.CreatedAt) > retryableDuration {
 				retryableBreachCount++
 			}
+			if c.State == continuation.StateExecuting && now.Sub(c.CreatedAt) > executingDuration {
+				executingBreachCount++
+			}
 		}
 	}
 
 	status["sla"] = map[string]any{
-		"approvals_breaching": approvalBreachCount,
-		"retryable_breaching": retryableBreachCount,
+		"approvals_breaching":    approvalBreachCount,
+		"retryable_breaching":    retryableBreachCount,
+		"executing_breaching":    executingBreachCount,
 		"approval_threshold_min": approvalThreshold,
 		"retryable_threshold_min": retryableThreshold,
+		"executing_threshold_min": executingThreshold,
 	}
 }
 

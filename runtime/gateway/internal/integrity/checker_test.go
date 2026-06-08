@@ -104,6 +104,14 @@ func (m *mockContinuationStore) CancelForOperation(id string) (*continuation.Con
 	return nil, false
 }
 
+func (m *mockContinuationStore) RecoverFromExecuting(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) ListExecutingIDs() []string {
+	return nil
+}
+
 type mockExecutionStore struct {
 	executions []*execution.Execution
 	stats     (func() (total, succeeded, failed, running, timedOut int))

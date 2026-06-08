@@ -855,6 +855,7 @@ func TestBulkRetry_SortOldest(t *testing.T) {
 	old := continuation.NewContinuation("dec_old", "shell", "shell:ls").WithAgentID("agt_1")
 	old.State = continuation.StateExecuted
 	old.MaxRetries = 3
+	old.CreatedAt = time.Now().UTC().Add(-1 * time.Second)
 	store.Create(old)
 
 	new := continuation.NewContinuation("dec_new", "shell", "shell:pwd").WithAgentID("agt_1")

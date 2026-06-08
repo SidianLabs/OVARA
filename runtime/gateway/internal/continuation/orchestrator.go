@@ -24,6 +24,9 @@ type Orchestrator struct {
 	runMu       sync.Mutex
 	wg          sync.WaitGroup
 	logger      *log.Logger
+
+	stuckSweepInterval     time.Duration
+	stuckRecoveryThreshold time.Duration
 }
 
 func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
@@ -55,6 +58,7 @@ func (o *Orchestrator) Start() {
 	if o.running {
 		return
 	}
+	o.sweepStuckExecuting()
 	o.running = true
 	o.wg.Add(1)
 	go o.run()
@@ -97,15 +101,39 @@ func (o *Orchestrator) Resume() {
 
 func (o *Orchestrator) run() {
 	defer o.wg.Done()
-	ticker := time.NewTicker(o.pollInterval)
-	defer ticker.Stop()
+	pollTicker := time.NewTicker(o.pollInterval)
+	defer pollTicker.Stop()
+
+	var stuckTicker *time.Ticker
+	if o.stuckSweepInterval > 0 {
+		stuckTicker = time.NewTicker(o.stuckSweepInterval)
+		defer stuckTicker.Stop()
+	}
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-pollTicker.C:
 			o.drainQueue()
 		case <-o.stopChan:
 			return
+		default:
+			if stuckTicker != nil {
+				select {
+				case <-stuckTicker.C:
+					o.sweepStuckExecutingThreshold()
+				case <-o.stopChan:
+					return
+				case <-pollTicker.C:
+					o.drainQueue()
+				}
+			} else {
+				select {
+				case <-pollTicker.C:
+					o.drainQueue()
+				case <-o.stopChan:
+					return
+				}
+			}
 		}
 	}
 }
@@ -125,19 +153,27 @@ func (o *Orchestrator) drainQueue() {
 }
 
 func (o *Orchestrator) executeOne(cnt *Continuation) {
+	if cnt.LastSkippedAt != nil && !cnt.LastSkippedAt.IsZero() {
+		if time.Since(*cnt.LastSkippedAt) < o.pollInterval {
+			return
+		}
+	}
+	cnt.LastSkippedAt = nil
+
 	c, claimed := o.store.ClaimForExecution(cnt.ContinuationID)
 	if !claimed {
 		return
 	}
 	cnt = c
 
-	if !cnt.CanExecute() {
-		return
-	}
-
 	if o.registry != nil {
 		if _, ok := o.registry.Get(cnt.ActionType); !ok {
-			cnt.State = StateQueued
+			// Requeue via the disciplined transition helper so the
+			// claimed StateExecuting → StateQueued transition is
+			// observable and consistent with other state changes.
+			now := time.Now().UTC()
+			cnt.LastSkippedAt = &now
+			cnt.MarkRequeue()
 			o.store.Update(cnt)
 			o.logf("SKIP no executor registered for action_type=%s continuation_id=%s", cnt.ActionType, cnt.ContinuationID)
 			return
@@ -187,17 +223,17 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 			cnt.ActionType, cnt.ContinuationID, exe.ExecutionID, exe.ExitCode)
 	case execution.StateTimedOut:
 		evtType = events.EventTypeExecutionTimedOut
-		cnt.State = StateExecuted
+		cnt.MarkExecutionFailed()
 		o.logf("EXEC completed=timeout action_type=%s continuation_id=%s execution_id=%s timeout_s=%d",
 			cnt.ActionType, cnt.ContinuationID, exe.ExecutionID, exe.TimeoutSeconds)
 	case execution.StateFailed:
 		evtType = events.EventTypeExecutionFailed
-		cnt.State = StateExecuted
+		cnt.MarkExecutionFailed()
 		o.logf("EXEC completed=failed action_type=%s continuation_id=%s execution_id=%s exit_code=%d error=%q",
 			cnt.ActionType, cnt.ContinuationID, exe.ExecutionID, exe.ExitCode, exe.Error)
 	default:
 		evtType = "execution.completed"
-		cnt.State = StateExecuted
+		cnt.MarkExecutionFailed()
 		o.logf("EXEC completed=%s action_type=%s continuation_id=%s execution_id=%s",
 			exe.State, cnt.ActionType, cnt.ContinuationID, exe.ExecutionID)
 	}
@@ -235,8 +271,126 @@ func (o *Orchestrator) SetLogger(l *log.Logger) {
 	o.logger = l
 }
 
+func (o *Orchestrator) SetStuckExecutingSweep(intervalSec int, recoveryThresholdMin int) {
+	if intervalSec <= 0 {
+		o.stuckSweepInterval = 0
+		return
+	}
+	o.stuckSweepInterval = time.Duration(intervalSec) * time.Second
+	if recoveryThresholdMin <= 0 {
+		recoveryThresholdMin = 30
+	}
+	o.stuckRecoveryThreshold = time.Duration(recoveryThresholdMin) * time.Minute
+}
+
 func (o *Orchestrator) logf(format string, args ...any) {
 	if o.logger != nil {
 		o.logger.Printf(format, args...)
+	}
+}
+
+// RecoverAllExecuting transitions every continuation currently in
+// StateExecuting back to StateExecuted so they become retryable. Returns the
+// number of items recovered. Used by the operator recovery endpoint to clear
+// stuck executions without restarting the gateway.
+func (o *Orchestrator) RecoverAllExecuting() int {
+	ids := o.store.ListExecutingIDs()
+	recovered := 0
+	for _, id := range ids {
+		rec, ok := o.store.RecoverFromExecuting(id)
+		if !ok {
+			continue
+		}
+		recovered++
+		o.logf("RECOVER executing continuation_id=%s action_type=%s — marked executed for retry",
+			rec.ContinuationID, rec.ActionType)
+	}
+	return recovered
+}
+
+// ExecutingCount returns the number of continuations currently in
+// StateExecuting. Used by runtime status to expose in-flight claim depth.
+func (o *Orchestrator) ExecutingCount() int {
+	return len(o.store.ListExecutingIDs())
+}
+
+// OldestExecutingAt returns the CreatedAt timestamp of the oldest continuation
+// currently in StateExecuting, or the zero time if none are executing. Used
+// by runtime status to surface how long the longest-running claim has been
+// in flight.
+func (o *Orchestrator) OldestExecutingAt() time.Time {
+	var oldest time.Time
+	for _, c := range o.store.ListByState(StateExecuting) {
+		if c.CreatedAt.IsZero() {
+			continue
+		}
+		if oldest.IsZero() || c.CreatedAt.Before(oldest) {
+			oldest = c.CreatedAt
+		}
+	}
+	return oldest
+}
+
+// sweepStuckExecuting recovers continuations orphaned in StateExecuting after
+// a gateway crash or restart. Any continuation left in executing was claimed
+// by a previous process that is no longer running, so we transition them to
+// StateExecuted so they become retryable. Uses the atomic RecoverFromExecuting
+// store method so each transition is independent and any items that have
+// already moved on (e.g. concurrent live executor finishing) are skipped.
+func (o *Orchestrator) sweepStuckExecuting() {
+	ids := o.store.ListExecutingIDs()
+	if len(ids) == 0 {
+		return
+	}
+	for _, id := range ids {
+		rec, ok := o.store.RecoverFromExecuting(id)
+		if !ok {
+			continue
+		}
+		o.logf("RECOVER stuck-executing continuation_id=%s action_type=%s — marked executed for retry",
+			rec.ContinuationID, rec.ActionType)
+	}
+}
+
+// sweepStuckExecutingThreshold recovers continuations in StateExecuting that
+// have been stuck for longer than the configured recovery threshold. Unlike
+// the startup sweep (which unconditionally recovers all stuck items), this
+// periodic sweep is age-gated to avoid recovering items that are still young
+// (e.g. a slow but valid execution). Only recovers items older than
+// stuckRecoveryThreshold. Uses the atomic RecoverFromExecuting store method
+// so each transition is independent.
+func (o *Orchestrator) sweepStuckExecutingThreshold() {
+	if o.stuckRecoveryThreshold <= 0 {
+		return
+	}
+	ids := o.store.ListExecutingIDs()
+	if len(ids) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	recovered := 0
+	for _, id := range ids {
+		snap, ok := o.store.Get(id)
+		if !ok {
+			continue
+		}
+		if snap.CreatedAt.IsZero() {
+			continue
+		}
+		age := now.Sub(snap.CreatedAt)
+		if age < o.stuckRecoveryThreshold {
+			continue
+		}
+		rec, ok := o.store.RecoverFromExecuting(id)
+		if !ok {
+			continue
+		}
+		recovered++
+		o.logf("RECOVER stale-executing continuation_id=%s action_type=%s age=%s — marked executed for retry",
+			rec.ContinuationID, rec.ActionType, age.Round(time.Second))
+	}
+	if recovered > 0 {
+		o.logf("RECOVER stale-executing sweep completed recovered=%d threshold=%s",
+			recovered, o.stuckRecoveryThreshold.Round(time.Minute))
 	}
 }
