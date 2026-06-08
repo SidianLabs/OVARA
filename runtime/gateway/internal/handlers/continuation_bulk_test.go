@@ -463,7 +463,7 @@ func TestBulkCancel_DryRun_NoChanges(t *testing.T) {
 	store.Create(c1)
 
 	c2 := continuation.NewContinuation("dec_2", "shell", "shell:pwd").WithAgentID("agt_1")
-	c2.State = continuation.StateReady
+	c2.State = continuation.StateQueued
 	store.Create(c2)
 
 	h := NewContinuationHandler(store)
@@ -498,8 +498,8 @@ func TestBulkCancel_DryRun_NoChanges(t *testing.T) {
 	}
 
 	updated2, _ := store.Get(c2.ContinuationID)
-	if updated2.State != continuation.StateReady {
-		t.Errorf("c2 state = %v, want ready (dry run)", updated2.State)
+	if updated2.State != continuation.StateQueued {
+		t.Errorf("c2 state = %v, want queued (dry run)", updated2.State)
 	}
 }
 
@@ -574,7 +574,7 @@ func TestBulkCancel_MixedState_SkipsNonCancellable(t *testing.T) {
 	store.Create(cQueued)
 
 	cReady := continuation.NewContinuation("dec_re", "shell", "shell:pwd").WithAgentID("agt_1")
-	cReady.State = continuation.StateReady
+	cReady.State = continuation.StateQueued
 	store.Create(cReady)
 
 	cExecuted := continuation.NewContinuation("dec_ex", "shell", "shell:whoami").WithAgentID("agt_1")
@@ -688,7 +688,7 @@ func TestBulkCancel_StateFilter(t *testing.T) {
 	store.Create(c1)
 
 	c2 := continuation.NewContinuation("dec_re", "shell", "shell:pwd").WithAgentID("agt_1")
-	c2.State = continuation.StateReady
+	c2.State = continuation.StateResumed
 	store.Create(c2)
 
 	c3 := continuation.NewContinuation("dec_ex", "shell", "shell:id").WithAgentID("agt_1")

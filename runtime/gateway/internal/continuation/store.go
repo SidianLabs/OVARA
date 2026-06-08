@@ -15,7 +15,6 @@ const (
 	StateEscalated  State = "escalated"
 	StateApproved   State = "approved"
 	StateQueued     State = "queued"
-	StateReady      State = "ready"
 	StateExecuting  State = "executing" // claimed and actively running; never a resting state
 	StateDenied     State = "denied"
 	StateResumed    State = "resumed"
@@ -68,7 +67,7 @@ func (c *Continuation) snapshot() *Continuation {
 }
 
 func (c *Continuation) CanResume() bool {
-	return c.State == StateApproved || c.State == StateReady
+	return c.State == StateApproved
 }
 
 func (c *Continuation) IsTerminal() bool {
@@ -155,7 +154,9 @@ func (c *Continuation) MarkApproved(resolvedBy string) {
 
 func (c *Continuation) MarkReady() {
 	if c.State == StateApproved {
-		c.State = StateReady
+		c.State = StateQueued
+		now := time.Now().UTC()
+		c.QueuedAt = &now
 	}
 }
 
@@ -195,7 +196,7 @@ func (c *Continuation) Retry() bool {
 }
 
 func (c *Continuation) MarkExecuted() {
-	if c.State != StateResumed && c.State != StateReady && c.State != StateExecuting {
+	if c.State != StateResumed && c.State != StateExecuting {
 		return
 	}
 	c.State = StateExecuted
@@ -204,28 +205,28 @@ func (c *Continuation) MarkExecuted() {
 // MarkExecutionFailed transitions a claimed continuation back to StateExecuted
 // so it can be retried. Called after a failed or timed-out execution.
 func (c *Continuation) MarkExecutionFailed() {
-	if c.State != StateExecuting && c.State != StateReady {
+	if c.State != StateExecuting {
 		return
 	}
 	c.State = StateExecuted
 }
 
 func (c *Continuation) MarkQueued() {
-	if c.State == StateApproved || c.State == StateReady {
+	if c.State == StateApproved {
 		c.State = StateQueued
 		now := time.Now().UTC()
 		c.QueuedAt = &now
 	}
 }
 
-// MarkRequeue returns a claimed (StateExecuting) or briefly-held (StateReady)
-// continuation back to StateQueued so it can be picked up by the orchestrator
-// again. Used by paths that successfully claimed a continuation but cannot
-// execute it (e.g. unknown action type in the executor registry). Only
-// requeues from transient claim states — never from terminal, approved, or
-// escalated states.
+// MarkRequeue returns a claimed (StateExecuting) continuation back to
+// StateQueued so it can be picked up by the orchestrator again. Used by
+// paths that successfully claimed a continuation but cannot execute it
+// (e.g. unknown action type in the executor registry). Only requeues from
+// transient claim states — never from terminal, approved, or escalated
+// states.
 func (c *Continuation) MarkRequeue() {
-	if c.State == StateExecuting || c.State == StateReady {
+	if c.State == StateExecuting {
 		c.State = StateQueued
 		now := time.Now().UTC()
 		c.QueuedAt = &now
@@ -233,7 +234,7 @@ func (c *Continuation) MarkRequeue() {
 }
 
 func (c *Continuation) MarkCancelled() {
-	if c.State == StateQueued || c.State == StateReady || c.State == StateResumed {
+	if c.State == StateQueued || c.State == StateResumed {
 		c.State = StateCancelled
 		now := time.Now().UTC()
 		c.CancelledAt = &now
@@ -241,11 +242,11 @@ func (c *Continuation) MarkCancelled() {
 }
 
 func (c *Continuation) CanEnqueue() bool {
-	return c.State == StateApproved || c.State == StateReady
+	return c.State == StateApproved
 }
 
 func (c *Continuation) CanCancel() bool {
-	return c.State == StateQueued || c.State == StateReady || c.State == StateResumed
+	return c.State == StateQueued || c.State == StateResumed
 }
 
 func (c *Continuation) CanRetry() bool {
@@ -299,7 +300,7 @@ func (c *Continuation) RetryInfo() RetryInfo {
 			info.Status = "retryable"
 			info.Reason = "execution completed, retry available"
 		}
-	case c.State == StateApproved || c.State == StateQueued || c.State == StateReady:
+	case c.State == StateApproved || c.State == StateQueued:
 		info.Status = "not_needed"
 		info.Reason = "continuation has not been executed yet"
 	case c.State == StateEscalated:
@@ -322,7 +323,7 @@ func (c *Continuation) MarkExpired() {
 }
 
 func (c *Continuation) IsReady() bool {
-	return c.State == StateReady
+	return c.State == StateQueued
 }
 
 func (c *Continuation) IsExpired() bool {
@@ -343,7 +344,7 @@ func (c *Continuation) ShouldExpire(now time.Time) bool {
 }
 
 func (c *Continuation) IsExecutable() bool {
-	if c.State != StateApproved && c.State != StateReady && c.State != StateQueued {
+	if c.State != StateApproved && c.State != StateQueued {
 		return false
 	}
 	// StateExecuting means already claimed by another path — not available
@@ -361,7 +362,7 @@ func (c *Continuation) CanExecute() bool {
 	if c.State == StateExecuting {
 		return false
 	}
-	if c.State != StateQueued && c.State != StateReady && c.State != StateResumed && c.State != StateApproved {
+	if c.State != StateQueued && c.State != StateResumed && c.State != StateApproved {
 		return false
 	}
 	return true
@@ -510,7 +511,7 @@ func (s *InMemoryStore) ClaimForExecution(id string) (*Continuation, bool) {
 	if !ok {
 		return nil, false
 	}
-	if c.State == StateApproved || c.State == StateQueued || c.State == StateReady || c.State == StateResumed {
+	if c.State == StateApproved || c.State == StateQueued || c.State == StateResumed {
 		c.State = StateExecuting
 		return c.snapshot(), true
 	}
