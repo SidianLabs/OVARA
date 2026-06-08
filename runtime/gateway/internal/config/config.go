@@ -53,6 +53,8 @@ type Config struct {
 	BulkMaxBatchCap             int      `json:"bulk_max_batch_cap"`
 	BulkDefaultBatch            int      `json:"bulk_default_batch"`
 
+	ReceiptSigningKey          string `json:"receipt_signing_key"`
+
 	StuckExecutingSweepIntervalSec     int `json:"stuck_executing_sweep_interval_secs"`
 	StuckExecutingRecoveryThresholdMin int `json:"stuck_executing_recovery_threshold_min"`
 
