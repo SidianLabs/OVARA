@@ -8,6 +8,8 @@ Local runtime authorization layer for Ovara. Intercepts and evaluates autonomous
 - `exec` — direct subprocess execution (no shell wrapper)
 - `git.push` — git push to remote repository
 - `git.pull` — git pull from remote repository
+- `git.fetch` — git fetch from remote repository
+- `git.checkout` — git checkout a branch in a local repository
 
 For full support matrix (resource formats, default behavior, failure modes), see [SUPPORT_MATRIX.md](SUPPORT_MATRIX.md).
 
@@ -200,6 +202,9 @@ Runtime operations are logged to stderr and stdout in a structured key=value for
 - `EXEC completed` — execution finished (success, timeout, or failure)
 - `SKIP no executor` — continuation has no registered executor for its action type
 - `APPROVAL created/approved/denied/resumed` — approval workflow events
+- `QUEUE enqueue/cancel/pause/resume` — queue operations
+- `RECOVER stuck-executing` — startup sweep of orphaned executing continuations after gateway restart
+- `RECOVER executing` — operator-triggered recovery of stuck executions
 - `SWEEP` — background cleanup operations
 
 Decision logs are written to the configured `decision_log_file` as JSON lines. Each entry includes the timestamp, full request, and full response.
