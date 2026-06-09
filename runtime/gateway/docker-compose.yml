@@ -1,0 +1,22 @@
+# Ovara Docker Compose — Development
+#
+# Lightweight dev stack: Gateway + PostgreSQL for local development
+# No NATS, ClickHouse, or enterprise services needed for local dev
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      OVARA_ENVIRONMENT: local
+      OVARA_CONFIG: /etc/ovara/config.json
+    volumes:
+      - gateway_data:/var/data/ovara
+      - ./etc/config.json:/etc/ovara/config.json:ro
+    restart: unless-stopped
+
+volumes:
+  gateway_data:
