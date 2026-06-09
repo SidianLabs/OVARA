@@ -52,14 +52,16 @@ type AgentIdentity struct {
 }
 
 type CapabilityLease struct {
-	LeaseID         string    `json:"lease_id"`
-	Issuer          string    `json:"issuer"`
-	Subject         string    `json:"subject"`
-	AllowedActions  []string  `json:"allowed_actions"`
-	ResourceScope   string    `json:"resource_scope"`
-	Expiry          time.Time `json:"expiry"`
-	DelegationDepth int       `json:"delegation_depth"`
-	RevocationHandle string   `json:"revocation_handle,omitempty"`
+	LeaseID          string    `json:"lease_id"`
+	Issuer           string    `json:"issuer"`
+	Subject          string    `json:"subject"`
+	AllowedActions   []string  `json:"allowed_actions"`
+	ResourceScope    string    `json:"resource_scope"`
+	Expiry           time.Time `json:"expiry"`
+	DelegationDepth  int       `json:"delegation_depth"`
+	RevocationHandle string    `json:"revocation_handle,omitempty"`
+	Signature        []byte    `json:"signature,omitempty"`
+	VerifyKey        string    `json:"verify_key,omitempty"`
 }
 
 type DelegationChain struct {
