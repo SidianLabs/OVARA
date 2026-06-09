@@ -1,0 +1,99 @@
+# Ovara Full Stack — Docker Compose
+#
+# Starts: control plane, PostgreSQL, Gateway, NATS, ClickHouse, enterprise services
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ovara
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-ovara}
+      POSTGRES_DB: ovara_control
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ovara -d ovara_control"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  control-plane:
+    build: ../../cloud/control-plane
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://ovara:${PG_PASSWORD:-ovara}@postgres:5432/ovara_control
+      JWT_SECRET: ${JWT_SECRET:-ovara-dev-secret}
+      OPERATOR_API_KEY: ${OPERATOR_API_KEY:-sk_operator_dev}
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../../runtime/gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      OVARA_ENVIRONMENT: ${ENVIRONMENT:-local}
+      OVARA_CONFIG: /etc/ovara/config.json
+      CONTROL_PLANE_URL: http://control-plane:3000
+      CONTROL_PLANE_API_KEY: ${OPERATOR_API_KEY:-sk_operator_dev}
+    volumes:
+      - gateway_data:/var/data/ovara
+      - ./gateway_config.json:/etc/ovara/config.json:ro
+    depends_on:
+      - control-plane
+    restart: unless-stopped
+
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: "-js -m 8222"
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: ovara_telemetry
+      CLICKHOUSE_USER: ovara
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-ovara}
+    volumes:
+      - chdata:/var/lib/clickhouse
+      - ../../telemetry/schema/clickhouse_init.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    restart: unless-stopped
+
+  sso:
+    build: ../../enterprise/sso
+    ports:
+      - "3001:3001"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-ovara-dev-secret}
+      PORT: "3001"
+      NODE_ENV: ${NODE_ENV:-production}
+    restart: unless-stopped
+
+  compliance:
+    build: ../../enterprise/compliance
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: "3002"
+      NODE_ENV: ${NODE_ENV:-production}
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  gateway_data:
+  chdata:
