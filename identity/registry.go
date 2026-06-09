@@ -22,6 +22,11 @@ func (r *Registry) Register(id *AgentIdentity) error {
 	if _, exists := r.identities[id.ID]; exists {
 		return fmt.Errorf("identity already registered: %s", id.ID)
 	}
+	for _, existing := range r.identities {
+		if existing.SubjectID == id.SubjectID && existing.Issuer == id.Issuer {
+			return fmt.Errorf("identity with subject_id=%q and issuer=%q already exists", id.SubjectID, id.Issuer)
+		}
+	}
 	r.identities[id.ID] = id
 	return nil
 }
