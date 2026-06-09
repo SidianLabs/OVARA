@@ -59,6 +59,7 @@ type CapabilityLease struct {
 	ResourceScope    string    `json:"resource_scope"`
 	Expiry           time.Time `json:"expiry"`
 	DelegationDepth  int       `json:"delegation_depth"`
+	IssuedAt         time.Time `json:"issued_at,omitempty"`
 	RevocationHandle string    `json:"revocation_handle,omitempty"`
 	Signature        []byte    `json:"signature,omitempty"`
 	VerifyKey        string    `json:"verify_key,omitempty"`

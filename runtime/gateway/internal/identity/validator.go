@@ -2,6 +2,7 @@ package identity
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -110,9 +111,11 @@ func (v *Validator) verifyLeaseSignature(lease *models.CapabilityLease) bool {
 	if err != nil || len(verifyKey) != ed25519.PublicKeySize {
 		return false
 	}
-	payload := fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d",
+	// Payload format must match ovara.identity module:
+	// LeaseID|Issuer|Subject|[AllowedActions]|ResourceScope|ExpiryUnix|DelegationDepth|IssuedAtUnix
+	payload := fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
 		lease.LeaseID, lease.Issuer, lease.Subject, lease.AllowedActions,
-		lease.ResourceScope, lease.Expiry.Unix(), lease.DelegationDepth,
+		lease.ResourceScope, lease.Expiry.Unix(), lease.DelegationDepth, lease.IssuedAt.Unix(),
 	)
 	return ed25519.Verify(verifyKey, []byte(payload), lease.Signature)
 }
@@ -162,7 +165,51 @@ func (v *Validator) ValidateDelegationChain(chain *models.DelegationChain) *Vali
 		}
 	}
 
+	// Verify chain hash integrity if present.
+	if chain.ChainHash != "" && !v.verifyChainHash(chain) {
+		result.Add("delegation_chain.chain_hash verification failed")
+	}
+
 	return result
+}
+
+// verifyChainHash recomputes the chain hash and compares it to the stored hash.
+// The hash algorithm matches ovara.identity.DelegationChain.computeHash():
+//
+//	sha256("depth|Issuer|SubjectID|DelegatedAtUnix|" repeated per authority)
+func (v *Validator) verifyChainHash(chain *models.DelegationChain) bool {
+	if chain.ChainHash == "" {
+		return true
+	}
+	payload := fmt.Sprintf("%d|", len(chain.Authorities))
+	for _, a := range chain.Authorities {
+		payload += fmt.Sprintf("%s|%s|%d|", a.Issuer, a.SubjectID, a.DelegatedAt.Unix())
+	}
+	computed := hex.EncodeToString(sha256Hash([]byte(payload)))
+	return hmacEqual(chain.ChainHash, computed)
+}
+
+// sha256Hash returns a SHA-256 hash of the input.
+func sha256Hash(data []byte) []byte {
+	h := sha256.Sum256(data)
+	return h[:]
+}
+
+// hmacEqual performs a constant-time comparison to prevent timing attacks.
+func hmacEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var diff byte
+	for i := 0; i < len(a); i++ {
+		diff |= a[i] ^ b[i]
+	}
+	return diff == 0
+}
+
+// validateDelegationChainHash is a convenience function for checking chain integrity.
+func (v *Validator) validateDelegationChainHash(chain *models.DelegationChain) bool {
+	return chain != nil && chain.ChainHash != "" && v.verifyChainHash(chain)
 }
 
 func (v *Validator) ValidateAll(req *models.ActionRequest) *ValidationResult {
