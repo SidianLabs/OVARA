@@ -133,6 +133,17 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 		}
 	}
 
+	// Validate delegation chain hash integrity and flag invalid chains.
+	if decision == "" && req.DelegationChain != nil {
+		chainResult := e.validator.ValidateDelegationChain(req.DelegationChain)
+		if !chainResult.Valid {
+			for range chainResult.Reasons {
+				reasons = append(reasons, models.ReasonIdentityInvalid)
+			}
+			decision = models.DecisionDeny
+		}
+	}
+
 	if decision == "" && req.CapabilityLease != nil {
 		if e.revocationChecker != nil && e.revocationChecker.IsRevoked(req.CapabilityLease.LeaseID) {
 			reasons = append(reasons, models.ReasonCapabilityRevoked)
