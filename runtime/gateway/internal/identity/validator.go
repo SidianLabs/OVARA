@@ -1,6 +1,8 @@
 package identity
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -88,7 +90,31 @@ func (v *Validator) ValidateCapabilityLease(lease *models.CapabilityLease) *Vali
 		result.Add("capability_lease.delegation_depth must be non-negative")
 	}
 
+	if len(lease.Signature) > 0 {
+		if !v.verifyLeaseSignature(lease) {
+			result.Add("capability_lease.signature verification failed")
+		}
+	}
+
 	return result
+}
+
+func (v *Validator) verifyLeaseSignature(lease *models.CapabilityLease) bool {
+	if len(lease.Signature) == 0 {
+		return true
+	}
+	if lease.VerifyKey == "" {
+		return false
+	}
+	verifyKey, err := hex.DecodeString(lease.VerifyKey)
+	if err != nil || len(verifyKey) != ed25519.PublicKeySize {
+		return false
+	}
+	payload := fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d",
+		lease.LeaseID, lease.Issuer, lease.Subject, lease.AllowedActions,
+		lease.ResourceScope, lease.Expiry.Unix(), lease.DelegationDepth,
+	)
+	return ed25519.Verify(verifyKey, []byte(payload), lease.Signature)
 }
 
 func (v *Validator) ValidateCapabilityLeaseScope(lease *models.CapabilityLease, actionType, resource string) *ValidationResult {
