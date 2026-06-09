@@ -1048,7 +1048,7 @@ func (h *ContinuationHandler) handleBulkCancel(w http.ResponseWriter, r *http.Re
 
 	for _, cnt := range continuations {
 		if !cnt.CanCancel() {
-			reason := "cannot cancel: state " + string(cnt.State) + " (only queued/ready/resumed can be cancelled)"
+			reason := "cannot cancel: state " + string(cnt.State) + " (only queued/resumed can be cancelled)"
 			skippedItems = append(skippedItems, bulkSkip{
 				ContinuationID: cnt.ContinuationID,
 				DecisionID:     cnt.DecisionID,

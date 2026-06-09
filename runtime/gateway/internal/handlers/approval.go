@@ -184,7 +184,7 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 		list := h.continuationStore.ListByApprovalID(id)
 		for _, cnt := range list {
 			cnt.MarkApproved(body.ResolvedBy)
-			cnt.MarkReady()
+			cnt.MarkQueued()
 			_ = h.continuationStore.Update(cnt)
 
 			if h.eventStore != nil {
