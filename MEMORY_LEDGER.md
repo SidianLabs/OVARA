@@ -1,25 +1,24 @@
 # Memory Ledger
 ## Project: Ovara
-## Current Phase: 66 (Identity Integration Deepening)
-## Current Task: 66.1 — Fix payload mismatch + wire full ed25519 verification
+## Current Phase: 67 (Trust-Aware Security)
+## Current Task: 67.1 — Add drift detection
 
 ## Completed Tasks
 - [x] Phase 65 — V1 Hardening & Cleanup
-- [ ] Phase 66 — Identity Integration Deepening
+- [x] Phase 66 — Identity Integration Deepening
+- [ ] Phase 67 — Trust-Aware Security
 
 ## Active Decisions & Rationale
-- Critical payload mismatch found: gateway validator omits `issuedAt` from signature payload; identity module includes it
-- Gateway validator uses string-based payload; identity module uses same format with identical separator
-- Fix: add `IssuedAt` (or timestamp field) to gateway's models.CapabilityLease for compatibility
-- Need to add delegation chain hash verification to gateway validator
+- Drift detection: track action patterns per agent in sliding time windows
+- Trust degradation: exponential decay with configurable half-life, accelerated by repeat offenses
+- Trust recovery: clean behavior gradually restores score toward baseline
+- Trust-dependent policy rules: extend Rule with MinTrustLevel/MinTrustScore
+- Suspicious chaining: detect same-issuer repeat, excessive depth, circular patterns
+- Trust state persistence: file-backed store alongside existing persistence patterns
 
 ## Open Issues / Gotchas
-- Gateway models.CapabilityLease has no `IssuedAt` field — need to add or use `Expiry` as the reference timestamp
-- Identity module's IssuedAt is a read-after-sign field — timestamp is embedded in payload
-- The delegation chain in models uses different types than ovara.identity module
+- Need to avoid making the hot path too expensive — drift computation must be O(1) per check
+- Trust state must be thread-safe (already using RWMutex patterns from trust/shield.go)
 
 ## Next Immediate Action
-- Fix CapabilityLease signature payload mismatch between ovara.identity and gateway validator
-- Add IssuedAt to models.CapabilityLease
-- Wire DelegationChain.Verify() into validator
-- Add integration tests with real ed25519 keys
+- Add drift detection: trust/drift.go with sliding window pattern tracking
