@@ -25,6 +25,9 @@ type Evaluator struct {
 	validator         *identity.Validator
 	shieldStore       *trust.ShieldStore
 	revocationChecker RevocationChecker
+	driftDetector     *trust.DriftDetector
+	degradation      *trust.DegradationModel
+	chainDetector    *trust.ChainDetector
 }
 
 func New(p *policy.Store) *Evaluator {
@@ -41,6 +44,21 @@ func NewWithShield(p *policy.Store, ss *trust.ShieldStore) *Evaluator {
 		validator:   identity.NewValidator(),
 		shieldStore: ss,
 	}
+}
+
+// SetDriftDetector configures drift detection for behavioral anomaly detection.
+func (e *Evaluator) SetDriftDetector(dd *trust.DriftDetector) {
+	e.driftDetector = dd
+}
+
+// SetDegradationModel configures trust score degradation and recovery.
+func (e *Evaluator) SetDegradationModel(dm *trust.DegradationModel) {
+	e.degradation = dm
+}
+
+// SetChainDetector configures delegation chain pattern analysis.
+func (e *Evaluator) SetChainDetector(cd *trust.ChainDetector) {
+	e.chainDetector = cd
 }
 
 func (e *Evaluator) SetRevocationChecker(rc RevocationChecker) {
@@ -159,6 +177,8 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 				for _, reason := range leaseResult.Reasons {
 					if strings.Contains(reason, "expiry") {
 						reasons = append(reasons, models.ReasonCapabilityExpiry)
+					} else if strings.Contains(reason, "signature") {
+						reasons = append(reasons, models.ReasonIdentityInvalid)
 					} else {
 						reasons = append(reasons, models.ReasonCapabilityNotAllowed)
 					}
@@ -178,6 +198,38 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 					}
 				}
 				decision = models.DecisionDeny
+			}
+		}
+	}
+
+	// Drift detection: if the agent's recent action pattern deviates from
+	// their established baseline, escalate for human review.
+	if decision == "" && e.driftDetector != nil && req.AgentIdentity != nil {
+		agentID := req.AgentIdentity.SubjectID
+		isRisky := trustResult.Score < 0.8 || len(trustResult.AnomalySignals) > 0
+		e.driftDetector.RecordAction(agentID, req.ActionType, req.Resource, isRisky)
+
+		drift := e.driftDetector.CheckDrift(agentID)
+		if drift.Drifting {
+			reasons = append(reasons, models.ReasonAnomalyDetected)
+			if decision != models.DecisionDeny {
+				decision = models.DecisionEscalate
+				requiresApproval = true
+			}
+		}
+	}
+
+	// Delegation chain pattern analysis: detect suspicious patterns and
+	// escalate if found.
+	if decision == "" && e.chainDetector != nil && req.DelegationChain != nil && req.AgentIdentity != nil {
+		e.chainDetector.RecordChain(req.AgentIdentity.SubjectID, req.DelegationChain)
+		suspicions := e.chainDetector.DetectSuspiciousPatterns(req.AgentIdentity.SubjectID)
+		for _, s := range suspicions {
+			if s.Severity == "high" {
+				reasons = append(reasons, models.ReasonAnomalyDetected)
+				decision = models.DecisionEscalate
+				requiresApproval = true
+				break
 			}
 		}
 	}
@@ -204,6 +256,24 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 	}
 
 	trustScore = trustResult.Score
+
+	// Trust-dependent policy rules: deny or escalate if the agent's trust
+	// score/level falls below rule-specified minimums.
+	if decision == models.DecisionAllow {
+		for _, r := range actionRules {
+			if r.MinTrustScore != nil && trustScore < *r.MinTrustScore {
+				reasons = append(reasons, models.ReasonTrustLow)
+				decision = models.DecisionDeny
+				break
+			}
+			if r.MinTrustLevel != "" && trustLevelBelow(trustResult.Level, r.MinTrustLevel) {
+				reasons = append(reasons, models.ReasonTrustLow)
+				decision = models.DecisionDeny
+				break
+			}
+		}
+	}
+
 	if trustResult.ShouldEscalate() && decision == models.DecisionAllow {
 		reasons = append(reasons, models.ReasonTrustEscalate)
 		for _, sig := range trustResult.AnomalySignals {
@@ -515,4 +585,21 @@ func actionDigest(req *models.ActionRequest) string {
 		h.Write([]byte(req.CapabilityLease.LeaseID))
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// trustLevelBelow returns true if actualLevel is below the named minimum.
+// Order: none < low < medium < high
+func trustLevelBelow(actual models.TrustLevel, minName string) bool {
+	order := map[models.TrustLevel]int{
+		models.TrustLevelNone:   0,
+		models.TrustLevelLow:    1,
+		models.TrustLevelMedium: 2,
+		models.TrustLevelHigh:   3,
+	}
+	actualOrd, actualOk := order[actual]
+	minOrd, minOk := order[models.TrustLevel(minName)]
+	if !actualOk || !minOk {
+		return false
+	}
+	return actualOrd < minOrd
 }

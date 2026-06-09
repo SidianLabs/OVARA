@@ -7,11 +7,13 @@ import (
 )
 
 type Rule struct {
-	ActionType  string
-	Environment string
-	Allow       bool
-	Deny        bool
-	Escalate    bool
+	ActionType    string `json:"action_type"`
+	Environment   string `json:"environment"`
+	Allow         bool   `json:"allow"`
+	Deny          bool   `json:"deny"`
+	Escalate      bool   `json:"escalate"`
+	MinTrustScore *float64 `json:"min_trust_score,omitempty"` // deny if trust score below this
+	MinTrustLevel string   `json:"min_trust_level,omitempty"`  // deny/escalate if trust level below this
 }
 
 type Store struct {
