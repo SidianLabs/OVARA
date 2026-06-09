@@ -98,14 +98,14 @@ func TestContinuation_IsExecutable(t *testing.T) {
 
 	c2 := NewContinuation("dec_2", "shell", "shell:ls")
 	c2.MarkApproved("admin")
-	c2.MarkReady()
+	c2.MarkQueued()
 	if !c2.IsExecutable() {
-		t.Error("queued should be executable (MarkReady now transitions to queued)")
+		t.Error("queued should be executable")
 	}
 
 	c3 := NewContinuation("dec_3", "shell", "shell:ls").WithExpiration(1)
 	c3.MarkApproved("admin")
-	c3.MarkReady()
+	c3.MarkQueued()
 	c3.State = StateEscalated
 	if c3.IsExecutable() {
 		t.Error("escalated should not be executable even if was previously approved/queued")
@@ -148,19 +148,19 @@ func TestContinuation_ShouldExpire(t *testing.T) {
 	}
 }
 
-func TestContinuation_MarkReady(t *testing.T) {
+func TestContinuation_MarkQueued(t *testing.T) {
 	c := NewContinuation("dec_1", "shell", "shell:ls")
 	c.MarkApproved("admin")
-	c.MarkReady()
+	c.MarkQueued()
 
 	if c.State != StateQueued {
-		t.Errorf("state = %s, want queued (MarkReady now transitions to queued)", c.State)
+		t.Errorf("state = %s, want queued", c.State)
 	}
 
 	c2 := NewContinuation("dec_2", "shell", "shell:ls")
-	c2.MarkReady()
+	c2.MarkQueued()
 	if c2.State != StateEscalated {
-		t.Error("escalated continuation should not transition via MarkReady")
+		t.Error("escalated continuation should not transition via MarkQueued")
 	}
 }
 
@@ -249,9 +249,9 @@ func TestContinuation_StateTransitionFlow(t *testing.T) {
 		t.Fatalf("after approve: state should be approved, got %s", c.State)
 	}
 
-	c.MarkReady()
+	c.MarkQueued()
 	if c.State != StateQueued {
-		t.Fatalf("after mark ready: state should be queued (MarkReady now transitions to queued), got %s", c.State)
+		t.Fatalf("after mark queued: state should be queued, got %s", c.State)
 	}
 
 	c.MarkResumed()
@@ -479,8 +479,8 @@ func TestContinuation_StateExecuting_NotAsRestingState(t *testing.T) {
 	if c.IsTerminal() {
 		t.Error("executing should not be terminal")
 	}
-	if c.IsReady() {
-		t.Error("executing should not be ready")
+	if c.IsQueued() {
+		t.Error("executing should not be queued")
 	}
 	if c.CanEnqueue() {
 		t.Error("executing should not be enqueueable")
@@ -523,7 +523,7 @@ func TestContinuation_MarkExecutionFailed_FromExecuting(t *testing.T) {
 func TestContinuation_MarkExecutionFailed_FromQueued(t *testing.T) {
 	c := NewContinuation("dec_queued", "shell", "shell:ls")
 	c.MarkApproved("admin")
-	c.MarkReady()
+	c.MarkQueued()
 
 	c.MarkExecutionFailed()
 	if c.State != StateQueued {
@@ -634,7 +634,7 @@ func TestInMemoryStore_ClaimForExecution_Ready(t *testing.T) {
 	store := NewInMemoryStore()
 	c := NewContinuation("dec_ready", "shell", "shell:ls")
 	c.MarkApproved("admin")
-	c.MarkReady()
+	c.MarkQueued()
 	store.Create(c)
 
 	claimed, ok := store.ClaimForExecution(c.ContinuationID)
@@ -751,7 +751,7 @@ func TestContinuation_MarkRequeue_FromExecuting(t *testing.T) {
 func TestContinuation_MarkRequeue_FromReady(t *testing.T) {
 	c := NewContinuation("dec_requeue", "shell", "shell:ls")
 	c.MarkApproved("admin")
-	c.MarkReady()
+	c.MarkQueued()
 
 	c.MarkRequeue()
 	if c.State != StateQueued {

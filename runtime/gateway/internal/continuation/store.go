@@ -152,7 +152,9 @@ func (c *Continuation) MarkApproved(resolvedBy string) {
 	c.ApprovedAt = &now
 }
 
-func (c *Continuation) MarkReady() {
+// MarkQueued transitions an approved continuation into the queued state
+// so the orchestrator can pick it up for execution.
+func (c *Continuation) MarkQueued() {
 	if c.State == StateApproved {
 		c.State = StateQueued
 		now := time.Now().UTC()
@@ -209,14 +211,6 @@ func (c *Continuation) MarkExecutionFailed() {
 		return
 	}
 	c.State = StateExecuted
-}
-
-func (c *Continuation) MarkQueued() {
-	if c.State == StateApproved {
-		c.State = StateQueued
-		now := time.Now().UTC()
-		c.QueuedAt = &now
-	}
 }
 
 // MarkRequeue returns a claimed (StateExecuting) continuation back to
@@ -322,7 +316,9 @@ func (c *Continuation) MarkExpired() {
 	}
 }
 
-func (c *Continuation) IsReady() bool {
+// IsQueued returns true when the continuation has been queued for execution
+// and is awaiting pickup by the orchestrator.
+func (c *Continuation) IsQueued() bool {
 	return c.State == StateQueued
 }
 

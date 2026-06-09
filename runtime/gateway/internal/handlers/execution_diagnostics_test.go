@@ -227,7 +227,7 @@ func TestExecutionHandler_HandleGet_WithLinkedContinuation_Retryable(t *testing.
 	c := continuation.NewContinuation("dec_1", "shell", "shell:ls")
 	c.ContinuationID = "cnt_1"
 	c.MarkApproved("tester")
-	c.MarkReady()
+	c.MarkQueued()
 	c.State = continuation.StateExecuted
 	c.MaxRetries = 3
 	c.RetryCount = 1
@@ -272,7 +272,7 @@ func TestExecutionHandler_HandleGet_WithLinkedContinuation_Exhausted(t *testing.
 	c := continuation.NewContinuation("dec_1", "shell", "shell:ls")
 	c.ContinuationID = "cnt_1"
 	c.MarkApproved("tester")
-	c.MarkReady()
+	c.MarkQueued()
 	c.State = continuation.StateExecuted
 	c.MaxRetries = 3
 	c.RetryCount = 3

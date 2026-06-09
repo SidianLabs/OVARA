@@ -634,3 +634,52 @@ func TestOrchestrator_PeriodicSweep_RunsAndRecovers(t *testing.T) {
 		t.Error("recovered item should be retryable")
 	}
 }
+
+// panickingExecutor panics in Execute to simulate an executor crash.
+type panickingExecutor struct{}
+
+func (m *panickingExecutor) Execute(ctx context.Context, e *execution.Execution) error {
+	panic("simulated executor crash")
+}
+
+func TestOrchestrator_ExecutorPanic_RecoversAndMarksFailed(t *testing.T) {
+	store := NewInMemoryStore()
+	execStore := &mockExecStore{}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", &panickingExecutor{})
+
+	orch := NewOrchestrator(store, execStore, reg)
+	orch.pollInterval = 100 * time.Millisecond
+
+	cnt := NewContinuation("dec_1", "shell", "shell:ls")
+	cnt.MarkApproved("admin")
+	cnt.MarkQueued()
+	store.Create(cnt)
+
+	// Call executeOne directly since we cannot easily observe recover()
+	// inside a goroutine without races. The deferred recover handles the
+	// panic internally and marks the execution as failed.
+	orch.executeOne(cnt)
+
+	updated, _ := store.Get(cnt.ContinuationID)
+
+	// The continuation should be in StateExecuted (retryable) after panic recovery.
+	if updated.State != StateExecuted {
+		t.Errorf("after executor panic: state = %s, want executed (should be retryable)", updated.State)
+	}
+	if !updated.CanRetry() {
+		t.Errorf("after executor panic: can_retry = false, want true (should be retryable)")
+	}
+
+	// The execution record should exist and be in StateFailed.
+	if len(execStore.executions) == 0 {
+		t.Fatal("expected an execution record after panic")
+	}
+	exe := execStore.executions[0]
+	if exe.State != execution.StateFailed {
+		t.Errorf("execution state after panic = %s, want failed", exe.State)
+	}
+	if exe.Error == "" {
+		t.Error("execution error should be set after panic")
+	}
+}
