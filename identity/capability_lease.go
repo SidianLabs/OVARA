@@ -42,7 +42,8 @@ func IssueCapabilityLease(issuer *AgentIdentity, issuerKey ed25519.PrivateKey, s
 	}
 
 	now := time.Now().UTC()
-	leaseID := "lse_" + hex.EncodeToString(issuer.PublicKey[:6])
+	idBytes := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%d", issuer.ID, subject, now.UnixNano())))
+	leaseID := "lse_" + hex.EncodeToString(idBytes[:8])
 
 	cl := &CapabilityLease{
 		LeaseID:         leaseID,
