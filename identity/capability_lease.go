@@ -91,7 +91,7 @@ func (c *CapabilityLease) ScopeCovers(resource string) bool {
 }
 
 func (c *CapabilityLease) Verify(publicKey []byte) bool {
-	if len(c.Signature) == 0 || len(publicKey) == 0 {
+	if len(c.Signature) == 0 || len(publicKey) != ed25519.PublicKeySize {
 		return false
 	}
 	payload := c.digestPayload()
