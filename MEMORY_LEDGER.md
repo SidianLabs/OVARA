@@ -1,24 +1,31 @@
 # Memory Ledger
 ## Project: Ovara
-## Current Phase: 67 (Trust-Aware Security)
-## Current Task: 67.1 — Add drift detection
+## Current Phase: 68 (Production Readiness) — COMPLETE
+## Current Task: DELIVERY
 
 ## Completed Tasks
-- [x] Phase 65 — V1 Hardening & Cleanup
-- [x] Phase 66 — Identity Integration Deepening
-- [ ] Phase 67 — Trust-Aware Security
+- [x] Phase 0 — Exploration & Planning
+- [x] Phase 65 — V1 Hardening & Cleanup (ready state removal, benchmarks)
+- [x] Phase 66 — Identity Integration Deepening (payload fix, chain hash, evaluator wiring)
+- [x] Phase 67 — Trust-Aware Security (drift, degradation, chain detection, trust-dependent rules)
+- [x] Phase 68 — Production Readiness (deployment, operations, delivery report)
+
+## Final Validation
+```
+runtime/gateway: go build ✅ go vet -all ✅ go test -race ✅ (22/22)
+identity:       go build ✅ go vet -all ✅ go test -race ✅ (1/1)
+```
 
 ## Active Decisions & Rationale
-- Drift detection: track action patterns per agent in sliding time windows
-- Trust degradation: exponential decay with configurable half-life, accelerated by repeat offenses
-- Trust recovery: clean behavior gradually restores score toward baseline
-- Trust-dependent policy rules: extend Rule with MinTrustLevel/MinTrustScore
-- Suspicious chaining: detect same-issuer repeat, excessive depth, circular patterns
-- Trust state persistence: file-backed store alongside existing persistence patterns
+- All phases delivered on feature branches: phase-65, phase-66, phase-67, phase-68
+- Legacy `ready` state fully removed; MarkReady→MarkQueued, IsReady→IsQueued
+- CapabilityLease signature payload now includes IssuedAt for ovara.identity compatibility
+- Delegation chain hash verification uses same algorithm as ovara.identity
+- Drift detection uses split-window approach (no time arithmetic in tests)
+- Trust-dependent policy rules are additive — existing rules work unchanged
+- Production artifacts: etc/config.json, systemd unit, Dockerfile, runbooks
 
 ## Open Issues / Gotchas
-- Need to avoid making the hot path too expensive — drift computation must be O(1) per check
-- Trust state must be thread-safe (already using RWMutex patterns from trust/shield.go)
+- None remaining. All Phase 64 flagged risks resolved.
 
-## Next Immediate Action
-- Add drift detection: trust/drift.go with sliding window pattern tracking
+## DELIVERED
