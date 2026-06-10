@@ -93,6 +93,41 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
     restart: unless-stopped
 
+  analytics:
+    build: ../../services/analytics
+    ports:
+      - "3003:3003"
+    environment:
+      PORT: "3003"
+      NODE_ENV: ${NODE_ENV:-production}
+    restart: unless-stopped
+
+  approval-service:
+    build: ../../services/approval
+    ports:
+      - "3004:3004"
+    restart: unless-stopped
+
+  receipt-storage:
+    build: ../../services/receipt-storage
+    ports:
+      - "3005:3005"
+    restart: unless-stopped
+
+  collector:
+    build:
+      context: ../../telemetry/collector
+      dockerfile: Dockerfile
+    environment:
+      NATS_URL: nats://nats:4222
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ovara
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-ovara}
+    depends_on:
+      - nats
+      - clickhouse
+    restart: unless-stopped
+
 volumes:
   pgdata:
   gateway_data:
