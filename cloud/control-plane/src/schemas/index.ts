@@ -40,6 +40,15 @@ export const publishPolicySchema = z.object({
   gatewayIds: z.array(uuid()).optional(),
 });
 
+export const publishToGatewaysSchema = z.object({
+  policyId: uuid(),
+  organizationId: uuid(),
+});
+
+export const publishToGatewaySchema = z.object({
+  policyId: uuid(),
+});
+
 export const createApiKeySchema = z.object({
   organizationId: uuid(),
   name: z.string().min(3).max(255),
@@ -65,3 +74,5 @@ export type CreatePolicy = z.infer<typeof createPolicySchema>;
 export type PublishPolicy = z.infer<typeof publishPolicySchema>;
 export type CreateApiKey = z.infer<typeof createApiKeySchema>;
 export type CreateRevocation = z.infer<typeof createRevocationSchema>;
+export type PublishToGateways = z.infer<typeof publishToGatewaysSchema>;
+export type PublishToGateway = z.infer<typeof publishToGatewaySchema>;
