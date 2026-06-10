@@ -8,6 +8,7 @@ import { gatewayRoutes } from "./routes/gateways";
 import { policyRoutes } from "./routes/policies";
 import { revocationRoutes } from "./routes/revocations";
 import { apiKeyRoutes } from "./routes/apiKeys";
+import { distributionRoutes } from "./routes/distribution";
 import { db } from "./db/connection";
 
 const app = Fastify({
@@ -31,6 +32,7 @@ async function start() {
   await app.register(policyRoutes, { prefix: "/v1/policies" });
   await app.register(revocationRoutes, { prefix: "/v1/revocations" });
   await app.register(apiKeyRoutes, { prefix: "/v1/api-keys" });
+  await app.register(distributionRoutes, { prefix: "/v1/distribution" });
 
   app.setErrorHandler((error, _request, reply) => {
     const err = error as Error & { statusCode?: number };
