@@ -120,3 +120,173 @@ func captureStderr(fn func()) string {
 	n, _ := r.Read(buf[:])
 	return string(buf[:n])
 }
+
+func TestCLI_ApprovalsList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/approvals" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"approvals": []map[string]string{
+					{"id": "ap-1", "state": "pending"},
+					{"id": "ap-2", "state": "pending"},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "approvals"}
+	main()
+}
+
+func TestCLI_ApprovalsApprove(t *testing.T) {
+	var receivedBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/approvals/ap-1" {
+			json.NewDecoder(r.Body).Decode(&receivedBody)
+			json.NewEncoder(w).Encode(map[string]string{"id": "ap-1", "state": "approved"})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "approvals", "approve", "ap-1"}
+	main()
+
+	if receivedBody["action"] != "approve" {
+		t.Errorf("action = %q, want approve", receivedBody["action"])
+	}
+}
+
+func TestCLI_ApprovalsDeny(t *testing.T) {
+	var receivedBody map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/approvals/ap-2" {
+			json.NewDecoder(r.Body).Decode(&receivedBody)
+			json.NewEncoder(w).Encode(map[string]string{"id": "ap-2", "state": "denied"})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "approvals", "deny", "ap-2", "--reason=not ready"}
+	main()
+
+	if receivedBody["action"] != "deny" {
+		t.Errorf("action = %q, want deny", receivedBody["action"])
+	}
+	if receivedBody["reason"] != "not ready" {
+		t.Errorf("reason = %q, want 'not ready'", receivedBody["reason"])
+	}
+}
+
+func TestCLI_ApprovalsFilterState(t *testing.T) {
+	var receivedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/approvals" {
+			receivedQuery = r.URL.RawQuery
+			json.NewEncoder(w).Encode(map[string]interface{}{"approvals": []map[string]string{}})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "approvals", "--state=approved"}
+	main()
+
+	if !strings.Contains(receivedQuery, "state=approved") {
+		t.Errorf("query = %q, want state=approved", receivedQuery)
+	}
+}
+
+func TestCLI_TrustScore(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/trust/score/agent-1" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"agent_id": "agent-1",
+				"score":    0.95,
+			})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "trust", "score", "agent-1"}
+	main()
+}
+
+func TestCLI_TrustDrift(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/trust/drift/agent-2" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"agent_id": "agent-2",
+				"drift":    "none",
+			})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "trust", "drift", "agent-2"}
+	main()
+}
+
+func TestCLI_TrustGraph(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/trust/graph" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"nodes": []string{"agent-1", "agent-2"},
+				"edges": []map[string]string{{"from": "agent-1", "to": "agent-2"}},
+			})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "trust", "graph"}
+	main()
+}
+
+func TestCLI_TrustNoSubcommand(t *testing.T) {
+	cmd := captureStderr(func() {
+		os.Args = []string{"ovara", "trust"}
+		main()
+	})
+	if !strings.Contains(cmd, "usage:") {
+		t.Errorf("expected usage in stderr, got: %s", cmd)
+	}
+}
+
+func TestCLI_VerifySingle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/receipts/rx-42/verify" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"receipt_id": "rx-42",
+				"valid":      true,
+				"signature":  "verified",
+			})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "verify", "rx-42"}
+	main()
+}
+
+func TestCLI_VerifyAll(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/receipts/verify" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"verified": 3,
+				"invalid":  0,
+			})
+		}
+	}))
+	defer server.Close()
+
+	os.Args = []string{"ovara", "--gateway", server.URL, "verify", "--all"}
+	main()
+}
+
+func TestCLI_VerifyNoArgs(t *testing.T) {
+	cmd := captureStderr(func() {
+		os.Args = []string{"ovara", "verify"}
+		main()
+	})
+	if !strings.Contains(cmd, "usage:") {
+		t.Errorf("expected usage in stderr, got: %s", cmd)
+	}
+}
