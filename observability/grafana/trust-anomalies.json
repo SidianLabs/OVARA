@@ -1,0 +1,65 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "id": null,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [{"type": "range", "options": {"from": 0, "result": {"color": "red", "index": 0}, "to": 0.3}}, {"type": "range", "options": {"from": 0.3, "result": {"color": "yellow", "index": 1}, "to": 0.6}}, {"type": "range", "options": {"from": 0.6, "result": {"color": "green", "index": 2}, "to": 1}}], "max": 1, "min": 0 } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [{ "expr": "avg by (agent_id) (ovara_trust_score)", "legendFormat": "{{agent_id}}", "refId": "A" }],
+      "title": "Trust Scores by Agent",
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 20, "lineWidth": 2 }, "unit": "none" } },
+      "gridPos": { "h": 12, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": { "legend": { "calcs": ["last", "max", "min"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [{ "expr": "ovara_trust_score{agent_id=~\"$agent_id\"}", "legendFormat": "{{agent_id}}", "refId": "A" }],
+      "title": "Trust Score History",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2 }, "unit": "short" } },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "targets": [{ "expr": "rate(ovara_anomaly_detected_total[10m])", "legendFormat": "Anomalies", "refId": "A" }],
+      "title": "Anomalies Detected (10m rate)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2 }, "unit": "none" } },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 4,
+      "targets": [{ "expr": "rate(ovara_drift_detected_total[10m])", "legendFormat": "Drift Events", "refId": "A" }],
+      "title": "Trust Drift Detection",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["ovara", "trust"],
+  "templating": {
+    "list": [{
+      "current": { "selected": true, "text": "All", "value": "$__all" },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "definition": "label_values(ovara_trust_score, agent_id)",
+      "hide": 0, "includeAll": true, "label": "Agent", "multi": true,
+      "name": "agent_id", "query": { "query": "label_values(ovara_trust_score, agent_id)", "refId": "A" },
+      "refresh": 2, "type": "query"
+    }]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "utc",
+  "title": "Ovara — Trust & Anomalies",
+  "uid": "ovara-trust-anomalies",
+  "version": 1
+}

@@ -1,0 +1,26 @@
+# AppArmor profile for Ovara runtime gateway
+
+#include <tunables/global>
+
+profile ovara-gateway /usr/local/bin/ovara-gateway {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  capability sys_admin,
+  capability net_bind_service,
+
+  network inet stream,
+  network inet6 stream,
+
+  /etc/ovara/config.json r,
+  /var/data/ovara/** rw,
+  /var/log/ovara/** rw,
+  /tmp/ovara-exec/** rw,
+
+  deny /etc/shadow r,
+  deny /root/** rwx,
+  deny /proc/kcore r,
+
+  signal (receive) peer=unconfined,
+  signal (send) peer=unconfined,
+}

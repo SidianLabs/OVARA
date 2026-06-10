@@ -1,0 +1,24 @@
+# Ovara MicroVM Sandbox Configuration (Firecracker)
+
+kernel_image_path: "/var/lib/ovara/vmlinux.bin"
+rootfs_path: "/var/lib/ovara/rootfs.ext4"
+vcpu_count: 1
+mem_size_mib: 128
+network_interfaces: []
+boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
+
+# Execution constraints
+max_processes: 20
+max_file_descriptors: 64
+max_runtime_seconds: 300
+read_only_rootfs: true
+
+# Network isolation
+network_enabled: false
+allow_outbound: false
+allow_inbound: false
+
+# Resource limits (cgroup)
+cpu_weight: 10  # 1/10th of a CPU core
+memory_limit_bytes: 134217728  # 128MB
+pids_limit: 50

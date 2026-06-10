@@ -1,0 +1,39 @@
+# eBPF Hook Specifications for Ovara Runtime Interception
+
+# File system hooks
+- hook: tracepoint/syscalls/sys_enter_execve
+  description: Intercept process execution calls
+  action: block_or_allow
+  policy_ref: shell.execute
+
+- hook: tracepoint/syscalls/sys_enter_openat
+  description: Intercept file open calls
+  action: audit_only
+  policy_ref: file.access
+
+- hook: tracepoint/syscalls/sys_enter_unlink
+  description: Intercept file deletion
+  action: block_or_allow
+  policy_ref: file.delete
+
+# Network hooks
+- hook: kprobe/tcp_connect
+  description: Intercept outbound TCP connections
+  action: audit_only
+  policy_ref: network.outbound
+
+- hook: kprobe/tcp_v4_connect
+  description: Intercept IPv4 connections
+  action: block_or_allow
+  policy_ref: network.connect
+
+# Process hooks
+- hook: tracepoint/sched/sched_process_fork
+  description: Detect new process creation
+  action: audit_only
+  policy_ref: process.fork
+
+- hook: kprobe/do_exit
+  description: Detect process termination
+  action: audit_only
+  policy_ref: process.exit
