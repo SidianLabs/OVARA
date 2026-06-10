@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ovara-sdk"
+version = "0.1.0"
+description = "Ovara Runtime Gateway SDK for Python"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27.0",
+    "pydantic>=2.0",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "pytest-mock"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
