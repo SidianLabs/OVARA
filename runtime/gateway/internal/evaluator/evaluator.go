@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/models"
+	"ovara.runtime.gateway/internal/observe"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/trust"
 )
@@ -117,7 +119,26 @@ type PolicyDiff struct {
 }
 
 func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionResponse, error) {
+	ctx, span := observe.StartDecisionSpan(context.Background(), req)
+	defer func() {
+		if resp, err := e.evaluate(ctx, req); err == nil && resp != nil {
+			observe.EndSpan(span, resp.Decision)
+			observe.AddSpanEvent(span, "decision.complete", map[string]string{
+				"decision_id": resp.DecisionID,
+				"trust_score": fmt.Sprintf("%.2f", resp.TrustScore),
+			})
+		}
+	}()
+	return e.evaluate(ctx, req)
+}
+
+func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*models.DecisionResponse, error) {
+	span := observe.SpanFromContext(ctx)
+
 	if errs := req.Validate(); len(errs) > 0 {
+		if span != nil {
+			observe.AddSpanEvent(span, "validation.failed", map[string]string{"error": errs[0]})
+		}
 		return &models.DecisionResponse{
 			Decision:    models.DecisionDeny,
 			ReasonCodes: []models.ReasonCode{models.ReasonActionNotAllowed},
@@ -291,6 +312,16 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionRespons
 	}
 
 	receiptStub := e.buildReceiptStub(req, decision, policyVersion, trustScore)
+
+	if span != nil {
+		observe.AddSpanAttribute(span, "policy_version", policyVersion)
+		observe.AddSpanAttribute(span, "trust_score", fmt.Sprintf("%.2f", trustScore))
+		observe.AddSpanAttribute(span, "trust_level", string(trustResult.Level))
+		observe.AddSpanEvent(span, "evaluation.complete", map[string]string{
+			"decision":   string(decision),
+			"reasons":    fmt.Sprintf("%v", reasons),
+		})
+	}
 
 	trustCtx := &models.TrustContext{
 		Score:          trustScore,
