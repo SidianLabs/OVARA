@@ -55,6 +55,10 @@ type Config struct {
 
 	ReceiptSigningKey          string `json:"receipt_signing_key"`
 
+	OTELEnabled        bool    `json:"otel_enabled"`
+	OTELEndpoint       string  `json:"otel_endpoint"`
+	OTELSampleRate     float64 `json:"otel_sample_rate"`
+
 	StuckExecutingSweepIntervalSec     int `json:"stuck_executing_sweep_interval_secs"`
 	StuckExecutingRecoveryThresholdMin int `json:"stuck_executing_recovery_threshold_min"`
 
@@ -133,6 +137,10 @@ func Default() *Config {
 		AuthEnabled:              false,
 		BulkMaxBatchCap:          100,
 		BulkDefaultBatch:         20,
+
+		OTELEnabled:        false,
+		OTELEndpoint:       "localhost:4317",
+		OTELSampleRate:     1.0,
 
 		StuckExecutingSweepIntervalSec:     0,
 		StuckExecutingRecoveryThresholdMin: 30,

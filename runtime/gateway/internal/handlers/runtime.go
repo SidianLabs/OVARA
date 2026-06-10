@@ -21,6 +21,7 @@ import (
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
+	"ovara.runtime.gateway/internal/observe"
 	"ovara.runtime.gateway/internal/receipt"
 	"ovara.runtime.gateway/internal/receipts"
 )
@@ -236,8 +237,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
+	ctx, span := observe.StartDecisionSpan(r.Context(), nil)
+	defer func() {
+		if span != nil {
+			observe.AddSpanAttribute(span, "http.method", r.Method)
+			observe.AddSpanAttribute(span, "http.path", r.URL.Path)
+		}
+	}()
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		if span != nil {
+			observe.AddSpanEvent(span, "request.read_failed", map[string]string{"error": err.Error()})
+		}
 		api.JSONBadRequest(w, "failed to read request body")
 		return
 	}
@@ -245,15 +257,26 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	var req models.ActionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		if span != nil {
+			observe.AddSpanEvent(span, "request.parse_failed", map[string]string{"error": err.Error()})
+		}
 		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
+	ctx, span = observe.StartDecisionSpan(ctx, &req)
+
 	resp, err := h.evaluator.Evaluate(&req)
 	if err != nil {
+		if span != nil {
+			observe.AddSpanEvent(span, "evaluation.failed", map[string]string{"error": err.Error()})
+			observe.EndSpan(span, models.DecisionDeny)
+		}
 		api.JSONInternalError(w, "evaluation failed: "+err.Error())
 		return
 	}
+
+	observe.EndSpan(span, resp.Decision)
 
 	latencyMs := time.Since(start).Milliseconds()
 
@@ -313,6 +336,8 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordDecision(string(resp.Decision), string(req.ActionType), latencyMs)
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Trace-ID", span.TraceID)
+	w.Header().Set("X-Span-ID", span.SpanID)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
 }
