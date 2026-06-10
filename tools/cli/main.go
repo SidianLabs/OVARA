@@ -49,6 +49,12 @@ func main() {
 		doEnroll()
 	case "metrics":
 		doMetrics()
+	case "approvals":
+		doApprovals(cmdArgs)
+	case "trust":
+		doTrust(cmdArgs)
+	case "verify":
+		doVerify(cmdArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		osExit(1)
@@ -71,6 +77,9 @@ Commands:
   gateways      List gateways (control plane)
   enroll <url> <org-id>  Enroll gateway with control plane
   metrics       Show runtime metrics
+  approvals     List/manage approvals
+  trust <sub> [args]  Trust score, drift, or graph
+  verify        Verify execution receipts
 
 Flags:
 `)
@@ -145,6 +154,120 @@ func doEnroll() {
 
 func doMetrics() {
 	resp := get("/v1/runtime/metrics")
+	if resp != nil {
+		printJSON(resp)
+	}
+}
+
+func doApprovals(args []string) {
+	if len(args) == 0 {
+		resp := get("/v1/approvals")
+		if resp != nil {
+			printJSON(resp)
+		}
+		return
+	}
+
+	if args[0] == "approve" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ovara approvals approve <id>")
+			return
+		}
+		id := args[1]
+		body := map[string]string{"action": "approve"}
+		resp := post("/v1/approvals/"+id, body)
+		if resp != nil {
+			printJSON(resp)
+		}
+		return
+	}
+
+	if args[0] == "deny" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ovara approvals deny <id> --reason=<reason>")
+			return
+		}
+		id := args[1]
+		reason := ""
+		for _, a := range args[2:] {
+			if strings.HasPrefix(a, "--reason=") {
+				reason = strings.TrimPrefix(a, "--reason=")
+			}
+		}
+		body := map[string]string{"action": "deny", "reason": reason}
+		resp := post("/v1/approvals/"+id, body)
+		if resp != nil {
+			printJSON(resp)
+		}
+		return
+	}
+
+	state := ""
+	if strings.HasPrefix(args[0], "--state=") {
+		state = strings.TrimPrefix(args[0], "--state=")
+	}
+	path := "/v1/approvals"
+	if state != "" {
+		path += "?state=" + state
+	}
+	resp := get(path)
+	if resp != nil {
+		printJSON(resp)
+	}
+}
+
+func doTrust(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: ovara trust score|drift|graph [args]")
+		return
+	}
+
+	sub := args[0]
+	switch sub {
+	case "score":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ovara trust score <agent-id>")
+			return
+		}
+		resp := get("/v1/trust/score/" + args[1])
+		if resp != nil {
+			printJSON(resp)
+		}
+	case "drift":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: ovara trust drift <agent-id>")
+			return
+		}
+		resp := get("/v1/trust/drift/" + args[1])
+		if resp != nil {
+			printJSON(resp)
+		}
+	case "graph":
+		resp := get("/v1/trust/graph")
+		if resp != nil {
+			printJSON(resp)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown trust subcommand: %s\n", sub)
+	}
+}
+
+func doVerify(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: ovara verify <receipt-id> | ovara verify --all")
+		return
+	}
+
+	if args[0] == "--all" {
+		resp := get("/v1/receipts/verify")
+		if resp != nil {
+			printJSON(resp)
+		}
+		return
+	}
+
+	receiptID := args[0]
+	resp := get("/v1/receipts/" + receiptID + "/verify")
 	if resp != nil {
 		printJSON(resp)
 	}
