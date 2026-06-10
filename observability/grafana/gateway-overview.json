@@ -1,0 +1,117 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisPlacement": "auto", "fillOpacity": 25, "gradientMode": "none", "lineWidth": 2, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "unit": "reqps"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "expr": "rate(ovara_decisions_total[5m])", "legendFormat": "{{decision}}", "refId": "A" }
+      ],
+      "title": "Decisions/sec (5m rate)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "ms" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": { "legend": { "calcs": ["mean", "p95"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(ovara_decision_latency_ms_bucket[5m]))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, rate(ovara_decision_latency_ms_bucket[5m]))", "legendFormat": "p95", "refId": "B" },
+        { "expr": "histogram_quantile(0.99, rate(ovara_decision_latency_ms_bucket[5m]))", "legendFormat": "p99", "refId": "C" }
+      ],
+      "title": "Decision Latency (percentiles)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "sum by (decision) (rate(ovara_decisions_total[5m]))", "legendFormat": "{{decision}}", "refId": "A" }
+      ],
+      "title": "Decision Outcomes (allow/deny/pending)",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "max": 1, "min": 0, "unit": "none" }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "options": { "legend": { "calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "ovara_trust_score{agent_id=~\"$agent_id\"}", "legendFormat": "{{agent_id}}", "refId": "A" }
+      ],
+      "title": "Trust Scores (per agent)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "unit": "short" }
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "id": 5,
+      "options": { "legend": { "calcs": ["last"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "ovara_active_gateways", "legendFormat": "Active", "refId": "A" },
+        { "expr": "ovara_gateway_heartbeat_seconds", "legendFormat": "Heartbeat (s)", "refId": "B" }
+      ],
+      "title": "Gateway Health",
+      "type": "stat"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["ovara", "runtime", "trust"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "definition": "label_values(ovara_decisions_total, agent_id)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Agent ID",
+        "multi": true,
+        "name": "agent_id",
+        "options": [],
+        "query": { "query": "label_values(ovara_decisions_total, agent_id)", "refId": "StandardVariableQuery" },
+        "refresh": 2,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Ovara — Gateway Overview",
+  "uid": "ovara-gateway-overview",
+  "version": 1
+}

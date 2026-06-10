@@ -1,0 +1,10 @@
+{
+  "name": "@ovara/analytics-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ovara analytics service — decision analytics and reporting",
+  "scripts": { "dev": "tsx watch src/server.ts", "build": "tsc" },
+  "dependencies": { "fastify": "^5.0.0", "@fastify/cors": "^10.0.0" },
+  "devDependencies": { "typescript": "^5.6.0", "tsx": "^4.0.0", "@types/node": "^22.0.0" }
+}

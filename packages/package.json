@@ -1,0 +1,15 @@
+{
+  "name": "ovara",
+  "private": true,
+  "workspaces": [
+    "cloud/control-plane",
+    "enterprise/sso",
+    "enterprise/compliance",
+    "sdk/typescript",
+    "integrations/mcp",
+    "integrations/langchain",
+    "integrations/openai",
+    "integrations/crewai",
+    "apps/admin-dashboard"
+  ]
+}

@@ -1,0 +1,83 @@
+groups:
+  - name: ovara_gateway
+    interval: 30s
+    rules:
+      - alert: GatewayDown
+        expr: up{job="ovara-gateway"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: gateway
+        annotations:
+          summary: "Ovara gateway {{ $labels.instance }} is down"
+          description: "Gateway has been unreachable for 2 minutes"
+
+      - alert: HighDecisionLatency
+        expr: histogram_quantile(0.95, rate(ovara_decision_latency_ms_bucket[5m])) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: gateway
+        annotations:
+          summary: "High decision latency on {{ $labels.instance }}"
+          description: "p95 latency is {{ $value }}ms (threshold: 100ms)"
+
+      - alert: HighDenyRate
+        expr: rate(ovara_decisions_total{decision="deny"}[10m]) / rate(ovara_decisions_total[10m]) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+          component: policy
+        annotations:
+          summary: "High deny rate on {{ $labels.instance }}"
+          description: "Deny rate is {{ $value | humanizePercentage }} in last 10 minutes"
+
+      - alert: PolicyReloadFailure
+        expr: ovara_policy_reload_status == 2
+        for: 1m
+        labels:
+          severity: critical
+          component: policy
+        annotations:
+          summary: "Policy reload failed on {{ $labels.instance }}"
+          description: "Latest reload attempt failed: {{ $labels.error }}"
+
+      - alert: TrustScoreDegraded
+        expr: ovara_trust_score < 0.3
+        for: 10m
+        labels:
+          severity: warning
+          component: trust
+        annotations:
+          summary: "Trust score degraded for agent {{ $labels.agent_id }}"
+          description: "Score is {{ $value }}, below 0.3 threshold"
+
+      - alert: AnomalyDetected
+        expr: rate(ovara_anomaly_detected_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: trust
+        annotations:
+          summary: "Anomalies detected on {{ $labels.instance }}"
+          description: "{{ $value }} anomalies detected in last 15 minutes"
+
+      - alert: DriftDetected
+        expr: rate(ovara_drift_detected_total[30m]) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+          component: trust
+        annotations:
+          summary: "Trust drift detected on {{ $labels.instance }}"
+          description: "Drift rate: {{ $value }}/s"
+
+      - alert: HighEnrollmentFailureRate
+        expr: rate(ovara_enrollment_failures_total[15m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: gateway
+        annotations:
+          summary: "High enrollment failure rate"
+          description: "Enrollment failures: {{ $value }}/s"
