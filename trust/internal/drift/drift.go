@@ -2,6 +2,25 @@ package drift
 
 import "sync"
 
+type DriftWindowEntry struct {
+	IsRisky  bool   `json:"is_risky"`
+	Action   string `json:"action"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+type DriftState struct {
+	Window    int                            `json:"window"`
+	Threshold float64                        `json:"threshold"`
+	Agents    map[string]DriftAgentState     `json:"agents"`
+}
+
+type DriftAgentState struct {
+	Actions []DriftWindowEntry `json:"actions"`
+	Head    int                `json:"head"`
+	Size    int                `json:"size"`
+	Count   int                `json:"count"`
+}
+
 type DriftResult struct {
 	Drifting   bool    `json:"drifting"`
 	Confidence float64 `json:"confidence"`
@@ -91,5 +110,57 @@ func (d *DriftDetector) CheckDrift(agentID string) DriftResult {
 		Drifting:   drifting,
 		Confidence: ratio,
 		Window:     s.count,
+	}
+}
+
+func (d *DriftDetector) ExportState() DriftState {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	state := DriftState{
+		Window:    d.window,
+		Threshold: d.threshold,
+		Agents:    make(map[string]DriftAgentState, len(d.agents)),
+	}
+
+	for id, s := range d.agents {
+		actions := make([]DriftWindowEntry, len(s.actions))
+		for i, a := range s.actions {
+			actions[i] = DriftWindowEntry{
+				IsRisky:  a.isRisky,
+				Action:   "",
+				Timestamp: 0,
+			}
+		}
+		state.Agents[id] = DriftAgentState{
+			Actions: actions,
+			Head:    s.head,
+			Size:    s.size,
+			Count:   s.count,
+		}
+	}
+
+	return state
+}
+
+func (d *DriftDetector) ImportState(state DriftState) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.window = state.Window
+	d.threshold = state.Threshold
+	d.agents = make(map[string]*agentState, len(state.Agents))
+
+	for id, as := range state.Agents {
+		actions := make([]actionEntry, len(as.Actions))
+		for i, a := range as.Actions {
+			actions[i] = actionEntry{isRisky: a.IsRisky}
+		}
+		d.agents[id] = &agentState{
+			actions: actions,
+			head:    as.Head,
+			size:    as.Size,
+			count:   as.Count,
+		}
 	}
 }
