@@ -5,3 +5,4 @@
 - Every phase produces a checkpoint doc at `docs/build/phase_<n>_<name>_checkpoint.md`. Confidence: 0.80
 - Local-first architecture; no distributed executors, plugin architecture, or cloud control plane. Confidence: 0.85
 - Cloud control plane uses TypeScript with Fastify and Drizzle ORM for PostgreSQL; split control-plane/data-plane per architecture doc. Confidence: 0.70
+- Match code organization quality of `runtime/` across all directories; use consistent package structure, clear file naming, and proper modular breakdown. Confidence: 0.65

@@ -1,19 +1,21 @@
-package identity
+package store
 
 import (
 	"testing"
 	"time"
+
+	"ovara.identity/internal/crypto"
 )
 
 func TestLeaseStore_StoreAndGet(t *testing.T) {
 	s := NewLeaseStore()
 
-	issuer, priv, err := NewAgentIdentity("ovara", "issuer-1", "owner-1")
+	issuer, priv, err := crypto.NewAgentIdentity("ovara", "issuer-1", "owner-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	lease, err := IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
+	lease, err := crypto.IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,8 +39,8 @@ func TestLeaseStore_StoreAndGet(t *testing.T) {
 func TestLeaseStore_StoreDuplicate(t *testing.T) {
 	s := NewLeaseStore()
 
-	issuer, priv, _ := NewAgentIdentity("ovara", "issuer-1", "owner-1")
-	lease, _ := IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
+	issuer, priv, _ := crypto.NewAgentIdentity("ovara", "issuer-1", "owner-1")
+	lease, _ := crypto.IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
 
 	s.Store(lease)
 	if err := s.Store(lease); err == nil {
@@ -57,9 +59,9 @@ func TestLeaseStore_GetMissing(t *testing.T) {
 func TestLeaseStore_List(t *testing.T) {
 	s := NewLeaseStore()
 
-	issuer, priv, _ := NewAgentIdentity("ovara", "issuer-1", "owner-1")
-	l1, _ := IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
-	l2, _ := IssueCapabilityLease(issuer, priv, "agent-3", []string{"git.push"}, "repo:other", 30, 0)
+	issuer, priv, _ := crypto.NewAgentIdentity("ovara", "issuer-1", "owner-1")
+	l1, _ := crypto.IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
+	l2, _ := crypto.IssueCapabilityLease(issuer, priv, "agent-3", []string{"git.push"}, "repo:other", 30, 0)
 
 	s.Store(l1)
 	s.Store(l2)
@@ -73,9 +75,9 @@ func TestLeaseStore_List(t *testing.T) {
 func TestLeaseStore_ListBySubject(t *testing.T) {
 	s := NewLeaseStore()
 
-	issuer, priv, _ := NewAgentIdentity("ovara", "issuer-1", "owner-1")
-	l1, _ := IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
-	l2, _ := IssueCapabilityLease(issuer, priv, "agent-3", []string{"shell"}, "repo:*", 30, 0)
+	issuer, priv, _ := crypto.NewAgentIdentity("ovara", "issuer-1", "owner-1")
+	l1, _ := crypto.IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
+	l2, _ := crypto.IssueCapabilityLease(issuer, priv, "agent-3", []string{"shell"}, "repo:*", 30, 0)
 
 	s.Store(l1)
 	s.Store(l2)
@@ -92,11 +94,11 @@ func TestLeaseStore_ListBySubject(t *testing.T) {
 func TestLeaseStore_ListByIssuer(t *testing.T) {
 	s := NewLeaseStore()
 
-	issuer1, priv1, _ := NewAgentIdentity("ovara", "issuer-1", "owner-1")
-	issuer2, priv2, _ := NewAgentIdentity("ovara", "issuer-2", "owner-1")
+	issuer1, priv1, _ := crypto.NewAgentIdentity("ovara", "issuer-1", "owner-1")
+	issuer2, priv2, _ := crypto.NewAgentIdentity("ovara", "issuer-2", "owner-1")
 
-	l1, _ := IssueCapabilityLease(issuer1, priv1, "agent-a", []string{"shell"}, "repo:*", 30, 0)
-	l2, _ := IssueCapabilityLease(issuer2, priv2, "agent-b", []string{"shell"}, "repo:*", 30, 0)
+	l1, _ := crypto.IssueCapabilityLease(issuer1, priv1, "agent-a", []string{"shell"}, "repo:*", 30, 0)
+	l2, _ := crypto.IssueCapabilityLease(issuer2, priv2, "agent-b", []string{"shell"}, "repo:*", 30, 0)
 
 	s.Store(l1)
 	s.Store(l2)
@@ -110,10 +112,10 @@ func TestLeaseStore_ListByIssuer(t *testing.T) {
 func TestLeaseStore_ListActive(t *testing.T) {
 	s := NewLeaseStore()
 
-	issuer, priv, _ := NewAgentIdentity("ovara", "issuer-1", "owner-1")
-	l1, _ := IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
+	issuer, priv, _ := crypto.NewAgentIdentity("ovara", "issuer-1", "owner-1")
+	l1, _ := crypto.IssueCapabilityLease(issuer, priv, "agent-2", []string{"shell"}, "repo:*", 30, 0)
 
-	l2, _ := IssueCapabilityLease(issuer, priv, "agent-3", []string{"shell"}, "repo:*", 1, 0)
+	l2, _ := crypto.IssueCapabilityLease(issuer, priv, "agent-3", []string{"shell"}, "repo:*", 1, 0)
 	l2.Expiry = l2.IssuedAt.Add(-1 * time.Hour)
 
 	s.Store(l1)

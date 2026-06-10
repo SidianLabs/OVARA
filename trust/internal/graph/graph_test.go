@@ -1,10 +1,9 @@
-package trust
+package graph
 
 import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"testing"
-	"time"
 )
 
 func TestTrustGraph_AddOrganization(t *testing.T) {
@@ -170,84 +169,6 @@ func TestTrustGraph_Snapshot(t *testing.T) {
 	}
 }
 
-func TestCrossOrgReceipt_SignAndVerify(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-
-	receipt := &CrossOrgReceipt{
-		ReceiptID:      "rcpt_001",
-		DecisionID:     "dec_001",
-		IssuingGateway: "gw_a",
-		IssuingOrg:     "acme.com",
-		ActionType:     "shell.execute",
-		Resource:       "sudo",
-		Decision:       "deny",
-		AgentIdentity:  "agt_abc123",
-		TrustScore:     0.85,
-		Timestamp:      time.Now().UTC(),
-	}
-
-	err := SignCrossOrgReceipt(receipt, priv)
-	if err != nil {
-		t.Fatalf("SignCrossOrgReceipt failed: %v", err)
-	}
-	if len(receipt.Signature) == 0 {
-		t.Fatal("signature should not be empty")
-	}
-
-	if !receipt.Verify(pub) {
-		t.Error("receipt verification failed with correct public key")
-	}
-
-	wrongPub, _, _ := ed25519.GenerateKey(rand.Reader)
-	if receipt.Verify(wrongPub) {
-		t.Error("receipt verification succeeded with wrong public key")
-	}
-}
-
-func TestCrossOrgReceipt_VerifyTampered(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-
-	receipt := &CrossOrgReceipt{
-		ReceiptID:      "rcpt_001",
-		DecisionID:     "dec_001",
-		IssuingGateway: "gw_a",
-		IssuingOrg:     "acme.com",
-		ActionType:     "shell.execute",
-		Resource:       "sudo",
-		Decision:       "deny",
-		AgentIdentity:  "agt_abc123",
-		TrustScore:     0.85,
-		Timestamp:      time.Now().UTC(),
-	}
-
-	SignCrossOrgReceipt(receipt, priv)
-	receipt.Decision = "allow"
-
-	if receipt.Verify(pub) {
-		t.Error("tampered receipt should fail verification")
-	}
-}
-
-func TestFederatedIdentity_Basic(t *testing.T) {
-	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	digest := "sha256:abc123"
-
-	fid := &FederatedIdentity{
-		IdentityDigest: digest,
-		Domain:         "acme.com",
-		SigningKey:     priv,
-		IssuedAt:       time.Now().UTC(),
-		ExpiresAt:      time.Now().UTC().Add(24 * time.Hour),
-	}
-
-	if fid.IdentityDigest != digest {
-		t.Errorf("IdentityDigest = %v, want %v", fid.IdentityDigest, digest)
-	}
-	if fid.Domain != "acme.com" {
-		t.Errorf("Domain = %v, want acme.com", fid.Domain)
-	}
-}
-
 func TestTrustPath_Hash(t *testing.T) {
 	path := &TrustPath{
 		Domains:    []TrustDomain{"a.com", "b.com", "c.com"},
@@ -322,5 +243,43 @@ func TestTrustGraph_RemoveOrgClearsEdges(t *testing.T) {
 	}
 	if neighbors[0].TargetOrg != "c.com" {
 		t.Errorf("remaining neighbor = %v, want c.com", neighbors[0].TargetOrg)
+	}
+}
+
+func TestTrustGraph_GetNode(t *testing.T) {
+	tg := NewTrustGraph()
+	tg.AddOrganization("a.com", "Org A", nil)
+
+	node, ok := tg.GetNode("a.com")
+	if !ok {
+		t.Fatal("GetNode returned false")
+	}
+	if node.Name != "Org A" {
+		t.Errorf("name = %v, want Org A", node.Name)
+	}
+
+	_, ok = tg.GetNode("missing.com")
+	if ok {
+		t.Error("GetNode returned true for missing node")
+	}
+}
+
+func TestTrustGraph_GetRelationship(t *testing.T) {
+	tg := NewTrustGraph()
+	tg.AddOrganization("a.com", "Org A", nil)
+	tg.AddOrganization("b.com", "Org B", nil)
+	tg.Federate("a.com", "b.com", 0.5, nil)
+
+	rel, ok := tg.GetRelationship("a.com", "b.com")
+	if !ok {
+		t.Fatal("GetRelationship returned false")
+	}
+	if rel.TrustLevel != 0.5 {
+		t.Errorf("trust level = %v, want 0.5", rel.TrustLevel)
+	}
+
+	_, ok = tg.GetRelationship("b.com", "a.com")
+	if ok {
+		t.Error("GetRelationship returned true for reverse direction")
 	}
 }

@@ -1,13 +1,15 @@
-package identity
+package store
 
 import (
 	"testing"
+
+	"ovara.identity/internal/crypto"
 )
 
 func TestRegistry_RegisterAndGet(t *testing.T) {
 	r := NewRegistry()
 
-	id, _, err := NewAgentIdentity("ovara", "agent-1", "owner-1")
+	id, _, err := crypto.NewAgentIdentity("ovara", "agent-1", "owner-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,7 +33,7 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 func TestRegistry_RegisterDuplicate(t *testing.T) {
 	r := NewRegistry()
 
-	id, _, err := NewAgentIdentity("ovara", "agent-1", "owner-1")
+	id, _, err := crypto.NewAgentIdentity("ovara", "agent-1", "owner-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,8 +58,8 @@ func TestRegistry_GetMissing(t *testing.T) {
 func TestRegistry_List(t *testing.T) {
 	r := NewRegistry()
 
-	id1, _, _ := NewAgentIdentity("ovara", "agent-1", "owner-1")
-	id2, _, _ := NewAgentIdentity("ovara", "agent-2", "owner-2")
+	id1, _, _ := crypto.NewAgentIdentity("ovara", "agent-1", "owner-1")
+	id2, _, _ := crypto.NewAgentIdentity("ovara", "agent-2", "owner-2")
 
 	r.Register(id1)
 	r.Register(id2)
@@ -71,8 +73,8 @@ func TestRegistry_List(t *testing.T) {
 func TestRegistry_ListActive(t *testing.T) {
 	r := NewRegistry()
 
-	id1, _, _ := NewAgentIdentity("ovara", "agent-1", "owner-1")
-	id2, _, _ := NewAgentIdentity("ovara", "agent-2", "owner-2")
+	id1, _, _ := crypto.NewAgentIdentity("ovara", "agent-1", "owner-1")
+	id2, _, _ := crypto.NewAgentIdentity("ovara", "agent-2", "owner-2")
 
 	r.Register(id1)
 	r.Register(id2)
@@ -91,7 +93,7 @@ func TestRegistry_ListActive(t *testing.T) {
 func TestRegistry_Suspend(t *testing.T) {
 	r := NewRegistry()
 
-	id, _, _ := NewAgentIdentity("ovara", "agent-1", "owner-1")
+	id, _, _ := crypto.NewAgentIdentity("ovara", "agent-1", "owner-1")
 	r.Register(id)
 
 	if err := r.Suspend(id.ID); err != nil {
@@ -111,7 +113,7 @@ func TestRegistry_Suspend(t *testing.T) {
 func TestRegistry_Revoke(t *testing.T) {
 	r := NewRegistry()
 
-	id, _, _ := NewAgentIdentity("ovara", "agent-1", "owner-1")
+	id, _, _ := crypto.NewAgentIdentity("ovara", "agent-1", "owner-1")
 	r.Register(id)
 
 	if err := r.Revoke(id.ID); err != nil {
@@ -119,7 +121,7 @@ func TestRegistry_Revoke(t *testing.T) {
 	}
 
 	got, _ := r.Get(id.ID)
-	if got.Lifecycle != LifecycleRevoked {
+	if got.Lifecycle != crypto.LifecycleRevoked {
 		t.Errorf("lifecycle = %v, want revoked", got.Lifecycle)
 	}
 
@@ -134,7 +136,7 @@ func TestRegistry_Count(t *testing.T) {
 		t.Errorf("count = %d, want 0", r.Count())
 	}
 
-	id, _, _ := NewAgentIdentity("ovara", "agent-1", "owner-1")
+	id, _, _ := crypto.NewAgentIdentity("ovara", "agent-1", "owner-1")
 	r.Register(id)
 	if r.Count() != 1 {
 		t.Errorf("count = %d, want 1", r.Count())

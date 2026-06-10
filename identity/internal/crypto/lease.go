@@ -1,4 +1,4 @@
-package identity
+package crypto
 
 import (
 	"crypto/ed25519"
@@ -9,16 +9,16 @@ import (
 )
 
 type CapabilityLease struct {
-	LeaseID          string    `json:"lease_id"`
-	Issuer           string    `json:"issuer"`
-	Subject          string    `json:"subject"`
-	AllowedActions   []string  `json:"allowed_actions"`
-	ResourceScope    string    `json:"resource_scope"`
-	Expiry           time.Time `json:"expiry"`
-	DelegationDepth  int       `json:"delegation_depth"`
-	RevocationHandle string    `json:"revocation_handle,omitempty"`
-	IssuedAt         time.Time `json:"issued_at"`
-	Signature        []byte    `json:"signature,omitempty"`
+	LeaseID         string    `json:"lease_id"`
+	Issuer          string    `json:"issuer"`
+	Subject         string    `json:"subject"`
+	AllowedActions  []string  `json:"allowed_actions"`
+	ResourceScope   string    `json:"resource_scope"`
+	Expiry          time.Time `json:"expiry"`
+	DelegationDepth int       `json:"delegation_depth"`
+	RevocationHandle string   `json:"revocation_handle,omitempty"`
+	IssuedAt        time.Time `json:"issued_at"`
+	Signature       []byte    `json:"signature,omitempty"`
 }
 
 func IssueCapabilityLease(issuer *AgentIdentity, issuerKey ed25519.PrivateKey, subject string, allowedActions []string, resourceScope string, ttlMinutes int, delegationDepth int) (*CapabilityLease, error) {

@@ -1,22 +1,24 @@
-package identity
+package store
 
 import (
 	"fmt"
 	"sync"
+
+	"ovara.identity/internal/crypto"
 )
 
 type Registry struct {
 	mu         sync.RWMutex
-	identities map[string]*AgentIdentity
+	identities map[string]*crypto.AgentIdentity
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		identities: make(map[string]*AgentIdentity),
+		identities: make(map[string]*crypto.AgentIdentity),
 	}
 }
 
-func (r *Registry) Register(id *AgentIdentity) error {
+func (r *Registry) Register(id *crypto.AgentIdentity) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.identities[id.ID]; exists {
@@ -31,27 +33,27 @@ func (r *Registry) Register(id *AgentIdentity) error {
 	return nil
 }
 
-func (r *Registry) Get(id string) (*AgentIdentity, bool) {
+func (r *Registry) Get(id string) (*crypto.AgentIdentity, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	identity, ok := r.identities[id]
 	return identity, ok
 }
 
-func (r *Registry) List() []*AgentIdentity {
+func (r *Registry) List() []*crypto.AgentIdentity {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	result := make([]*AgentIdentity, 0, len(r.identities))
+	result := make([]*crypto.AgentIdentity, 0, len(r.identities))
 	for _, id := range r.identities {
 		result = append(result, id)
 	}
 	return result
 }
 
-func (r *Registry) ListActive() []*AgentIdentity {
+func (r *Registry) ListActive() []*crypto.AgentIdentity {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var result []*AgentIdentity
+	var result []*crypto.AgentIdentity
 	for _, id := range r.identities {
 		if id.IsActive() {
 			result = append(result, id)
