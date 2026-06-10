@@ -12,6 +12,19 @@ type Suspicion struct {
 	Description string `json:"description"`
 }
 
+type ChainRecordExport struct {
+	ChainHash string `json:"chain_hash"`
+	Depth     int    `json:"depth"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+type ChainState struct {
+	Agents         map[string][]ChainRecordExport `json:"agents"`
+	MaxDepth       int                             `json:"max_depth"`
+	RapidWindowSec int64                           `json:"rapid_window_sec"`
+	RapidThreshold int                             `json:"rapid_threshold"`
+}
+
 type chainRecord struct {
 	chainHash string
 	depth     int
@@ -112,4 +125,52 @@ func itoa(n int) string {
 
 func itoa64(n int64) string {
 	return itoa(int(n))
+}
+
+func (cd *ChainDetector) ExportState() ChainState {
+	cd.mu.RLock()
+	defer cd.mu.RUnlock()
+
+	state := ChainState{
+		Agents:         make(map[string][]ChainRecordExport, len(cd.chains)),
+		MaxDepth:       cd.maxDepth,
+		RapidWindowSec: cd.rapidWindowSec,
+		RapidThreshold: cd.rapidThreshold,
+	}
+
+	for id, records := range cd.chains {
+		exports := make([]ChainRecordExport, len(records))
+		for i, r := range records {
+			exports[i] = ChainRecordExport{
+				ChainHash: r.chainHash,
+				Depth:     r.depth,
+				Timestamp: r.timestamp.UnixNano(),
+			}
+		}
+		state.Agents[id] = exports
+	}
+
+	return state
+}
+
+func (cd *ChainDetector) ImportState(state ChainState) {
+	cd.mu.Lock()
+	defer cd.mu.Unlock()
+
+	cd.maxDepth = state.MaxDepth
+	cd.rapidWindowSec = state.RapidWindowSec
+	cd.rapidThreshold = state.RapidThreshold
+	cd.chains = make(map[string][]chainRecord, len(state.Agents))
+
+	for id, records := range state.Agents {
+		imported := make([]chainRecord, len(records))
+		for i, r := range records {
+			imported[i] = chainRecord{
+				chainHash: r.ChainHash,
+				depth:     r.Depth,
+				timestamp: time.Unix(0, r.Timestamp).UTC(),
+			}
+		}
+		cd.chains[id] = imported
+	}
 }
