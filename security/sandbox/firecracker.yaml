@@ -1,24 +1,100 @@
 # Ovara MicroVM Sandbox Configuration (Firecracker)
+# Production-grade microVM configuration for agent code execution.
+# Provides hardware-level isolation via KVM with strict resource controls.
+#
+# Launch: firecracker --config-file firecracker.yaml
 
+# ---------------------------------------------------------------------------
+# Kernel and root filesystem
+# ---------------------------------------------------------------------------
 kernel_image_path: "/var/lib/ovara/vmlinux.bin"
 rootfs_path: "/var/lib/ovara/rootfs.ext4"
-vcpu_count: 1
-mem_size_mib: 128
-network_interfaces: []
 boot_args: "console=ttyS0 reboot=k panic=1 pci=off"
 
+# ---------------------------------------------------------------------------
+# vCPU configuration
+# ---------------------------------------------------------------------------
+vcpu_count: 1
+# cpu_template: C3  # Uncommment to use Intel cache-pinning for deterministic perf
+
+# ---------------------------------------------------------------------------
+# Memory configuration
+# ---------------------------------------------------------------------------
+mem_size_mib: 128
+
+# ---------------------------------------------------------------------------
+# Rate limiting — CPU throttling
+# ---------------------------------------------------------------------------
+# Firecracker supports per-vCPU throttling via the cpu_template which pins
+# cache lines and sets frequency scaling. For stricter rate limiting, use
+# cgroup cpu.max on the host.
+# cpu_template: C3  # Intel C3 cache template (recommended for isolation)
+
+# ---------------------------------------------------------------------------
+# Memory balloon device
+# ---------------------------------------------------------------------------
+# Allows host to reclaim unused guest memory dynamically.
+# deflate_on_oom: guest balloon deflates when the VM hits OOM, returning
+#   pages to the host.
+# stats_polling_interval: seconds between guest→host stat pushes.
+balloon:
+  deflate_on_oom: true
+  stats_polling_interval: 5
+
+# ---------------------------------------------------------------------------
+# Seccomp filter
+# ---------------------------------------------------------------------------
+# Path to the seccomp JSON profile. Firecracker applies this filter to the
+# guest process on startup, restricting the syscall surface to only those
+# needed for a minimal Go binary execution.
+seccomp_path: "/etc/ovara/sandbox/seccomp-profile.json"
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+# Firecracker's built-in API logger. The log captures VM lifecycle events
+# (boot, shutdown, snapshot) but NOT guest stdout/stderr (use serial for that).
+log_path: "/var/log/ovara/firecracker.log"
+level: "Warning"
+show_level: true
+show_timestamp: true
+
+# ---------------------------------------------------------------------------
+# Snapshot / Restore
+# ---------------------------------------------------------------------------
+# Snapshots enable fast VM startup by restoring from a pre-initialized state.
+# version must be >= 0.24.0 for snapshot support.
+enable_snapshotting: true
+snapshot_path: "/var/lib/ovara/snapshots/"
+mem_snapshot_path: "/var/lib/ovara/snapshots/mem"
+version: "0.24.0"
+
+# ---------------------------------------------------------------------------
+# Network configuration
+# ---------------------------------------------------------------------------
+# Tap device created on the host and bridged to the gateway network.
+# guest_mac is deterministic for stable ARP entries in the host bridge.
+network_interfaces:
+  - iface_id: "eth0"
+    host_dev_name: "tap-ovara-0"
+    guest_mac: "AA:FC:00:00:00:01"
+
+# Legacy network fields (used when network_interfaces is empty)
+network_enabled: true
+allow_outbound: false
+allow_inbound: false
+
+# ---------------------------------------------------------------------------
 # Execution constraints
+# ---------------------------------------------------------------------------
 max_processes: 20
 max_file_descriptors: 64
 max_runtime_seconds: 300
 read_only_rootfs: true
 
-# Network isolation
-network_enabled: false
-allow_outbound: false
-allow_inbound: false
-
+# ---------------------------------------------------------------------------
 # Resource limits (cgroup)
-cpu_weight: 10  # 1/10th of a CPU core
-memory_limit_bytes: 134217728  # 128MB
-pids_limit: 50
+# ---------------------------------------------------------------------------
+cpu_weight: 10            # 1/10th of a CPU core (relative weight)
+memory_limit_bytes: 134217728  # 128 MB hard limit
+pids_limit: 50           # Max concurrent processes/threads

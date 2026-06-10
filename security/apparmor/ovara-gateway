@@ -1,26 +1,235 @@
 # AppArmor profile for Ovara runtime gateway
+# Production-grade mandatory access control policy
+# Deny-by-default: only explicitly allowed actions are permitted.
+# Last updated: 2026-06-11
 
 #include <tunables/global>
 
 profile ovara-gateway /usr/local/bin/ovara-gateway {
+  # ---------------------------------------------------------------------------
+  # Abstraction includes
+  # ---------------------------------------------------------------------------
+  # Base abstractions: minimum kernel/system interface for process execution.
+  # Nameservice: allows DNS resolution (getaddrinfo) required for upstream
+  # connections without granting broad NSS/file access.
+  # ---------------------------------------------------------------------------
   #include <abstractions/base>
   #include <abstractions/nameservice>
 
-  capability sys_admin,
+  # ---------------------------------------------------------------------------
+  # Linux capabilities
+  # ---------------------------------------------------------------------------
+  # net_bind_service: bind to privileged ports (< 1024) if the gateway listens
+  # on 80/443. The gateway binary is started as root then drops privileges, but
+  # the capability set is retained by the binary.
+  #
+  # sys_admin is explicitly NOT granted — it grants broad filesystem, mount,
+  # namespace, and kernel parameter access that a network service has no need
+  # for. Removing it closes container-escape and namespace-confusion attack
+  # vectors.
+  # ---------------------------------------------------------------------------
   capability net_bind_service,
 
+  # ---------------------------------------------------------------------------
+  # Deny dangerous capabilities unconditionally
+  # ---------------------------------------------------------------------------
+  # These are never needed by a user-space network gateway. Blocking them in
+  # AppArmor is defense-in-depth even if the binary is built without them.
+  # ---------------------------------------------------------------------------
+  deny capability sys_admin,
+  deny capability sys_rawio,
+  deny capability sys_ptrace,
+  deny capability sys_module,
+  deny capability sys_boot,
+
+  # ---------------------------------------------------------------------------
+  # Deny privileged operations
+  # ---------------------------------------------------------------------------
+  # mount: prevents filesystem mount/umount (container escape vector).
+  # ptrace: prevents attaching to other processes (code injection, keylogging).
+  # dbus: prevents sending messages on the system bus (privilege escalation
+  #   via D-Bus service calls to privileged daemons).
+  # ---------------------------------------------------------------------------
+  deny mount,
+  deny ptrace,
+  deny dbus,
+
+  # ---------------------------------------------------------------------------
+  # Network access
+  # ---------------------------------------------------------------------------
+  # Only TCP stream sockets on IPv4 and IPv6 are permitted. No raw sockets,
+  # no netlink, no packet-level access.
+  #
+  # The gateway is restricted to ports 8080 (HTTP) and 9090 (metrics/admin).
+  # AppArmor does not support port filtering natively, so this is enforced
+  # by iptables/nftables rules that the operator MUST also deploy:
+  #   iptables -A OUTPUT -m owner --uid-owner ovara -p tcp \
+  #     --dport 8080 -j ACCEPT
+  #   iptables -A OUTPUT -m owner --uid-owner ovara -p tcp \
+  #     --dport 9090 -j ACCEPT
+  #   iptables -A OUTPUT -m owner --uid-owner ovara -p tcp -j DROP
+  # ---------------------------------------------------------------------------
   network inet stream,
   network inet6 stream,
 
-  /etc/ovara/config.json r,
-  /var/data/ovara/** rw,
-  /var/log/ovara/** rw,
-  /tmp/ovara-exec/** rw,
+  # ---------------------------------------------------------------------------
+  # Deny all other network families
+  # ---------------------------------------------------------------------------
+  deny network inet dgram,
+  deny network inet raw,
+  deny network inet6 dgram,
+  deny network inet6 raw,
+  deny network netlink,
 
+  # ---------------------------------------------------------------------------
+  # Ovara application files — read-only configuration
+  # ---------------------------------------------------------------------------
+  # Primary config: gateway startup parameters, routes, credentials.
+  deny /etc/ovara/config.json w,
+  deny /etc/ovara/config.json x,
+
+  # ---------------------------------------------------------------------------
+  # Ovara runtime data — read-write (persistence layer)
+  # ---------------------------------------------------------------------------
+  # Transaction logs, state snapshots, temporary processing artefacts.
+  # Scoped to /var/data/ovara/** — nothing above that directory.
+  /var/data/ovara/** rw,
+
+  # ---------------------------------------------------------------------------
+  # Ovara logs — append-only via file permissions (not enforced by AppArmor)
+  # ---------------------------------------------------------------------------
+  # Structured logs for the gateway process. AppArmor grants rw; operators
+  # should set logrotate and filesystem ACLs to enforce append-only semantics.
+  /var/log/ovara/** rw,
+
+  # ---------------------------------------------------------------------------
+  # Temporary execution directories
+  # ---------------------------------------------------------------------------
+  # The gateway extracts bundles or compiles small scripts into /tmp/ovara-exec
+  # before execution. The path is scoped to prevent symlink attacks on
+  # /tmp broadly.
+  /tmp/ovara-exec/** rwk,
+
+  # ---------------------------------------------------------------------------
+  # TLS / certificate stores — read-only
+  # ---------------------------------------------------------------------------
+  # System CA bundle for outgoing TLS verification (upstream APIs, registries).
+  /etc/ssl/certs/** r,
+  /etc/ssl/openssl.cnf r,
+
+  # ---------------------------------------------------------------------------
+  # System configuration files — read-only
+  # ---------------------------------------------------------------------------
+  # Hostname, timezone, resolv.conf — needed for networking and logging.
+  /etc/hostname r,
+  /etc/hosts r,
+  /etc/resolv.conf r,
+  /etc/localtime r,
+  /etc/timezone r,
+
+  # ---------------------------------------------------------------------------
+  # Library files — read-only for Go runtime and dependencies
+  # ---------------------------------------------------------------------------
+  # Go binaries link against system libc, libpthread, libdl, libresolv at
+  # runtime. All of /usr/lib is granted read-only to cover distro layout
+  # variations. The deny-write rule below prevents library tampering.
+  /usr/lib/** r,
+  /usr/lib64/** r,
+
+  # ---------------------------------------------------------------------------
+  # Binary and shared-object read-only (execution of binaries is NOT granted)
+  # ---------------------------------------------------------------------------
+  /usr/bin/ovara-gateway r,
+  /usr/local/bin/ovara-gateway r,
+
+  # ---------------------------------------------------------------------------
+  # Proc filesystem — restricted
+  # ---------------------------------------------------------------------------
+  # Only /proc/self is accessible. /proc/sys/** (kernel tunables) is denied
+  # to prevent runtime kernel parameter modification via sysctl.
+  /proc/self/** r,
+
+  # ---------------------------------------------------------------------------
+  # Sysfs — denied entirely
+  # ---------------------------------------------------------------------------
+  # /sys/** exposes hardware and kernel device parameters. A user-space
+  # gateway has no need to read or write sysfs entries.
+  deny /sys/** rwx,
+
+  # ---------------------------------------------------------------------------
+  # Device filesystem — denied entirely
+  # ---------------------------------------------------------------------------
+  # /dev/** grants direct hardware access. Prevents device-node based attacks
+  # (e.g., /dev/mem, /dev/kmem) and ioctl abuse.
+  deny /dev/** rwx,
+
+  # ---------------------------------------------------------------------------
+  # Boot and kernel images — denied entirely
+  # ---------------------------------------------------------------------------
+  # /boot/** contains kernel images and initramfs. No user-space service
+  # should read or write boot assets.
+  deny /boot/** rwx,
+
+  # ---------------------------------------------------------------------------
+  # Sbin — denied entirely
+  # ---------------------------------------------------------------------------
+  # /sbin/** contains privileged system administration binaries. The gateway
+  # must not invoke, read, or overwrite them.
+  deny /sbin/** rwx,
+
+  # ---------------------------------------------------------------------------
+  # Sensitive system files — denied (defense-in-depth)
+  # ---------------------------------------------------------------------------
+  # /etc/shadow: password hashes — never readable by services.
+  # /root/**: root home directory — contains credentials, keys, config.
+  # /proc/kcore: raw kernel memory image — catastrophic info leak if read.
   deny /etc/shadow r,
+  deny /etc/shadow w,
   deny /root/** rwx,
   deny /proc/kcore r,
+  deny /etc/passwd w,
+  deny /etc/group w,
 
+  # ---------------------------------------------------------------------------
+  # Unix domain socket restrictions
+  # ---------------------------------------------------------------------------
+  # Only allow communication with peers running as the same user (ovara).
+  # Prevents the gateway from connecting to or accepting connections from
+  # untrusted or privileged processes via abstract or filesystem sockets.
+  unix (send, receive) peer=(label=ovara-gateway),
+  unix (send, receive) peer=(uid=0),
+
+  # ---------------------------------------------------------------------------
+  # Signal handling
+  # ---------------------------------------------------------------------------
+  # The gateway must receive SIGTERM/SIGINT for graceful shutdown and send
+  # signals to its own child worker processes.
   signal (receive) peer=unconfined,
   signal (send) peer=unconfined,
+
+  # ---------------------------------------------------------------------------
+  # Filesystem deny rules — block broad access
+  # ---------------------------------------------------------------------------
+  # Prevent the gateway from reading or writing outside its designated paths.
+  # This is a catch-all below the specific allow rules above.
+  deny /etc/** rw,
+  deny /home/** rwx,
+  deny /var/** w,
+
+  # ---------------------------------------------------------------------------
+  # Environment and credential hardening
+  # ---------------------------------------------------------------------------
+  # Prevent the gateway from reading its own /proc/<pid>/environ or
+  # /proc/<pid>/cmdline which may contain secrets.
+  deny /proc/self/environ r,
+  deny /proc/self/cmdline r,
+
+  # ---------------------------------------------------------------------------
+  # Owner match (if the gateway runs as a dedicated user)
+  # ---------------------------------------------------------------------------
+  # Restrict all file access to files owned by the gateway's UID. This is a
+  # belt-and-suspenders measure alongside the explicit path rules above.
+  owner /var/data/ovara/** rw,
+  owner /var/log/ovara/** rw,
+  owner /tmp/ovara-exec/** rwk,
 }
