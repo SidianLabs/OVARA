@@ -1,12 +1,14 @@
-package identity
+package federation
 
 import (
 	"testing"
+
+	"ovara.identity/internal/store"
 )
 
 func TestIssuer_CreateIdentity(t *testing.T) {
-	r := NewRegistry()
-	ls := NewLeaseStore()
+	r := store.NewRegistry()
+	ls := store.NewLeaseStore()
 	issuer := NewIssuer(r, ls)
 
 	id, _, err := issuer.CreateIdentity("ovara", "agent-1", "owner-1")
@@ -30,8 +32,8 @@ func TestIssuer_CreateIdentity(t *testing.T) {
 }
 
 func TestIssuer_CreateIdentity_DuplicateRejected(t *testing.T) {
-	r := NewRegistry()
-	ls := NewLeaseStore()
+	r := store.NewRegistry()
+	ls := store.NewLeaseStore()
 	issuer := NewIssuer(r, ls)
 
 	_, _, err := issuer.CreateIdentity("ovara", "agent-1", "owner-1")
@@ -45,8 +47,8 @@ func TestIssuer_CreateIdentity_DuplicateRejected(t *testing.T) {
 }
 
 func TestIssuer_IssueLease(t *testing.T) {
-	r := NewRegistry()
-	ls := NewLeaseStore()
+	r := store.NewRegistry()
+	ls := store.NewLeaseStore()
 	issuer := NewIssuer(r, ls)
 
 	id, priv, err := issuer.CreateIdentity("ovara", "agent-1", "owner-1")
@@ -75,8 +77,8 @@ func TestIssuer_IssueLease(t *testing.T) {
 }
 
 func TestIssuer_IssueLease_IssuerNotInRegistry(t *testing.T) {
-	r := NewRegistry()
-	ls := NewLeaseStore()
+	r := store.NewRegistry()
+	ls := store.NewLeaseStore()
 	issuer := NewIssuer(r, ls)
 
 	_, err := issuer.IssueLease("nonexistent", nil, "agent-2", []string{"shell"}, "repo:*", 30, 0)
@@ -86,8 +88,8 @@ func TestIssuer_IssueLease_IssuerNotInRegistry(t *testing.T) {
 }
 
 func TestIssuer_IssueLease_IssuerRevoked(t *testing.T) {
-	r := NewRegistry()
-	ls := NewLeaseStore()
+	r := store.NewRegistry()
+	ls := store.NewLeaseStore()
 	issuer := NewIssuer(r, ls)
 
 	id, priv, err := issuer.CreateIdentity("ovara", "agent-1", "owner-1")
@@ -103,8 +105,8 @@ func TestIssuer_IssueLease_IssuerRevoked(t *testing.T) {
 }
 
 func TestIssuer_RevokeLease(t *testing.T) {
-	r := NewRegistry()
-	ls := NewLeaseStore()
+	r := store.NewRegistry()
+	ls := store.NewLeaseStore()
 	issuer := NewIssuer(r, ls)
 
 	id, priv, err := issuer.CreateIdentity("ovara", "agent-1", "owner-1")
@@ -128,8 +130,8 @@ func TestIssuer_RevokeLease(t *testing.T) {
 }
 
 func TestIssuer_RevokeLease_NotFound(t *testing.T) {
-	r := NewRegistry()
-	ls := NewLeaseStore()
+	r := store.NewRegistry()
+	ls := store.NewLeaseStore()
 	issuer := NewIssuer(r, ls)
 
 	if err := issuer.RevokeLease("nonexistent"); err == nil {
@@ -138,8 +140,8 @@ func TestIssuer_RevokeLease_NotFound(t *testing.T) {
 }
 
 func TestIssuer_ActiveLeasesFor(t *testing.T) {
-	r := NewRegistry()
-	ls := NewLeaseStore()
+	r := store.NewRegistry()
+	ls := store.NewLeaseStore()
 	issuer := NewIssuer(r, ls)
 
 	id, priv, _ := issuer.CreateIdentity("ovara", "agent-1", "owner-1")

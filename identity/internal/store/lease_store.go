@@ -1,22 +1,24 @@
-package identity
+package store
 
 import (
 	"fmt"
 	"sync"
+
+	"ovara.identity/internal/crypto"
 )
 
 type LeaseStore struct {
 	mu     sync.RWMutex
-	leases map[string]*CapabilityLease
+	leases map[string]*crypto.CapabilityLease
 }
 
 func NewLeaseStore() *LeaseStore {
 	return &LeaseStore{
-		leases: make(map[string]*CapabilityLease),
+		leases: make(map[string]*crypto.CapabilityLease),
 	}
 }
 
-func (s *LeaseStore) Store(lease *CapabilityLease) error {
+func (s *LeaseStore) Store(lease *crypto.CapabilityLease) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.leases[lease.LeaseID]; exists {
@@ -26,27 +28,27 @@ func (s *LeaseStore) Store(lease *CapabilityLease) error {
 	return nil
 }
 
-func (s *LeaseStore) Get(leaseID string) (*CapabilityLease, bool) {
+func (s *LeaseStore) Get(leaseID string) (*crypto.CapabilityLease, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	lease, ok := s.leases[leaseID]
 	return lease, ok
 }
 
-func (s *LeaseStore) List() []*CapabilityLease {
+func (s *LeaseStore) List() []*crypto.CapabilityLease {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]*CapabilityLease, 0, len(s.leases))
+	result := make([]*crypto.CapabilityLease, 0, len(s.leases))
 	for _, l := range s.leases {
 		result = append(result, l)
 	}
 	return result
 }
 
-func (s *LeaseStore) ListBySubject(subject string) []*CapabilityLease {
+func (s *LeaseStore) ListBySubject(subject string) []*crypto.CapabilityLease {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*CapabilityLease
+	var result []*crypto.CapabilityLease
 	for _, l := range s.leases {
 		if l.Subject == subject {
 			result = append(result, l)
@@ -55,10 +57,10 @@ func (s *LeaseStore) ListBySubject(subject string) []*CapabilityLease {
 	return result
 }
 
-func (s *LeaseStore) ListByIssuer(issuerID string) []*CapabilityLease {
+func (s *LeaseStore) ListByIssuer(issuerID string) []*crypto.CapabilityLease {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*CapabilityLease
+	var result []*crypto.CapabilityLease
 	for _, l := range s.leases {
 		if l.Issuer == issuerID {
 			result = append(result, l)
@@ -67,10 +69,10 @@ func (s *LeaseStore) ListByIssuer(issuerID string) []*CapabilityLease {
 	return result
 }
 
-func (s *LeaseStore) ListActive() []*CapabilityLease {
+func (s *LeaseStore) ListActive() []*crypto.CapabilityLease {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*CapabilityLease
+	var result []*crypto.CapabilityLease
 	for _, l := range s.leases {
 		if !l.IsExpired() {
 			result = append(result, l)

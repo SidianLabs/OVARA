@@ -1,9 +1,6 @@
-package trust
+package graph
 
 import (
-	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"sync"
@@ -23,18 +20,18 @@ type TrustRelationship struct {
 }
 
 type TrustGraph struct {
-	mu          sync.RWMutex
-	nodes       map[TrustDomain]*OrganizationNode
-	edges       map[TrustDomain]map[TrustDomain]*TrustRelationship
+	mu    sync.RWMutex
+	nodes map[TrustDomain]*OrganizationNode
+	edges map[TrustDomain]map[TrustDomain]*TrustRelationship
 }
 
 type OrganizationNode struct {
-	Domain      TrustDomain       `json:"domain"`
-	Name        string            `json:"name"`
-	PublicKeys  [][]byte          `json:"public_keys"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	JoinedAt    time.Time         `json:"joined_at"`
-	Active      bool              `json:"active"`
+	Domain     TrustDomain       `json:"domain"`
+	Name       string            `json:"name"`
+	PublicKeys [][]byte          `json:"public_keys"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	JoinedAt   time.Time         `json:"joined_at"`
+	Active     bool              `json:"active"`
 }
 
 func NewTrustGraph() *TrustGraph {
@@ -142,94 +139,6 @@ func (tg *TrustGraph) RevokeFederation(source, target TrustDomain) error {
 	return nil
 }
 
-func (tg *TrustGraph) ComputeTrustPath(source, target TrustDomain) (*TrustPath, error) {
-	tg.mu.RLock()
-	defer tg.mu.RUnlock()
-
-	if err := tg.requireNode(source); err != nil {
-		return nil, err
-	}
-	if err := tg.requireNode(target); err != nil {
-		return nil, err
-	}
-
-	if source == target {
-		return &TrustPath{
-			Domains:    []TrustDomain{source},
-			TrustScore: 1.0,
-			Depth:      0,
-		}, nil
-	}
-
-	visited := make(map[TrustDomain]bool)
-	type pathState struct {
-		domain     TrustDomain
-		score      float64
-		depth      int
-		chain      []TrustDomain
-	}
-
-	var bestScore float64 = -1
-	var bestChain []TrustDomain
-	var bestDepth int
-
-	var dfs func(current TrustDomain, score float64, depth int, chain []TrustDomain)
-	dfs = func(current TrustDomain, score float64, depth int, chain []TrustDomain) {
-		if depth > 10 {
-			return
-		}
-		if current == target {
-			cfgScore := float64(1.0) / float64(depth+1)
-			composite := score * 0.7 + cfgScore * 0.3
-			if composite > bestScore {
-				bestScore = composite
-				bestChain = make([]TrustDomain, len(chain))
-				copy(bestChain, chain)
-				bestDepth = depth
-			}
-			return
-		}
-
-		visited[current] = true
-		defer delete(visited, current)
-
-		if edges, ok := tg.edges[current]; ok {
-			for next, rel := range edges {
-				if visited[next] || !rel.Active {
-					continue
-				}
-				newScore := score * rel.TrustLevel
-				newChain := make([]TrustDomain, len(chain)+1)
-				copy(newChain, chain)
-				newChain[len(chain)] = next
-				dfs(next, newScore, depth+1, newChain)
-			}
-		}
-	}
-
-	dfs(source, 1.0, 0, []TrustDomain{source})
-
-	if bestScore < 0 {
-		return nil, fmt.Errorf("no trust path between %s and %s", source, target)
-	}
-
-	return &TrustPath{
-		Domains:    bestChain,
-		TrustScore: bestScore,
-		Depth:      bestDepth,
-	}, nil
-}
-
-type TrustPath struct {
-	Domains    []TrustDomain `json:"domains"`
-	TrustScore float64       `json:"trust_score"`
-	Depth      int           `json:"depth"`
-}
-
-func (tp *TrustPath) IsDirect() bool {
-	return tp.Depth == 1
-}
-
 func (tg *TrustGraph) GetNeighbors(domain TrustDomain) []TrustRelationship {
 	tg.mu.RLock()
 	defer tg.mu.RUnlock()
@@ -291,58 +200,21 @@ func (tg *TrustGraph) requireNode(domain TrustDomain) error {
 	return nil
 }
 
-func (tp *TrustPath) Hash() string {
-	payload := fmt.Sprintf("%d|", tp.Depth)
-	for _, d := range tp.Domains {
-		payload += string(d) + "|"
+// GetNode returns an organization node by domain (read-only).
+func (tg *TrustGraph) GetNode(domain TrustDomain) (*OrganizationNode, bool) {
+	tg.mu.RLock()
+	defer tg.mu.RUnlock()
+	node, ok := tg.nodes[domain]
+	return node, ok
+}
+
+// GetRelationship returns the trust relationship between source and target (read-only).
+func (tg *TrustGraph) GetRelationship(source, target TrustDomain) (*TrustRelationship, bool) {
+	tg.mu.RLock()
+	defer tg.mu.RUnlock()
+	if targets, ok := tg.edges[source]; ok {
+		rel, ok := targets[target]
+		return rel, ok
 	}
-	h := sha256.Sum256([]byte(payload))
-	return hex.EncodeToString(h[:])
-}
-
-type FederatedIdentity struct {
-	IdentityDigest string    `json:"identity_digest"`
-	Domain         string    `json:"domain"`
-	SigningKey     []byte    `json:"signing_key,omitempty"`
-	IssuedAt       time.Time `json:"issued_at"`
-	ExpiresAt      time.Time `json:"expires_at"`
-}
-
-type CrossOrgReceipt struct {
-	ReceiptID      string    `json:"receipt_id"`
-	DecisionID     string    `json:"decision_id"`
-	IssuingGateway string    `json:"issuing_gateway"`
-	IssuingOrg     string    `json:"issuing_org"`
-	ActionType     string    `json:"action_type"`
-	Resource       string    `json:"resource"`
-	Decision       string    `json:"decision"`
-	AgentIdentity  string    `json:"agent_identity"`
-	LeaseDigest    string    `json:"lease_digest,omitempty"`
-	TrustScore     float64   `json:"trust_score"`
-	Timestamp      time.Time `json:"timestamp"`
-	Signature      []byte    `json:"signature"`
-}
-
-func (r *CrossOrgReceipt) Verify(publicKey []byte) bool {
-	if len(r.Signature) == 0 || len(publicKey) != ed25519.PublicKeySize {
-		return false
-	}
-	payload := r.Digest()
-	return ed25519.Verify(publicKey, []byte(payload), r.Signature)
-}
-
-func (r *CrossOrgReceipt) Digest() string {
-	payload := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%.3f|%d",
-		r.ReceiptID, r.DecisionID, r.IssuingGateway, r.IssuingOrg,
-		r.ActionType, r.Resource, r.Decision, r.AgentIdentity,
-		r.TrustScore, r.Timestamp.Unix(),
-	)
-	return payload
-}
-
-func SignCrossOrgReceipt(receipt *CrossOrgReceipt, signingKey ed25519.PrivateKey) error {
-	payload := receipt.Digest()
-	sig := ed25519.Sign(signingKey, []byte(payload))
-	receipt.Signature = sig
-	return nil
+	return nil, false
 }

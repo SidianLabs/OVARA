@@ -1,4 +1,4 @@
-package identity
+package crypto
 
 import (
 	"crypto/sha256"
@@ -9,8 +9,8 @@ import (
 )
 
 type Authority struct {
-	Issuer      string    `json:"issuer"`
-	SubjectID   string    `json:"subject_id"`
+	Issuer     string    `json:"issuer"`
+	SubjectID  string    `json:"subject_id"`
 	DelegatedAt time.Time `json:"delegated_at,omitempty"`
 }
 

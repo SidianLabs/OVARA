@@ -1,4 +1,4 @@
-package identity
+package crypto
 
 import (
 	"crypto/ed25519"
@@ -12,20 +12,20 @@ import (
 type LifecycleState string
 
 const (
-	LifecycleActive   LifecycleState = "active"
+	LifecycleActive    LifecycleState = "active"
 	LifecycleSuspended LifecycleState = "suspended"
-	LifecycleRevoked  LifecycleState = "revoked"
+	LifecycleRevoked   LifecycleState = "revoked"
 )
 
 type AgentIdentity struct {
-	ID          string         `json:"id"`
-	Issuer      string         `json:"issuer"`
-	SubjectID   string         `json:"subject_id"`
-	Owner       string         `json:"owner"`
-	Lifecycle   LifecycleState `json:"lifecycle"`
-	PublicKey   []byte         `json:"public_key,omitempty"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	ID        string         `json:"id"`
+	Issuer    string         `json:"issuer"`
+	SubjectID string         `json:"subject_id"`
+	Owner     string         `json:"owner"`
+	Lifecycle LifecycleState `json:"lifecycle"`
+	PublicKey []byte         `json:"public_key,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
 }
 
 func NewAgentIdentity(issuer, subjectID, owner string) (*AgentIdentity, ed25519.PrivateKey, error) {
