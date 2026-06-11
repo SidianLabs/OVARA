@@ -220,6 +220,7 @@ func (c *decisionCache) Stats() (int, int) {
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runtime/check", h.handleCheck)
+	mux.HandleFunc("POST /v1/runtime/batch-check", h.handleBatchCheck)
 	mux.HandleFunc("GET /v1/runtime/decision/{id}", h.handleGetDecision)
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
 	mux.HandleFunc("GET /v1/runtime/status", h.handleGetStatus)
@@ -340,6 +341,49 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Span-ID", span.SpanID)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) handleBatchCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		api.JSONBadRequest(w, "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	var reqBody struct {
+		Requests []models.ActionRequest `json:"requests"`
+	}
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
+		return
+	}
+
+	if reqBody.Requests == nil {
+		reqBody.Requests = []models.ActionRequest{}
+	}
+
+	decisions := make([]*models.DecisionResponse, 0, len(reqBody.Requests))
+	for i := range reqBody.Requests {
+		req :=&reqBody.Requests[i]
+		resp, err := h.evaluator.Evaluate(req)
+		if err != nil {
+			resp = &models.DecisionResponse{
+				Decision: models.DecisionDeny,
+				ReasonCodes: []models.ReasonCode{models.ReasonDeny},
+			}
+		}
+		decisions = append(decisions, resp)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{"decisions": decisions})
 }
 
 func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.ActionRequest) *models.Receipt {

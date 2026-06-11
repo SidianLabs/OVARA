@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
 import httpx
 
 from .types import (
     ActionRequest,
     DecisionResponse,
-    ExecutionRequest,
-    ExecutionResponse,
     GatewayStatus,
     ReceiptRecord,
 )
@@ -48,9 +46,9 @@ class OvaraClient:
         resp = await self.check(
             ActionRequest(action_type=action_type, resource=resource, environment=env, trace_id=uuid.uuid4().hex)
         )
-        return resp.decision == "allow"
+        return resp.get("decision") == "allow"
 
-    async def batch_check(self, requests: Sequence[ActionRequest]) -> list[DecisionResponse]:
+    async def batch_check(self, requests: list[ActionRequest]) -> list[DecisionResponse]:
         payload = {
             "requests": [
                 {
@@ -68,55 +66,35 @@ class OvaraClient:
         result = await self._post("/v1/runtime/batch-check", payload)
         return [DecisionResponse(**d) for d in result.get("decisions", [])]
 
-    async def execute(self, request: ExecutionRequest) -> ExecutionResponse:
-        return await self._post(
-            "/v1/runtime/execute",
-            {
-                "command": request.command,
-                "args": request.args,
-                "env": request.env,
-                "working_dir": request.working_dir,
-                "timeout_ms": request.timeout_ms,
-            },
-        )
-
     async def status(self) -> GatewayStatus:
-        return await self._get("/v1/runtime/status")
+        data = await self._get("/v1/runtime/status")
+        return GatewayStatus(**data) if data else GatewayStatus()
 
     async def health(self) -> dict:
         return await self._get("/v1/runtime/health")
 
     async def list_receipts(self, limit: int = 50, offset: int = 0) -> list[ReceiptRecord]:
         params = {"limit": limit, "offset": offset}
-        result = await self._get("/v1/runtime/receipts", params=params)
+        result = await self._get("/v1/receipts", params=params)
         return [ReceiptRecord(**r) for r in result] if result else []
 
     async def get_receipt(self, receipt_id: str) -> ReceiptRecord:
-        return await self._get(f"/v1/runtime/receipts/{receipt_id}")
-
-    async def verify_identity(self, identity: dict) -> dict:
-        return await self._post("/v1/runtime/identity/verify", identity)
+        return await self._get(f"/v1/receipts/{receipt_id}")
 
     async def list_approvals(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        return await self._get("/v1/runtime/approvals", params={"limit": limit, "offset": offset})
+        return await self._get("/v1/approvals", params={"limit": limit, "offset": offset})
 
     async def list_executions(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        return await self._get("/v1/runtime/executions", params={"limit": limit, "offset": offset})
+        return await self._get("/v1/executions", params={"limit": limit, "offset": offset})
 
     async def list_continuations(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        return await self._get("/v1/runtime/continuations", params={"limit": limit, "offset": offset})
+        return await self._get("/v1/continuations", params={"limit": limit, "offset": offset})
 
     async def get_capabilities(self) -> dict:
-        return await self._get("/v1/runtime/capabilities")
-
-    async def get_trust_score(self, agent_id: str) -> dict:
-        return await self._get(f"/v1/runtime/trust/{agent_id}")
+        return await self._get("/v1/capabilities")
 
     async def get_metrics(self) -> dict:
         return await self._get("/v1/runtime/metrics")
-
-    async def get_policy(self) -> dict:
-        return await self._get("/v1/runtime/policy")
 
     async def _get(self, path: str, params: Optional[dict] = None) -> Any:
         return await self._request("GET", path, params=params)

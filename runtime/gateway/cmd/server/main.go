@@ -26,6 +26,7 @@ import (
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipt"
 	"ovara.runtime.gateway/internal/receipts"
+	"ovara.runtime.gateway/internal/sandbox"
 	"ovara.runtime.gateway/internal/trust"
 
 	"github.com/fsnotify/fsnotify"
@@ -360,6 +361,41 @@ func main() {
 	execRegistry.Register("git.checkout", gitExec)
 	log.Printf("git executor configured (git.push, git.pull, git.fetch, git.checkout)")
 
+	sandboxEnabled := os.Getenv("OVARA_SANDBOX_ENABLED")
+	if sandboxEnabled == "true" {
+		dockerSandbox := sandbox.NewDockerSandbox("")
+		sandboxExec := execution.NewSandboxExecutor(dockerSandbox, 60)
+		execRegistry.Register("shell.sandboxed", sandboxExec)
+		log.Printf("sandbox executor configured (shell.sandboxed, docker-based, network disabled)")
+	} else {
+		log.Printf("sandbox executor NOT configured: set OVARA_SANDBOX_ENABLED=true to enable")
+	}
+
+	if cfg.GitHubToken != "" {
+		githubExec := execution.NewGitHubExecutor(cfg.GitHubToken, 60)
+		execRegistry.Register("github.push", githubExec)
+		execRegistry.Register("github.pr", githubExec)
+		execRegistry.Register("github.merge", githubExec)
+		execRegistry.Register("github.delete_branch", githubExec)
+		log.Printf("github executor configured (github.push, github.pr, github.merge, github.delete_branch)")
+	} else {
+		log.Printf("github executor NOT configured: github_token not set in config")
+	}
+
+	if cfg.CIToken != "" || cfg.CIWebhookURL != "" {
+		ciExec := execution.NewCIExecutor(60)
+		if cfg.CIToken != "" {
+			ciExec.RegisterProvider(execution.NewGitHubActionsProvider(cfg.CIToken, 60))
+		}
+		if cfg.CIWebhookURL != "" {
+			ciExec.RegisterProvider(execution.NewWebhookProvider(cfg.CIWebhookURL, cfg.CIToken, 60))
+		}
+		execRegistry.Register("ci.trigger", ciExec)
+		log.Printf("ci executor configured (ci.trigger)")
+	} else {
+		log.Printf("ci executor NOT configured: ci_token and ci_webhook_url not set in config")
+	}
+
 	continuationHandler.SetExecutionStore(execStore)
 	continuationHandler.SetExecutorRegistry(execRegistry)
 	continuationHandler.SetExecutor(shellExec)
@@ -378,7 +414,7 @@ func main() {
 	if cfg.StuckExecutingSweepIntervalSec > 0 {
 		stuckSweepDesc = fmt.Sprintf("interval=%ds threshold=%dmin", cfg.StuckExecutingSweepIntervalSec, cfg.StuckExecutingRecoveryThresholdMin)
 	}
-	log.Printf("execution orchestrator started (poll_interval=2s, stuck_sweep=%s, action_types=[shell, exec, git.push, git.pull, git.fetch, git.checkout])", stuckSweepDesc)
+	log.Printf("execution orchestrator started (poll_interval=2s, stuck_sweep=%s, action_types=[shell, exec, git.push, git.pull, git.fetch, git.checkout, github.push, github.pr, github.merge, github.delete_branch, ci.trigger])", stuckSweepDesc)
 
 	execSweeper := execution.NewSweeper(execStore)
 	execSweeper.Start(cfg.ExecutionSweepIntervalSec)

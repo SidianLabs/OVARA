@@ -4,13 +4,13 @@
 
 Goal: make sensitive AI actions interceptable, policy-evaluable, and auditable.
 
-- ✅ shell, GitHub, Git, and CI/CD action interceptors (5 execution surfaces)
+- ✅ shell, GitHub, Git, and CI/CD action interceptors (11 execution surfaces)
 - ✅ local policy engine with allow, deny, and escalate outcomes
 - ✅ approval workflows for high-risk actions (create, audit, enforce, escalate)
 - ✅ execution receipts with cryptographic signing (HMAC-SHA256)
 - ✅ operator bearer-token auth, bulk retry/cancel, unified pagination
 - ✅ SLA health diagnostics, stuck-executing recovery, panic recovery
-- 🔲 runtime SDKs for TypeScript and Python (separate codebases)
+- ✅ runtime SDKs for TypeScript and Python (separate codebases)
 
 Exit criteria:
 

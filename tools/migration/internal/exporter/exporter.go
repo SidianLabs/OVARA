@@ -84,7 +84,9 @@ func (exp *Exporter) Run() (*ExportResult, error) {
 			continue
 		}
 
-		result.FilesWritten++
+		if !exp.dryRun {
+			result.FilesWritten++
+		}
 		result.RecordsExported += count
 		fmt.Printf("exported %d records to %s.jsonl\n", count, col.Name)
 	}

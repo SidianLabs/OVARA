@@ -50,7 +50,8 @@ func (imp *Importer) Run() (*ImportResult, error) {
 		}
 
 		path := filepath.Join(imp.sourceDir, entry.Name())
-		count, err := imp.importFile(path, entry.Name())
+		collection := strings.TrimSuffix(entry.Name(), ".jsonl")
+		count, err := imp.importFile(path, collection)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error importing %s: %v\n", entry.Name(), err)
 			result.Errors++
@@ -104,12 +105,11 @@ func (imp *Importer) importFile(filePath, collection string) (int, error) {
 		if err != nil {
 			return count, fmt.Errorf("sending request: %w", err)
 		}
-		io.Copy(io.Discard, resp.Body)
+		bodyBytes, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			fmt.Fprintf(os.Stderr, "API error for %s: status %d\n", collection, resp.StatusCode)
-			continue
+			return count, fmt.Errorf("API error: status %d: %s", resp.StatusCode, string(bodyBytes))
 		}
 
 		count++

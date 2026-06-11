@@ -37,6 +37,12 @@ enforced by a single middleware wrapping all routes. See
 | `git.pull` | `GitExecutor` | `git:<repo>[:branch]` e.g. `git:origin/main` | Policy-evaluated; allow/deny/escalate |
 | `git.fetch` | `GitExecutor` | `git:<remote>[:<refspec>]` e.g. `git:origin` or `git:origin:refs/heads/main` | Policy-evaluated; allow/deny/escalate |
 | `git.checkout` | `GitExecutor` | `git:<repo>:<branch>` e.g. `git:/home/user/repo:main` | Policy-evaluated; allow/deny/escalate |
+| `github.push` | `GitHubExecutor` | `github:<owner>/<repo>[:<ref>]` e.g. `github:acme/app:main` | Policy-evaluated; token-gated |
+| `github.pr` | `GitHubExecutor` | `github:<owner>/<repo>[:<head>]?base=<base>` | Policy-evaluated; token-gated |
+| `github.merge` | `GitHubExecutor` | `github:<owner>/<repo>[:<sha>]` | Policy-evaluated; token-gated |
+| `github.delete_branch` | `GitHubExecutor` | `github:<owner>/<repo>[:<branch>]` | Policy-evaluated; token-gated |
+| `ci.trigger` | `CIExecutor` | `ci:<provider>:<workflow>[:<event>]` e.g. `ci:github:deploy.yml:workflow_dispatch` | Policy-evaluated; config-gated |
+| `shell.sandboxed` | `SandboxExecutor` | `shell:<command>` (same format as `shell`) | Policy-evaluated; opt-in sandbox |
 
 ### Resource Formats
 
@@ -603,17 +609,22 @@ For long-running gateways, a periodic sweep can be enabled to automatically reco
 
 ---
 
-## Unimplemented / Aspirational Action Types
+## Additional Action Types
 
-These appear in docs/policies but are **not yet implemented** in V1:
+| Action Type | Executor | Resource Format | Behavior |
+|-------------|----------|-----------------|----------|
+| `github.push` | `GitHubExecutor` | `github:<owner>/<repo>[:<ref>]` e.g. `github:acme/app:main` | Policy-evaluated; token-gated |
+| `github.pr` | `GitHubExecutor` | `github:<owner>/<repo>[:<head>]?base=<base>` | Policy-evaluated; token-gated |
+| `github.merge` | `GitHubExecutor` | `github:<owner>/<repo>[:<sha>]` | Policy-evaluated; token-gated |
+| `github.delete_branch` | `GitHubExecutor` | `github:<owner>/<repo>[:<branch>]` | Policy-evaluated; token-gated |
+| `ci.trigger` | `CIExecutor` | `ci:<provider>:<workflow>[:<event>]` e.g. `ci:github:deploy.yml:workflow_dispatch` | Policy-evaluated; config-gated |
+| `shell.sandboxed` | `SandboxExecutor` | `shell:<command>` (same format as `shell`) | Policy-evaluated; opt-in via `OVARA_SANDBOX_ENABLED=true` |
 
-| Action Type | Status |
-|------------|--------|
-| `github.*` (push, pr, merge, delete_branch) | Not implemented — no GitHub API executor |
-| `ci.*` (deploy, build_trigger, approval) | Not implemented — no CI system executor |
-| `git.force_push` | Registered in policy but not as an executor — falls through to `SKIP no executor` |
+**Token-gated executors**: `github.push`, `github.pr`, `github.merge`, and `github.delete_branch` require `github_token` in config. If not configured, the executor logs a warning and actions are routed to the orchestrator but skipped at execution time.
 
-Using an unimplemented action type in a policy is harmless (it simply never matches a registered executor). However, using it in a continuation will result in `SKIP no executor registered` at execution time.
+**Config-gated executors**: `ci.trigger` requires `ci_token` and/or `ci_webhook_url` in config. If not configured, behaves the same as token-gated GitHub actions.
+
+**Opt-in sandbox**: `shell.sandboxed` is identical in resource format to `shell` but executes inside a Docker container. Enabled by setting `OVARA_SANDBOX_ENABLED=true`. Requires Docker daemon running.
 
 ---
 

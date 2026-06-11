@@ -11,6 +11,10 @@ export interface AuthContext {
 }
 
 export async function authenticate(request: FastifyRequest): Promise<AuthContext> {
+  if ((request as any).auth) {
+    return (request as any).auth as AuthContext;
+  }
+
   const header = request.headers["authorization"];
   if (!header || !header.startsWith("Bearer ")) {
     throw { statusCode: 401, message: "Missing authorization header" };

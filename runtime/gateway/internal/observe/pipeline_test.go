@@ -170,7 +170,9 @@ func TestMetricsBridge_EmitSnapshot(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	bridge.Stop()
 
-	if exp.Count() < 1 {
+	exp.mu.Lock()
+	defer exp.mu.Unlock()
+	if len(exp.exported) < 1 {
 		t.Error("expected at least 1 metrics snapshot event")
 	}
 	if exp.exported[0].EventType != "telemetry.metrics_snapshot" {

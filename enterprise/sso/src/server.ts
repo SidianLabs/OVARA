@@ -1,11 +1,28 @@
-import Fastify from "fastify";
+import Fastify, { FastifyRequest, FastifyReply } from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { OIDCProvider, SAMLProvider } from "./providers";
+import { ssoConfigSchema, samlConfigSchema } from "./types";
 
 const app = Fastify({ logger: true });
 
 const oidcConfigs: Map<string, any> = new Map();
+
+const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 30;
+
+function checkRateLimit(key: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitStore.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitStore.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false;
+  entry.count++;
+  return true;
+}
 
 function getOIDCProvider(orgId: string): OIDCProvider | null {
   const config = oidcConfigs.get(orgId);
@@ -13,19 +30,43 @@ function getOIDCProvider(orgId: string): OIDCProvider | null {
   return new OIDCProvider(config);
 }
 
+function validateOrgId(orgId: string): boolean {
+  return /^[a-zA-Z0-9_-]{1,64}$/.test(orgId);
+}
+
 export async function buildApp() {
   await app.register(cors, { origin: true, credentials: true });
   await app.register(cookie, { secret: process.env.COOKIE_SECRET || "ovara-cookie-secret" });
 
+  app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
+    const clientIp = request.ip || request.socket.remoteAddress || "unknown";
+    const key = `${clientIp}:${request.url}`;
+    if (!checkRateLimit(key)) {
+      return reply.status(429).send({ error: "Rate limit exceeded" });
+    }
+  });
+
   app.post("/sso/:orgId/configure", async (request, reply) => {
     const { orgId } = request.params as { orgId: string };
-    const config = request.body as any;
-    oidcConfigs.set(orgId, config);
+    if (!validateOrgId(orgId)) {
+      return reply.status(400).send({ error: "Invalid organization ID" });
+    }
+
+    const parsed = ssoConfigSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid configuration", details: parsed.error.issues });
+    }
+
+    oidcConfigs.set(orgId, parsed.data);
     return reply.send({ status: "configured", orgId });
   });
 
   app.get("/sso/:orgId/login", async (request, reply) => {
     const { orgId } = request.params as { orgId: string };
+    if (!validateOrgId(orgId)) {
+      return reply.status(400).send({ error: "Invalid organization ID" });
+    }
+
     const state = `${orgId}:${Date.now()}`;
     const nonce = `${Date.now()}${Math.random().toString(36).slice(2)}`;
 
@@ -42,6 +83,10 @@ export async function buildApp() {
 
   app.get("/sso/:orgId/callback", async (request, reply) => {
     const { orgId } = request.params as { orgId: string };
+    if (!validateOrgId(orgId)) {
+      return reply.status(400).send({ error: "Invalid organization ID" });
+    }
+
     const { code, state, error } = request.query as Record<string, string>;
 
     if (error) {
@@ -75,18 +120,31 @@ export async function buildApp() {
   });
 
   app.post("/sso/:orgId/saml/callback", async (request, reply) => {
+    const { orgId } = request.params as { orgId: string };
+    if (!validateOrgId(orgId)) {
+      return reply.status(400).send({ error: "Invalid organization ID" });
+    }
+
     const { SAMLResponse, RelayState } = request.body as any;
     if (!SAMLResponse) {
       return reply.status(400).send({ error: "Missing SAMLResponse" });
     }
 
-    const config = oidcConfigs.get(request.params as any);
+    if (typeof SAMLResponse !== "string" || SAMLResponse.length > 1_000_000) {
+      return reply.status(400).send({ error: "Invalid SAMLResponse" });
+    }
+
+    const config = oidcConfigs.get(orgId);
     if (!config || !config.x509Cert) {
       return reply.status(400).send({ error: "SAML not configured" });
     }
 
     try {
-      const samlProvider = new SAMLProvider(config);
+      const parsed = samlConfigSchema.safeParse(config);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Invalid SAML configuration" });
+      }
+      const samlProvider = new SAMLProvider(parsed.data);
       const user = await samlProvider.parseAssertionResponse(SAMLResponse);
       const token = await signUserToken(user);
       return reply.send({ user, token });
@@ -97,10 +155,18 @@ export async function buildApp() {
 
   app.get("/sso/:orgId/config", async (request, reply) => {
     const { orgId } = request.params as { orgId: string };
+    if (!validateOrgId(orgId)) {
+      return reply.status(400).send({ error: "Invalid organization ID" });
+    }
+
     const config = oidcConfigs.get(orgId);
     if (!config) return reply.status(404).send({ error: "No SSO config found" });
     const { clientSecret, ...safe } = config;
     return reply.send(safe);
+  });
+
+  app.get("/health", async () => {
+    return { status: "ok", service: "ovara-sso", timestamp: new Date().toISOString() };
   });
 
   return app;

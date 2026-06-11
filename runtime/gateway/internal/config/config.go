@@ -62,6 +62,10 @@ type Config struct {
 	StuckExecutingSweepIntervalSec     int `json:"stuck_executing_sweep_interval_secs"`
 	StuckExecutingRecoveryThresholdMin int `json:"stuck_executing_recovery_threshold_min"`
 
+	GitHubToken     string `json:"github_token"`
+	CIToken         string `json:"ci_token"`
+	CIWebhookURL    string `json:"ci_webhook_url"`
+
 	SLAApprovalMaxAgeMin          int              `json:"sla_approval_max_age_min"`
 	SLARetryableMaxAgeMin         int              `json:"sla_retryable_max_age_min"`
 	SLAPendingApprovalMaxAgeMin   int              `json:"sla_pending_approval_max_age_min"`

@@ -18,3 +18,6 @@ node_modules/
 .next/
 *.tsbuildinfo
 next-env.d.ts
+runtime/gateway/server
+tools/cli/ovara.tools.cli
+trust/trust-cli

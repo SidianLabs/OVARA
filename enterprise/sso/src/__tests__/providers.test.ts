@@ -110,6 +110,7 @@ describe("SAMLProvider", () => {
     ssoUrl: "https://idp.example.com/sso",
     x509Cert: "MIIC...cert",
     assertionConsumerUrl: "https://app.example.com/saml/callback",
+    nameIdFormat: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
   };
 
   let samlProvider: SAMLProvider;

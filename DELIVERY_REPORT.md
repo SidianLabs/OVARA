@@ -13,7 +13,7 @@ Ovara Runtime Gateway is a single-binary Go service providing runtime trust infr
 ### Core Gateway (`runtime/gateway/`)
 - **22 packages**, 130+ Go files, 300+ test functions
 - HTTP API with 25+ endpoints across 8 route groups
-- 5 execution surfaces: `shell`, `exec`, `git.push`, `git.pull`, `git.fetch`, `git.checkout`
+- 11 execution surfaces: `shell`, `exec`, `git.push`, `git.pull`, `git.fetch`, `git.checkout`, `github.push`, `github.pr`, `github.merge`, `github.delete_branch`, `ci.trigger`, plus `shell.sandboxed` (opt-in)
 - Policy engine: allow/deny/escalate with trust-dependent rules (MinTrustScore, MinTrustLevel)
 - Identity verification: agent identity, capability leases (ed25519-signed), delegation chains (hash-verified)
 - Trust evaluation: shield/containment, anomaly heuristics, drift detection, degradation model
@@ -139,8 +139,8 @@ Identity Module:
 | `/v1/runtime/health` | GET | SLA health diagnostics |
 | `/v1/audit/export` | GET | Audit data export |
 | `/v1/approval/create` | POST | Create approval request |
-| `/v1/approval/approve/{id}` | POST | Approve escalation |
-| `/v1/approval/deny/{id}` | POST | Deny escalation |
+| `/v1/approval/{id}/approve` | POST | Approve escalation |
+| `/v1/approval/{id}/deny` | POST | Deny escalation |
 | `/v1/approval/list` | GET | List approvals |
 | `/v1/continuations/list` | GET | List continuations |
 | `/v1/continuations/{id}` | GET | Get continuation |
@@ -186,7 +186,7 @@ Identity Module:
 
 | Criterion | Status |
 |-----------|--------|
-| 5 execution surfaces (shell, exec, git.push, git.pull, git.fetch, git.checkout) | ✅ |
+| 11 execution surfaces (shell, exec, git.push, git.pull, git.fetch, git.checkout, github.push/pr/merge/delete_branch, ci.trigger, shell.sandboxed) | ✅ |
 | Policy engine (allow/deny/escalate) with dynamic approvals | ✅ |
 | Cryptographic receipt signing (HMAC-SHA256, sig_v1) | ✅ |
 | Operator bearer-token auth | ✅ |

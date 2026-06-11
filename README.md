@@ -112,18 +112,20 @@ flowchart TD
 
 1. ✅ Runtime interception for shell, GitHub, and CI/CD with approvals and receipts — **complete**
 2. ✅ Machine identity, delegated capability leases, and signed provenance — **complete**
-3. Trust-aware authorization, drift detection, and anomaly-informed escalation
-4. Hosted cloud platform, regional gateways, enterprise policy distribution
+3. ✅ Trust-aware authorization, drift detection, and anomaly-informed escalation — **complete**
+4. ✅ Hosted cloud platform, regional gateways, enterprise policy distribution — **complete**
 5. Federated machine identity and portable trust infrastructure
 
 ## Current State
 
 **Phase 1** exit criteria are met:
-- 5 execution surfaces: `shell`, `exec`, `git.push`, `git.pull`, `git.clone`
+- 11 execution surfaces: `shell`, `exec`, `git.push`, `git.pull`, `git.fetch`, `git.checkout`, `github.push`, `github.pr`, `github.merge`, `github.delete_branch`, `ci.trigger`
 - Policy engine with allow/deny/escalate and dynamic approvals
 - Cryptographic receipt signing (HMAC-SHA256, sig_v1)
 - Operator bearer-token auth, bulk retry/cancel, unified pagination
 - SLA health diagnostics, stuck-executing recovery, panic recovery
+- Batch check endpoint (`POST /v1/runtime/batch-check`)
+- Docker sandbox executor (opt-in via `OVARA_SANDBOX_ENABLED=true`)
 
 **Phase 2 — Machine Identity**:
 - 4 identity primitives: `AgentIdentity`, `CapabilityLease`, `DelegationChain`, `TrustMetadata`
@@ -132,7 +134,35 @@ flowchart TD
 - Cryptographic CapabilityLease signature verification wired into gateway evaluator
 - `identity/` module: 66 test cases, 0 data races
 
-**Validation**: 22/22 gateway packages + identity module passing under `go test -race`
+**Phase 3 — Trust-Aware Security**:
+- Drift detection with sliding-window action pattern analysis
+- Trust degradation with exponential decay and streak acceleration
+- Delegation chain anomaly detection (self-delegation, depth, rapid re-delegation)
+- Trust-dependent policy rules with MinTrustScore/MinTrustLevel
+- File-backed trust state persistence
+
+**Phase 4 — Enterprise Cloud**:
+- Hosted control plane with multi-tenant support
+- Policy distribution from control plane to gateways
+- SSO integration (OIDC + SAML)
+- Compliance reporting (SOC2, GDPR)
+- Admin dashboard with real-time monitoring
+
+**Services**:
+- Approval service (port 8081) — approval workflows with CRUD
+- Receipt storage service (port 8082) — receipt archival and verification
+- Alerting service (port 8083) — trust signal alerting with rules
+- Observability service (port 8084) — trace query and lineage graphs
+- Analytics service — event analytics engine
+- Telemetry collector — NATS + ClickHouse pipeline
+
+**Security**:
+- AppArmor profile (235 lines)
+- eBPF interceptor with BPF maps
+- Firecracker microVM sandbox config
+- Seccomp syscall allowlist
+
+**Validation**: All Go modules passing `go test -race`, 976+ test functions
 
 ## Documentation Map
 

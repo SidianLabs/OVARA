@@ -1,7 +1,7 @@
 .PHONY: all build test clean docker-build docker-push lint vet check
 
-GO_MODULES := runtime/gateway identity trust services/approval services/receipt-storage tools/cli telemetry/collector
-TS_MODULES := cloud/control-plane enterprise/sso enterprise/compliance sdk/typescript integrations/mcp integrations/langchain policy/compiler apps/admin-dashboard
+GO_MODULES := runtime/gateway identity trust services/approval services/receipt-storage services/alerting services/observability tools/cli telemetry/collector
+TS_MODULES := cloud/control-plane enterprise/sso enterprise/compliance sdk/typescript integrations/mcp integrations/langchain integrations/crewai integrations/openai-agents integrations/browser-automation integrations/openai policy/compiler apps/admin-dashboard packages/shared-types
 
 all: vet test build
 
@@ -19,7 +19,7 @@ test:
 test-ts:
 	@for mod in $(TS_MODULES); do \
 		if [ -f $$mod/package.json ]; then \
-			echo "=== test $$mod ===" && cd $$mod && npx vitest run 2>/dev/null || true && cd $(CURDIR); \
+			echo "=== test $$mod ===" && cd $$mod && npx vitest run; cd $(CURDIR); \
 		fi; \
 	done
 
@@ -45,6 +45,10 @@ bench-compare:
 docker-build:
 	docker build -t ovara/gateway:latest runtime/gateway
 	docker build -t ovara/control-plane:latest cloud/control-plane
+	docker build -t ovara/approval:latest services/approval
+	docker build -t ovara/receipt-storage:latest services/receipt-storage
+	docker build -t ovara/alerting:latest services/alerting
+	docker build -t ovara/observability:latest services/observability
 
 docker-build-all:
 	docker compose -f infrastructure/docker-compose.full.yml build
@@ -57,7 +61,16 @@ docker-down:
 
 # ── Lint ─────────────────────────────────────────────
 lint:
-	@echo "=== golangci-lint ===" && golangci-lint run runtime/gateway/... identity/... trust/... 2>/dev/null || echo "install golangci-lint for full linting"
+	@echo "=== golangci-lint ===" && golangci-lint run runtime/gateway/... identity/... trust/... services/... 2>/dev/null || echo "install golangci-lint for full linting"
+
+# ── Security ─────────────────────────────────────────
+security-check:
+	@echo "=== AppArmor profile validation ===" && apparmor_parser -Q security/apparmor/ovara-gateway 2>/dev/null && echo "AppArmor OK" || echo "AppArmor: install apparmor-utils to validate"
+	@echo "=== Seccomp profile validation ===" && python3 -c "import json; json.load(open('security/sandbox/seccomp-profile.json'))" 2>/dev/null && echo "Seccomp OK" || echo "Seccomp: profile not yet created"
+
+# ── Full validation ──────────────────────────────────
+validate: vet test build test-ts build-ts security-check
+	@echo "=== ALL VALIDATION PASSED ==="
 
 # ── Check (CI entry point) ───────────────────────────
 check: vet test build test-ts build-ts
