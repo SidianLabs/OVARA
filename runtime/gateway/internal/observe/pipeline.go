@@ -3,6 +3,7 @@ package observe
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"sync"
 	"time"
 
@@ -39,7 +40,9 @@ func (p *TelemetryPipeline) Send(ctx context.Context, evt *events.Event) {
 		return
 	}
 	for _, exp := range p.exporters {
-		_ = exp.Export(ctx, evt)
+		if err := exp.Export(ctx, evt); err != nil {
+			log.Printf("telemetry export error: %v", err)
+		}
 	}
 }
 
@@ -60,7 +63,9 @@ func (p *TelemetryPipeline) Shutdown() {
 	defer p.mu.Unlock()
 	p.running = false
 	for _, exp := range p.exporters {
-		_ = exp.Close()
+		if err := exp.Close(); err != nil {
+			log.Printf("telemetry exporter close error: %v", err)
+		}
 	}
 }
 
@@ -80,11 +85,11 @@ func (c *ConsoleExporter) Export(_ context.Context, evt *events.Event) error {
 	if err != nil {
 		return err
 	}
-	_, _ = json.Marshal(struct {
+	_, err = json.Marshal(struct {
 		Timestamp time.Time `json:"@timestamp"`
 		Event     string    `json:"@event"`
 	}{Timestamp: evt.Timestamp, Event: string(data)})
-	return nil
+	return err
 }
 
 func (c *ConsoleExporter) Close() error { return nil }

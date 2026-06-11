@@ -118,7 +118,10 @@ func (d *DockerSocker) CreateContainer(ctx context.Context, opts SandboxOpts) (s
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("docker create returned %d: failed to read response body: %w", resp.StatusCode, err)
+		}
 		return "", fmt.Errorf("docker create returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -175,7 +178,10 @@ func (d *DockerSocker) ExecInContainer(ctx context.Context, containerID, command
 	}
 	defer startResp.Body.Close()
 
-	output, _ := io.ReadAll(startResp.Body)
+	output, err := io.ReadAll(startResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading exec output: %w", err)
+	}
 
 	return &SandboxResult{
 		ContainerID: containerID,

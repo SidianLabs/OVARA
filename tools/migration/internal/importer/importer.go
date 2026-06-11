@@ -105,8 +105,11 @@ func (imp *Importer) importFile(filePath, collection string) (int, error) {
 		if err != nil {
 			return count, fmt.Errorf("sending request: %w", err)
 		}
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if err != nil {
+			return count, fmt.Errorf("reading response body: %w", err)
+		}
 
 		if resp.StatusCode >= 400 {
 			return count, fmt.Errorf("API error: status %d: %s", resp.StatusCode, string(bodyBytes))
