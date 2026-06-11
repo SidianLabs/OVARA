@@ -232,3 +232,90 @@ func (m *mockMetrics) Snapshot() MetricsSnapshot {
 		PolicyReloadStatus: m.reloadStatus,
 	}
 }
+
+func TestTelemetryEvent_Fields(t *testing.T) {
+	evt := telemetryEvent{
+		EventType: "test.event",
+		Timestamp: time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC),
+		GatewayID: "gw-123",
+		Payload:   map[string]any{"key": "value"},
+	}
+
+	if evt.EventType != "test.event" {
+		t.Errorf("eventType = %v, want test.event", evt.EventType)
+	}
+	if evt.GatewayID != "gw-123" {
+		t.Errorf("gatewayID = %v, want gw-123", evt.GatewayID)
+	}
+	if evt.Payload["key"] != "value" {
+		t.Errorf("payload[key] = %v, want value", evt.Payload["key"])
+	}
+}
+
+func TestNewTelemetryEvent(t *testing.T) {
+	payload := map[string]any{"action": "approve", "result": "allowed"}
+	evt := NewTelemetryEvent("decision.made", "gw-456", payload)
+
+	if evt.EventType != "decision.made" {
+		t.Errorf("eventType = %v, want decision.made", evt.EventType)
+	}
+	if evt.GatewayID != "gw-456" {
+		t.Errorf("gatewayID = %v, want gw-456", evt.GatewayID)
+	}
+	if evt.Timestamp.IsZero() {
+		t.Error("timestamp should not be zero")
+	}
+	if evt.Payload["action"] != "approve" {
+		t.Errorf("payload[action] = %v, want approve", evt.Payload["action"])
+	}
+}
+
+func TestNewTelemetryEvent_EmptyPayload(t *testing.T) {
+	evt := NewTelemetryEvent("event.type", "gw-789", nil)
+
+	if evt.Payload != nil {
+		t.Errorf("payload = %v, want nil", evt.Payload)
+	}
+}
+
+func TestNATSExporter_Stats_Empty(t *testing.T) {
+	exp := NewNATSExporter(NATSConfig{})
+	sent, dropped := exp.Stats()
+	if sent != 0 {
+		t.Errorf("sent = %d, want 0", sent)
+	}
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0", dropped)
+	}
+}
+
+func TestNATSExporter_Stats_Multiple(t *testing.T) {
+	exp := NewNATSExporter(NATSConfig{})
+	evt := events.NewEvent("test.event")
+
+	for i := 0; i < 5; i++ {
+		exp.Export(context.Background(), evt)
+	}
+
+	sent, dropped := exp.Stats()
+	if sent != 5 {
+		t.Errorf("sent = %d, want 5", sent)
+	}
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0", dropped)
+	}
+}
+
+func TestNATSExporter_Export_MarshalError(t *testing.T) {
+	exp := NewNATSExporter(NATSConfig{})
+	evt := events.NewEvent("test.event")
+
+	for i := 0; i < 3; i++ {
+		exp.Export(context.Background(), evt)
+	}
+
+	sent, _ := exp.Stats()
+	if sent != 3 {
+		t.Errorf("sent = %d, want 3", sent)
+	}
+}

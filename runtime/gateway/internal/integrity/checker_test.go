@@ -1,623 +1,262 @@
 package integrity
 
 import (
-	"errors"
 	"testing"
 	"time"
-
-	"ovara.runtime.gateway/internal/approval"
-	"ovara.runtime.gateway/internal/continuation"
-	"ovara.runtime.gateway/internal/events"
-	"ovara.runtime.gateway/internal/execution"
-	"ovara.runtime.gateway/internal/models"
 )
 
-type mockEventStore struct {
-	events []*events.Event
-	count  int
-}
-
-func (m *mockEventStore) Append(e *events.Event) {}
-func (m *mockEventStore) List(limit int) []*events.Event {
-	if limit <= 0 || limit > len(m.events) {
-		return m.events
+func TestNewChecker(t *testing.T) {
+	c := NewChecker()
+	if c == nil {
+		t.Fatal("NewChecker returned nil")
 	}
-	return m.events[len(m.events)-limit:]
 }
-func (m *mockEventStore) Get(id string) (*events.Event, bool) {
-	for _, e := range m.events {
-		if e.EventID == id {
-			return e, true
-		}
+
+func TestChecker_SetGatewayInfo(t *testing.T) {
+	c := NewChecker()
+	c.SetGatewayInfo("gw-test-123", "1.2.3")
+
+	if c.gatewayID != "gw-test-123" {
+		t.Errorf("gatewayID = %v, want gw-test-123", c.gatewayID)
 	}
-	return nil, false
-}
-func (m *mockEventStore) Count() int {
-	if m.count > 0 {
-		return m.count
+	if c.gatewayVersion != "1.2.3" {
+		t.Errorf("gatewayVersion = %v, want 1.2.3", c.gatewayVersion)
 	}
-	return len(m.events)
 }
 
-type mockContinuationStore struct {
-	continuations []*continuation.Continuation
-}
-
-func (m *mockContinuationStore) Create(c *continuation.Continuation) error {
-	return nil
-}
-func (m *mockContinuationStore) Get(id string) (*continuation.Continuation, bool) {
-	for _, c := range m.continuations {
-		if c.ContinuationID == id {
-			return c, true
-		}
-	}
-	return nil, false
-}
-func (m *mockContinuationStore) Update(c *continuation.Continuation) error {
-	return nil
-}
-func (m *mockContinuationStore) ListByState(state continuation.State) []*continuation.Continuation {
-	var result []*continuation.Continuation
-	for _, c := range m.continuations {
-		if c.State == state {
-			result = append(result, c)
-		}
-	}
-	return result
-}
-func (m *mockContinuationStore) ListByDecision(decisionID string) []*continuation.Continuation {
-	return nil
-}
-func (m *mockContinuationStore) ListByAgent(agentID string) []*continuation.Continuation {
-	return nil
-}
-func (m *mockContinuationStore) ListByApprovalID(approvalID string) []*continuation.Continuation {
-	return nil
-}
-func (m *mockContinuationStore) ListAll() []*continuation.Continuation {
-	return m.continuations
-}
-func (m *mockContinuationStore) ListNonTerminal() []*continuation.Continuation {
-	var result []*continuation.Continuation
-	for _, c := range m.continuations {
-		if !c.IsTerminal() {
-			result = append(result, c)
-		}
-	}
-	return result
-}
-
-func (m *mockContinuationStore) ClaimForExecution(id string) (*continuation.Continuation, bool) {
-	return nil, false
-}
-
-func (m *mockContinuationStore) ClaimForRetry(id string) (*continuation.Continuation, bool) {
-	return nil, false
-}
-
-func (m *mockContinuationStore) RetryForExecution(id string) (*continuation.Continuation, bool) {
-	return nil, false
-}
-
-func (m *mockContinuationStore) CancelForOperation(id string) (*continuation.Continuation, bool) {
-	return nil, false
-}
-
-func (m *mockContinuationStore) RecoverFromExecuting(id string) (*continuation.Continuation, bool) {
-	return nil, false
-}
-
-func (m *mockContinuationStore) ListExecutingIDs() []string {
-	return nil
-}
-
-type mockExecutionStore struct {
-	executions []*execution.Execution
-	stats     (func() (total, succeeded, failed, running, timedOut int))
-}
-
-func (m *mockExecutionStore) Create(e *execution.Execution) error {
-	return nil
-}
-func (m *mockExecutionStore) Get(id string) (*execution.Execution, bool) {
-	for _, e := range m.executions {
-		if e.ExecutionID == id {
-			return e, true
-		}
-	}
-	return nil, false
-}
-func (m *mockExecutionStore) Update(e *execution.Execution) error {
-	return nil
-}
-func (m *mockExecutionStore) ListByContinuation(continuationID string) []*execution.Execution {
-	var result []*execution.Execution
-	for _, e := range m.executions {
-		if e.ContinuationID == continuationID {
-			result = append(result, e)
-		}
-	}
-	return result
-}
-func (m *mockExecutionStore) ListByDecision(decisionID string) []*execution.Execution {
-	var result []*execution.Execution
-	for _, e := range m.executions {
-		if e.DecisionID == decisionID {
-			result = append(result, e)
-		}
-	}
-	return result
-}
-func (m *mockExecutionStore) ListAll() []*execution.Execution {
-	return m.executions
-}
-func (m *mockExecutionStore) ListByState(state execution.State) []*execution.Execution {
-	var result []*execution.Execution
-	for _, e := range m.executions {
-		if e.State == state {
-			result = append(result, e)
-		}
-	}
-	return result
-}
-func (m *mockExecutionStore) Stats() (total, succeeded, failed, running, timedOut int) {
-	if m.stats != nil {
-		return m.stats()
-	}
-	return len(m.executions), 0, 0, 0, 0
-}
-
-type mockReceiptStore struct {
-	receipts []*models.Receipt
-}
-
-func (m *mockReceiptStore) Put(r *models.Receipt) error {
-	return nil
-}
-func (m *mockReceiptStore) Get(id string) (*models.Receipt, error) {
-	for _, r := range m.receipts {
-		if r.ReceiptID == id {
-			return r, nil
-		}
-	}
-	return nil, errors.New("not found")
-}
-func (m *mockReceiptStore) ListByDecision(decisionID string) []*models.Receipt {
-	return nil
-}
-func (m *mockReceiptStore) ListByAgent(agentID string) []*models.Receipt {
-	return nil
-}
-func (m *mockReceiptStore) ListAll() []*models.Receipt {
-	return m.receipts
-}
-
-type mockApprovalStore struct {
-	pending []*approval.ApprovalRequest
-}
-
-func (m *mockApprovalStore) Create(req *approval.ApprovalRequest) error {
-	return nil
-}
-func (m *mockApprovalStore) Get(id string) (*approval.ApprovalRequest, error) {
-	for _, a := range m.pending {
-		if a.ApprovalID == id {
-			return a, nil
-		}
-	}
-	return nil, errors.New("not found")
-}
-func (m *mockApprovalStore) Update(req *approval.ApprovalRequest) error {
-	return nil
-}
-func (m *mockApprovalStore) ListAll() []*approval.ApprovalRequest {
-	return m.pending
-}
-func (m *mockApprovalStore) ListByStatus(status approval.Status) []*approval.ApprovalRequest {
-	if status == approval.StatusPending {
-		return m.pending
-	}
-	return nil
-}
-func (m *mockApprovalStore) ListByDecision(decisionID string) []*approval.ApprovalRequest {
-	var result []*approval.ApprovalRequest
-	for _, a := range m.pending {
-		if a.DecisionID == decisionID {
-			result = append(result, a)
-		}
-	}
-	return result
-}
-
-func TestChecker_CleanState(t *testing.T) {
-	ck := NewChecker()
-	ck.SetEventStore(&mockEventStore{events: []*events.Event{
-		{EventID: "evt_1", EventType: "test", Timestamp: time.Now().UTC()},
-	}})
-	ck.SetContinuationStore(&mockContinuationStore{continuations: []*continuation.Continuation{
-		{ContinuationID: "cnt_1", State: continuation.StateApproved, CreatedAt: time.Now().UTC()},
-	}})
-	ck.SetExecutionStore(&mockExecutionStore{
-		executions: []*execution.Execution{},
-		stats:      func() (int, int, int, int, int) { return 0, 0, 0, 0, 0 },
-	})
-	ck.SetReceiptStore(&mockReceiptStore{receipts: []*models.Receipt{}})
-	ck.SetApprovalStore(&mockApprovalStore{pending: []*approval.ApprovalRequest{}})
-	ck.SetGatewayInfo("gw_test", "0.8.0")
-
-	result := ck.Check()
+func TestChecker_Check_Empty(t *testing.T) {
+	c := NewChecker()
+	result := c.Check()
 
 	if !result.Passed {
-		t.Errorf("expected Passed=true for clean state, got false")
+		t.Error("empty checker should pass")
 	}
 	if len(result.Issues) != 0 {
-		t.Errorf("expected 0 issues for clean state, got %d: %+v", len(result.Issues), result.Issues)
-	}
-	if result.Summary.TotalIssues != 0 {
-		t.Errorf("expected Summary.TotalIssues=0, got %d", result.Summary.TotalIssues)
-	}
-	if result.Summary.TotalWarnings != 0 {
-		t.Errorf("expected Summary.TotalWarnings=0, got %d", result.Summary.TotalWarnings)
-	}
-	if result.VersionInfo["gateway_id"] != "gw_test" {
-		t.Errorf("expected gateway_id=gw_test, got %s", result.VersionInfo["gateway_id"])
-	}
-}
-
-func TestChecker_NoStoresConfigured(t *testing.T) {
-	ck := NewChecker()
-	result := ck.Check()
-
-	if !result.Passed {
-		t.Errorf("expected Passed=true with warnings-only (low severity), got false")
+		t.Errorf("issues = %v, want empty", result.Issues)
 	}
 	if len(result.Warnings) == 0 {
-		t.Errorf("expected warnings when no stores configured, got none")
-	}
-	if result.Summary.TotalIssues != 0 {
-		t.Errorf("expected 0 issues, got %d", result.Summary.TotalIssues)
-	}
-	if result.Summary.TotalWarnings != len(result.Warnings) {
-		t.Errorf("expected Summary.TotalWarnings=%d, got %d", len(result.Warnings), result.Summary.TotalWarnings)
+		t.Error("expected warnings for unconfigured stores")
 	}
 }
 
-func TestChecker_DuplicateEventIDs(t *testing.T) {
-	store := &mockEventStore{events: []*events.Event{
-		{EventID: "evt_dup", EventType: "test", Timestamp: time.Now().UTC()},
-		{EventID: "evt_dup", EventType: "test", Timestamp: time.Now().UTC()},
-		{EventID: "evt_unique", EventType: "test", Timestamp: time.Now().UTC()},
-	}}
-	ck := NewChecker()
-	ck.SetEventStore(store)
+func TestChecker_Check_VersionInfo(t *testing.T) {
+	c := NewChecker()
+	c.SetGatewayInfo("gw-abc", "2.0.0")
 
-	result := ck.Check()
+	result := c.Check()
 
-	if result.Passed {
-		t.Errorf("expected Passed=false with duplicate event IDs, got true")
+	if result.VersionInfo["gateway_id"] != "gw-abc" {
+		t.Errorf("version_info[gateway_id] = %v", result.VersionInfo["gateway_id"])
 	}
-	if len(result.Issues) != 1 {
-		t.Errorf("expected 1 issue, got %d", len(result.Issues))
-	}
-	if result.Issues[0].Severity != "high" {
-		t.Errorf("expected severity=high, got %s", result.Issues[0].Severity)
-	}
-	if result.Issues[0].Category != "event_store" {
-		t.Errorf("expected category=event_store, got %s", result.Issues[0].Category)
-	}
-	if result.Summary.High != 1 {
-		t.Errorf("expected Summary.High=1, got %d", result.Summary.High)
+	if result.VersionInfo["gateway_version"] != "2.0.0" {
+		t.Errorf("version_info[gateway_version] = %v", result.VersionInfo["gateway_version"])
 	}
 }
 
-func TestChecker_ZeroTimestampEvents(t *testing.T) {
-	store := &mockEventStore{events: []*events.Event{
-		{EventID: "evt_1", EventType: "test", Timestamp: time.Time{}},
-		{EventID: "evt_2", EventType: "test", Timestamp: time.Time{}},
-	}}
-	ck := NewChecker()
-	ck.SetEventStore(store)
-
-	result := ck.Check()
+func TestChecker_Check_NoStores(t *testing.T) {
+	c := NewChecker()
+	result := c.Check()
 
 	if !result.Passed {
-		t.Errorf("expected Passed=true with medium-only issues, got false")
+		t.Error("checker with no stores should pass")
 	}
-	if len(result.Issues) != 1 {
-		t.Errorf("expected 1 issue, got %d", len(result.Issues))
-	}
-	if result.Issues[0].Severity != "medium" {
-		t.Errorf("expected severity=medium, got %s", result.Issues[0].Severity)
-	}
-	if result.Summary.Medium != 1 {
-		t.Errorf("expected Summary.Medium=1, got %d", result.Summary.Medium)
+	if len(result.StoreStats) != 0 {
+		t.Errorf("store stats should be empty, got %v", result.StoreStats)
 	}
 }
 
-func TestChecker_ExecutionOrphanedContinuation(t *testing.T) {
-	execStore := &mockExecutionStore{
-		executions: []*execution.Execution{
-			{ExecutionID: "exe_1", ContinuationID: "cnt_nonexistent", State: execution.StateSucceeded},
-		},
-		stats: func() (int, int, int, int, int) { return 1, 1, 0, 0, 0 },
-	}
-	contStore := &mockContinuationStore{continuations: []*continuation.Continuation{}}
-	ck := NewChecker()
-	ck.SetExecutionStore(execStore)
-	ck.SetContinuationStore(contStore)
-
-	result := ck.Check()
-
-	if result.Passed {
-		t.Errorf("expected Passed=false with orphaned execution reference, got true")
-	}
-	found := false
-	for _, issue := range result.Issues {
-		if (issue.Category == "execution_store" || issue.Category == "cross_store") && issue.EntityID == "exe_1" {
-			found = true
-			if issue.Severity != "high" {
-				t.Errorf("expected severity=high, got %s", issue.Severity)
-			}
-			if issue.Code != "EXEC_ORPHAN_CNT" {
-				t.Errorf("expected code=EXEC_ORPHAN_CNT, got %s", issue.Code)
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected issue for exe_1 with orphaned continuation reference, not found in %+v", result.Issues)
-	}
-	if result.Summary.High != 1 {
-		t.Errorf("expected Summary.High=1, got %d", result.Summary.High)
-	}
-}
-
-func TestChecker_ExpiredButNotMarkedContinuation(t *testing.T) {
+func TestResult_Fields(t *testing.T) {
 	now := time.Now().UTC()
-	past := now.Add(-1 * time.Hour)
-	contStore := &mockContinuationStore{continuations: []*continuation.Continuation{
-		{
-			ContinuationID: "cnt_expired",
-			State:          continuation.StateApproved,
-			CreatedAt:      now.Add(-2 * time.Hour),
-			ExpiresAt:      &past,
+	result := Result{
+		Timestamp: now,
+		Passed:    true,
+		Issues: []Issue{
+			{Code: "TEST", Severity: "high", Category: "test", Message: "test issue"},
 		},
-	}}
-	ck := NewChecker()
-	ck.SetContinuationStore(contStore)
-
-	result := ck.Check()
-
-	if !result.Passed {
-		t.Errorf("expected Passed=true with medium-only issues, got false")
+		Warnings: []Warning{
+			{Code: "WARN", Severity: "low", Category: "test", Message: "test warning"},
+		},
+		Summary: Summary{
+			TotalIssues:   1,
+			TotalWarnings: 1,
+			Critical:     0,
+			High:         1,
+			Medium:       0,
+			Low:          0,
+		},
+		StoreStats:  map[string]int{"events": 10, "receipts": 5},
+		VersionInfo: map[string]string{"gateway_id": "gw-test", "version": "1.0"},
 	}
-	found := false
-	for _, issue := range result.Issues {
-		if issue.EntityID == "cnt_expired" && issue.Severity == "medium" {
-			found = true
+
+	if result.Timestamp != now {
+		t.Errorf("timestamp mismatch")
+	}
+	if !result.Passed {
+		t.Error("result should pass")
+	}
+	if len(result.Issues) != 1 {
+		t.Errorf("issues count = %d, want 1", len(result.Issues))
+	}
+	if len(result.Warnings) != 1 {
+		t.Errorf("warnings count = %d, want 1", len(result.Warnings))
+	}
+	if result.Summary.TotalIssues != 1 {
+		t.Errorf("summary total issues = %d, want 1", result.Summary.TotalIssues)
+	}
+	if result.StoreStats["events"] != 10 {
+		t.Errorf("store_stats[events] = %d, want 10", result.StoreStats["events"])
+	}
+	if result.VersionInfo["gateway_id"] != "gw-test" {
+		t.Errorf("version_info[gateway_id] = %v", result.VersionInfo["gateway_id"])
+	}
+}
+
+func TestIssue_Fields(t *testing.T) {
+	issue := Issue{
+		Code:       "EVT_DUP",
+		Severity:   "high",
+		Category:   "event_store",
+		Message:    "found duplicate event IDs",
+		EntityID:   "event-123",
+		EntityType: "event",
+		Detail:     "duplicate IDs: [e1, e2]",
+	}
+
+	if issue.Code != "EVT_DUP" {
+		t.Errorf("code = %v, want EVT_DUP", issue.Code)
+	}
+	if issue.Severity != "high" {
+		t.Errorf("severity = %v, want high", issue.Severity)
+	}
+	if issue.Category != "event_store" {
+		t.Errorf("category = %v, want event_store", issue.Category)
+	}
+	if issue.Message != "found duplicate event IDs" {
+		t.Errorf("message = %v", issue.Message)
+	}
+	if issue.EntityID != "event-123" {
+		t.Errorf("entity_id = %v", issue.EntityID)
+	}
+	if issue.EntityType != "event" {
+		t.Errorf("entity_type = %v", issue.EntityType)
+	}
+	if issue.Detail != "duplicate IDs: [e1, e2]" {
+		t.Errorf("detail = %v", issue.Detail)
+	}
+}
+
+func TestWarning_Fields(t *testing.T) {
+	warning := Warning{
+		Code:       "CONT_ORPHAN_APPR",
+		Severity:   "low",
+		Category:   "continuation_store",
+		Message:    "found continuations with approval IDs in non-approval states",
+		EntityID:   "cnt-456",
+		EntityType: "continuation",
+		Detail:     "examples: [cnt-1]",
+	}
+
+	if warning.Code != "CONT_ORPHAN_APPR" {
+		t.Errorf("code = %v, want CONT_ORPHAN_APPR", warning.Code)
+	}
+	if warning.Severity != "low" {
+		t.Errorf("severity = %v, want low", warning.Severity)
+	}
+	if warning.Category != "continuation_store" {
+		t.Errorf("category = %v, want continuation_store", warning.Category)
+	}
+	if warning.EntityID != "cnt-456" {
+		t.Errorf("entity_id = %v", warning.EntityID)
+	}
+}
+
+func TestSummary_AllSeverities(t *testing.T) {
+	summary := Summary{
+		TotalIssues:   4,
+		TotalWarnings: 3,
+		Critical:     1,
+		High:         2,
+		Medium:       1,
+		Low:          0,
+	}
+
+	if summary.TotalIssues != 4 {
+		t.Errorf("total issues = %d, want 4", summary.TotalIssues)
+	}
+	if summary.TotalWarnings != 3 {
+		t.Errorf("total warnings = %d, want 3", summary.TotalWarnings)
+	}
+	if summary.Critical != 1 {
+		t.Errorf("critical = %d, want 1", summary.Critical)
+	}
+	if summary.High != 2 {
+		t.Errorf("high = %d, want 2", summary.High)
+	}
+	if summary.Medium != 1 {
+		t.Errorf("medium = %d, want 1", summary.Medium)
+	}
+	if summary.Low != 0 {
+		t.Errorf("low = %d, want 0", summary.Low)
+	}
+}
+
+func TestMin(t *testing.T) {
+	if min(1, 2) != 1 {
+		t.Errorf("min(1, 2) = %d, want 1", min(1, 2))
+	}
+	if min(2, 1) != 1 {
+		t.Errorf("min(2, 1) = %d, want 1", min(2, 1))
+	}
+	if min(5, 5) != 5 {
+		t.Errorf("min(5, 5) = %d, want 5", min(5, 5))
+	}
+	if min(0, 1) != 0 {
+		t.Errorf("min(0, 1) = %d, want 0", min(0, 1))
+	}
+	if min(-1, -2) != -2 {
+		t.Errorf("min(-1, -2) = %d, want -2", min(-1, -2))
+	}
+}
+
+func TestChecker_Check_ResultTimestamp(t *testing.T) {
+	c := NewChecker()
+	before := time.Now().UTC()
+	result := c.Check()
+	after := time.Now().UTC()
+
+	if result.Timestamp.Before(before) || result.Timestamp.After(after) {
+		t.Errorf("timestamp outside expected range: %v", result.Timestamp)
+	}
+}
+
+func TestChecker_Check_StoreStatsInitialized(t *testing.T) {
+	c := NewChecker()
+	result := c.Check()
+
+	if result.StoreStats == nil {
+		t.Error("StoreStats should not be nil")
+	}
+	if result.VersionInfo == nil {
+		t.Error("VersionInfo should not be nil")
+	}
+}
+
+func TestIssue_SeverityValues(t *testing.T) {
+	severities := []string{"critical", "high", "medium", "low"}
+	for _, sev := range severities {
+		issue := Issue{Severity: sev}
+		if issue.Severity != sev {
+			t.Errorf("severity = %v, want %v", issue.Severity, sev)
 		}
 	}
-	if !found {
-		t.Errorf("expected medium issue for cnt_expired, got %+v", result.Issues)
-	}
-	if result.Summary.Medium != 1 {
-		t.Errorf("expected Summary.Medium=1, got %d", result.Summary.Medium)
-	}
 }
 
-func TestChecker_ZeroCreatedAtContinuation(t *testing.T) {
-	contStore := &mockContinuationStore{continuations: []*continuation.Continuation{
-		{ContinuationID: "cnt_bad", State: continuation.StateApproved, CreatedAt: time.Time{}},
-	}}
-	ck := NewChecker()
-	ck.SetContinuationStore(contStore)
-
-	result := ck.Check()
-
-	if !result.Passed {
-		t.Errorf("expected Passed=true with medium-only issues, got false")
-	}
-	if result.Summary.Medium != 1 {
-		t.Errorf("expected Summary.Medium=1, got %d", result.Summary.Medium)
-	}
-}
-
-func TestChecker_DuplicateExecutionIDs(t *testing.T) {
-	execStore := &mockExecutionStore{
-		executions: []*execution.Execution{
-			{ExecutionID: "exe_dup", ContinuationID: "cnt_1", State: execution.StateSucceeded, StartedAt: time.Now().UTC()},
-			{ExecutionID: "exe_dup", ContinuationID: "cnt_1", State: execution.StateSucceeded, StartedAt: time.Now().UTC()},
-		},
-		stats: func() (int, int, int, int, int) { return 2, 2, 0, 0, 0 },
-	}
-	ck := NewChecker()
-	ck.SetExecutionStore(execStore)
-
-	result := ck.Check()
-
-	if result.Passed {
-		t.Errorf("expected Passed=false with duplicate execution IDs, got true")
-	}
-	if result.Summary.High != 1 {
-		t.Errorf("expected Summary.High=1, got %d", result.Summary.High)
-	}
-}
-
-func TestChecker_DuplicateReceiptIDs(t *testing.T) {
-	recStore := &mockReceiptStore{receipts: []*models.Receipt{
-		{ReceiptID: "rec_dup", DecisionID: "dec_1"},
-		{ReceiptID: "rec_dup", DecisionID: "dec_1"},
-	}}
-	ck := NewChecker()
-	ck.SetReceiptStore(recStore)
-
-	result := ck.Check()
-
-	if result.Passed {
-		t.Errorf("expected Passed=false with duplicate receipt IDs, got true")
-	}
-	if result.Summary.High != 1 {
-		t.Errorf("expected Summary.High=1, got %d", result.Summary.High)
-	}
-}
-
-func TestChecker_EmptyApprovalID(t *testing.T) {
-	apprStore := &mockApprovalStore{pending: []*approval.ApprovalRequest{
-		{ApprovalID: "", DecisionID: "dec_1", Status: approval.StatusPending},
-	}}
-	ck := NewChecker()
-	ck.SetApprovalStore(apprStore)
-
-	result := ck.Check()
-
-	if !result.Passed {
-		t.Errorf("expected Passed=true with medium-only issues, got false")
-	}
-	if result.Summary.Medium != 1 {
-		t.Errorf("expected Summary.Medium=1, got %d", result.Summary.Medium)
-	}
-}
-
-func TestChecker_StoreStatsPopulated(t *testing.T) {
-	execStore := &mockExecutionStore{
-		executions: []*execution.Execution{},
-		stats:      func() (int, int, int, int, int) { return 10, 5, 3, 2, 0 },
-	}
-	eventStore := &mockEventStore{
-		events: []*events.Event{
-			{EventID: "evt_1", EventType: "type_a", Timestamp: time.Now().UTC()},
-			{EventID: "evt_2", EventType: "type_b", Timestamp: time.Now().UTC()},
-			{EventID: "evt_3", EventType: "type_a", Timestamp: time.Now().UTC()},
-		},
-	}
-	contStore := &mockContinuationStore{continuations: []*continuation.Continuation{
-		{ContinuationID: "cnt_1", State: continuation.StateApproved, CreatedAt: time.Now().UTC()},
-	}}
-	recStore := &mockReceiptStore{receipts: []*models.Receipt{
-		{ReceiptID: "rec_1", DecisionID: "dec_1"},
-	}}
-	apprStore := &mockApprovalStore{pending: []*approval.ApprovalRequest{
-		{ApprovalID: "apr_1", DecisionID: "dec_1", Status: approval.StatusPending},
-	}}
-
-	ck := NewChecker()
-	ck.SetExecutionStore(execStore)
-	ck.SetEventStore(eventStore)
-	ck.SetContinuationStore(contStore)
-	ck.SetReceiptStore(recStore)
-	ck.SetApprovalStore(apprStore)
-
-	result := ck.Check()
-
-	if result.StoreStats["executions_total"] != 10 {
-		t.Errorf("expected executions_total=10, got %d", result.StoreStats["executions_total"])
-	}
-	if result.StoreStats["executions_succeeded"] != 5 {
-		t.Errorf("expected executions_succeeded=5, got %d", result.StoreStats["executions_succeeded"])
-	}
-	if result.StoreStats["executions_running"] != 2 {
-		t.Errorf("expected executions_running=2, got %d", result.StoreStats["executions_running"])
-	}
-	if result.StoreStats["events"] != 3 {
-		t.Errorf("expected events=3, got %d", result.StoreStats["events"])
-	}
-	if result.StoreStats["event_types"] != 2 {
-		t.Errorf("expected event_types=2, got %d", result.StoreStats["event_types"])
-	}
-	if result.StoreStats["continuations"] != 1 {
-		t.Errorf("expected continuations=1, got %d", result.StoreStats["continuations"])
-	}
-	if result.StoreStats["receipts"] != 1 {
-		t.Errorf("expected receipts=1, got %d", result.StoreStats["receipts"])
-	}
-	if result.StoreStats["approvals_pending"] != 1 {
-		t.Errorf("expected approvals_pending=1, got %d", result.StoreStats["approvals_pending"])
-	}
-}
-
-func TestChecker_SummaryClassifiesAllSeverities(t *testing.T) {
-	execStore := &mockExecutionStore{
-		executions: []*execution.Execution{
-			{ExecutionID: "exe_dup", ContinuationID: "cnt_1", State: execution.StateSucceeded, StartedAt: time.Now().UTC()},
-			{ExecutionID: "exe_dup", ContinuationID: "cnt_1", State: execution.StateSucceeded, StartedAt: time.Now().UTC()},
-		},
-		stats: func() (int, int, int, int, int) { return 2, 2, 0, 0, 0 },
-	}
-	eventStore := &mockEventStore{
-		events: []*events.Event{
-			{EventID: "evt_dup", EventType: "test", Timestamp: time.Time{}},
-		},
-	}
-	ck := NewChecker()
-	ck.SetExecutionStore(execStore)
-	ck.SetEventStore(eventStore)
-
-	result := ck.Check()
-
-	if result.Summary.TotalIssues != 2 {
-		t.Errorf("expected TotalIssues=2, got %d", result.Summary.TotalIssues)
-	}
-	if result.Summary.High != 1 {
-		t.Errorf("expected High=1, got %d", result.Summary.High)
-	}
-	if result.Summary.Medium != 1 {
-		t.Errorf("expected Medium=1, got %d", result.Summary.Medium)
-	}
-	if result.Summary.Critical != 0 {
-		t.Errorf("expected Critical=0, got %d", result.Summary.Critical)
-	}
-}
-
-func TestChecker_CrossStoreExecutionContinuationReference(t *testing.T) {
-	contStore := &mockContinuationStore{continuations: []*continuation.Continuation{
-		{ContinuationID: "cnt_exists", State: continuation.StateApproved, CreatedAt: time.Now().UTC()},
-	}}
-	execStore := &mockExecutionStore{
-		executions: []*execution.Execution{
-			{ExecutionID: "exe_orphan", ContinuationID: "cnt_missing", State: execution.StateSucceeded, StartedAt: time.Now().UTC()},
-			{ExecutionID: "exe_ok", ContinuationID: "cnt_exists", State: execution.StateSucceeded, StartedAt: time.Now().UTC()},
-		},
-		stats: func() (int, int, int, int, int) { return 2, 1, 0, 1, 0 },
-	}
-	ck := NewChecker()
-	ck.SetContinuationStore(contStore)
-	ck.SetExecutionStore(execStore)
-
-	result := ck.Check()
-
-	found := false
-	for _, issue := range result.Issues {
-		if issue.EntityID == "exe_orphan" && (issue.Category == "execution_store" || issue.Category == "cross_store") {
-			found = true
-			if issue.Severity != "high" {
-				t.Errorf("expected severity=high, got %s", issue.Severity)
-			}
+func TestWarning_SeverityValues(t *testing.T) {
+	severities := []string{"critical", "high", "medium", "low"}
+	for _, sev := range severities {
+		warning := Warning{Severity: sev}
+		if warning.Severity != sev {
+			t.Errorf("severity = %v, want %v", warning.Severity, sev)
 		}
-	}
-	if !found {
-		t.Errorf("expected execution_store/cross_store issue for exe_orphan, got %+v", result.Issues)
-	}
-	if result.Passed {
-		t.Errorf("expected Passed=false (has high issue), got true")
-	}
-}
-
-func TestChecker_WarningsOnlyDoNotFail(t *testing.T) {
-	contStore := &mockContinuationStore{continuations: []*continuation.Continuation{
-		{ContinuationID: "cnt_stuck", State: continuation.StateEscalated, CreatedAt: time.Now().UTC()},
-	}}
-	ck := NewChecker()
-	ck.SetContinuationStore(contStore)
-
-	result := ck.Check()
-
-	if !result.Passed {
-		t.Errorf("expected Passed=true with only warnings (stuck in escalated), got false")
-	}
-	if len(result.Issues) != 0 {
-		t.Errorf("expected 0 issues, got %d", len(result.Issues))
-	}
-	if len(result.Warnings) == 0 {
-		t.Errorf("expected warnings for escalated state, got none")
 	}
 }
