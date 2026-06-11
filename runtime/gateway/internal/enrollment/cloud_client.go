@@ -72,7 +72,7 @@ func NewCloudService(filePath string, cloudCfg CloudConfig, opts ...func(*localS
 }
 
 func (s *CloudService) Enroll(organizationID string) error {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
@@ -108,7 +108,10 @@ func (s *CloudService) Enroll(organizationID string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("enrollment failed (status %d): failed to read response body: %w", resp.StatusCode, err)
+		}
 		return fmt.Errorf("enrollment failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
@@ -128,13 +131,19 @@ func (s *CloudService) Enroll(organizationID string) error {
 	s.identity.RegisteredAt = time.Now().UTC()
 	s.identity.LastSeenAt = time.Now().UTC()
 	s.identity.Tags = map[string]string{
-		"public_key":  fmt.Sprintf("%x", pub),
-		"private_key": fmt.Sprintf("%x", priv),
+		"public_key": fmt.Sprintf("%x", pub),
 	}
 
 	if s.filePath != "" {
-		data, _ := json.MarshalIndent(s.identity, "", "  ")
-		_ = os.WriteFile(s.filePath, data, 0644)
+		data, err := json.MarshalIndent(s.identity, "", "  ")
+		if err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("marshaling identity: %w", err)
+		}
+		if err := os.WriteFile(s.filePath, data, 0600); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("persisting identity: %w", err)
+		}
 	}
 
 	return nil

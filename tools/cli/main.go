@@ -251,7 +251,12 @@ func do(req *http.Request) map[string]interface{} {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading response: %v\n", err)
+		osExit(1)
+		return nil
+	}
 
 	if resp.StatusCode >= 400 {
 		fmt.Fprintf(os.Stderr, "error: %s (status %d)\n", string(body), resp.StatusCode)
