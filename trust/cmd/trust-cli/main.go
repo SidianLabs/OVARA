@@ -19,7 +19,7 @@ import (
 )
 
 func main() {
-	cmd := flag.String("cmd", "help", "Command: add-org, list-orgs, federate, revoke-federation, compute-path, snapshot, drift-check, trust-score, verify-federated, state")
+	cmd := flag.String("cmd", "help", "Command: add-org, list-orgs, federate, revoke-federation, compute-path, snapshot, export-graph, import-graph, merge-graph, drift-check, trust-score, verify-federated, state")
 	source := flag.String("source", "", "Source domain")
 	target := flag.String("target", "", "Target domain")
 	name := flag.String("name", "", "Organization name")
@@ -100,6 +100,64 @@ func main() {
 		snap := tg.Snapshot()
 		out, _ := json.MarshalIndent(snap, "", "  ")
 		fmt.Println(string(out))
+
+	case "export-graph":
+		state, err := tg.Export()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error exporting graph: %v\n", err)
+			os.Exit(1)
+		}
+		out, _ := json.MarshalIndent(state, "", "  ")
+		fmt.Println(string(out))
+
+	case "import-graph":
+		if *statePath == "" {
+			fmt.Fprintln(os.Stderr, "state-path is required for import-graph")
+			os.Exit(1)
+		}
+		data, err := os.ReadFile(*statePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading import file: %v\n", err)
+			os.Exit(1)
+		}
+		var state graph.ExportedTrustState
+		if err := json.Unmarshal(data, &state); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing import file: %v\n", err)
+			os.Exit(1)
+		}
+		if err := tg.Import(&state); err != nil {
+			fmt.Fprintf(os.Stderr, "Error importing graph: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Trust graph imported: %d organizations, %d relationships\n",
+			len(state.Organizations), len(state.Relationships))
+
+	case "merge-graph":
+		if *statePath == "" {
+			fmt.Fprintln(os.Stderr, "state-path is required for merge-graph")
+			os.Exit(1)
+		}
+		data, err := os.ReadFile(*statePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading merge file: %v\n", err)
+			os.Exit(1)
+		}
+		var state graph.ExportedTrustState
+		if err := json.Unmarshal(data, &state); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing merge file: %v\n", err)
+			os.Exit(1)
+		}
+		other := graph.NewTrustGraph()
+		if err := other.Import(&state); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing merge graph: %v\n", err)
+			os.Exit(1)
+		}
+		if err := tg.Merge(other); err != nil {
+			fmt.Fprintf(os.Stderr, "Error merging graph: %v\n", err)
+			os.Exit(1)
+		}
+		orgs := tg.GetAllOrganizations()
+		fmt.Printf("Merged graph now has %d organizations\n", len(orgs))
 
 	case "drift-check":
 		if *agentID == "" {
@@ -260,6 +318,9 @@ func main() {
 		fmt.Println("  revoke-federation   Revoke a federation")
 		fmt.Println("  compute-path        Compute the trust path between two organizations")
 		fmt.Println("  snapshot            Export the full trust graph as JSON")
+		fmt.Println("  export-graph        Export trust graph in portable format")
+		fmt.Println("  import-graph        Import trust graph from portable format")
+		fmt.Println("  merge-graph         Merge another trust graph into the current one")
 		fmt.Println("  drift-check         Check drift for an agent")
 		fmt.Println("  trust-score         Get trust score for an agent")
 		fmt.Println("  verify-federated    Verify a federated identity signature")
