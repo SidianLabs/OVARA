@@ -368,10 +368,18 @@ The orchestrator polls the continuation store every 2 seconds (configurable):
 The `ExecutorRegistry` maps action types to executors at startup:
 
 ```
-shell      → ShellExecutor    (system shell /bin/sh -c)
-exec       → DirectExecutor   (direct subprocess, no shell)
-git.push   → GitExecutor      (git push)
-git.pull   → GitExecutor      (git pull)
+shell            → ShellExecutor     (system shell /bin/sh -c)
+exec             → DirectExecutor    (direct subprocess, no shell)
+git.push         → GitExecutor       (git push)
+git.pull         → GitExecutor       (git pull)
+git.fetch        → GitExecutor       (git fetch)
+git.checkout     → GitExecutor       (git checkout)
+github.push      → GitHubExecutor     (GitHub API push)
+github.pr        → GitHubExecutor     (GitHub API pull request)
+github.merge     → GitHubExecutor     (GitHub API merge)
+github.delete_branch → GitHubExecutor (GitHub API delete branch)
+ci.trigger       → CIExecutor        (CI/CD workflow trigger)
+shell.sandboxed  → SandboxExecutor   (Docker-sandboxed shell, opt-in)
 ```
 
 The shell executor passes the command through the system shell, supporting all shell features (pipes, redirects, environment variables, globbing).
@@ -379,6 +387,12 @@ The shell executor passes the command through the system shell, supporting all s
 The direct executor (`exec:`) runs the binary directly, splitting on spaces. No shell interpretation — pipes and redirects do not work.
 
 The git executor runs git operations in the specified repository path using `git -C <repo>`.
+
+The GitHub executor uses the GitHub API with a token from config (`github_token`). If no token is configured, the executor logs a warning and actions are skipped at runtime.
+
+The CI executor triggers workflows via GitHub Actions or a generic webhook URL (configured via `ci_token` / `ci_webhook_url`). If not configured, actions are skipped.
+
+The sandbox executor wraps the shell executor and runs commands inside a Docker container, providing isolation. Enabled via `OVARA_SANDBOX_ENABLED=true`.
 
 ---
 

@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
-  "scripts": { "build": "tsc" },
+  "scripts": {
+    "build": "tsc",
+    "test": "cd ../langchain && npx vitest run --config ../openai/vitest.config.cjs",
+    "test:watch": "cd ../langchain && npx vitest --config ../openai/vitest.config.cjs",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": { "@ovara/sdk": "*", "openai": "^4.70.0" },
-  "devDependencies": { "typescript": "^5.6.0", "@types/node": "^22.0.0" }
+  "devDependencies": { "typescript": "^5.6.0", "@types/node": "^22.0.0", "vitest": "^2.0.0" }
 }

@@ -14,7 +14,7 @@ Ovara is a single-binary Go gateway providing runtime trust infrastructure for a
 
 ### Current State
 - 22/22 gateway packages + identity module pass `go build ./...`, `go vet ./...`, `go test -race ./...`
-- 5 execution surfaces: shell, exec, git.push, git.pull, git.fetch, git.checkout
+- 11 execution surfaces: shell, exec, git.push, git.pull, git.fetch, git.checkout, github.push, github.pr, github.merge, github.delete_branch, ci.trigger, shell.sandboxed (opt-in)
 - Policy engine with allow/deny/escalate, dynamic approvals, cryptographic receipts
 - Machine identity with ed25519, capability leases, agent registry
 - Trust evaluation with anomaly heuristics, shield auto-restriction

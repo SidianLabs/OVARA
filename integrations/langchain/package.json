@@ -6,7 +6,12 @@
   "description": "Ovara tools for LangChain agents",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "scripts": { "build": "tsc" },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {},
   "devDependencies": { "typescript": "^5.6.0", "@types/node": "^22.0.0", "vitest": "^2.0.0" }
 }

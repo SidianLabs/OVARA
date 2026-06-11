@@ -43,10 +43,6 @@ func main() {
 		doReceipts()
 	case "policy":
 		doPolicy()
-	case "gateways":
-		doGateways()
-	case "enroll":
-		doEnroll()
 	case "metrics":
 		doMetrics()
 	case "approvals":
@@ -73,13 +69,11 @@ Commands:
   health        Health check
   check <action> <resource>  Check if action is allowed
   receipts      List recent receipts
-  policy        Show current policy
-  gateways      List gateways (control plane)
-  enroll <url> <org-id>  Enroll gateway with control plane
+  policy        Show current policy rules
   metrics       Show runtime metrics
   approvals     List/manage approvals
-  trust <sub> [args]  Trust score, drift, or graph
-  verify        Verify execution receipts
+  trust score <agent-id>  Get trust context for an agent
+  verify<receipt-id>  Get receipt by ID
 
 Flags:
 `)
@@ -118,35 +112,14 @@ func doCheck(args []string) {
 }
 
 func doReceipts() {
-	resp := get("/v1/runtime/receipts")
+	resp := get("/v1/receipts")
 	if resp != nil {
 		printJSON(resp)
 	}
 }
 
 func doPolicy() {
-	resp := get("/v1/runtime/policy")
-	if resp != nil {
-		printJSON(resp)
-	}
-}
-
-func doGateways() {
-	resp := get("/v1/gateways")
-	if resp != nil {
-		printJSON(resp)
-	}
-}
-
-func doEnroll() {
-	args := flag.Args()
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: ovara enroll <organization-id>")
-		return
-	}
-	orgID := args[1]
-	body := map[string]string{"organizationId": orgID}
-	resp := post("/v1/gateways/enroll", body)
+	resp := get("/v1/policy/rules")
 	if resp != nil {
 		printJSON(resp)
 	}
@@ -174,8 +147,7 @@ func doApprovals(args []string) {
 			return
 		}
 		id := args[1]
-		body := map[string]string{"action": "approve"}
-		resp := post("/v1/approvals/"+id, body)
+		resp := post("/v1/approval/"+id+"/approve", nil)
 		if resp != nil {
 			printJSON(resp)
 		}
@@ -194,8 +166,8 @@ func doApprovals(args []string) {
 				reason = strings.TrimPrefix(a, "--reason=")
 			}
 		}
-		body := map[string]string{"action": "deny", "reason": reason}
-		resp := post("/v1/approvals/"+id, body)
+		body := map[string]string{"reason": reason}
+		resp := post("/v1/approval/"+id+"/deny", body)
 		if resp != nil {
 			printJSON(resp)
 		}
@@ -218,7 +190,7 @@ func doApprovals(args []string) {
 
 func doTrust(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: ovara trust score|drift|graph [args]")
+		fmt.Fprintln(os.Stderr, "usage: ovara trust score <agent-id>")
 		return
 	}
 
@@ -229,21 +201,7 @@ func doTrust(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: ovara trust score <agent-id>")
 			return
 		}
-		resp := get("/v1/trust/score/" + args[1])
-		if resp != nil {
-			printJSON(resp)
-		}
-	case "drift":
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: ovara trust drift <agent-id>")
-			return
-		}
-		resp := get("/v1/trust/drift/" + args[1])
-		if resp != nil {
-			printJSON(resp)
-		}
-	case "graph":
-		resp := get("/v1/trust/graph")
+		resp := get("/v1/trust/context?agent_id=" + args[1])
 		if resp != nil {
 			printJSON(resp)
 		}
@@ -253,21 +211,12 @@ func doTrust(args []string) {
 }
 
 func doVerify(args []string) {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: ovara verify <receipt-id> | ovara verify --all")
+	if len(args)< 1 {
+		fmt.Fprintln(os.Stderr, "usage: ovara verify <receipt-id>")
 		return
 	}
-
-	if args[0] == "--all" {
-		resp := get("/v1/receipts/verify")
-		if resp != nil {
-			printJSON(resp)
-		}
-		return
-	}
-
 	receiptID := args[0]
-	resp := get("/v1/receipts/" + receiptID + "/verify")
+	resp := get("/v1/receipts/" + receiptID)
 	if resp != nil {
 		printJSON(resp)
 	}

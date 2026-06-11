@@ -114,6 +114,18 @@ services:
       - "3005:3005"
     restart: unless-stopped
 
+  alerting:
+    build: ../../services/alerting
+    ports:
+      - "8083:8083"
+    restart: unless-stopped
+
+  observability:
+    build: ../../services/observability
+    ports:
+      - "8084:8084"
+    restart: unless-stopped
+
   collector:
     build:
       context: ../../telemetry/collector

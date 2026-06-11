@@ -3,11 +3,8 @@ import {
   OvaraClientOptions,
   ActionRequest,
   DecisionResponse,
-  ExecutionRequest,
-  ExecutionResponse,
   GatewayStatus,
   ReceiptRecord,
-  VerifiabilityResult,
   PaginationParams,
 } from "./types";
 
@@ -67,19 +64,6 @@ export class OvaraClient {
     return (resp as any).decisions || [];
   }
 
-  async execute(request: ExecutionRequest): Promise<ExecutionResponse> {
-    return this.fetch("/v1/runtime/execute", {
-      method: "POST",
-      body: JSON.stringify({
-        command: request.command,
-        args: request.args,
-        env: request.env,
-        working_dir: request.workingDir,
-        timeout_ms: request.timeoutMs,
-      }),
-    });
-  }
-
   async status(): Promise<GatewayStatus> {
     return this.fetch("/v1/runtime/status");
   }
@@ -92,55 +76,40 @@ export class OvaraClient {
     const query = new URLSearchParams();
     if (params?.limit) query.set("limit", String(params.limit));
     if (params?.offset) query.set("offset", String(params.offset));
-    return this.fetch(`/v1/runtime/receipts?${query}`);
+    return this.fetch(`/v1/receipts?${query}`);
   }
 
   async getReceipt(receiptId: string): Promise<ReceiptRecord> {
-    return this.fetch(`/v1/runtime/receipts/${receiptId}`);
-  }
-
-  async verifyIdentity(identity: any): Promise<VerifiabilityResult> {
-    return this.fetch("/v1/runtime/identity/verify", {
-      method: "POST",
-      body: JSON.stringify(identity),
-    });
+    return this.fetch(`/v1/receipts/${receiptId}`);
   }
 
   async listApprovals(params?: PaginationParams): Promise<any[]> {
     const query = new URLSearchParams();
     if (params?.limit) query.set("limit", String(params.limit));
     if (params?.offset) query.set("offset", String(params.offset));
-    return this.fetch(`/v1/runtime/approvals?${query}`);
+    return this.fetch(`/v1/approvals?${query}`);
   }
 
   async listExecutions(params?: PaginationParams): Promise<any[]> {
     const query = new URLSearchParams();
     if (params?.limit) query.set("limit", String(params.limit));
     if (params?.offset) query.set("offset", String(params.offset));
-    return this.fetch(`/v1/runtime/executions?${query}`);
+    return this.fetch(`/v1/executions?${query}`);
   }
 
   async listContinuations(params?: PaginationParams): Promise<any[]> {
     const query = new URLSearchParams();
     if (params?.limit) query.set("limit", String(params.limit));
     if (params?.offset) query.set("offset", String(params.offset));
-    return this.fetch(`/v1/runtime/continuations?${query}`);
+    return this.fetch(`/v1/continuations?${query}`);
   }
 
   async getCapabilities(): Promise<any> {
-    return this.fetch("/v1/runtime/capabilities");
-  }
-
-  async getTrustScore(agentId: string): Promise<any> {
-    return this.fetch(`/v1/runtime/trust/${agentId}`);
+    return this.fetch("/v1/capabilities");
   }
 
   async getMetrics(): Promise<any> {
     return this.fetch("/v1/runtime/metrics");
-  }
-
-  async getPolicy(): Promise<any> {
-    return this.fetch("/v1/runtime/policy");
   }
 
   private async fetch(path: string, options: RequestInit = {}): Promise<any> {

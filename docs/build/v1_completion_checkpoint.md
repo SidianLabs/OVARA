@@ -28,7 +28,7 @@ go build ./...       → clean
 
 | Criterion | Status |
 |-----------|--------|
-| 5 execution surfaces (shell, exec, git.push, git.pull, git.clone) | ✅ |
+| 11 execution surfaces (shell, exec, git.push, git.pull, git.fetch, git.checkout, github.push, github.pr, github.merge, github.delete_branch, ci.trigger) | ✅ |
 | Policy engine (allow/deny/escalate) with dynamic approvals | ✅ |
 | Cryptographic receipt signing (HMAC-SHA256, sig_v1) | ✅ |
 | Operator bearer-token auth | ✅ |
