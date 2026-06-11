@@ -1,7 +1,9 @@
 package enrollment
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
@@ -204,5 +206,8 @@ func (s *localService) dir() string {
 }
 
 func newGatewayID() string {
-	return fmt.Sprintf("gw_%d", time.Now().UnixNano()%1000000)
+	var b [8]byte
+	rand.Read(b[:])
+	nanos := time.Now().UnixNano()
+	return fmt.Sprintf("gw_%d%06d", nanos/1000000, nanos%1000000) + fmt.Sprintf("%04x", binary.BigEndian.Uint32(b[:4]))
 }
