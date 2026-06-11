@@ -1,4 +1,5 @@
-import { createHash, createVerify } from "crypto";
+import { createHash } from "crypto";
+import { ed25519 } from "crypto";
 
 export interface PortableIdentity {
   id: string;
@@ -41,15 +42,13 @@ export function verifyAgentIdentity(identity: PortableIdentity, publicKeyHex: st
   if (!identity.signature || !publicKeyHex) return false;
 
   const payload = `${identity.id}|${identity.issuer}|${identity.subjectId}|${identity.owner}|${identity.lifecycle}`;
-  const digest = createHash("sha256").update(payload).digest("hex");
 
   try {
-    const publicKey = Buffer.from(publicKeyHex, "hex");
-    const signature = Buffer.from(identity.signature, "hex");
-    const verify = createVerify("SHA256");
-    verify.update(payload);
-    return verify.verify({ key: publicKey, format: "der", type: "spki" }, signature) ||
-      verify.verify(publicKey, signature);
+    return ed25519.verify(
+      Buffer.from(identity.signature, "hex"),
+      Buffer.from(payload),
+      Buffer.from(publicKeyHex, "hex")
+    );
   } catch {
     return false;
   }
@@ -58,12 +57,14 @@ export function verifyAgentIdentity(identity: PortableIdentity, publicKeyHex: st
 export function verifyCapabilityLease(lease: PortableLease, publicKeyHex: string): boolean {
   if (!lease.signature || !publicKeyHex) return false;
 
-  const payload = `${lease.leaseId}|${lease.issuer}|${lease.subject}|${lease.allowedActions}|${lease.resourceScope}|${lease.expiry}|${lease.delegationDepth}|${lease.issuedAt}`;
+  const payload = `${lease.leaseId}|${lease.issuer}|${lease.subject}|${JSON.stringify(lease.allowedActions)}|${lease.resourceScope}|${lease.expiry}|${lease.delegationDepth}|${lease.issuedAt}`;
 
   try {
-    const publicKey = Buffer.from(publicKeyHex, "hex");
-    const signature = Buffer.from(lease.signature, "hex");
-    return ed25519Verify(publicKey, Buffer.from(payload), signature);
+    return ed25519.verify(
+      Buffer.from(lease.signature, "hex"),
+      Buffer.from(payload),
+      Buffer.from(publicKeyHex, "hex")
+    );
   } catch {
     return false;
   }
@@ -80,21 +81,10 @@ export function verifyReceipt(receipt: PortableReceipt, publicKeyHex: string): b
   ].join("|");
 
   try {
-    const publicKey = Buffer.from(publicKeyHex, "hex");
-    const signature = Buffer.from(receipt.signature, "hex");
-    return ed25519Verify(publicKey, Buffer.from(payload), signature);
-  } catch {
-    return false;
-  }
-}
-
-function ed25519Verify(publicKey: Buffer, message: Buffer, signature: Buffer): boolean {
-  try {
-    const verifyObj = createVerify("SHA256");
-    verifyObj.update(message);
-    return verifyObj.verify(
-      { key: publicKey, format: "der", type: "spki" },
-      signature
+    return ed25519.verify(
+      Buffer.from(receipt.signature, "hex"),
+      Buffer.from(payload),
+      Buffer.from(publicKeyHex, "hex")
     );
   } catch {
     return false;
