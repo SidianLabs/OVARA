@@ -23,13 +23,14 @@ type RevocationChecker interface {
 }
 
 type Evaluator struct {
-	policyStore       *policy.Store
-	validator         *identity.Validator
-	shieldStore       *trust.ShieldStore
-	revocationChecker RevocationChecker
-	driftDetector     *trust.DriftDetector
-	degradation      *trust.DegradationModel
-	chainDetector    *trust.ChainDetector
+	policyStore          *policy.Store
+	validator            *identity.Validator
+	shieldStore          *trust.ShieldStore
+	revocationChecker    RevocationChecker
+	driftDetector        *trust.DriftDetector
+	degradation          *trust.DegradationModel
+	chainDetector        *trust.ChainDetector
+	federatedTrustClient FederatedTrustClient
 }
 
 func New(p *policy.Store) *Evaluator {
@@ -65,6 +66,10 @@ func (e *Evaluator) SetChainDetector(cd *trust.ChainDetector) {
 
 func (e *Evaluator) SetRevocationChecker(rc RevocationChecker) {
 	e.revocationChecker = rc
+}
+
+func (e *Evaluator) SetFederatedTrustClient(client FederatedTrustClient) {
+	e.federatedTrustClient = client
 }
 
 func (e *Evaluator) PolicyVersion() string {
