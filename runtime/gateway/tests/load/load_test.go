@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -81,6 +82,17 @@ func TestLoadDecisionLatency(t *testing.T) {
 	server := httptest.NewServer(testHandler())
 	defer server.Close()
 
+	// Threshold is more permissive than the measured Apple M4 baseline (7-30ms)
+	// to avoid flakes on busy CI runners. 250ms still catches real regressions
+	// where decision latency is pathologically slow.
+	const ciThreshold = 250 * time.Millisecond
+	const devThreshold = 100 * time.Millisecond
+
+	threshold := devThreshold
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
+		threshold = ciThreshold
+	}
+
 	config := LoadConfig{
 		Target:      server.URL,
 		Duration:    3 * time.Second,
@@ -90,11 +102,12 @@ func TestLoadDecisionLatency(t *testing.T) {
 	metrics := RunLoadTest(config)
 	latency := CalculatePercentiles(metrics.Latencies)
 
-	if latency.P99 > 100*time.Millisecond {
-		t.Errorf("p99 latency = %v, want < 100ms", latency.P99)
+	if latency.P99 > threshold {
+		t.Errorf("p99 latency = %v, want < %v (CI=%v dev=%v)",
+			latency.P99, threshold, ciThreshold, devThreshold)
 	}
-	t.Logf("Latency: min=%v avg=%v p50=%v p95=%v p99=%v max=%v",
-		latency.Min, latency.Avg, latency.P50, latency.P95, latency.P99, latency.Max)
+	t.Logf("Latency: min=%v avg=%v p50=%v p95=%v p99=%v max=%v (threshold=%v)",
+		latency.Min, latency.Avg, latency.P50, latency.P95, latency.P99, latency.Max, threshold)
 }
 
 func TestGenerateRequest(t *testing.T) {

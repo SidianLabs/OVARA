@@ -12,11 +12,12 @@ type filePolicy struct {
 }
 
 type fileRule struct {
-	ActionType  string `json:"action_type"`
-	Environment string `json:"environment"`
-	Allow       bool   `json:"allow"`
-	Deny        bool   `json:"deny"`
-	Escalate    bool   `json:"escalate"`
+	ActionType  string                 `json:"action_type"`
+	Environment string                 `json:"environment"`
+	Allow       bool                   `json:"allow"`
+	Deny        bool                   `json:"deny"`
+	Escalate    bool                   `json:"escalate"`
+	Conditions  map[string]interface{} `json:"conditions,omitempty"`
 }
 
 func LoadStoreFromFile(filePath string, versionHint string) (*Store, error) {

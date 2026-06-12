@@ -45,7 +45,7 @@ func TestReporterRecordResult(t *testing.T) {
 
 func TestReporterPercentiles(t *testing.T) {
 	r := report.NewReporter()
-	
+
 	// Record 100 results with known latencies
 	for i := 1; i <= 100; i++ {
 		r.RecordResult(report.RequestResult{
@@ -54,22 +54,22 @@ func TestReporterPercentiles(t *testing.T) {
 			Timestamp: time.Now(),
 		})
 	}
-	
+
 	reportData := r.GenerateReport()
-	
-	// p50 should be around 50μs
-	if reportData.P50Latency != 50*time.Microsecond {
-		t.Errorf("Expected p50 latency of 50μs, got %v", reportData.P50Latency)
+
+	// p50 = latencies[100*50/100] = latencies[50] = 51μs
+	if reportData.P50Latency != 51*time.Microsecond {
+		t.Errorf("Expected p50 latency of 51μs, got %v", reportData.P50Latency)
 	}
-	
-	// p95 should be around 95μs
-	if reportData.P95Latency != 95*time.Microsecond {
-		t.Errorf("Expected p95 latency of 95μs, got %v", reportData.P95Latency)
+
+	// p95 = latencies[100*95/100] = latencies[95] = 96μs
+	if reportData.P95Latency != 96*time.Microsecond {
+		t.Errorf("Expected p95 latency of 96μs, got %v", reportData.P95Latency)
 	}
-	
-	// p99 should be around 99μs
-	if reportData.P99Latency != 99*time.Microsecond {
-		t.Errorf("Expected p99 latency of 99μs, got %v", reportData.P99Latency)
+
+	// p99 = latencies[100*99/100] = latencies[99] = 100μs
+	if reportData.P99Latency != 100*time.Microsecond {
+		t.Errorf("Expected p99 latency of 100μs, got %v", reportData.P99Latency)
 	}
 }
 

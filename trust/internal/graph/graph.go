@@ -218,3 +218,60 @@ func (tg *TrustGraph) GetRelationship(source, target TrustDomain) (*TrustRelatio
 	}
 	return nil, false
 }
+
+// GraphSnapshot is a serializable representation of the entire trust graph.
+// Used for persistence and cross-instance sync.
+type GraphSnapshot struct {
+	Version       string                `json:"version"`
+	Nodes         []OrganizationNode    `json:"nodes"`
+	Relationships []TrustRelationship   `json:"relationships"`
+}
+
+// SnapshotV2 returns a versioned, JSON-serializable snapshot of the graph.
+func (tg *TrustGraph) SnapshotV2() GraphSnapshot {
+	tg.mu.RLock()
+	defer tg.mu.RUnlock()
+
+	nodes := make([]OrganizationNode, 0, len(tg.nodes))
+	for _, n := range tg.nodes {
+		nodes = append(nodes, *n)
+	}
+
+	edges := make([]TrustRelationship, 0)
+	for _, targets := range tg.edges {
+		for _, rel := range targets {
+			edges = append(edges, *rel)
+		}
+	}
+
+	return GraphSnapshot{
+		Version:       "v1",
+		Nodes:         nodes,
+		Relationships: edges,
+	}
+}
+
+// RestoreFromSnapshot replaces the current graph state with the provided snapshot.
+// Used for loading persisted state on startup.
+func (tg *TrustGraph) RestoreFromSnapshot(snap GraphSnapshot) error {
+	tg.mu.Lock()
+	defer tg.mu.Unlock()
+
+	tg.nodes = make(map[TrustDomain]*OrganizationNode)
+	tg.edges = make(map[TrustDomain]map[TrustDomain]*TrustRelationship)
+
+	for _, n := range snap.Nodes {
+		node := n
+		tg.nodes[n.Domain] = &node
+	}
+
+	for _, r := range snap.Relationships {
+		rel := r
+		if tg.edges[r.SourceOrg] == nil {
+			tg.edges[r.SourceOrg] = make(map[TrustDomain]*TrustRelationship)
+		}
+		tg.edges[r.SourceOrg][r.TargetOrg] = &rel
+	}
+
+	return nil
+}
