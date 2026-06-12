@@ -2,8 +2,13 @@ package policy
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
 
 func TestValidator_ValidatePolicyData_ValidPolicy(t *testing.T) {
 	v := NewValidator()
@@ -303,5 +308,130 @@ func TestValidator_RoundTrip(t *testing.T) {
 	}
 	if !result.Valid {
 		t.Errorf("expected valid after roundtrip: %v", result.Errors)
+	}
+}
+
+func TestValidator_DetectCatch22_NoCatch22(t *testing.T) {
+	v := NewValidator()
+
+	rules := []fileRule{
+		{ActionType: "shell", Environment: "local", Allow: true},
+		{ActionType: "shell", Environment: "dev", Escalate: true},
+		{ActionType: "git.pull", Environment: "*", Allow: true},
+	}
+	cycles := v.DetectCatch22(rules)
+	if len(cycles) != 0 {
+		t.Errorf("expected no cycles, got: %v", cycles)
+	}
+}
+
+func TestValidator_DetectCatch22_SelfLoop(t *testing.T) {
+	v := NewValidator()
+
+	// A rule whose conditions reference its own action_type + environment
+	// creates a self-loop in the dependency graph
+	rules := []fileRule{
+		{
+			ActionType:  "shell",
+			Environment: "dev",
+			Escalate:    true,
+			Conditions:  map[string]interface{}{"ref": "shell:dev"},
+		},
+	}
+	cycles := v.DetectCatch22(rules)
+	if len(cycles) == 0 {
+		t.Error("expected at least one cycle for self-loop, got none")
+	}
+}
+
+func TestValidator_DetectCatch22_MutualReference(t *testing.T) {
+	v := NewValidator()
+
+	// Two rules that reference each other's outcomes
+	rules := []fileRule{
+		{
+			ActionType:  "shell",
+			Environment: "dev",
+			Escalate:    true,
+			Conditions:  map[string]interface{}{"depends_on": "git.push:dev"},
+		},
+		{
+			ActionType:  "git.push",
+			Environment: "dev",
+			Escalate:    true,
+			Conditions:  map[string]interface{}{"depends_on": "shell:dev"},
+		},
+	}
+	cycles := v.DetectCatch22(rules)
+	if len(cycles) == 0 {
+		t.Error("expected at least one cycle for mutual reference, got none")
+	}
+}
+
+func TestValidator_DetectCatch22_ThreeWayCycle(t *testing.T) {
+	v := NewValidator()
+
+	rules := []fileRule{
+		{
+			ActionType:  "shell",
+			Environment: "dev",
+			Conditions:  map[string]interface{}{"depends_on": "exec:dev"},
+		},
+		{
+			ActionType:  "exec",
+			Environment: "dev",
+			Conditions:  map[string]interface{}{"depends_on": "git.push:dev"},
+		},
+		{
+			ActionType:  "git.push",
+			Environment: "dev",
+			Conditions:  map[string]interface{}{"depends_on": "shell:dev"},
+		},
+	}
+	cycles := v.DetectCatch22(rules)
+	if len(cycles) == 0 {
+		t.Error("expected at least one cycle for 3-way cycle, got none")
+	}
+}
+
+func TestValidator_DetectCatch22_EmptyRules(t *testing.T) {
+	v := NewValidator()
+	cycles := v.DetectCatch22([]fileRule{})
+	if len(cycles) != 0 {
+		t.Errorf("expected no cycles for empty rules, got: %v", cycles)
+	}
+}
+
+func TestValidator_ValidatePolicyData_DetectsCatch22(t *testing.T) {
+	v := NewValidator()
+
+	data := []byte(`{
+		"version": "v1-test",
+		"rules": [
+			{
+				"action_type": "shell",
+				"environment": "dev",
+				"escalate": true,
+				"conditions": {"depends_on": "shell:dev"}
+			}
+		]
+	}`)
+
+	result, err := v.ValidatePolicyData(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Valid {
+		t.Error("expected invalid for catch-22 policy")
+	}
+	hasCircularError := false
+	for _, e := range result.Errors {
+		if contains(e, "circular") {
+			hasCircularError = true
+			break
+		}
+	}
+	if !hasCircularError {
+		t.Errorf("expected circular dependency error, got: %v", result.Errors)
 	}
 }

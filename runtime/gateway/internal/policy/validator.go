@@ -49,11 +49,157 @@ func (v *Validator) ValidateFilePolicy(fp *filePolicy) (*ValidationResult, error
 		}
 	}
 
+	if cycles := v.DetectCatch22(fp.Rules); len(cycles) > 0 {
+		for _, cycle := range cycles {
+			result.Errors = append(result.Errors,
+				fmt.Sprintf("circular dependency detected: %s", strings.Join(cycle, " -> ")))
+		}
+		result.Valid = false
+	}
+
 	if warns := v.checkContradictions(fp.Rules); len(warns) > 0 {
 		result.Warnings = append(result.Warnings, warns...)
 	}
 
 	return result, nil
+}
+
+// DetectCatch22 finds circular dependencies between policy rules.
+//
+// A rule R1 is considered to "depend on" rule R2 if any of the following
+// hold:
+//
+//  1. R1's `conditions.depends_on` field names R2's (action_type, environment)
+//  2. R1's `conditions.ref` field names R2's identity
+//  3. R1's `conditions.<custom>` field matches R2's identity pattern
+//     "action_type:environment"
+//
+// A cycle is a path R1 -> R2 -> ... -> R1 in this dependency graph.
+// Cycles produce a "catch-22" — the rules mutually depend on each other
+// and can never resolve to a stable decision.
+//
+// Returns the list of cycles, where each cycle is the ordered list of
+// rule keys forming the cycle.
+func (v *Validator) DetectCatch22(rules []fileRule) [][]string {
+	adjacency := make(map[string][]string)
+	keyToIdx := make(map[string]int)
+
+	for _, r := range rules {
+		key := ruleKey(r)
+		keyToIdx[key] = 0
+		adjacency[key] = []string{}
+	}
+
+	for _, r := range rules {
+		key := ruleKey(r)
+		deps := extractDependencies(r)
+		for _, dep := range deps {
+			if _, exists := keyToIdx[dep]; exists {
+				adjacency[key] = append(adjacency[key], dep)
+			}
+		}
+	}
+
+	// Tarjan-style SCC detection
+	var cycles [][]string
+	visited := make(map[string]int) // 0 = unvisited, 1 = in stack, 2 = done
+	var stack []string
+	onStack := make(map[string]bool)
+
+	var dfs func(node string)
+	dfs = func(node string) {
+		visited[node] = 1
+		stack = append(stack, node)
+		onStack[node] = true
+
+		for _, next := range adjacency[node] {
+			switch visited[next] {
+			case 0:
+				dfs(next)
+			case 1:
+				// Found a back-edge → cycle
+				cycleStart := -1
+				for k, n := range stack {
+					if n == next {
+						cycleStart = k
+						break
+					}
+				}
+				if cycleStart >= 0 {
+					cycle := append([]string{}, stack[cycleStart:]...)
+					cycle = append(cycle, next) // close the cycle
+					cycles = append(cycles, cycle)
+				}
+			}
+		}
+
+		onStack[node] = false
+		stack = stack[:len(stack)-1]
+		visited[node] = 2
+	}
+
+	for node := range adjacency {
+		if visited[node] == 0 {
+			dfs(node)
+		}
+	}
+
+	return cycles
+}
+
+// ruleKey returns the canonical identity of a rule for graph nodes.
+func ruleKey(r fileRule) string {
+	return r.ActionType + ":" + r.Environment
+}
+
+// extractDependencies returns the rule keys this rule depends on,
+// based on the conditions field.
+func extractDependencies(r fileRule) []string {
+	if r.Conditions == nil {
+		return nil
+	}
+	var deps []string
+	// depends_on: string | []string | map
+	if v, ok := r.Conditions["depends_on"]; ok {
+		switch val := v.(type) {
+		case string:
+			deps = append(deps, val)
+		case []interface{}:
+			for _, item := range val {
+				if s, ok := item.(string); ok {
+					deps = append(deps, s)
+				}
+			}
+		}
+	}
+	// ref: string  (single dependency reference)
+	if v, ok := r.Conditions["ref"]; ok {
+		if s, ok := v.(string); ok {
+			deps = append(deps, s)
+		}
+	}
+	// Any condition value matching "<action>:<env>" pattern
+	for _, v := range r.Conditions {
+		if s, ok := v.(string); ok {
+			if isRuleKey(s) {
+				deps = append(deps, s)
+			}
+		}
+	}
+	return deps
+}
+
+func isRuleKey(s string) bool {
+	// Heuristic: contains a colon and matches a known action or environment
+	idx := strings.Index(s, ":")
+	if idx < 0 || idx == len(s)-1 {
+		return false
+	}
+	knownEnvs := map[string]bool{
+		"local": true, "dev": true, "staging": true, "production": true, "*": true,
+	}
+	env := s[idx+1:]
+	return knownEnvs[env]
 }
 
 func (v *Validator) validateRule(idx int, rule *fileRule, seen map[string]int) []string {

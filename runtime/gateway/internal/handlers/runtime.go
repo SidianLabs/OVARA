@@ -230,6 +230,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runtime/trace", h.handleTrace)
 	mux.HandleFunc("GET /v1/runtime/summary", h.handleSummary)
 	mux.HandleFunc("GET /v1/runtime/health", h.handleGetHealth)
+	mux.HandleFunc("GET /v1/runtime/required_action_fields", h.handleRequiredActionFields)
 	mux.HandleFunc("GET /v1/audit/export", h.handleAuditExport)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
@@ -1321,4 +1322,134 @@ func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
 		Capabilities:  capabilitySummary,
 		DecisionCache: cacheSize,
 	})
+}
+
+// RequiredActionFieldsResponse describes the schema of an action request.
+type RequiredActionFieldsResponse struct {
+	ActionType     ActionTypeField            `json:"action_type"`
+	Environment    ActionTypeField            `json:"environment"`
+	Resource       ActionTypeField            `json:"resource"`
+	AgentIdentity  OptionalFieldGroup         `json:"agent_identity"`
+	CapabilityLease OptionalFieldGroup        `json:"capability_lease"`
+	TrustMetadata  OptionalFieldGroup         `json:"trust_metadata"`
+	Metadata       OptionalFieldGroup         `json:"metadata"`
+	SupportedActionTypes   []string            `json:"supported_action_types"`
+	SupportedEnvironments  []string            `json:"supported_environments"`
+}
+
+// ActionTypeField describes a required string field with allowed values.
+type ActionTypeField struct {
+	Required    bool     `json:"required"`
+	Type        string   `json:"type"`
+	Description string   `json:"description"`
+	AllowedValues []string `json:"allowed_values,omitempty"`
+	Example     string   `json:"example,omitempty"`
+}
+
+// OptionalFieldGroup describes an optional JSON object field.
+type OptionalFieldGroup struct {
+	Required    bool                   `json:"required"`
+	Type        string                 `json:"type"`
+	Description string                 `json:"description"`
+	Fields      map[string]ActionTypeField `json:"fields,omitempty"`
+	Example     map[string]interface{} `json:"example,omitempty"`
+}
+
+// handleRequiredActionFields returns the schema for /v1/runtime/check requests.
+//
+// This endpoint is useful for client SDKs and integration tests that need
+// to construct valid action requests without consulting the source code.
+func (h *Handler) handleRequiredActionFields(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	resp := RequiredActionFieldsResponse{
+		ActionType: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "The type of action being requested. Must be one of the supported action types.",
+			AllowedValues: []string{
+				"shell", "exec", "shell.sandboxed",
+				"git.push", "git.pull", "git.fetch", "git.checkout",
+				"github.push", "github.pr", "github.merge", "github.delete_branch",
+				"ci.trigger",
+			},
+			Example: "shell",
+		},
+		Environment: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "The environment in which the action is being requested.",
+			AllowedValues: []string{
+				"local", "dev", "staging", "production",
+			},
+			Example: "dev",
+		},
+		Resource: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "The resource identifier. Format depends on the action_type (e.g., 'shell:<command>' for shell, 'repo:<owner>/<repo>' for git/github).",
+			Example:     "shell:git push origin main",
+		},
+		AgentIdentity: OptionalFieldGroup{
+			Required:    false,
+			Type:        "object",
+			Description: "The agent's identity. Required for cryptographic verification.",
+			Fields: map[string]ActionTypeField{
+				"issuer":     {Required: true, Type: "string", Description: "The identity issuer (e.g., 'ovara')."},
+				"subject_id": {Required: true, Type: "string", Description: "The agent's subject identifier (e.g., 'agt_001')."},
+			},
+			Example: map[string]interface{}{
+				"issuer":     "ovara",
+				"subject_id": "agt_001",
+			},
+		},
+		CapabilityLease: OptionalFieldGroup{
+			Required:    false,
+			Type:        "object",
+			Description: "The capability lease authorizing the action. Required for actions that need cryptographic authorization.",
+			Fields: map[string]ActionTypeField{
+				"lease_id":         {Required: true, Type: "string", Description: "Unique lease identifier."},
+				"issuer":           {Required: true, Type: "string", Description: "The lease issuer."},
+				"subject":          {Required: true, Type: "string", Description: "The lease subject (agent ID)."},
+				"allowed_actions":  {Required: true, Type: "array", Description: "List of action types the lease permits."},
+				"resource_scope":   {Required: true, Type: "string", Description: "Resource scope glob."},
+				"expiry":           {Required: true, Type: "string", Description: "RFC 3339 expiry timestamp."},
+				"delegation_depth": {Required: true, Type: "integer", Description: "Maximum delegation depth (0 = non-delegable)."},
+			},
+			Example: map[string]interface{}{
+				"lease_id":         "cap_abc123",
+				"issuer":           "ovara",
+				"subject":          "agt_001",
+				"allowed_actions":  []string{"shell", "exec"},
+				"resource_scope":   "shell:*",
+				"expiry":           "2026-06-01T01:00:00Z",
+				"delegation_depth": 1,
+			},
+		},
+		TrustMetadata: OptionalFieldGroup{
+			Required:    false,
+			Type:        "object",
+			Description: "Signed posture attestation for the agent.",
+		},
+		Metadata: OptionalFieldGroup{
+			Required:    false,
+			Type:        "object",
+			Description: "Free-form metadata for audit. Not used for policy evaluation.",
+		},
+		SupportedActionTypes: []string{
+			"shell", "exec", "shell.sandboxed",
+			"git.push", "git.pull", "git.fetch", "git.checkout",
+			"github.push", "github.pr", "github.merge", "github.delete_branch",
+			"ci.trigger",
+		},
+		SupportedEnvironments: []string{
+			"local", "dev", "staging", "production",
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }

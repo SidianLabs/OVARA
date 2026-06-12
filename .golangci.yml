@@ -1,0 +1,70 @@
+---
+# golangci-lint configuration for Ovara.
+# See https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    # Default enabled linters
+    - errcheck      # check for unchecked errors
+    - gosimple      # simplify code
+    - govet         # standard go vet
+    - ineffassign   # detect ineffectual assignments
+    - staticcheck   # static analysis
+    - unused        # check for unused identifiers
+
+    # Style and correctness
+    - gofmt         # check go formatting
+    - goimports     # check go imports
+    - misspell      # check for misspellings
+    - unconvert     # remove unnecessary conversions
+    - unparam       # find unused function parameters
+    - nakedret      # find naked returns
+    - prealloc      # find slice preallocation opportunities
+    - exportloopref # find loop variable capture in goroutines
+
+    # Security
+    - gosec         # security checks
+    - bodyclose     # check HTTP body close
+    - sqlclosecheck # check sql.Rows.Close
+
+    # Performance
+    - gocritic      # opinionated style/best-practice checks
+    - gocyclo       # cyclomatic complexity
+    - goconst       # repeated strings as constants
+    - dupl          # duplicate code detection
+    - ineffassign   # already listed
+
+  # Don't fail on these by default
+  presets:
+    - bugs
+    - unused
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 5
+  exclude-rules:
+    # Exclude some default-disabled issues for now
+    - linters:
+        - gosec
+        - gocyclo
+        - dupl
+        - gocritic
+      text: "should have comment|is too long|cyclomatic|duplicated"
+  exclude:
+    # Allow common patterns that we don't want to fix
+    - "Error return value of .* is not checked"
+    - "exported function .* should have comment"
+
+severity:
+  default-severity: error
+  rules:
+    - linters:
+        - gosec
+        - errcheck
+      severity: warning

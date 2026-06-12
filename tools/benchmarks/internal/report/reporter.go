@@ -126,11 +126,11 @@ func (r *Reporter) GenerateReport() Report {
 		sort.Slice(latencies, func(i, j int) bool {
 			return latencies[i] < latencies[j]
 		})
-		
-		report.P50Latency = latencies[(len(latencies)-1)*50/100]
-		report.P95Latency = latencies[(len(latencies)-1)*95/100]
-		report.P99Latency = latencies[(len(latencies)-1)*99/100]
-		
+
+		report.P50Latency = latencies[len(latencies)*50/100]
+		report.P95Latency = latencies[len(latencies)*95/100]
+		report.P99Latency = latencies[len(latencies)*99/100]
+
 		var total time.Duration
 		for _, l := range latencies {
 			total += l

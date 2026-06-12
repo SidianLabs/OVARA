@@ -3,8 +3,12 @@ package graph
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"testing"
 )
+
+func jsonMarshal(v interface{}) ([]byte, error) { return json.Marshal(v) }
+func jsonUnmarshal(data []byte, v interface{}) error { return json.Unmarshal(data, v) }
 
 func TestTrustGraph_AddOrganization(t *testing.T) {
 	tg := NewTrustGraph()
@@ -281,5 +285,129 @@ func TestTrustGraph_GetRelationship(t *testing.T) {
 	_, ok = tg.GetRelationship("b.com", "a.com")
 	if ok {
 		t.Error("GetRelationship returned true for reverse direction")
+	}
+}
+
+func TestTrustGraph_SnapshotV2_Empty(t *testing.T) {
+	tg := NewTrustGraph()
+	snap := tg.SnapshotV2()
+	if snap.Version != "v1" {
+		t.Errorf("expected version v1, got %s", snap.Version)
+	}
+	if len(snap.Nodes) != 0 {
+		t.Errorf("expected 0 nodes, got %d", len(snap.Nodes))
+	}
+	if len(snap.Relationships) != 0 {
+		t.Errorf("expected 0 relationships, got %d", len(snap.Relationships))
+	}
+}
+
+func TestTrustGraph_SnapshotV2_Populated(t *testing.T) {
+	tg := NewTrustGraph()
+	tg.AddOrganization("a.com", "Org A", nil)
+	tg.AddOrganization("b.com", "Org B", nil)
+	tg.Federate("a.com", "b.com", 0.75, nil)
+
+	snap := tg.SnapshotV2()
+	if len(snap.Nodes) != 2 {
+		t.Errorf("expected 2 nodes, got %d", len(snap.Nodes))
+	}
+	if len(snap.Relationships) != 1 {
+		t.Errorf("expected 1 relationship, got %d", len(snap.Relationships))
+	}
+	if snap.Relationships[0].TrustLevel != 0.75 {
+		t.Errorf("expected trust level 0.75, got %f", snap.Relationships[0].TrustLevel)
+	}
+}
+
+func TestTrustGraph_RestoreFromSnapshot(t *testing.T) {
+	original := NewTrustGraph()
+	original.AddOrganization("a.com", "Org A", nil)
+	original.AddOrganization("b.com", "Org B", nil)
+	original.AddOrganization("c.com", "Org C", nil)
+	original.Federate("a.com", "b.com", 0.5, nil)
+	original.Federate("b.com", "c.com", 0.7, nil)
+	original.Federate("a.com", "c.com", 0.9, nil)
+
+	snap := original.SnapshotV2()
+
+	// Restore into a fresh graph
+	restored := NewTrustGraph()
+	if err := restored.RestoreFromSnapshot(snap); err != nil {
+		t.Fatalf("RestoreFromSnapshot failed: %v", err)
+	}
+
+	if len(restored.GetAllOrganizations()) != 3 {
+		t.Errorf("expected 3 orgs in restored graph, got %d", len(restored.GetAllOrganizations()))
+	}
+
+	// Verify each relationship
+	rel, ok := restored.GetRelationship("a.com", "b.com")
+	if !ok || rel.TrustLevel != 0.5 {
+		t.Error("a->b relationship not restored correctly")
+	}
+	rel, ok = restored.GetRelationship("b.com", "c.com")
+	if !ok || rel.TrustLevel != 0.7 {
+		t.Error("b->c relationship not restored correctly")
+	}
+	rel, ok = restored.GetRelationship("a.com", "c.com")
+	if !ok || rel.TrustLevel != 0.9 {
+		t.Error("a->c relationship not restored correctly")
+	}
+}
+
+func TestTrustGraph_RestoreFromSnapshot_Replaces(t *testing.T) {
+	tg := NewTrustGraph()
+	tg.AddOrganization("old.com", "Old", nil)
+
+	// Replace with new snapshot
+	snap := GraphSnapshot{
+		Version: "v1",
+		Nodes: []OrganizationNode{
+			{Domain: "new.com", Name: "New"},
+		},
+		Relationships: []TrustRelationship{},
+	}
+	if err := tg.RestoreFromSnapshot(snap); err != nil {
+		t.Fatalf("RestoreFromSnapshot failed: %v", err)
+	}
+
+	if _, ok := tg.GetNode("old.com"); ok {
+		t.Error("old.com should have been removed by restore")
+	}
+	if _, ok := tg.GetNode("new.com"); !ok {
+		t.Error("new.com should be present after restore")
+	}
+}
+
+func TestTrustGraph_SnapshotV2_RoundTrip_JSON(t *testing.T) {
+	tg := NewTrustGraph()
+	tg.AddOrganization("a.com", "Org A", nil)
+	tg.AddOrganization("b.com", "Org B", nil)
+	tg.Federate("a.com", "b.com", 0.6, nil)
+
+	snap := tg.SnapshotV2()
+
+	// Serialize to JSON
+	data, err := jsonMarshal(snap)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+
+	// Deserialize
+	restored := GraphSnapshot{}
+	if err := jsonUnmarshal(data, &restored); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	// Restore into new graph
+	tg2 := NewTrustGraph()
+	if err := tg2.RestoreFromSnapshot(restored); err != nil {
+		t.Fatalf("RestoreFromSnapshot failed: %v", err)
+	}
+
+	rel, ok := tg2.GetRelationship("a.com", "b.com")
+	if !ok || rel.TrustLevel != 0.6 {
+		t.Error("relationship not preserved through JSON round-trip")
 	}
 }
