@@ -145,7 +145,9 @@ curl -X POST http://localhost:8080/v1/runtime/check \
     "action_type": "shell",
     "resource": "shell:git push origin main",
     "agent_identity": { "issuer": "ovara", "subject_id": "agt_001" },
-    "environment": "dev"
+    "environment": "dev",
+    "nonce": "'$(uuidgen)'",
+    "issued_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
   }'
 ```
 

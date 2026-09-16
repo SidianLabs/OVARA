@@ -32,6 +32,8 @@ for cmd in "ls -la" "pwd" "echo hello"; do
     -H "Content-Type: application/json" \
     -d "{
       \"action_type\": \"shell\",
+      \"nonce\": \"$(uuidgen)\",
+      \"issued_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
       \"resource\": \"shell:$cmd\",
       \"environment\": \"local\",
       \"agent_identity\": {

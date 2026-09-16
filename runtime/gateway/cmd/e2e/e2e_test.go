@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/enrollment"
-	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/handlers"
 	"ovara.runtime.gateway/internal/integrity"
@@ -105,6 +107,8 @@ func TestE2E_FullDecisionChain(t *testing.T) {
 
 	t.Run("check_allows_safe", func(t *testing.T) {
 		req := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeCIBuildTrigger,
 			Resource:    "build:./test.sh",
 			Environment: models.EnvironmentDev,
@@ -126,6 +130,8 @@ func TestE2E_FullDecisionChain(t *testing.T) {
 
 	t.Run("receipt_persisted", func(t *testing.T) {
 		req := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeCIBuildTrigger,
 			Resource:    "build:./deploy.sh",
 			Environment: models.EnvironmentDev,
@@ -187,6 +193,8 @@ func TestE2E_RateResilience(t *testing.T) {
 
 	for i := range 20 {
 		req := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeCIBuildTrigger,
 			Resource:    fmt.Sprintf("build:./%d", i),
 			Environment: models.EnvironmentDev,

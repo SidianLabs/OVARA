@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
@@ -17,6 +19,8 @@ func newTestEvaluator() *evaluator.Evaluator {
 
 func newTestRequest(actionType, resource, env string) *models.ActionRequest {
 	return &models.ActionRequest{
+		Nonce:       uuid.NewString(),
+		IssuedAt:    time.Now(),
 		ActionType:  models.ActionType(actionType),
 		Resource:    resource,
 		Environment: models.Environment(env),
@@ -54,6 +58,8 @@ func newTestEvaluatorWithShield() (*evaluator.Evaluator, *trust.ShieldStore) {
 func TestFullStack_DecisionToReceipt(t *testing.T) {
 	eval := newTestEvaluator()
 	req := &models.ActionRequest{
+		Nonce:       uuid.NewString(),
+		IssuedAt:    time.Now(),
 		ActionType:  models.ActionTypeGitPull,
 		Resource:    "repo:acme/api",
 		Environment: models.EnvironmentLocal,

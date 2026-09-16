@@ -224,12 +224,26 @@ func TestComputePath_NoPath(t *testing.T) {
 func TestRegisterFederatedIdentity(t *testing.T) {
 	srv := NewServer("")
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	_ = pub
+
+	issuedAt := time.Now().UTC()
+	expiresAt := issuedAt.Add(24 * time.Hour)
+	fid := &receipt.FederatedIdentity{
+		IdentityDigest: hex.EncodeToString([]byte("agent-123")),
+		Domain:         "acme.com",
+		IssuedAt:       issuedAt,
+		ExpiresAt:      expiresAt,
+	}
+	if err := fid.Sign(priv); err != nil {
+		t.Fatalf("sign failed: %v", err)
+	}
 
 	body := map[string]interface{}{
-		"identity_digest": hex.EncodeToString([]byte("agent-123")),
-		"domain":          "acme.com",
-		"signing_key":     hex.EncodeToString(priv),
+		"identity_digest": fid.IdentityDigest,
+		"domain":          fid.Domain,
+		"public_key":      hex.EncodeToString(pub),
+		"signature":       hex.EncodeToString(fid.Signature),
+		"issued_at":       issuedAt.Format(time.RFC3339),
+		"expires_at":      expiresAt.Format(time.RFC3339),
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/identities/register", bytes.NewReader(b))
@@ -239,9 +253,9 @@ func TestRegisterFederatedIdentity(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Errorf("status = %d, want %d: %s", w.Code, http.StatusCreated, w.Body.String())
 	}
-	var fid receipt.FederatedIdentity
-	json.Unmarshal(w.Body.Bytes(), &fid)
-	if len(fid.Signature) == 0 {
+	var resp receipt.FederatedIdentity
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Signature) == 0 {
 		t.Error("signature should be set")
 	}
 }
@@ -429,12 +443,14 @@ func TestComputePath_MissingParams(t *testing.T) {
 	}
 }
 
-func TestRegisterFederatedIdentity_InvalidKey(t *testing.T) {
+func TestRegisterFederatedIdentity_InvalidSignature(t *testing.T) {
 	srv := NewServer("")
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	body := map[string]interface{}{
 		"identity_digest": hex.EncodeToString([]byte("agent-123")),
-		"domain":         "acme.com",
-		"signing_key":    "not-a-valid-key",
+		"domain":          "acme.com",
+		"public_key":      hex.EncodeToString(pub),
+		"signature":       hex.EncodeToString(make([]byte, 64)),
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/identities/register", bytes.NewReader(b))

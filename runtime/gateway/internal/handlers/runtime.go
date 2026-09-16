@@ -1329,6 +1329,8 @@ type RequiredActionFieldsResponse struct {
 	ActionType     ActionTypeField            `json:"action_type"`
 	Environment    ActionTypeField            `json:"environment"`
 	Resource       ActionTypeField            `json:"resource"`
+	Nonce          ActionTypeField            `json:"nonce"`
+	IssuedAt       ActionTypeField            `json:"issued_at"`
 	AgentIdentity  OptionalFieldGroup         `json:"agent_identity"`
 	CapabilityLease OptionalFieldGroup        `json:"capability_lease"`
 	TrustMetadata  OptionalFieldGroup         `json:"trust_metadata"`
@@ -1392,6 +1394,18 @@ func (h *Handler) handleRequiredActionFields(w http.ResponseWriter, r *http.Requ
 			Type:        "string",
 			Description: "The resource identifier. Format depends on the action_type (e.g., 'shell:<command>' for shell, 'repo:<owner>/<repo>' for git/github).",
 			Example:     "shell:git push origin main",
+		},
+		Nonce: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "Unique per-request nonce. A nonce already seen within the dedup window is rejected (replay protection).",
+			Example:     "9f3c2a1e-7b4d-4e5f-8a9c-1d2e3f4a5b6c",
+		},
+		IssuedAt: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "RFC 3339 timestamp of when the request was issued. Must be within ±60s of gateway time.",
+			Example:     "2026-06-01T00:00:00Z",
 		},
 		AgentIdentity: OptionalFieldGroup{
 			Required:    false,

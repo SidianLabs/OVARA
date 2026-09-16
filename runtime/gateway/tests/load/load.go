@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Metrics struct {
@@ -23,12 +26,12 @@ type Metrics struct {
 }
 
 type LatencyPercentiles struct {
-	P50  time.Duration
-	P95  time.Duration
-	P99  time.Duration
-	Avg  time.Duration
-	Min  time.Duration
-	Max  time.Duration
+	P50 time.Duration
+	P95 time.Duration
+	P99 time.Duration
+	Avg time.Duration
+	Min time.Duration
+	Max time.Duration
 }
 
 type LoadConfig struct {
@@ -61,6 +64,8 @@ func generateRequest() map[string]interface{} {
 				"action_type": a.actionType,
 				"resource":    a.resource,
 				"environment": a.env,
+				"nonce":       uuid.NewString(),
+				"issued_at":   time.Now().UTC().Format(time.RFC3339Nano),
 			}
 		}
 	}
@@ -68,6 +73,8 @@ func generateRequest() map[string]interface{} {
 		"action_type": "shell",
 		"resource":    "shell:echo test",
 		"environment": "local",
+		"nonce":       uuid.NewString(),
+		"issued_at":   time.Now().UTC().Format(time.RFC3339Nano),
 	}
 }
 
@@ -84,6 +91,11 @@ func RunLoadTest(config LoadConfig) *Metrics {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
+	client := &http.Client{Transport: &http.Transport{
+		MaxIdleConns:        config.Concurrency,
+		MaxIdleConnsPerHost: config.Concurrency,
+	}}
+
 	for i := 0; i < config.Concurrency; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -91,7 +103,7 @@ func RunLoadTest(config LoadConfig) *Metrics {
 			deadline := metrics.StartTime.Add(config.Duration)
 			for time.Now().Before(deadline) {
 				start := time.Now()
-				err := sendRequest(config.Target)
+				err := sendRequest(client, config.Target)
 				latency := time.Since(start)
 
 				atomic.AddInt64(&metrics.TotalRequests, 1)
@@ -121,7 +133,7 @@ func warmup(config LoadConfig) {
 			defer wg.Done()
 			deadline := time.Now().Add(config.Warmup)
 			for time.Now().Before(deadline) {
-				sendRequest(config.Target)
+				sendRequest(http.DefaultClient, config.Target)
 				time.Sleep(10 * time.Millisecond)
 			}
 		}()
@@ -129,13 +141,16 @@ func warmup(config LoadConfig) {
 	wg.Wait()
 }
 
-func sendRequest(target string) error {
+func sendRequest(client *http.Client, target string) error {
 	body, _ := json.Marshal(generateRequest())
-	resp, err := http.Post(target+"/v1/runtime/check", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(target+"/v1/runtime/check", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	// Drain before close so the connection is reusable — otherwise every
+	// request opens a new socket and the generator itself produces errors.
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,9 @@ type Evaluator struct {
 	degradation          *trust.DegradationModel
 	chainDetector        *trust.ChainDetector
 	federatedTrustClient FederatedTrustClient
+	nonceCache           map[string]time.Time
+	nonceSweepAt         time.Time
+	nonceMu              sync.Mutex
 }
 
 func New(p *policy.Store) *Evaluator {
@@ -38,6 +42,7 @@ func New(p *policy.Store) *Evaluator {
 		policyStore: p,
 		validator:   identity.NewValidator(),
 		shieldStore: trust.NewShieldStore(),
+		nonceCache:  make(map[string]time.Time),
 	}
 }
 
@@ -46,6 +51,7 @@ func NewWithShield(p *policy.Store, ss *trust.ShieldStore) *Evaluator {
 		policyStore: p,
 		validator:   identity.NewValidator(),
 		shieldStore: ss,
+		nonceCache:  make(map[string]time.Time),
 	}
 }
 
@@ -123,18 +129,21 @@ type PolicyDiff struct {
 	ToVersion    string
 }
 
-func (e *Evaluator) Evaluate(req *models.ActionRequest) (*models.DecisionResponse, error) {
+func (e *Evaluator) Evaluate(req *models.ActionRequest) (resp *models.DecisionResponse, err error) {
 	ctx, span := observe.StartDecisionSpan(context.Background(), req)
 	defer func() {
-		if resp, err := e.evaluate(ctx, req); err == nil && resp != nil {
+		if err == nil && resp != nil {
 			observe.EndSpan(span, resp.Decision)
 			observe.AddSpanEvent(span, "decision.complete", map[string]string{
 				"decision_id": resp.DecisionID,
 				"trust_score": fmt.Sprintf("%.2f", resp.TrustScore),
 			})
+		} else {
+			observe.EndSpan(span, models.DecisionDeny)
 		}
 	}()
-	return e.evaluate(ctx, req)
+	resp, err = e.evaluate(ctx, req)
+	return resp, err
 }
 
 func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*models.DecisionResponse, error) {
@@ -149,6 +158,37 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 			ReasonCodes: []models.ReasonCode{models.ReasonActionNotAllowed},
 		}, nil
 	}
+
+	// Replay and freshness protection: reject requests outside a tight clock
+	// skew and reject any nonce that has already been seen.
+	const maxClockSkew = 60 * time.Second
+	now := time.Now().UTC()
+	if req.IssuedAt.Before(now.Add(-maxClockSkew)) || req.IssuedAt.After(now.Add(maxClockSkew)) {
+		return &models.DecisionResponse{
+			Decision:    models.DecisionDeny,
+			ReasonCodes: []models.ReasonCode{models.ReasonActionNotAllowed},
+		}, nil
+	}
+	e.nonceMu.Lock()
+	if seenAt, ok := e.nonceCache[req.Nonce]; ok && now.Sub(seenAt) < 5*time.Minute {
+		e.nonceMu.Unlock()
+		return &models.DecisionResponse{
+			Decision:    models.DecisionDeny,
+			ReasonCodes: []models.ReasonCode{models.ReasonActionNotAllowed},
+		}, nil
+	}
+	e.nonceCache[req.Nonce] = now
+	// ponytail: amortized sweep once a minute; expired entries are denied anyway,
+	// this only bounds memory. A TTL map would be the upgrade if needed.
+	if now.After(e.nonceSweepAt) {
+		for n, seenAt := range e.nonceCache {
+			if now.Sub(seenAt) >= 5*time.Minute {
+				delete(e.nonceCache, n)
+			}
+		}
+		e.nonceSweepAt = now.Add(time.Minute)
+	}
+	e.nonceMu.Unlock()
 
 	actionRules := e.policyStore.RulesForAction(string(req.ActionType))
 	envRules := e.policyStore.RulesForEnvironment(string(req.Environment))

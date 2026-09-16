@@ -32,6 +32,8 @@ export class OvaraClient {
         capability_lease: request.capabilityLease,
         metadata: request.metadata,
         trace_id: request.traceId || randomUUID(),
+        nonce: request.nonce || randomUUID(),
+        issued_at: request.issuedAt || new Date().toISOString(),
       }),
     });
   }
@@ -58,6 +60,8 @@ export class OvaraClient {
           capability_lease: r.capabilityLease,
           metadata: r.metadata,
           trace_id: r.traceId || randomUUID(),
+          nonce: r.nonce || randomUUID(),
+          issued_at: r.issuedAt || new Date().toISOString(),
         })),
       }),
     });

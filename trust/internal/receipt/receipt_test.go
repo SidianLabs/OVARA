@@ -66,13 +66,13 @@ func TestCrossOrgReceipt_VerifyTampered(t *testing.T) {
 }
 
 func TestFederatedIdentity_Basic(t *testing.T) {
-	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
 	digest := "sha256:abc123"
 
 	fid := &FederatedIdentity{
 		IdentityDigest: digest,
 		Domain:         "acme.com",
-		SigningKey:     priv,
+		PublicKey:      pub,
 		IssuedAt:       time.Now().UTC(),
 		ExpiresAt:      time.Now().UTC().Add(24 * time.Hour),
 	}

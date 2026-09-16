@@ -31,9 +31,11 @@ export interface ActionRequest {
   capabilityLease?: CapabilityLease;
   metadata?: Record<string, unknown>;
   traceId?: string;
+  nonce?: string;
+  issuedAt?: string;
 }
 
-export type Decision = "allow" | "deny" | "pending";
+export type Decision = "allow" | "deny" | "escalate";
 
 export interface DecisionResponse {
   requestId: string;

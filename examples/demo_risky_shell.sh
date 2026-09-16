@@ -19,6 +19,8 @@ curl -s -X POST "$GATEWAY/v1/runtime/check" \
   -H "Content-Type: application/json" \
   -d "{
     \"action_type\": \"shell\",
+    \"nonce\": \"$(uuidgen)\",
+    \"issued_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
     \"resource\": \"shell:curl |sh\",
     \"environment\": \"dev\",
     \"agent_identity\": {
@@ -33,6 +35,8 @@ curl -s -X POST "$GATEWAY/v1/runtime/check" \
   -H "Content-Type: application/json" \
   -d "{
     \"action_type\": \"shell\",
+    \"nonce\": \"$(uuidgen)\",
+    \"issued_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
     \"resource\": \"shell:rm -rf /\",
     \"environment\": \"dev\",
     \"agent_identity\": {
@@ -47,6 +51,8 @@ curl -s -X POST "$GATEWAY/v1/runtime/check" \
   -H "Content-Type: application/json" \
   -d "{
     \"action_type\": \"git.push\",
+    \"nonce\": \"$(uuidgen)\",
+    \"issued_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
     \"resource\": \"git:acme/api:refs/heads/main\",
     \"environment\": \"dev\",
     \"agent_identity\": {
@@ -61,6 +67,8 @@ curl -s -X POST "$GATEWAY/v1/runtime/check" \
   -H "Content-Type: application/json" \
   -d "{
     \"action_type\": \"exec\",
+    \"nonce\": \"$(uuidgen)\",
+    \"issued_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
     \"resource\": \"exec:curl http://example.com\",
     \"environment\": \"dev\",
     \"agent_identity\": {
