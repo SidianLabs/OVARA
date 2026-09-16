@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import uuid
 from typing import Any, Optional
@@ -39,6 +40,8 @@ class OvaraClient:
                 "capability_lease": _maybe_dict(request.capability_lease),
                 "metadata": request.metadata,
                 "trace_id": request.trace_id or uuid.uuid4().hex,
+                "nonce": request.nonce or uuid.uuid4().hex,
+                "issued_at": request.issued_at or datetime.datetime.now(datetime.timezone.utc).isoformat(),
             },
         )
 
@@ -59,6 +62,8 @@ class OvaraClient:
                     "capability_lease": _maybe_dict(r.capability_lease),
                     "metadata": r.metadata,
                     "trace_id": r.trace_id or uuid.uuid4().hex,
+                    "nonce": r.nonce or uuid.uuid4().hex,
+                    "issued_at": r.issued_at or datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }
                 for r in requests
             ]

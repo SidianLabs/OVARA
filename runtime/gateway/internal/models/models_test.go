@@ -3,10 +3,13 @@ package models
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestActionRequest_Validate_Valid(t *testing.T) {
 	req := ActionRequest{
+		Nonce:       "test-nonce",
+		IssuedAt:    time.Now(),
 		ActionType:  ActionTypeShell,
 		Resource:    "shell:ls",
 		Environment: EnvironmentLocal,
@@ -19,6 +22,8 @@ func TestActionRequest_Validate_Valid(t *testing.T) {
 
 func TestActionRequest_Validate_MissingActionType(t *testing.T) {
 	req := ActionRequest{
+		Nonce:       "test-nonce",
+		IssuedAt:    time.Now(),
 		Resource:    "shell:ls",
 		Environment: EnvironmentLocal,
 	}
@@ -33,6 +38,8 @@ func TestActionRequest_Validate_MissingActionType(t *testing.T) {
 
 func TestActionRequest_Validate_MissingResource(t *testing.T) {
 	req := ActionRequest{
+		Nonce:       "test-nonce",
+		IssuedAt:    time.Now(),
 		ActionType:  ActionTypeShell,
 		Environment: EnvironmentLocal,
 	}
@@ -47,6 +54,8 @@ func TestActionRequest_Validate_MissingResource(t *testing.T) {
 
 func TestActionRequest_Validate_MissingEnvironment(t *testing.T) {
 	req := ActionRequest{
+		Nonce:      "test-nonce",
+		IssuedAt:   time.Now(),
 		ActionType: ActionTypeShell,
 		Resource:   "shell:ls",
 	}
@@ -62,8 +71,8 @@ func TestActionRequest_Validate_MissingEnvironment(t *testing.T) {
 func TestActionRequest_Validate_MultipleErrors(t *testing.T) {
 	req := ActionRequest{}
 	errs := req.Validate()
-	if len(errs) != 3 {
-		t.Errorf("expected 3 errors, got %d", len(errs))
+	if len(errs) != 5 {
+		t.Errorf("expected 5 errors, got %d", len(errs))
 	}
 }
 
@@ -142,6 +151,8 @@ func TestTrustLevel_Constants(t *testing.T) {
 
 func TestActionRequest_JSONMarshal(t *testing.T) {
 	req := ActionRequest{
+		Nonce:       "test-nonce",
+		IssuedAt:    time.Now(),
 		ActionType:  ActionTypeShell,
 		Resource:    "shell:ls",
 		Environment: EnvironmentLocal,
@@ -162,11 +173,11 @@ func TestActionRequest_JSONMarshal(t *testing.T) {
 
 func TestCapabilityLease_JSONRoundTrip(t *testing.T) {
 	lease := CapabilityLease{
-		LeaseID:        "lease-001",
-		Issuer:         "issuer-001",
-		Subject:        "subject-001",
-		AllowedActions: []string{"shell", "exec"},
-		ResourceScope:  "shell:*",
+		LeaseID:         "lease-001",
+		Issuer:          "issuer-001",
+		Subject:         "subject-001",
+		AllowedActions:  []string{"shell", "exec"},
+		ResourceScope:   "shell:*",
 		DelegationDepth: 1,
 	}
 	data, err := json.Marshal(lease)

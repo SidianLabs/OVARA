@@ -46,6 +46,8 @@ export interface ActionRequest {
   capability_lease?: CapabilityLease;
   delegation_chain?: DelegationChain;
   metadata?: Record<string, unknown>;
+  nonce: string;
+  issued_at: string;
 }
 
 export interface AgentIdentity {

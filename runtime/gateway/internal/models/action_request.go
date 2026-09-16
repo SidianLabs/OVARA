@@ -41,6 +41,8 @@ type ActionRequest struct {
 	DelegationChain *DelegationChain `json:"delegation_chain,omitempty"`
 	Environment     Environment      `json:"environment"`
 	Metadata        json.RawMessage  `json:"metadata,omitempty"`
+	Nonce           string           `json:"nonce"`
+	IssuedAt        time.Time        `json:"issued_at"`
 }
 
 type AgentIdentity struct {
@@ -87,6 +89,12 @@ func (r ActionRequest) Validate() []string {
 	}
 	if r.Environment == "" {
 		errs = append(errs, "environment is required")
+	}
+	if r.Nonce == "" {
+		errs = append(errs, "nonce is required")
+	}
+	if r.IssuedAt.IsZero() {
+		errs = append(errs, "issued_at is required")
 	}
 	return errs
 }

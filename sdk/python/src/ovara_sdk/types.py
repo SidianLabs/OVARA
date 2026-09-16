@@ -38,12 +38,14 @@ class ActionRequest:
     capability_lease: Optional[CapabilityLease] = None
     metadata: Optional[dict] = None
     trace_id: Optional[str] = None
+    nonce: Optional[str] = None
+    issued_at: Optional[str] = None
 
 
 @dataclass
 class DecisionResponse:
     request_id: str
-    decision: Literal["allow", "deny", "pending"]
+    decision: Literal["allow", "deny", "escalate"]
     reason: Optional[str] = None
     trust_score: Optional[float] = None
     receipt_id: Optional[str] = None

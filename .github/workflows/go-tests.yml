@@ -23,8 +23,12 @@ jobs:
           - identity
           - trust
           - services/approval
+          - services/alerting
+          - services/observability
           - services/receipt-storage
           - tools/cli
+          - tools/migration
+          - tools/benchmarks
           - telemetry/collector
     steps:
       - uses: actions/checkout@v4

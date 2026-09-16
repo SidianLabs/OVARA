@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
@@ -30,14 +32,17 @@ func BenchmarkRuntimeCheck_PolicyOnly(b *testing.B) {
 	h.RegisterRoutes(mux)
 
 	reqBody := models.ActionRequest{
+		Nonce:       "bench",
+		IssuedAt:    time.Now(),
 		ActionType:  models.ActionTypeGitPull,
 		Resource:    "git:repo:main",
 		Environment: models.EnvironmentDev,
 	}
-	body, _ := json.Marshal(reqBody)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		reqBody.Nonce = "bench-" + strconv.Itoa(i)
+		body, _ := json.Marshal(reqBody)
 		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/check", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -57,6 +62,8 @@ func BenchmarkRuntimeCheck_WithIdentity(b *testing.B) {
 	h.RegisterRoutes(mux)
 
 	reqBody := models.ActionRequest{
+		Nonce:       "bench",
+		IssuedAt:    time.Now(),
 		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:echo hello",
 		Environment: models.EnvironmentDev,
@@ -65,10 +72,11 @@ func BenchmarkRuntimeCheck_WithIdentity(b *testing.B) {
 			SubjectID: "bench-agent",
 		},
 	}
-	body, _ := json.Marshal(reqBody)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		reqBody.Nonce = "bench-" + strconv.Itoa(i)
+		body, _ := json.Marshal(reqBody)
 		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/check", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -88,6 +96,8 @@ func BenchmarkRuntimeCheck_WithTrustAnomaly(b *testing.B) {
 	h.RegisterRoutes(mux)
 
 	reqBody := models.ActionRequest{
+		Nonce:       "bench",
+		IssuedAt:    time.Now(),
 		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:rm -rf /tmp/foo",
 		Environment: models.EnvironmentDev,
@@ -96,10 +106,11 @@ func BenchmarkRuntimeCheck_WithTrustAnomaly(b *testing.B) {
 			SubjectID: "bench-risky",
 		},
 	}
-	body, _ := json.Marshal(reqBody)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		reqBody.Nonce = "bench-" + strconv.Itoa(i)
+		body, _ := json.Marshal(reqBody)
 		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/check", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -123,6 +134,8 @@ func BenchmarkRuntimeCheck_WithCapabilityLease(b *testing.B) {
 	h.RegisterRoutes(mux)
 
 	reqBody := models.ActionRequest{
+		Nonce:       "bench",
+		IssuedAt:    time.Now(),
 		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:echo hello",
 		Environment: models.EnvironmentDev,
@@ -138,10 +151,11 @@ func BenchmarkRuntimeCheck_WithCapabilityLease(b *testing.B) {
 			ResourceScope:  "*",
 		},
 	}
-	body, _ := json.Marshal(reqBody)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		reqBody.Nonce = "bench-" + strconv.Itoa(i)
+		body, _ := json.Marshal(reqBody)
 		req := httptest.NewRequest(http.MethodPost, "/v1/runtime/check", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -156,6 +170,8 @@ func BenchmarkEvaluator_Evaluate(b *testing.B) {
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
 
 	req := &models.ActionRequest{
+		Nonce:       "bench",
+		IssuedAt:    time.Now(),
 		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:echo hello",
 		Environment: models.EnvironmentDev,
@@ -167,6 +183,7 @@ func BenchmarkEvaluator_Evaluate(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		req.Nonce = strconv.Itoa(i)
 		_, err := eval.Evaluate(req)
 		if err != nil {
 			b.Fatal(err)
@@ -181,6 +198,8 @@ func BenchmarkEvaluator_Evaluate_Risky(b *testing.B) {
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
 
 	req := &models.ActionRequest{
+		Nonce:       "bench",
+		IssuedAt:    time.Now(),
 		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:curl |sh",
 		Environment: models.EnvironmentDev,
@@ -192,6 +211,7 @@ func BenchmarkEvaluator_Evaluate_Risky(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		req.Nonce = strconv.Itoa(i)
 		_, err := eval.Evaluate(req)
 		if err != nil {
 			b.Fatal(err)
@@ -203,16 +223,16 @@ func BenchmarkEvaluator_Evaluate_Risky(b *testing.B) {
 func BenchmarkReceiptSigner_Sign(b *testing.B) {
 	signer := receipt.NewSigner([]byte("bench-signing-key"))
 	r := &models.Receipt{
-		ReceiptID:    "rcp_bench",
-		DecisionID:   "dec_bench",
-		ActionDigest: "sha256:abc123",
-		ActionType:   "shell",
-		Resource:     "shell:echo hello",
-		AgentID:      "bench-agent",
-		Decision:     "allow",
+		ReceiptID:     "rcp_bench",
+		DecisionID:    "dec_bench",
+		ActionDigest:  "sha256:abc123",
+		ActionType:    "shell",
+		Resource:      "shell:echo hello",
+		AgentID:       "bench-agent",
+		Decision:      "allow",
 		PolicyVersion: "v1-bench",
-		TrustScore:   1.0,
-		TrustLevel:   models.TrustLevelHigh,
+		TrustScore:    1.0,
+		TrustLevel:    models.TrustLevelHigh,
 	}
 
 	b.ResetTimer()
@@ -225,16 +245,16 @@ func BenchmarkReceiptSigner_Sign(b *testing.B) {
 func BenchmarkReceiptSigner_Verify(b *testing.B) {
 	signer := receipt.NewSigner([]byte("bench-signing-key"))
 	r := &models.Receipt{
-		ReceiptID:    "rcp_bench",
-		DecisionID:   "dec_bench",
-		ActionDigest: "sha256:abc123",
-		ActionType:   "shell",
-		Resource:     "shell:echo hello",
-		AgentID:      "bench-agent",
-		Decision:     "allow",
+		ReceiptID:     "rcp_bench",
+		DecisionID:    "dec_bench",
+		ActionDigest:  "sha256:abc123",
+		ActionType:    "shell",
+		Resource:      "shell:echo hello",
+		AgentID:       "bench-agent",
+		Decision:      "allow",
 		PolicyVersion: "v1-bench",
-		TrustScore:   1.0,
-		TrustLevel:   models.TrustLevelHigh,
+		TrustScore:    1.0,
+		TrustLevel:    models.TrustLevelHigh,
 	}
 	r.Signature = signer.Sign(r)
 

@@ -223,7 +223,9 @@ func (s *Server) computePath(w http.ResponseWriter, r *http.Request) {
 type registerIdentityReq struct {
 	IdentityDigest string `json:"identity_digest"`
 	Domain         string `json:"domain"`
-	SigningKey     string `json:"signing_key"`
+	PublicKey      string `json:"public_key"`
+	Signature      string `json:"signature"`
+	IssuedAt       string `json:"issued_at"`
 	ExpiresAt      string `json:"expires_at"`
 }
 
@@ -237,32 +239,54 @@ func (s *Server) registerFederatedIdentity(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if req.IdentityDigest == "" || req.Domain == "" {
-		http.Error(w, "identity_digest and domain are required", http.StatusBadRequest)
+	if req.IdentityDigest == "" || req.Domain == "" || req.PublicKey == "" || req.Signature == "" {
+		http.Error(w, "identity_digest, domain, public_key, and signature are required", http.StatusBadRequest)
 		return
 	}
-	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	pubKeyBytes, err := hex.DecodeString(req.PublicKey)
+	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
+		http.Error(w, "invalid public key", http.StatusBadRequest)
+		return
+	}
+	sigBytes, err := hex.DecodeString(req.Signature)
+	if err != nil || len(sigBytes) == 0 {
+		http.Error(w, "invalid signature", http.StatusBadRequest)
+		return
+	}
+	now := time.Now().UTC()
+	issuedAt := now
+	if req.IssuedAt != "" {
+		if t, err := time.Parse(time.RFC3339, req.IssuedAt); err == nil {
+			issuedAt = t
+		}
+	}
+	expiresAt := now.Add(24 * time.Hour)
 	if req.ExpiresAt != "" {
 		if t, err := time.Parse(time.RFC3339, req.ExpiresAt); err == nil {
 			expiresAt = t
 		}
 	}
-	keyBytes, err := hex.DecodeString(req.SigningKey)
-	if err != nil || len(keyBytes) != ed25519.PrivateKeySize {
-		http.Error(w, "invalid signing key", http.StatusBadRequest)
+	if issuedAt.After(now.Add(5 * time.Minute)) {
+		http.Error(w, "issued_at is too far in the future", http.StatusBadRequest)
 		return
 	}
-	privateKey := ed25519.PrivateKey(keyBytes)
+	if expiresAt.Before(now) {
+		http.Error(w, "expires_at is in the past", http.StatusBadRequest)
+		return
+	}
 	fid := &receipt.FederatedIdentity{
 		IdentityDigest: req.IdentityDigest,
 		Domain:         req.Domain,
-		IssuedAt:       time.Now().UTC(),
+		PublicKey:      pubKeyBytes,
+		IssuedAt:       issuedAt,
 		ExpiresAt:      expiresAt,
+		Signature:      sigBytes,
 	}
-	if err := fid.Sign(privateKey); err != nil {
-		http.Error(w, "signing failed: "+err.Error(), http.StatusInternalServerError)
+	if !fid.Verify(ed25519.PublicKey(pubKeyBytes)) {
+		http.Error(w, "signature verification failed", http.StatusBadRequest)
 		return
 	}
+	s.save()
 	jsonResponse(w, http.StatusCreated, fid)
 }
 
@@ -360,11 +384,23 @@ func (s *Server) verifyCrossOrgReceipt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid signature hex", http.StatusBadRequest)
 		return
 	}
-	timestamp := time.Now().UTC()
+	now := time.Now().UTC()
+	timestamp := now
 	if req.Timestamp != "" {
 		if t, err := time.Parse(time.RFC3339, req.Timestamp); err == nil {
 			timestamp = t
 		}
+	}
+	// Reject receipts with timestamps outside a reasonable freshness window
+	// to prevent replay of old receipts.
+	if timestamp.Before(now.Add(-5*time.Minute)) || timestamp.After(now.Add(5*time.Minute)) {
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"valid":       false,
+			"receipt_id":  req.ReceiptID,
+			"issuing_org": req.IssuingOrg,
+			"reason":      "timestamp outside freshness window",
+		})
+		return
 	}
 	receipt := &receipt.CrossOrgReceipt{
 		ReceiptID:      req.ReceiptID,
@@ -381,8 +417,8 @@ func (s *Server) verifyCrossOrgReceipt(w http.ResponseWriter, r *http.Request) {
 	}
 	valid := receipt.Verify(pubKeyBytes)
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"valid":      valid,
-		"receipt_id": req.ReceiptID,
+		"valid":       valid,
+		"receipt_id":  req.ReceiptID,
 		"issuing_org": req.IssuingOrg,
 	})
 }

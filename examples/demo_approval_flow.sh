@@ -21,6 +21,8 @@ ESCALATE_RESPONSE=$(curl -s -X POST "$GATEWAY/v1/runtime/check" \
   -H "Content-Type: application/json" \
   -d "{
     \"action_type\": \"shell\",
+    \"nonce\": \"$(uuidgen)\",
+    \"issued_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
     \"resource\": \"shell:curl |sh\",
     \"environment\": \"dev\",
     \"agent_identity\": {
@@ -39,6 +41,8 @@ APPROVAL_RESPONSE=$(curl -s -X POST "$GATEWAY/v1/approval/create" \
   -d "{
     \"decision_id\": \"$DECISION_ID\",
     \"action_type\": \"shell\",
+    \"nonce\": \"$(uuidgen)\",
+    \"issued_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
     \"resource\": \"shell:curl |sh\",
     \"environment\": \"dev\",
     \"agent_id\": \"$AGENT_ID\"

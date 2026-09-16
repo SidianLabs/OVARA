@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -269,14 +271,20 @@ func main() {
 
 	signingKey := cfg.ReceiptSigningKey
 	if signingKey == "" {
-		signingKey = cfg.GatewayID
+		// Generate a secure random per-process signing key when none is configured.
+		// Receipts signed with this key cannot be verified after a restart, so
+		// production deployments must set receipt_signing_key in config.json.
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			log.Fatalf("failed to generate receipt signing key: %v", err)
+		}
+		signingKey = hex.EncodeToString(key)
+		log.Printf("WARNING: receipt_signing_key not configured; using a random per-process key. Set receipt_signing_key for cross-restart receipt verification.")
 	}
 	h.SetReceiptSigner(receipt.NewSigner([]byte(signingKey)))
 	log.Printf("receipt signer configured (sig_v1, hmac-sha256)")
 
 	approvalHandler.SetEventStore(eventStore)
-	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
-	approvalHandler.SetContinuationStore(continuationStore)
 	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	approvalHandler.SetContinuationStore(continuationStore)
 

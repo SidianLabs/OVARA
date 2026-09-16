@@ -16,12 +16,9 @@ Reports:
 - Policy cache hit rate
 - Memory usage
 
-## Baseline (local, single gateway)
-| Metric | Value |
-|--------|-------|
-| Decisions/sec | 200,000+ |
-| p50 latency | 5μs |
-| p95 latency | 8μs |
-| p99 latency | 12μs |
-| Error rate | 0% |
-| Memory | ~40MB |
+## Baseline
+
+See [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md) for verified numbers.
+The previously listed baseline (200k decisions/sec, 5μs p50) was never
+reproduced and has been removed — run the tool against a live gateway for
+real figures.
