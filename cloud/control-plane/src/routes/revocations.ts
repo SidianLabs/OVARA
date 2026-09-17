@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { db } from "../db/connection";
 import { revocations } from "../db/schema";
 import { createRevocationSchema } from "../schemas";
-import { authenticate, requireScope } from "../middleware/auth";
+import { authenticate, requireOrg, requireScope } from "../middleware/auth";
 import { eq } from "drizzle-orm";
 
 export function revocationRoutes(app: FastifyInstance) {
@@ -10,10 +10,11 @@ export function revocationRoutes(app: FastifyInstance) {
   app.post("/", {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const body = createRevocationSchema.parse(request.body);
     const [rev] = await db.insert(revocations)
       .values({
-        organizationId: body.organizationId,
+        organizationId: auth.organizationId,
         leaseId: body.leaseId,
         reason: body.reason,
       })
@@ -25,6 +26,9 @@ export function revocationRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { id } = request.params as { id: string };
+    const existing = await db.query.revocations.findFirst({ where: eq(revocations.id, id) });
+    if (!existing) return reply.status(404).send({ error: "Revocation not found" });
+    await requireOrg(request, existing.organizationId);
     const [rev] = await db.update(revocations)
       .set({ status: "executed", executedAt: new Date() })
       .where(eq(revocations.id, id))
@@ -36,10 +40,13 @@ export function revocationRoutes(app: FastifyInstance) {
   app.get("/", {
     preHandler: [authenticate, requireScope("read")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const query = request.query as Record<string, string>;
-    const all = query.organizationId
-      ? await db.select().from(revocations).where(eq(revocations.organizationId, query.organizationId))
-      : await db.select().from(revocations);
+    if (query.organizationId && query.organizationId !== auth.organizationId) {
+      return reply.status(403).send({ error: "Forbidden: organization does not match authenticated credentials" });
+    }
+    const all = await db.select().from(revocations)
+      .where(eq(revocations.organizationId, auth.organizationId));
     return reply.send(all);
   });
 
@@ -49,6 +56,7 @@ export function revocationRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const rev = await db.query.revocations.findFirst({ where: eq(revocations.id, id) });
     if (!rev) return reply.status(404).send({ error: "Revocation not found" });
+    await requireOrg(request, rev.organizationId);
     return reply.send(rev);
   });
 }

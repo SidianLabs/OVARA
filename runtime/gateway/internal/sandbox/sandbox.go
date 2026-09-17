@@ -83,27 +83,23 @@ func (d *DockerSocker) CreateContainer(ctx context.Context, opts SandboxOpts) (s
 		image = "alpine:latest"
 	}
 
-	config := map[string]interface{}{
+	// Docker Engine API: POST /containers/create takes container config
+	// fields at the top level, with runtime options under "HostConfig".
+	body := map[string]interface{}{
 		"Image": image,
 		"Cmd":   []string{"sh", "-c", "sleep 3600"},
 		"Env":   envToSlice(opts.Env),
-	}
-
-	hostConfig := map[string]interface{}{
-		"ReadonlyRootfs": opts.ReadOnlyRootfs,
+		"HostConfig": map[string]interface{}{
+			"ReadonlyRootfs": opts.ReadOnlyRootfs,
+		},
 	}
 
 	if opts.MemoryLimitMB > 0 {
-		hostConfig["Memory"] = opts.MemoryLimitMB * 1024 * 1024
+		body["HostConfig"].(map[string]interface{})["Memory"] = opts.MemoryLimitMB * 1024 * 1024
 	}
 
 	if !opts.NetworkEnabled {
-		hostConfig["NetworkMode"] = "none"
-	}
-
-	body := map[string]interface{}{
-		"config":     config,
-		"hostConfig": hostConfig,
+		body["HostConfig"].(map[string]interface{})["NetworkMode"] = "none"
 	}
 
 	data, err := json.Marshal(body)
@@ -183,12 +179,44 @@ func (d *DockerSocker) ExecInContainer(ctx context.Context, containerID, command
 		return nil, fmt.Errorf("reading exec output: %w", err)
 	}
 
+	// The exec start response carries multiplexed output but no exit code;
+	// GET /exec/{id}/json reports the real ExitCode.
+	exitCode, err := d.execExitCode(ctx, execResult.Id)
+	if err != nil {
+		return nil, fmt.Errorf("inspect exec: %w", err)
+	}
+
 	return &SandboxResult{
 		ContainerID: containerID,
-		ExitCode:    0,
+		ExitCode:    exitCode,
 		Stdout:      string(output),
 		Duration:    time.Since(start),
 	}, nil
+}
+
+func (d *DockerSocker) execExitCode(ctx context.Context, execID string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost/exec/"+execID+"/json", nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("exec inspect returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var inspect struct {
+		ExitCode int `json:"ExitCode"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&inspect); err != nil {
+		return 0, err
+	}
+	return inspect.ExitCode, nil
 }
 
 func (d *DockerSocker) DestroyContainer(ctx context.Context, containerID string) error {

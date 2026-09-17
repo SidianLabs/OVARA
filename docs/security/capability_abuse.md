@@ -11,8 +11,8 @@ defense surface for the identity module.
 The agent has a lease for `git.pull` but attempts to run `shell`.
 
 **Defense:** The gateway verifier checks `allowed_actions` against
-the requested `action_type`. If the action is not in the list, the
-decision is `deny` with reason `action_not_in_scope`.
+the requested `action_type` (exact match or `*`). If the action is not
+in the list, the decision is `deny` with reason `capability_not_allowed`.
 
 ### 2. Resource Outside Scope
 
@@ -20,8 +20,9 @@ The agent has a lease scoped to `repo:acme/api` but attempts to
 access `repo:acme/other-service`.
 
 **Defense:** The gateway verifier checks `resource_scope` against
-the requested `resource` using glob matching. If the resource does
-not match, the decision is `deny` with reason `resource_not_in_scope`.
+the requested `resource` using exact string matching (`*` matches all
+resources — there is no glob expansion). If the resource does not
+match, the decision is `deny` with reason `capability_scope_mismatch`.
 
 ### 3. Expired Lease
 
@@ -29,7 +30,7 @@ The agent has a valid lease but the lease has expired.
 
 **Defense:** The gateway verifier checks `expiry` against the current
 time. If the lease is expired, the decision is `deny` with reason
-`lease_expired`.
+`capability_expired`.
 
 ### 4. Revoked Lease
 
@@ -38,16 +39,18 @@ revoked by the issuer.
 
 **Defense:** The gateway maintains a revocation list. If the lease
 is in the revocation list, the decision is `deny` with reason
-`lease_revoked`.
+`capability_revoked`.
 
 ### 5. Forged Lease
 
 The agent presents a lease that was not actually issued by the
 claimed issuer.
 
-**Defense:** The gateway verifier checks the ed25519 signature. If
-the signature is invalid, the decision is `deny` with reason
-`signature_invalid`.
+**Defense:** The gateway verifier checks the ed25519 signature against
+the issuer's public key from the `trusted_issuers` config registry.
+Unsigned leases, unknown issuers, and invalid signatures all produce
+`deny` (signature failures carry reason `identity_invalid`). The
+lease's embedded `verify_key` is never used for trust.
 
 ### 6. Tampered Lease
 
@@ -69,12 +72,14 @@ different IPs. (V2 feature; V1 trusts the lease alone.)
 
 ```
 1. Reconstruct canonical payload from lease fields
-2. Verify ed25519 signature against issuer's public key
-3. Check current time < expiry
-4. Check lease is not in revocation list
-5. Check action_type is in allowed_actions
-6. Check resource matches resource_scope
-7. Check delegation chain (if any) for valid hash lineage
+2. Look up the issuer's public key in `trusted_issuers`; reject if
+   the issuer is unknown or the lease is unsigned
+3. Verify the ed25519 signature over the canonical payload
+4. Check current time < expiry
+5. Check lease is not in revocation list
+6. Check action_type is in allowed_actions (exact or `*`)
+7. Check resource equals resource_scope (exact or `*`)
+8. Check delegation chain (if any) for valid integrity hash
 ```
 
 If any step fails, the decision is `deny` with a specific reason.

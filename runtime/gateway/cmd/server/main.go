@@ -22,6 +22,7 @@ import (
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/handlers"
+	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/integrity"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
@@ -187,6 +188,21 @@ func main() {
 
 	shieldStore := trust.NewShieldStore()
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
+
+	if len(cfg.TrustedIssuers) > 0 {
+		trustedKeys := make(map[string][]byte, len(cfg.TrustedIssuers))
+		for issuer, hexKey := range cfg.TrustedIssuers {
+			key, err := hex.DecodeString(hexKey)
+			if err != nil {
+				log.Fatalf("trusted_issuers: invalid hex public key for issuer %q: %v", issuer, err)
+			}
+			trustedKeys[issuer] = key
+		}
+		eval.SetValidator(identity.NewValidatorWithTrustedKeys(trustedKeys))
+		log.Printf("trusted issuers configured (%d issuer key(s) for lease signature verification)", len(trustedKeys))
+	} else {
+		log.Printf("WARNING: trusted_issuers not configured; signed capability leases cannot be verified and will FAIL validation. Set trusted_issuers in config.json.")
+	}
 
 	var approvalStore approval.Store
 	if cfg.ApprovalsFile != "" {

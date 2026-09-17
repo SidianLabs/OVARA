@@ -55,6 +55,11 @@ type Config struct {
 
 	ReceiptSigningKey          string `json:"receipt_signing_key"`
 
+	// TrustedIssuers maps capability-lease issuer ID to hex-encoded
+	// ed25519 public key. If empty, signed leases cannot be verified
+	// and lease validation fails closed.
+	TrustedIssuers            map[string]string `json:"trusted_issuers"`
+
 	OTELEnabled        bool    `json:"otel_enabled"`
 	OTELEndpoint       string  `json:"otel_endpoint"`
 	OTELSampleRate     float64 `json:"otel_sample_rate"`

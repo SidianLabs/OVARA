@@ -14,7 +14,7 @@ foundational artifact of Ovara's audit trail.
   "action_digest": "sha256:abc123...",
   "resource": "shell:git push origin main",
   "agent_id": "agt_001",
-  "lease_id": "cap_def456",
+  "capability_lease_id": "cap_def456",
   "policy_version": "v1",
   "decision": "allow",
   "trust_score": 0.85,
@@ -31,7 +31,7 @@ foundational artifact of Ovara's audit trail.
 | `action_digest` | string | SHA-256 digest of the canonical action representation |
 | `resource` | string | The resource that was acted on |
 | `agent_id` | string | The agent that initiated the action |
-| `lease_id` | string | The capability lease that authorized the action |
+| `capability_lease_id` | string | The capability lease that authorized the action |
 | `policy_version` | string | The policy version that was active when the decision was made |
 | `decision` | string | The decision: `allow`, `deny`, or `escalate` |
 | `trust_score` | number | The trust score at decision time (0.0-1.0) |
@@ -40,28 +40,20 @@ foundational artifact of Ovara's audit trail.
 
 ## Canonical Payload
 
-The signature is computed over a canonical JSON representation of all
-fields except `signature` itself. The canonical form is:
+The signature is computed over a pipe-delimited canonical string, not
+JSON. The fields and ordering are fixed (see
+[`receipt/signer.go`](../../runtime/gateway/internal/receipt/signer.go)):
 
-```json
-{
-  "receipt_id": "...",
-  "decision_id": "...",
-  "action_type": "...",
-  "action_digest": "...",
-  "resource": "...",
-  "agent_id": "...",
-  "lease_id": "...",
-  "policy_version": "...",
-  "decision": "...",
-  "trust_score": 0.85,
-  "issued_at": "..."
-}
+```
+receipt_id|decision_id|action_digest|action_type|resource|agent_id|decision|policy_version|trust_score|issued_at_unix
 ```
 
-Fields are sorted alphabetically and serialized with no whitespace.
-This canonical form ensures signatures are stable across implementations
-and languages.
+- `trust_score` is formatted as a floating-point value
+- `issued_at_unix` is the Unix timestamp (integer seconds)
+
+This canonical form is stable across releases; the field list is covered
+by the signature, so modifying any of these fields invalidates the
+signature.
 
 ## Signing
 
@@ -79,9 +71,10 @@ For production deployments, generate this with:
 openssl rand -hex 32
 ```
 
-If the signing key is not configured, the gateway falls back to the
-`gateway_id` as the key. **This is not cryptographically strong** and
-should only be used for local development.
+If `receipt_signing_key` is not configured, the gateway generates a
+random per-process key at startup and logs a warning. Receipts signed
+under that key cannot be verified after a restart — set
+`receipt_signing_key` for cross-restart verification.
 
 The signature format is `sig_v1:<hex>` where `<hex>` is the
 HMAC-SHA256 output in lowercase hexadecimal.

@@ -33,15 +33,24 @@ type memoryStore struct {
 	mu       sync.RWMutex
 	receipts map[string]*models.Receipt
 	maxSize  int
+	hmacKey  []byte
 }
 
-func NewMemoryStore(maxSize int) Store {
+// NewMemoryStore creates an in-memory store. hmacKey is the shared secret
+// used to verify receipt signatures; when empty, Verify reports receipts as
+// unverifiable.
+func NewMemoryStore(maxSize int, hmacKey ...[]byte) Store {
 	if maxSize <= 0 {
 		maxSize = 100000
+	}
+	var key []byte
+	if len(hmacKey) > 0 {
+		key = hmacKey[0]
 	}
 	return &memoryStore{
 		receipts: make(map[string]*models.Receipt),
 		maxSize:  maxSize,
+		hmacKey:  key,
 	}
 }
 
@@ -121,11 +130,17 @@ func (s *memoryStore) Verify(id string) (*models.VerificationResult, error) {
 	}
 
 	digest := r.Digest()
-	valid := len(r.Signature) >= 64 && r.Signature != ""
 
 	var errs []string
-	if !valid {
-		errs = append(errs, "signature is too short or empty")
+	var valid bool
+	if len(s.hmacKey) == 0 {
+		errs = append(errs, "verification key not configured; signature not checked")
+	} else if r.Signature == "" {
+		errs = append(errs, "signature is empty")
+	} else if !verifySignature(s.hmacKey, r) {
+		errs = append(errs, "signature does not match receipt payload")
+	} else {
+		valid = true
 	}
 
 	return &models.VerificationResult{

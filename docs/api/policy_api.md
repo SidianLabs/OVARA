@@ -5,10 +5,11 @@ rules in the Ovara Runtime Gateway.
 
 ## Data Model
 
-A policy is a JSON document with a version and an ordered list of
-rules. The gateway applies rules in order; the first matching rule wins.
-If no rule matches, the gateway's default is to **escalate** (require
-human approval).
+A policy is a JSON document with a version and a list of rules. Rules
+are evaluated by precedence, not order: all matching **deny** rules are
+checked first, then matching **allow** rules, then matching **escalate**
+rules. If no rule matches, the gateway's default is to **escalate**
+(require human approval).
 
 ```json
 {
@@ -42,8 +43,12 @@ human approval).
 | `conditions` | object | no | Additional conditions (e.g., `agent_id`, `resource_pattern`) |
 | `description` | string | no | Human-readable description |
 
-A rule must have exactly one of `allow`, `deny`, or `escalate` set to
-true. Having none or multiple is a validation error.
+A rule must have at least one of `allow`, `deny`, or `escalate` set to
+true; a rule with no outcome is a validation error. Setting both
+`allow` and `deny` is a validation error. The combinations
+`allow`+`escalate` and `deny`+`escalate` are accepted by the validator;
+at evaluation time deny is checked before allow and allow before
+escalate, so the additional flag has no effect on the outcome.
 
 ## Condition Fields
 
@@ -84,15 +89,16 @@ that *would* be made without actually executing the action.
 ```json
 {
   "decision": "escalate",
-  "reason_codes": ["policy_escalate", "risky_pattern"],
+  "reason_codes": ["policy_escalate", "risky_shell_pattern"],
   "policy_version": "v1",
   "rule_matched": "shell:dev:risky-patterns"
 }
 ```
 
-### `POST /v1/policy/compare`
+### `GET`/`POST /v1/policy/diff`
 
-Compare two policies and report the differences.
+Compare the current policy against a candidate (POST body) and report
+the differences.
 
 **Request:**
 
@@ -145,15 +151,24 @@ translated to Ovara's native format using the adapters in
 
 ## Validation
 
-Policies are validated at load time. The following are rejected:
+Policies are validated at load time. The following are errors and cause
+rejection:
 
-- Missing `version` or `rules`
-- Empty `rules` array
-- Rules with no outcome (no `allow`, `deny`, or `escalate`)
-- Rules with multiple outcomes
-- Rules with invalid `action_type` (unknown action)
-- Rules with invalid `environment` (not `local`, `dev`, `staging`, `production`, or `*`)
+- Missing `version`
+- Rules missing `action_type` or `environment`
+- Rules with no outcome (none of `allow`, `deny`, or `escalate` set)
+- Rules with `allow` and `deny` both true
 - Circular conditions (a rule that depends on its own outcome)
+
+The following produce warnings, not rejection:
+
+- Missing or empty `rules` array (the policy is valid but matches
+  nothing, so every action falls through to the default escalate)
+- Potentially conflicting allow/deny rules across wildcard and specific
+  `action_type`/`environment` combinations
+
+`action_type` and `environment` values are not checked against a fixed
+enumeration — any non-empty string is accepted.
 
 ## Examples
 

@@ -42,8 +42,9 @@ func TestE2E_FullDecisionChain(t *testing.T) {
 	cfg.FailClosed = false
 
 	policyStore.AddRule(policy.Rule{
-		ActionType: string(models.ActionTypeCIBuildTrigger),
-		Allow:      true,
+		ActionType:  string(models.ActionTypeCIBuildTrigger),
+		Environment: "*",
+		Allow:       true,
 	})
 
 	approvalSvc := approval.NewService(approvalStore)

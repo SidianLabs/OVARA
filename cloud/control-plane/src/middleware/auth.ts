@@ -45,11 +45,29 @@ export async function authenticate(request: FastifyRequest): Promise<AuthContext
     .set({ lastUsedAt: new Date() })
     .where(eq(apiKeys.id, key.id));
 
-  return {
+  const auth: AuthContext = {
     organizationId: key.organizationId,
     scopes: key.scopes as string[],
     keyId: key.id,
   };
+  (request as any).auth = auth;
+  return auth;
+}
+
+/**
+ * Tenant isolation guard: returns the authenticated context only when the
+ * requested organization matches the API key's organization. Throws 403 on
+ * mismatch so callers can never act across org boundaries.
+ */
+export async function requireOrg(
+  request: FastifyRequest,
+  organizationId: string,
+): Promise<AuthContext> {
+  const auth = await authenticate(request);
+  if (!organizationId || auth.organizationId !== organizationId) {
+    throw { statusCode: 403, message: "Forbidden: organization does not match authenticated credentials" };
+  }
+  return auth;
 }
 
 export function requireScope(required: string) {

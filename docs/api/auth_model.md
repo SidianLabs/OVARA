@@ -65,20 +65,22 @@ ovara_a1b2c3d4.5e6f7g8h9i0j1k2l3m4n5o6p7q8r9s0t1u2v3w4x5y6z
 
 ## Agent Authentication
 
-Agents authenticate by presenting a valid `CapabilityLease` signed by
-an authorized issuer. The gateway verifies the lease's ed25519
-signature, checks the expiry, and validates the delegation chain
-before granting any permissions.
+Agents authenticate by presenting a valid `CapabilityLease` signed by a
+trusted issuer. The gateway verifies the lease's ed25519 signature
+against the issuer's registered public key, checks the expiry, and
+validates the delegation chain's integrity hash before granting any
+permissions. The `AgentIdentity` on the request is self-asserted — the
+lease is the verifiable artifact.
 
 ### Verification Flow
 
 ```
 ┌──────────┐                  ┌──────────────┐                  ┌──────────────┐
-│  Agent   │ ── request ────▶ │  Evaluator   │ ── verify sig ──▶ │  Lease Store │
-│          │                  │              │ ◀───── valid ──── │  + Public Keys│
+│  Agent   │ ── request ────▶ │  Evaluator   │ ── verify sig ──▶ │trusted_issuers│
+│          │                  │              │ ◀── issuer key ── │  (config)    │
 │          │                  │              │                   └──────────────┘
 │          │                  │              │ ── check expiry ──▶ (in lease)
-│          │                  │              │ ── check chain ───▶ (verify hashes)
+│          │                  │              │ ── check chain ───▶ (integrity hash)
 │          │                  │              │ ── check revocation▶ (revocation list)
 │          │ ◀── decision ─── │              │
 └──────────┘                  └──────────────┘
@@ -86,13 +88,27 @@ before granting any permissions.
 
 ### Issuer Trust
 
-The gateway trusts lease issuers that are registered in the
-configuration or the cloud control plane. Each issuer's public key is
-stored alongside their identity.
+The gateway only verifies lease signatures from issuers listed in the
+`trusted_issuers` map in `config.json` (issuer ID → hex-encoded ed25519
+public key):
+
+```json
+{
+  "trusted_issuers": {
+    "ovara": "<hex-encoded ed25519 public key>"
+  }
+}
+```
+
+Unsigned leases are rejected. Leases from issuers not in
+`trusted_issuers` are rejected. The `verify_key` field embedded in a
+lease is never used as a source of trust — it is caller-supplied and
+cannot prove anything.
 
 For self-hosted deployments, issuers are configured via
-[`identity/registry`](../../identity/internal/store/registry.go).
-For cloud deployments, issuers register through the control plane.
+[`identity/registry`](../../identity/internal/store/registry.go) and
+propagated into `trusted_issuers`. For cloud deployments, issuers
+register through the control plane.
 
 ## Authorization vs Authentication
 
@@ -103,11 +119,11 @@ Ovara separates these concerns:
 - **Authorization** — deciding what the authenticated agent is
   allowed to do (via policy evaluation)
 
-An agent with a valid signature but no matching policy rules still
-receives an `escalate` decision (the policy is the authorization
-layer). Conversely, an agent with a valid policy match but invalid
-signature receives a `deny` decision (the signature is the
-authentication gate).
+An agent with a valid lease signature but no matching policy rules
+receives an `escalate` decision (escalate is the default when no rule
+matches). Conversely, an agent with a matching allow rule but an
+invalid, missing, or untrusted-issuer signature receives a `deny`
+decision (the signature is the authentication gate).
 
 ## Security Best Practices
 

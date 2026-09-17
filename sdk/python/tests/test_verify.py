@@ -102,7 +102,7 @@ class TestVerifyAgentIdentity:
             signature=signature,
         )
 
-        assert verify_agent_identity(identity) is True
+        assert verify_agent_identity(identity, public_key_hex(public_key)) is True
 
     def test_tampered_signature_fails(self):
         private_key, public_key = make_keypair()
@@ -119,7 +119,7 @@ class TestVerifyAgentIdentity:
             signature=wrong_signature,
         )
 
-        assert verify_agent_identity(identity) is False
+        assert verify_agent_identity(identity, public_key_hex(public_key)) is False
 
     def test_no_signature_returns_false(self):
         identity = PortableIdentity(
@@ -131,7 +131,7 @@ class TestVerifyAgentIdentity:
             public_key="00" * 32,
             signature=None,
         )
-        assert verify_agent_identity(identity) is False
+        assert verify_agent_identity(identity, "00" * 32) is False
 
     def test_no_public_key_returns_false(self):
         identity = PortableIdentity(
@@ -143,7 +143,7 @@ class TestVerifyAgentIdentity:
             public_key=None,
             signature="00" * 64,
         )
-        assert verify_agent_identity(identity) is False
+        assert verify_agent_identity(identity, "") is False
 
     def test_malformed_public_key_returns_false(self):
         identity = PortableIdentity(
@@ -152,10 +152,10 @@ class TestVerifyAgentIdentity:
             subject_id="sub-001",
             owner="team-a",
             lifecycle="active",
-            public_key="not-hex",
+            public_key="00" * 32,
             signature="00" * 64,
         )
-        assert verify_agent_identity(identity) is False
+        assert verify_agent_identity(identity, "not-hex") is False
 
     def test_malformed_signature_returns_false(self):
         private_key, public_key = make_keypair()
@@ -168,7 +168,7 @@ class TestVerifyAgentIdentity:
             public_key=public_key_hex(public_key),
             signature="not-hex",
         )
-        assert verify_agent_identity(identity) is False
+        assert verify_agent_identity(identity, public_key_hex(public_key)) is False
 
 
 class TestVerifyCapabilityLease:
@@ -190,7 +190,7 @@ class TestVerifyCapabilityLease:
             signature=signature,
         )
 
-        assert verify_capability_lease(lease) is True
+        assert verify_capability_lease(lease, pk_hex) is True
 
     def test_tampered_payload_fails(self):
         private_key, public_key = make_keypair()
@@ -209,7 +209,7 @@ class TestVerifyCapabilityLease:
             signature=wrong_signature,
         )
 
-        assert verify_capability_lease(lease) is False
+        assert verify_capability_lease(lease, pk_hex) is False
 
     def test_no_signature_returns_false(self):
         lease = PortableLease(
@@ -223,7 +223,7 @@ class TestVerifyCapabilityLease:
             issued_at=1234567890,
             signature=None,
         )
-        assert verify_capability_lease(lease) is False
+        assert verify_capability_lease(lease, "00" * 32) is False
 
 
 class TestVerifyReceipt:

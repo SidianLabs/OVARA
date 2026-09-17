@@ -70,7 +70,20 @@ func TestEvaluator_ValidateRequest(t *testing.T) {
 }
 
 func TestEvaluator_AllowAction(t *testing.T) {
-	store := policy.NewStore("test")
+	cfg := map[string]any{
+		"policy_version": "test",
+		"rules": []any{
+			map[string]any{
+				"action_type": "git.pull",
+				"environment": "local",
+				"allow":       true,
+			},
+		},
+	}
+	store, err := policy.LoadStoreFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("failed to load store: %v", err)
+	}
 	ev := New(store)
 
 	req := &models.ActionRequest{
@@ -433,7 +446,7 @@ func TestEvaluator_TrustCanEscalateAllowedAction(t *testing.T) {
 	}
 }
 
-func TestEvaluator_DefaultAllowForUnknownAction(t *testing.T) {
+func TestEvaluator_DefaultEscalateForUnknownAction(t *testing.T) {
 	cfg := map[string]any{
 		"policy_version": "test-default",
 		"rules":          []any{},
@@ -460,18 +473,21 @@ func TestEvaluator_DefaultAllowForUnknownAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Decision != models.DecisionAllow {
-		t.Errorf("decision = %v, want allow (no rules = default allow)", resp.Decision)
+	if resp.Decision != models.DecisionEscalate {
+		t.Errorf("decision = %v, want escalate (no rules = default escalate)", resp.Decision)
 	}
-	hasAllowedReason := false
+	if !resp.RequiresApproval {
+		t.Errorf("requires_approval = false, want true")
+	}
+	hasEscalateReason := false
 	for _, code := range resp.ReasonCodes {
-		if code == models.ReasonAllowed {
-			hasAllowedReason = true
+		if code == models.ReasonEscalate {
+			hasEscalateReason = true
 			break
 		}
 	}
-	if !hasAllowedReason {
-		t.Errorf("expected reason_codes to contain allowed, got %v", resp.ReasonCodes)
+	if !hasEscalateReason {
+		t.Errorf("expected reason_codes to contain escalate, got %v", resp.ReasonCodes)
 	}
 }
 
@@ -673,7 +689,20 @@ func TestEvaluator_EvaluationSummary(t *testing.T) {
 }
 
 func TestEvaluator_ReplayProtection(t *testing.T) {
-	store := policy.NewStore("test")
+	cfg := map[string]any{
+		"policy_version": "test",
+		"rules": []any{
+			map[string]any{
+				"action_type": "git.pull",
+				"environment": "local",
+				"allow":       true,
+			},
+		},
+	}
+	store, err := policy.LoadStoreFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("failed to load store: %v", err)
+	}
 	ev := New(store)
 
 	newReq := func() *models.ActionRequest {

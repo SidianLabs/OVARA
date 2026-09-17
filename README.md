@@ -8,9 +8,17 @@ action, deciding whether that action should be **allowed**, **denied**, or
 every decision.
 
 The first product is **Ovara Runtime**: a low-latency, single-binary Go gateway
-that intercepts machine-driven actions (shell, Git, GitHub, CI/CD) and applies
-cryptographically-verified machine identity, capability leases, and trust-aware
-policy in microseconds.
+that evaluates machine-driven actions (shell, Git, GitHub, CI/CD) and applies
+cryptographically-verified capability leases, trust-aware policy, and signed
+receipts in microseconds.
+
+> **Security model, stated plainly:** in V1 the gateway is an *advisory*
+> decision point plus an executor. Client-side interceptors are cooperative —
+> an agent that bypasses them is not constrained. The non-advisory path is
+> actions the gateway executes itself. The target architecture — a
+> credential-starving executor proxy where every side effect physically
+> transits a notarizing chokepoint — is described in
+> [`docs/architecture/executor_proxy.md`](docs/architecture/executor_proxy.md).
 
 ```text
 ┌────────────┐   ┌─────────────────────┐   ┌────────────────────┐
@@ -69,10 +77,12 @@ Ovara provides that missing layer.
 
 ### Cryptographic Identity
 
-- **ed25519** key pairs for `AgentIdentity`
-- Signed **CapabilityLease** with TTL and delegation depth
-- **SHA-256 hash lineage** for `DelegationChain`
-- Cryptographic signature verification **wired into the gateway evaluator**
+- **ed25519** key pairs for `AgentIdentity` (asserted identity; see security model note above)
+- Signed **CapabilityLease** with TTL and delegation depth — verified against a
+  **trusted-issuer key registry** (`trusted_issuers` in config), never against
+  keys carried in the request
+- **SHA-256 hash lineage** for `DelegationChain` (integrity check, not proof of authority)
+- Unsigned or unknown-issuer leases are rejected
 
 ### Trust-Aware Security
 

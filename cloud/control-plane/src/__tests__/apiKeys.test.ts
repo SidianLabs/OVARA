@@ -7,6 +7,9 @@ import { apiKeys, organizations } from "../db/schema";
 
 let hasDB = false;
 
+// The mocked API key belongs to this org; all org-scoped resources must use it.
+const AUTH_ORG = "00000000-0000-0000-0000-000000000000";
+
 async function checkDB(): Promise<boolean> {
   try {
     await db.execute("SELECT 1");
@@ -20,7 +23,7 @@ const buildApp = async () => {
   const app = Fastify();
   app.decorateRequest("auth", null);
   app.decorate("authenticate", async (request: any) => {
-    request.auth = { organizationId: "00000000-0000-0000-0000-000000000000", scopes: ["admin"], keyId: "key1" };
+    request.auth = { organizationId: AUTH_ORG, scopes: ["admin"], keyId: "key1" };
   });
   app.addHook("preValidation", async (request) => {
     await (app as any).authenticate(request);
@@ -40,12 +43,13 @@ describe("API Keys API", () => {
     hasDB = await checkDB();
     if (hasDB) {
       app = await appPromise;
-      const res = await app.inject({
-        method: "POST",
-        url: "/v1/organizations",
-        payload: { tenantId: "00000000-0000-0000-0000-000000000001", name: "key-org", displayName: "Key Org" },
-      });
-      orgId = JSON.parse(res.payload).id;
+      await db.insert(organizations).values({
+        id: AUTH_ORG,
+        tenantId: "00000000-0000-0000-0000-000000000001",
+        name: "key-org",
+        displayName: "Key Org",
+      }).onConflictDoNothing();
+      orgId = AUTH_ORG;
     }
   }, 30000);
 
