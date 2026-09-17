@@ -151,8 +151,9 @@ func TestCLI_ApprovalsApprove(t *testing.T) {
 	os.Args = []string{"ovara", "--gateway", server.URL, "approvals", "approve", "ap-1"}
 	main()
 
-	if receivedBody != nil && receivedBody["action"] != "approve" {
-		t.Errorf("action = %q, want approve", receivedBody["action"])
+	// Approve must send resolved_by — the gateway requires it.
+	if receivedBody == nil || receivedBody["resolved_by"] == "" {
+		t.Errorf("expected resolved_by in approve body, got %v", receivedBody)
 	}
 }
 
@@ -222,8 +223,8 @@ func TestCLI_VerifySingle(t *testing.T) {
 		if r.URL.Path == "/v1/receipts/rx-42" {
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"receipt_id": "rx-42",
-				"valid":     true,
-				"signature": "sig_v1",
+				"valid":      true,
+				"signature":  "sig_v1",
 			})
 		}
 	}))

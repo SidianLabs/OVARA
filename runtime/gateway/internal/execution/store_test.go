@@ -154,6 +154,11 @@ func TestInMemoryStore_Stats(t *testing.T) {
 	e1.MarkSucceeded(0, "", "")
 	e2.MarkFailed("error", 1)
 	e3.MarkStarted()
+	// The store keeps sanitized copies, so post-create mutations are
+	// persisted via Update.
+	store.Update(e1)
+	store.Update(e2)
+	store.Update(e3)
 	total, succeeded, failed, running, timedOut := store.Stats()
 	if total != 3 {
 		t.Errorf("total = %d, want 3", total)

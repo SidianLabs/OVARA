@@ -668,7 +668,7 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 			DecisionID: decisionID,
 			Decision:   models.DecisionAllow,
 		})
-		rcp := &models.Receipt{ReceiptID: decisionID, TrustScore: 0.95}
+		rcp := &models.Receipt{ReceiptID: decisionID, DecisionID: decisionID, TrustScore: 0.95}
 		receiptsStore.Put(rcp)
 
 		cnt := continuation.NewContinuation(decisionID, "shell", "shell:ls")

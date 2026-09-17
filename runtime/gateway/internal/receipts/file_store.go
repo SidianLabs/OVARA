@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"ovara.runtime.gateway/internal/models"
+	"ovara.runtime.gateway/internal/persist"
 )
 
 type FileBackedStore struct {
@@ -49,15 +49,14 @@ func (s *FileBackedStore) load() error {
 	return nil
 }
 
+// persist writes the whole store via tmp-file + fsync + rename so a crash
+// mid-write cannot leave a truncated/corrupt receipts file.
 func (s *FileBackedStore) persist(receipts []*models.Receipt) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
 	data, err := json.MarshalIndent(receipts, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal receipts: %w", err)
 	}
-	if err := os.WriteFile(s.path, data, 0644); err != nil {
+	if err := persist.WriteFileAtomic(s.path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write receipts file: %w", err)
 	}
 	return nil

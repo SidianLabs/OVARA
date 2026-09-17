@@ -177,7 +177,7 @@ func (c *CIExecutor) Execute(ctx context.Context, e *Execution) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		e.MarkFailed("failed to read ci response: "+err.Error(), 1)
 		return fmt.Errorf("reading ci response: %w", err)

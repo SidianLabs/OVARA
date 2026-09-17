@@ -138,6 +138,12 @@ struct {
 // .rodata configuration constants
 // ---------------------------------------------------------------------------
 
+// global_agent_id is a .rodata constant: the userspace loader MUST override
+// it (e.g. via libbpf skel rodata or bpf_map__set_initial_value on kernels
+// that support it) before the programs are loaded. The default of 0 is a
+// placeholder — all events will be attributed to agent 0 if it is not set.
+// A proper deployment should instead populate a PID→agent map from
+// userspace and look up per-process agent identity; see get_agent_id().
 __u32 global_agent_id SEC(".rodata") = 0;
 
 // ---------------------------------------------------------------------------

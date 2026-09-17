@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -196,6 +197,7 @@ func Run(configPath string) error {
 	shieldStore := trust.NewShieldStore()
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
 
+	var leaseValidator *identity.Validator
 	if len(cfg.TrustedIssuers) > 0 {
 		trustedKeys := make(map[string][]byte, len(cfg.TrustedIssuers))
 		for issuer, hexKey := range cfg.TrustedIssuers {
@@ -205,7 +207,8 @@ func Run(configPath string) error {
 			}
 			trustedKeys[issuer] = key
 		}
-		eval.SetValidator(identity.NewValidatorWithTrustedKeys(trustedKeys))
+		leaseValidator = identity.NewValidatorWithTrustedKeys(trustedKeys)
+		eval.SetValidator(leaseValidator)
 		log.Printf("trusted issuers configured (%d issuer key(s) for lease signature verification)", len(trustedKeys))
 	} else {
 		log.Printf("WARNING: trusted_issuers not configured; signed capability leases cannot be verified and will FAIL validation. Set trusted_issuers in config.json.")
@@ -247,6 +250,18 @@ func Run(configPath string) error {
 	policyHandler := handlers.NewPolicyHandler(eval, policyStore)
 	policyHandler.SetEventStore(eventStore)
 	policyHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	// Restrict caller-supplied policy file paths (file_path, candidate_file,
+	// ?file=) to a single directory to prevent local file reads.
+	policyDir := cfg.PolicyDir
+	if policyDir == "" && cfg.PolicyFile != "" {
+		if abs, err := filepath.Abs(cfg.PolicyFile); err == nil {
+			policyDir = filepath.Dir(abs)
+		}
+	}
+	policyHandler.SetPolicyDir(policyDir)
+	if policyDir != "" {
+		log.Printf("policy file inputs restricted to %s", policyDir)
+	}
 
 	var capabilitiesStore capabilities.Store
 	if cfg.CapabilitiesFile != "" {
@@ -277,6 +292,11 @@ func Run(configPath string) error {
 	capabilitiesHandler := handlers.NewCapabilitiesHandler(capabilitiesStore)
 	capabilitiesHandler.SetEventStore(eventStore)
 	capabilitiesHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	if leaseValidator != nil {
+		capabilitiesHandler.SetLeaseValidator(leaseValidator)
+	} else {
+		log.Printf("WARNING: no trusted_issuers configured; /v1/capabilities/track accepts leases WITHOUT signature verification")
+	}
 	if capabilitiesHistoryStore != nil {
 		capabilitiesHandler.SetHistoryStore(capabilitiesHistoryStore)
 	}

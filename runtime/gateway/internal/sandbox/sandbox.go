@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,6 +51,12 @@ type DockerSocker struct {
 	client     *http.Client
 }
 
+// NewDockerSandbox returns a Sandbox backed by the Docker Engine API over a
+// unix socket. WARNING: access to /var/run/docker.sock is effectively root on
+// the host — only enable this backend (OVARA_SANDBOX_ENABLED=true) when the
+// gateway itself runs in a trusted context. Containers created here drop all
+// capabilities, set no-new-privileges, and default to NetworkMode=none unless
+// SandboxOpts.NetworkEnabled is set.
 func NewDockerSandbox(socketPath string) *DockerSocker {
 	if socketPath == "" {
 		socketPath = "/var/run/docker.sock"
@@ -68,6 +75,12 @@ func NewDockerSandbox(socketPath string) *DockerSocker {
 }
 
 func (d *DockerSocker) Execute(ctx context.Context, command string, opts SandboxOpts) (*SandboxResult, error) {
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+
 	containerID, err := d.CreateContainer(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("create container: %w", err)
@@ -91,6 +104,10 @@ func (d *DockerSocker) CreateContainer(ctx context.Context, opts SandboxOpts) (s
 		"Env":   envToSlice(opts.Env),
 		"HostConfig": map[string]interface{}{
 			"ReadonlyRootfs": opts.ReadOnlyRootfs,
+			// Drop all Linux capabilities and apply the default seccomp
+			// profile: the sandboxed workload should not need any caps.
+			"CapDrop":     []string{"ALL"},
+			"SecurityOpt": []string{"no-new-privileges"},
 		},
 	}
 
@@ -122,7 +139,7 @@ func (d *DockerSocker) CreateContainer(ctx context.Context, opts SandboxOpts) (s
 	}
 
 	var result struct {
-		Id       string `json:"Id"`
+		Id       string   `json:"Id"`
 		Warnings []string `json:"Warnings"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -158,11 +175,19 @@ func (d *DockerSocker) ExecInContainer(ctx context.Context, containerID, command
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("docker exec create returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
 	var execResult struct {
 		Id string `json:"Id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&execResult); err != nil {
 		return nil, err
+	}
+	if execResult.Id == "" {
+		return nil, fmt.Errorf("docker exec create returned empty exec id")
 	}
 
 	startResp, err := d.dockerPost(ctx, "/exec/"+execResult.Id+"/start", map[string]interface{}{
@@ -174,10 +199,20 @@ func (d *DockerSocker) ExecInContainer(ctx context.Context, containerID, command
 	}
 	defer startResp.Body.Close()
 
-	output, err := io.ReadAll(startResp.Body)
+	if startResp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(startResp.Body)
+		return nil, fmt.Errorf("docker exec start returned %d: %s", startResp.StatusCode, string(respBody))
+	}
+
+	raw, err := io.ReadAll(startResp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading exec output: %w", err)
 	}
+
+	// The exec start response is a docker-multiplexed stream: each frame is an
+	// 8-byte header [stream_id, 0,0,0, size(4, big-endian)] followed by payload.
+	// stream_id 1 = stdout, 2 = stderr. Demux it into separate buffers.
+	stdout, stderr := demuxDockerStream(raw)
 
 	// The exec start response carries multiplexed output but no exit code;
 	// GET /exec/{id}/json reports the real ExitCode.
@@ -189,9 +224,46 @@ func (d *DockerSocker) ExecInContainer(ctx context.Context, containerID, command
 	return &SandboxResult{
 		ContainerID: containerID,
 		ExitCode:    exitCode,
-		Stdout:      string(output),
+		Stdout:      stdout.String(),
+		Stderr:      stderr.String(),
 		Duration:    time.Since(start),
 	}, nil
+}
+
+// demuxDockerStream splits a raw docker attach/exec output stream into
+// stdout and stderr. Frames have an 8-byte header: byte 0 is the stream id
+// (1=stdout, 2=stderr), bytes 4-7 are the big-endian payload length. If the
+// stream does not look multiplexed (e.g. TTY mode), the whole payload is
+// treated as stdout.
+func demuxDockerStream(raw []byte) (stdout, stderr *bytes.Buffer) {
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+	i := 0
+	for i+8 <= len(raw) {
+		streamID := raw[i]
+		if streamID != 1 && streamID != 2 {
+			// Not a multiplexed stream — treat remainder as stdout.
+			stdout.Write(raw[i:])
+			return stdout, stderr
+		}
+		size := int(binary.BigEndian.Uint32(raw[i+4 : i+8]))
+		i += 8
+		if size < 0 || i+size > len(raw) {
+			// Truncated/corrupt frame — emit what remains as stdout.
+			stdout.Write(raw[i:])
+			return stdout, stderr
+		}
+		if streamID == 1 {
+			stdout.Write(raw[i : i+size])
+		} else {
+			stderr.Write(raw[i : i+size])
+		}
+		i += size
+	}
+	if i < len(raw) {
+		stdout.Write(raw[i:])
+	}
+	return stdout, stderr
 }
 
 func (d *DockerSocker) execExitCode(ctx context.Context, execID string) (int, error) {
@@ -292,25 +364,23 @@ func envToSlice(env map[string]string) []string {
 	return result
 }
 
+// NoopSandbox is a placeholder that reports an error rather than pretending
+// a command ran successfully — callers must not mistake a no-op for a real
+// execution.
 type NoopSandbox struct{}
 
+var errSandboxNotConfigured = fmt.Errorf("sandbox backend not configured: command not executed")
+
 func (n *NoopSandbox) Execute(ctx context.Context, command string, opts SandboxOpts) (*SandboxResult, error) {
-	return &SandboxResult{
-		ExitCode: 0,
-		Stdout:   "noop: command not executed",
-	}, nil
+	return nil, errSandboxNotConfigured
 }
 
 func (n *NoopSandbox) CreateContainer(ctx context.Context, opts SandboxOpts) (string, error) {
-	return "noop-container", nil
+	return "", errSandboxNotConfigured
 }
 
 func (n *NoopSandbox) ExecInContainer(ctx context.Context, containerID, command string) (*SandboxResult, error) {
-	return &SandboxResult{
-		ContainerID: containerID,
-		ExitCode:    0,
-		Stdout:      "noop: command not executed",
-	}, nil
+	return nil, errSandboxNotConfigured
 }
 
 func (n *NoopSandbox) DestroyContainer(ctx context.Context, containerID string) error {

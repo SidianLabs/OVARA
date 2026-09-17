@@ -65,7 +65,7 @@ func (g *GitHubExecutor) Execute(ctx context.Context, e *Execution) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		e.MarkFailed("failed to read github response: "+err.Error(), 1)
 		return fmt.Errorf("reading github response: %w", err)

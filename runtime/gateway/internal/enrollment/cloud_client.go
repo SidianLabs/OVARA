@@ -8,9 +8,35 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
+	"net/url"
 	"time"
+
+	"ovara.runtime.gateway/internal/persist"
 )
+
+// maxCloudResponseBytes bounds control-plane response bodies.
+const maxCloudResponseBytes = 10 << 20 // 10 MiB
+
+// checkCloudURL enforces https for control-plane endpoints so Bearer API keys
+// are never sent over cleartext. Plain http is permitted only for loopback
+// targets (localhost / 127.0.0.1 / ::1), e.g. local dev and tests.
+func checkCloudURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("invalid control plane URL: %q", rawURL)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" {
+		host := u.Hostname()
+		if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+			return nil
+		}
+		return fmt.Errorf("control plane URL must use https (got http://%s); refusing to send credentials over cleartext", u.Host)
+	}
+	return fmt.Errorf("unsupported control plane URL scheme %q (https required)", u.Scheme)
+}
 
 type CloudConfig struct {
 	ControlPlaneURL     string `json:"control_plane_url"`
@@ -24,6 +50,7 @@ type CloudService struct {
 	apiKey        string
 	httpClient    *http.Client
 	policySyncer  *PolicySyncService
+	urlErr        error
 }
 
 type enrollRequest struct {
@@ -68,10 +95,14 @@ func NewCloudService(filePath string, cloudCfg CloudConfig, opts ...func(*localS
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		urlErr: checkCloudURL(cloudCfg.ControlPlaneURL),
 	}
 }
 
 func (s *CloudService) Enroll(organizationID string) error {
+	if s.urlErr != nil {
+		return s.urlErr
+	}
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
@@ -108,7 +139,7 @@ func (s *CloudService) Enroll(organizationID string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxCloudResponseBytes))
 		if err != nil {
 			return fmt.Errorf("enrollment failed (status %d): failed to read response body: %w", resp.StatusCode, err)
 		}
@@ -116,7 +147,7 @@ func (s *CloudService) Enroll(organizationID string) error {
 	}
 
 	var result enrollResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCloudResponseBytes)).Decode(&result); err != nil {
 		return fmt.Errorf("decoding enrollment response: %w", err)
 	}
 
@@ -137,11 +168,9 @@ func (s *CloudService) Enroll(organizationID string) error {
 	if s.filePath != "" {
 		data, err := json.MarshalIndent(s.identity, "", "  ")
 		if err != nil {
-			s.mu.Unlock()
 			return fmt.Errorf("marshaling identity: %w", err)
 		}
-		if err := os.WriteFile(s.filePath, data, 0600); err != nil {
-			s.mu.Unlock()
+		if err := persist.WriteFileAtomic(s.filePath, data, 0600); err != nil {
 			return fmt.Errorf("persisting identity: %w", err)
 		}
 	}
@@ -150,9 +179,16 @@ func (s *CloudService) Enroll(organizationID string) error {
 }
 
 func (s *CloudService) ConfirmEnrollment(token string) error {
+	if s.urlErr != nil {
+		return s.urlErr
+	}
+	identity := s.GetIdentity()
+	if identity == nil {
+		return fmt.Errorf("gateway not initialized")
+	}
 	req, err := http.NewRequest(
 		http.MethodPost,
-		s.cloudURL+"/v1/gateways/confirm/"+s.GetIdentity().ID,
+		s.cloudURL+"/v1/gateways/confirm/"+identity.ID,
 		nil,
 	)
 	if err != nil {
@@ -168,7 +204,7 @@ func (s *CloudService) ConfirmEnrollment(token string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxCloudResponseBytes))
 		return fmt.Errorf("confirmation failed (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
@@ -176,6 +212,9 @@ func (s *CloudService) ConfirmEnrollment(token string) error {
 }
 
 func (s *CloudService) CloudHeartbeat() error {
+	if s.urlErr != nil {
+		return s.urlErr
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -223,6 +262,7 @@ type PolicySyncService struct {
 	gatewayID   string
 	httpClient  *http.Client
 	lastSyncAt  time.Time
+	urlErr      error
 }
 
 func NewPolicySyncService(cloudURL, apiKey, gatewayID string) *PolicySyncService {
@@ -231,10 +271,14 @@ func NewPolicySyncService(cloudURL, apiKey, gatewayID string) *PolicySyncService
 		apiKey:     apiKey,
 		gatewayID:  gatewayID,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		urlErr:     checkCloudURL(cloudURL),
 	}
 }
 
 func (ps *PolicySyncService) FetchDistributions() ([]distributionItem, error) {
+	if ps.urlErr != nil {
+		return nil, ps.urlErr
+	}
 	req, err := http.NewRequest(
 		http.MethodGet,
 		ps.cloudURL+"/v1/policies/distributions/"+ps.gatewayID,
@@ -256,7 +300,7 @@ func (ps *PolicySyncService) FetchDistributions() ([]distributionItem, error) {
 	}
 
 	var items []distributionItem
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCloudResponseBytes)).Decode(&items); err != nil {
 		return nil, fmt.Errorf("decoding distributions: %w", err)
 	}
 
@@ -264,6 +308,9 @@ func (ps *PolicySyncService) FetchDistributions() ([]distributionItem, error) {
 }
 
 func (ps *PolicySyncService) FetchPolicy(policyID string) (*policySyncResponse, error) {
+	if ps.urlErr != nil {
+		return nil, ps.urlErr
+	}
 	req, err := http.NewRequest(
 		http.MethodGet,
 		ps.cloudURL+"/v1/policies/"+policyID,
@@ -285,7 +332,7 @@ func (ps *PolicySyncService) FetchPolicy(policyID string) (*policySyncResponse, 
 	}
 
 	var item policySyncResponse
-	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCloudResponseBytes)).Decode(&item); err != nil {
 		return nil, fmt.Errorf("decoding policy: %w", err)
 	}
 
