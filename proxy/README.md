@@ -54,7 +54,27 @@ export HTTPS_PROXY=http://proxy:9443
 ```bash
 ./ovara-proxy -verify var/receipts.jsonl -pubkey $(cat var/receipt.pubkey)
 # {"total": N, "valid": true}
+# with anchors present: {"total": N, "valid": true, "anchors": M, "anchors_valid": true}
 ```
+
+## External anchoring (anti-rollback)
+
+Signatures prove receipts weren't modified; they do *not* prove the proxy
+didn't discard the log and rewrite history with the same key. Anchoring
+closes that gap: every `OVARA_ANCHOR_EVERY` receipts (default 1), the proxy
+writes `{seq, head, time}` — sequence count, chain head hash, timestamp — to
+an external sink:
+
+- `OVARA_ANCHOR_FILE` — JSONL append path (default `var/anchors.jsonl`).
+  Put it on a different host/mount/object store than the receipts, or it
+  proves nothing.
+- `OVARA_ANCHOR_URL` — optional; the same anchor is POSTed as JSON
+  (fire-and-forget, 5s timeout). Point it at anything that timestamps and
+  retains: a log service, a transparency-log shim, an internal append API.
+
+`-verify` picks up the anchor file automatically (`OVARA_ANCHOR_FILE` or
+the default path) and checks each anchor's `head` against the recomputed
+chain head at that `seq` — first divergence flips `valid` to false.
 
 ## Honest limits
 
@@ -63,6 +83,9 @@ export HTTPS_PROXY=http://proxy:9443
   over HTTPS.
 - The chain proves the log wasn't modified — completeness rests on the
   egress boundary being airtight (`scripts/` + `DEPLOYMENT.md`).
+- Anchors prove the chain wasn't rewritten *after* each anchor — and only
+  if the sink is genuinely outside the proxy's control. History before the
+  first anchor is still "tamper-evident, not anchored".
 - MITM needs the per-session CA trusted inside the agent env; tools with
   real cert pinning can't be intercepted (SNI-level policy only, or deny).
 - `fail_open: true` exists for development and voids the guarantee.

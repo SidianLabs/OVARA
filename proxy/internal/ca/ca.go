@@ -33,7 +33,7 @@ type CA struct {
 // LoadOrCreate loads a persisted CA or generates a new ECDSA P-256 root.
 func LoadOrCreate(certFile, keyFile string) (*CA, error) {
 	if cert, key, err := load(certFile, keyFile); err == nil {
-		return &CA{cert: cert, key: key, cache: map[string]*tls.Certificate{}}, nil
+		return &CA{cert: cert, key: key, certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), cache: map[string]*tls.Certificate{}}, nil
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -138,13 +138,17 @@ func (c *CA) CertFor(host string) (*tls.Certificate, error) {
 	} else {
 		tmpl.DNSNames = []string{host}
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, &c.key.PublicKey, c.key)
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.cert, &leafKey.PublicKey, c.key)
 	if err != nil {
 		return nil, err
 	}
 	cert := &tls.Certificate{
 		Certificate: [][]byte{der},
-		PrivateKey:  c.key,
+		PrivateKey:  leafKey,
 	}
 	c.cache[host] = cert
 	return cert, nil

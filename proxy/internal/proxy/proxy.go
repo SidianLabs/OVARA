@@ -5,7 +5,9 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -21,23 +23,39 @@ import (
 )
 
 type Server struct {
-	ca      *ca.CA
-	gw      *gateway.Client
-	bindings []creds.Binding
-	chain   *receipts.Chain
-	failOpen bool
-	transport *http.Transport
+	ca              *ca.CA
+	gw              *gateway.Client
+	bindings        []creds.Binding
+	chain           *receipts.Chain
+	failOpen        bool
+	transport       *http.Transport
+	escalateTimeout time.Duration
+	escalatePoll    time.Duration
 }
 
 func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts.Chain, failOpen bool) *Server {
 	return &Server{
 		ca: c, gw: gw, bindings: bindings, chain: chain, failOpen: failOpen,
+		escalateTimeout: 60 * time.Second,
+		escalatePoll:    2 * time.Second,
 		transport: &http.Transport{
 			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
 			MaxIdleConns:        100,
 			IdleConnTimeout:     90 * time.Second,
 			TLSHandshakeTimeout: 10 * time.Second,
 		},
+	}
+}
+
+// SetEscalateWindow configures the hold-and-resume bounds for escalate
+// decisions: how long to hold the client request and how often to poll the
+// gateway approval status.
+func (s *Server) SetEscalateWindow(timeout, poll time.Duration) {
+	if timeout > 0 {
+		s.escalateTimeout = timeout
+	}
+	if poll > 0 {
+		s.escalatePoll = poll
 	}
 }
 
@@ -126,6 +144,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		log.Printf("gateway check failed for %s: %v", url, err)
 		if !s.failOpen {
 			decision = "deny"
+			status = http.StatusBadGateway
 			http.Error(w, `{"error":"gateway unreachable, fail-closed"}`, http.StatusBadGateway)
 			return
 		}
@@ -133,17 +152,31 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	decision = d.Decision
 
+	writeJSON := func(code int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(v)
+		status = code
+	}
+
 	switch d.Decision {
 	case "deny":
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w, `{"error":"action denied","decision_id":%q,"reasons":%v}`, d.DecisionID, d.ReasonCodes)
+		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes})
 		return
 	case "escalate":
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprintf(w, `{"error":"action requires approval","decision_id":%q,"reasons":%v}`, d.DecisionID, d.ReasonCodes)
-		return
+		outcome, approvalID := s.awaitEscalation(r.Context(), d, r.Method, url)
+		switch outcome {
+		case "approved":
+			decision = "allow"
+		case "timeout":
+			writeJSON(http.StatusGatewayTimeout, map[string]any{"error": "approval timeout", "decision_id": d.DecisionID, "approval_id": approvalID})
+			return
+		case "aborted":
+			return
+		default:
+			writeJSON(http.StatusForbidden, map[string]any{"error": "action requires approval", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": d.ReasonCodes})
+			return
+		}
 	}
 
 	// allow: inject real credentials for this host, execute on behalf.
@@ -174,4 +207,44 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+}
+
+// awaitEscalation registers an approval request for an escalated decision and
+// holds until it is approved, denied, the escalate window elapses, or the
+// client disconnects. Returns the outcome and the approval_id ("" if the
+// gateway could not register one).
+func (s *Server) awaitEscalation(ctx context.Context, d *gateway.Decision, method, url string) (string, string) {
+	approvalID := d.ApprovalID
+	if approvalID == "" {
+		id, err := s.gw.CreateApproval(ctx, d, method, url)
+		if err != nil {
+			log.Printf("escalate: create approval for %s failed: %v", url, err)
+			return "denied", ""
+		}
+		approvalID = id
+	}
+	deadline := time.NewTimer(s.escalateTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(s.escalatePoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "aborted", approvalID
+		case <-deadline.C:
+			return "timeout", approvalID
+		case <-ticker.C:
+			status, err := s.gw.ApprovalStatus(ctx, approvalID)
+			if err != nil {
+				if ctx.Err() != nil {
+					return "aborted", approvalID
+				}
+				log.Printf("escalate: poll approval %s: %v", approvalID, err)
+				continue
+			}
+			if status != "pending" {
+				return status, approvalID
+			}
+		}
+	}
 }

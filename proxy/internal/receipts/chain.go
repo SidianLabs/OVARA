@@ -6,6 +6,7 @@
 package receipts
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -49,6 +51,11 @@ type Chain struct {
 	sessionID string
 	path      string
 	prevHash  string
+	seq       int
+
+	anchorFile  string
+	anchorURL   string
+	anchorEvery int
 }
 
 // LoadOrCreate opens (or creates) the receipt chain and signing key.
@@ -65,14 +72,28 @@ func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
 		}
 	}
 	c := &Chain{key: key, sessionID: newID(), path: path}
-	// Resume chain head so restarts continue the chain rather than fork it.
-	if data, err := lastLine(path); err == nil && len(data) > 0 {
+	// Resume chain head and length so restarts continue the chain rather
+	// than fork it.
+	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+		c.seq = bytes.Count(data, []byte{'\n'})
+		if data[len(data)-1] != '\n' {
+			c.seq++
+		}
 		var last Receipt
-		if json.Unmarshal(data, &last) == nil {
+		if json.Unmarshal(lastNonEmptyLine(data), &last) == nil {
 			c.prevHash = last.hash()
 		}
 	}
 	return c, nil
+}
+
+func lastNonEmptyLine(data []byte) []byte {
+	for i := len(data) - 1; i >= 0; i-- {
+		if data[i] == '\n' && i < len(data)-1 {
+			return data[i+1:]
+		}
+	}
+	return data
 }
 
 func loadKey(f string) (ed25519.PrivateKey, error) {
@@ -111,12 +132,7 @@ func lastLine(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := len(data) - 1; i >= 0; i-- {
-		if data[i] == '\n' && i < len(data)-1 {
-			return data[i+1:], nil
-		}
-	}
-	return data, nil
+	return lastNonEmptyLine(data), nil
 }
 
 // Record appends a receipt and returns it.
@@ -147,24 +163,36 @@ func (c *Chain) Record(method, url, decision string, status int) (*Receipt, erro
 		return nil, err
 	}
 	c.prevHash = r.hash()
+	c.seq++
+	c.emitAnchor()
 	return r, nil
 }
 
 // VerifyResult reports the first chain violation found, if any.
 type VerifyResult struct {
-	Total   int  `json:"total"`
-	Valid   bool `json:"valid"`
-	FailAt  int  `json:"fail_at,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Total        int  `json:"total"`
+	Valid        bool `json:"valid"`
+	FailAt       int  `json:"fail_at,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+	Anchors      int  `json:"anchors,omitempty"`
+	AnchorsValid bool `json:"anchors_valid,omitempty"`
 }
 
 // VerifyFile re-verifies a chain file offline: signatures, linkage, order.
 func VerifyFile(path string, pubKey ed25519.PublicKey) *VerifyResult {
+	res, _ := verifyChain(path, pubKey)
+	return res
+}
+
+// verifyChain walks the file, returning the result plus each head hash
+// (heads[i] is the chain head after i+1 receipts) for anchor checks.
+func verifyChain(path string, pubKey ed25519.PublicKey) (*VerifyResult, []string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return &VerifyResult{Reason: err.Error()}
+		return &VerifyResult{Reason: err.Error()}, nil
 	}
 	var prevHash string
+	var heads []string
 	total := 0
 	start := 0
 	for i := 0; i <= len(data); i++ {
@@ -178,18 +206,19 @@ func VerifyFile(path string, pubKey ed25519.PublicKey) *VerifyResult {
 		}
 		var r Receipt
 		if err := json.Unmarshal(line, &r); err != nil {
-			return &VerifyResult{Total: total, FailAt: total, Reason: "unparseable receipt"}
+			return &VerifyResult{Total: total, FailAt: total, Reason: "unparseable receipt"}, heads
 		}
 		if r.PrevHash != prevHash {
-			return &VerifyResult{Total: total, FailAt: total, Reason: "chain link broken (prev_hash mismatch)"}
+			return &VerifyResult{Total: total, FailAt: total, Reason: "chain link broken (prev_hash mismatch)"}, heads
 		}
-		if len(r.Signature) < 8 || !ed25519.Verify(pubKey, []byte(r.canonical()), mustHex(r.Signature[7:])) {
-			return &VerifyResult{Total: total, FailAt: total, Reason: "signature invalid"}
+		if !strings.HasPrefix(r.Signature, "sig_v1:") || !ed25519.Verify(pubKey, []byte(r.canonical()), mustHex(r.Signature[7:])) {
+			return &VerifyResult{Total: total, FailAt: total, Reason: "signature invalid"}, heads
 		}
 		prevHash = r.hash()
+		heads = append(heads, prevHash)
 		total++
 	}
-	return &VerifyResult{Total: total, Valid: true}
+	return &VerifyResult{Total: total, Valid: true}, heads
 }
 
 func mustHex(s string) []byte {
