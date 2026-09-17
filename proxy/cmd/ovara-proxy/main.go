@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"ovara.proxy/internal/ca"
@@ -73,23 +75,29 @@ func main() {
 }
 
 func runVerify(path, pubHex string) {
-	keyBytes, err := hex.DecodeString(pubHex)
+	keyBytes, err := hex.DecodeString(strings.TrimSpace(pubHex))
 	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
-		if pubHex == "" {
-			// Try sibling pubkey file convention
-			data, err2 := os.ReadFile(path + ".pub")
-			if err2 != nil {
-				log.Fatalf("verify: provide -pubkey or a %s.pub file", path)
+		// Sibling pubkey conventions: <chain>.pub, or the init layout
+		// (receipt_pubkey.hex beside the chain file).
+		for _, f := range []string{path + ".pub", filepath.Join(filepath.Dir(path), "receipt_pubkey.hex")} {
+			if data, err2 := os.ReadFile(f); err2 == nil {
+				keyBytes, _ = hex.DecodeString(strings.TrimSpace(string(data)))
+				if len(keyBytes) == ed25519.PublicKeySize {
+					break
+				}
 			}
-			keyBytes, _ = hex.DecodeString(string(data))
 		}
 	}
+	if len(keyBytes) != ed25519.PublicKeySize {
+		log.Fatalf("verify: provide -pubkey or a pubkey file beside %s", path)
+	}
 	res := receipts.VerifyFile(path, ed25519.PublicKey(keyBytes))
-	// If anchors exist (OVARA_ANCHOR_FILE, or the default sink), verify each
-	// anchor's head against the recomputed chain head at that sequence.
+	// If anchors exist (OVARA_ANCHOR_FILE, or the default sink beside the
+	// chain file), verify each anchor's head against the recomputed chain
+	// head at that sequence.
 	anchorPath := os.Getenv("OVARA_ANCHOR_FILE")
 	if anchorPath == "" {
-		anchorPath = "var/anchors.jsonl"
+		anchorPath = filepath.Join(filepath.Dir(path), "anchors.jsonl")
 	}
 	if _, err := os.Stat(anchorPath); err == nil {
 		res = receipts.VerifyAnchorFile(anchorPath, path, ed25519.PublicKey(keyBytes))

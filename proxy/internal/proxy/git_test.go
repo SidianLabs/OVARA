@@ -40,7 +40,7 @@ func TestParseRefUpdates(t *testing.T) {
 		{name: "no flush, pack follows", body: pkt(shaA+" "+shaB+" refs/heads/x\n") + "PACK", want: []RefUpdate{{Ref: "refs/heads/x", OldSHA: shaA, NewSHA: shaB}}},
 	}
 	for _, tt := range tests {
-		got := parseRefUpdates([]byte(tt.body))
+		got, _ := parseRefUpdates([]byte(tt.body))
 		if len(got) != len(tt.want) {
 			t.Fatalf("%s: got %d refs %+v, want %d", tt.name, len(got), got, len(tt.want))
 		}

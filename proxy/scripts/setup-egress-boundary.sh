@@ -76,12 +76,14 @@ esac
 render_nft() {
   cat <<EOF
 table inet egress_boundary {
-  # Redirect all DNS (TCP+UDP :53) to the policy-enforcing resolver.
-  # The resolver MUST be deny-by-default or this is an exfil tunnel.
+  # DNAT all DNS (TCP+UDP :53) to the policy-enforcing resolver. ('redirect'
+  # would deliver to THIS stack's :5353, blackholing DNS — the resolver is
+  # a different host/address.) It MUST be deny-by-default or this is an
+  # exfil tunnel.
   chain nat_output {
     type nat hook output priority -100; policy accept;
-    udp dport 53 redirect to :5353
-    tcp dport 53 redirect to :5353
+    udp dport 53 dnat to ${RESOLVER}:5353
+    tcp dport 53 dnat to ${RESOLVER}:5353
   }
 
   chain output {
@@ -94,8 +96,8 @@ table inet egress_boundary {
     # The only thing the agent may reach: the executor proxy.
     ip daddr ${PROXY_IP} tcp dport ${PROXY_PORT} accept
 
-    # Redirected DNS lands on the resolver address (loopback-redirected
-    # packets hit output again with daddr rewritten — allow to resolver).
+    # DNAT'd DNS egresses toward the resolver on :5353; also allow :53 in
+    # case the resolver listens on the standard port.
     ip daddr ${RESOLVER} udp dport {53, 5353} accept
     ip daddr ${RESOLVER} tcp dport {53, 5353} accept
 
@@ -169,7 +171,7 @@ Caveats:
   * QUIC/UDP-443 is blocked; HTTPS falls back to TCP. Confirm your agent's
     HTTP stack actually falls back (most do; Go's http3-enabled clients may
     need explicit config).
-  * DNS tunneling: :53 is redirected to ${RESOLVER}. If that resolver
+  * DNS tunneling: :53 is DNAT'd to ${RESOLVER}:5353. If that resolver
     answers arbitrary queries, the agent can exfiltrate through TXT.
     See proxy/scripts/resolver.md.
   * This ran on the host. If you ran it inside the agent env, it did nothing.
@@ -194,6 +196,22 @@ do_docker() {
       --driver bridge \
       --subnet 172.30.0.0/24 \
       "${DOCKER_NET}"
+  fi
+
+  # Host-side DOCKER-USER rules: the agent can still reach the bridge
+  # gateway (${PROXY_IP}) on EVERY port — including any other host services
+  # bound there. Restrict bridge-subnet traffic to exactly the proxy port
+  # and the resolver's DNS port. Idempotent like the netns INPUT fix.
+  if command -v iptables >/dev/null 2>&1; then
+    for rule in \
+      "-s 172.30.0.0/24 -d ${PROXY_IP} -p tcp --dport ${PROXY_PORT} -j ACCEPT" \
+      "-s 172.30.0.0/24 -d ${RESOLVER} -p udp --dport 53 -j ACCEPT" \
+      "-s 172.30.0.0/24 -d ${RESOLVER} -p tcp --dport 53 -j ACCEPT" \
+      "-s 172.30.0.0/24 -j DROP"; do
+      iptables -C DOCKER-USER ${rule} 2>/dev/null || iptables -A DOCKER-USER ${rule}
+    done
+  else
+    warn "iptables not found — DOCKER-USER restrictions NOT applied; the agent can hit the bridge gateway on all ports"
   fi
 
   cat <<EOF
@@ -235,10 +253,14 @@ Why each flag exists:
                          convenience for tools that respect them.
 
 Honest gaps:
-  * Container-to-container traffic on ${DOCKER_NET} is permitted. If the
-    resolver is a container on the same bridge, that is the intended DNS
-    path — but it means the agent can hit ANY container on the bridge on
-    ANY port. Keep the bridge to exactly: agent + proxy + resolver.
+  * DOCKER-USER rules (applied above) restrict bridge-subnet egress to
+    ${PROXY_IP}:${PROXY_PORT} and ${RESOLVER}:53 — the gateway can no longer
+    be hit on other ports. They apply to routed traffic; same-bridge
+    container-to-container traffic is switched L2 and bypasses iptables, so
+    still keep the bridge to exactly: agent + proxy + resolver.
+  * If you reused an existing ${DOCKER_NET} with a different subnet, the
+    hardcoded 172.30.0.0/24 DOCKER-USER rules will not match it — re-create
+    the network or adjust the rules.
   * QUIC/UDP-443: the internal network has no NAT, so UDP 443 goes nowhere
     anyway. No explicit rule needed here — unlike the netns path.
   * An agent with a cooperative-but-buggy client that ignores HTTPS_PROXY

@@ -35,31 +35,38 @@ func isReceivePack(r *http.Request) bool {
 	return ct == "" || strings.HasPrefix(ct, "application/x-git-receive-pack-request")
 }
 
-// peekReceivePack buffers up to gitBodyPeek bytes of r.Body, restores r.Body
-// so the full stream (peek + remainder) still reaches upstream, and returns
-// the buffered header bytes for parsing. Returns nil if not a push.
-func peekReceivePack(r *http.Request) []byte {
+// peekReceivePack buffers up to gitBodyPeek bytes of r.Body (plus one
+// lookahead byte to detect truncation), restores r.Body so the full stream
+// (peek + remainder) still reaches upstream, and returns the buffered
+// header bytes plus whether the body exceeded the buffer. Returns nil if
+// not a push.
+func peekReceivePack(r *http.Request) ([]byte, bool) {
 	if !isReceivePack(r) || r.Body == nil {
-		return nil
+		return nil, false
 	}
-	peek, err := io.ReadAll(io.LimitReader(r.Body, gitBodyPeek))
+	peek, err := io.ReadAll(io.LimitReader(r.Body, gitBodyPeek+1))
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	// Reconstruct Body: buffered head + whatever remains of the original.
+	truncated := len(peek) > gitBodyPeek
+	// Reconstruct Body with ALL buffered bytes (including the lookahead) +
+	// whatever remains of the original.
 	r.Body = struct {
 		io.Reader
 		io.Closer
 	}{Reader: io.MultiReader(bytes.NewReader(peek), r.Body), Closer: r.Body}
-	return peek
+	if truncated {
+		peek = peek[:gitBodyPeek]
+	}
+	return peek, truncated
 }
 
 // parseRefUpdates extracts ref updates from the pkt-line header of a
-// receive-pack body. Parsing stops at the flush pkt (0000) that precedes the
-// pack data. Malformed input yields whatever refs parsed before the error
-// (possibly none); it never panics.
-func parseRefUpdates(body []byte) []RefUpdate {
-	var refs []RefUpdate
+// receive-pack body. Parsing stops at the flush pkt (0000) that precedes
+// the pack data; complete reports whether that flush was seen. Malformed
+// input yields whatever refs parsed before the error (possibly none); it
+// never panics.
+func parseRefUpdates(body []byte) (refs []RefUpdate, complete bool) {
 	br := bufio.NewReader(bytes.NewReader(body))
 	for {
 		hdr := make([]byte, 4)
@@ -71,7 +78,7 @@ func parseRefUpdates(body []byte) []RefUpdate {
 			break
 		}
 		if n == 0 { // flush pkt: end of ref header, pack data follows
-			break
+			return refs, true
 		}
 		if n < 4 || n > gitBodyPeek {
 			break
@@ -95,7 +102,7 @@ func parseRefUpdates(body []byte) []RefUpdate {
 			Delete: strings.Trim(f[1], "0") == "",
 		})
 	}
-	return refs
+	return refs, false
 }
 
 // gitResourceSuffix returns " refs/a,refs/b" for appending to the policy
@@ -104,11 +111,17 @@ func (s *Server) gitResourceSuffix(r *http.Request) string {
 	if !s.gitGate {
 		return ""
 	}
-	peek := peekReceivePack(r)
+	peek, truncated := peekReceivePack(r)
 	if peek == nil {
 		return ""
 	}
-	refs := parseRefUpdates(peek)
+	refs, complete := parseRefUpdates(peek)
+	if truncated && !complete {
+		// Ref header ran past the 1MB buffer without a flush pkt: we cannot
+		// see all the refs being pushed — flag it honestly rather than
+		// evaluate a partial push.
+		return " git-receive-pack(truncated)"
+	}
 	if len(refs) == 0 {
 		return " git-receive-pack" // a push we couldn't parse: still flag it
 	}
