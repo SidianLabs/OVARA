@@ -100,7 +100,7 @@ export const apiKeys = pgTable("api_keys", {
   organizationId: uuid("organization_id").references(() => organizations.id).notNull(),
   name: varchar("name", { length: 255 }).notNull(),
   keyHash: varchar("key_hash", { length: 255 }).notNull().unique(),
-  prefix: varchar("prefix", { length: 8 }).notNull(),
+  prefix: varchar("prefix", { length: 32 }).notNull(),
   scopes: jsonb("scopes").default([]),
   expiresAt: timestamp("expires_at"),
   lastUsedAt: timestamp("last_used_at"),

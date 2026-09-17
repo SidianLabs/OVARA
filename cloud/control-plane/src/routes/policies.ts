@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { db } from "../db/connection";
 import { policies, policyDistributions, gateways } from "../db/schema";
 import { createPolicySchema, publishPolicySchema, paginationSchema } from "../schemas";
-import { authenticate, requireOrg, requireScope } from "../middleware/auth";
+import { authenticate, requireScope } from "../middleware/auth";
 import { eq, inArray } from "drizzle-orm";
 
 export function policyRoutes(app: FastifyInstance) {
@@ -29,9 +29,12 @@ export function policyRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const body = publishPolicySchema.parse(request.body || {});
 
+    const auth = await authenticate(request);
     const existing = await db.query.policies.findFirst({ where: eq(policies.id, id) });
-    if (!existing) return reply.status(404).send({ error: "Policy not found" });
-    const auth = await requireOrg(request, existing.organizationId);
+    // Uniform 404 for missing or cross-org policies to avoid existence oracles.
+    if (!existing || existing.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Policy not found" });
+    }
 
     const [policy] = await db.update(policies)
       .set({ status: "published", publishedAt: new Date(), updatedAt: new Date() })
@@ -88,20 +91,24 @@ export function policyRoutes(app: FastifyInstance) {
   app.get("/:id", {
     preHandler: [authenticate, requireScope("read")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const policy = await db.query.policies.findFirst({ where: eq(policies.id, id) });
-    if (!policy) return reply.status(404).send({ error: "Policy not found" });
-    await requireOrg(request, policy.organizationId);
+    if (!policy || policy.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Policy not found" });
+    }
     return reply.send(policy);
   });
 
   app.delete("/:id", {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const policy = await db.query.policies.findFirst({ where: eq(policies.id, id) });
-    if (!policy) return reply.status(404).send({ error: "Policy not found" });
-    await requireOrg(request, policy.organizationId);
+    if (!policy || policy.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Policy not found" });
+    }
     await db.delete(policies).where(eq(policies.id, id));
     return reply.status(204).send();
   });
@@ -109,10 +116,12 @@ export function policyRoutes(app: FastifyInstance) {
   app.get("/distributions/:gatewayId", {
     preHandler: [authenticate, requireScope("read")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { gatewayId } = request.params as { gatewayId: string };
     const gateway = await db.query.gateways.findFirst({ where: eq(gateways.id, gatewayId) });
-    if (!gateway) return reply.status(404).send({ error: "Gateway not found" });
-    await requireOrg(request, gateway.organizationId);
+    if (!gateway || gateway.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Gateway not found" });
+    }
     const dists = await db.select().from(policyDistributions)
       .where(eq(policyDistributions.gatewayId, gatewayId));
     return reply.send(dists);

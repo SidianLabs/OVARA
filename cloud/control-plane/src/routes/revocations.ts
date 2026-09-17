@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { db } from "../db/connection";
 import { revocations } from "../db/schema";
 import { createRevocationSchema } from "../schemas";
-import { authenticate, requireOrg, requireScope } from "../middleware/auth";
+import { authenticate, requireScope } from "../middleware/auth";
 import { eq } from "drizzle-orm";
 
 export function revocationRoutes(app: FastifyInstance) {
@@ -25,10 +25,13 @@ export function revocationRoutes(app: FastifyInstance) {
   app.post("/:id/execute", {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const existing = await db.query.revocations.findFirst({ where: eq(revocations.id, id) });
-    if (!existing) return reply.status(404).send({ error: "Revocation not found" });
-    await requireOrg(request, existing.organizationId);
+    // Uniform 404 for missing or cross-org revocations to avoid existence oracles.
+    if (!existing || existing.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Revocation not found" });
+    }
     const [rev] = await db.update(revocations)
       .set({ status: "executed", executedAt: new Date() })
       .where(eq(revocations.id, id))
@@ -53,10 +56,12 @@ export function revocationRoutes(app: FastifyInstance) {
   app.get("/:id", {
     preHandler: [authenticate, requireScope("read")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const rev = await db.query.revocations.findFirst({ where: eq(revocations.id, id) });
-    if (!rev) return reply.status(404).send({ error: "Revocation not found" });
-    await requireOrg(request, rev.organizationId);
+    if (!rev || rev.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Revocation not found" });
+    }
     return reply.send(rev);
   });
 }

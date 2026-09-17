@@ -1,6 +1,6 @@
 import { db } from "../db/connection";
 import { policies, gateways, policyDistributions } from "../db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import type {
   Policy,
   DistributionTarget,
@@ -14,6 +14,9 @@ const DEFAULT_CONFIG: Required<DistributorConfig> = {
   maxRetries: 3,
   retryBaseDelayMs: 1000,
   requestTimeoutMs: 10000,
+  // Bounds the total time a single gateway's inline retry loop may take so
+  // a request handler is never serialized behind N x (timeout + backoff).
+  maxRetryWindowMs: 30000,
   // Bearer credential sent to gateways on policy push. Configure via
   // OVARA_GATEWAY_API_KEY; when empty no Authorization header is sent.
   apiKey: process.env.OVARA_GATEWAY_API_KEY ?? "",
@@ -51,7 +54,7 @@ export class PolicyDistributor {
         timestamp: new Date(),
         error: "Gateway not found",
       };
-      this.recordHistory(policy.version, result);
+      this.recordHistory(policy.organizationId, policy.version, result);
       return result;
     }
 
@@ -63,7 +66,7 @@ export class PolicyDistributor {
         error: `Gateway status is ${gateway.status}`,
       };
       await this.updateDistributionStatus(gatewayId, policy, "failed");
-      this.recordHistory(policy.version, result);
+      this.recordHistory(policy.organizationId, policy.version, result);
       return result;
     }
 
@@ -79,7 +82,7 @@ export class PolicyDistributor {
         error: "Gateway has no endpoint_url configured",
       };
       await this.updateDistributionStatus(gatewayId, policy, "failed");
-      this.recordHistory(policy.version, result);
+      this.recordHistory(policy.organizationId, policy.version, result);
       return result;
     }
 
@@ -93,7 +96,7 @@ export class PolicyDistributor {
         error: error instanceof Error ? error.message : String(error),
       };
       await this.updateDistributionStatus(gatewayId, policy, "failed");
-      this.recordHistory(policy.version, result);
+      this.recordHistory(policy.organizationId, policy.version, result);
       return result;
     }
 
@@ -105,7 +108,7 @@ export class PolicyDistributor {
         timestamp: new Date(),
       };
       await this.updateDistributionStatus(gatewayId, policy, "delivered");
-      this.recordHistory(policy.version, result);
+      this.recordHistory(policy.organizationId, policy.version, result);
       return result;
     } catch (error) {
       const result = await this.retryDistribution(gatewayId, endpoint, policy, error);
@@ -126,13 +129,13 @@ export class PolicyDistributor {
 
     const distributions = await db.select().from(policyDistributions).where(
       and(
-        eq(policyDistributions.policyId, orgPolicyIds[0]),
+        inArray(policyDistributions.policyId, orgPolicyIds),
         eq(policyDistributions.status, "delivered"),
       ),
     );
 
     const allDistributions = await db.select().from(policyDistributions).where(
-      eq(policyDistributions.policyId, orgPolicyIds[0]),
+      inArray(policyDistributions.policyId, orgPolicyIds),
     );
 
     return {
@@ -176,8 +179,11 @@ export class PolicyDistributor {
     return results;
   }
 
-  getHistory(): DistributionRecord[] {
-    return [...this.history];
+  getHistory(orgId?: string): DistributionRecord[] {
+    const records = orgId
+      ? this.history.filter((h) => h.organizationId === orgId)
+      : this.history;
+    return [...records];
   }
 
   private async getTargetsForOrg(orgId: string): Promise<DistributionTarget[]> {
@@ -210,9 +216,13 @@ export class PolicyDistributor {
     }
   }
 
-  private async pushPolicyToGateway(endpoint: string, policy: Policy): Promise<void> {
+  private async pushPolicyToGateway(
+    endpoint: string,
+    policy: Policy,
+    timeoutMs: number = this.config.requestTimeoutMs,
+  ): Promise<void> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.config.apiKey) {
@@ -240,6 +250,10 @@ export class PolicyDistributor {
     }
   }
 
+  // Retries run inline in the request handler (no job queue yet), so the
+  // total wait is bounded by config.maxRetryWindowMs. Each push attempt is
+  // additionally capped by config.requestTimeoutMs inside
+  // pushPolicyToGateway. A durable retry queue is the proper long-term fix.
   private async retryDistribution(
     gatewayId: string,
     endpoint: string,
@@ -247,20 +261,28 @@ export class PolicyDistributor {
     lastError: unknown,
   ): Promise<DistributionResult> {
     let lastErr = lastError;
+    const deadline = Date.now() + this.config.maxRetryWindowMs;
 
     for (let attempt = 1; attempt <= this.config.maxRetries; attempt++) {
-      const delay = this.config.retryBaseDelayMs * Math.pow(2, attempt - 1);
+      if (Date.now() >= deadline) break;
+      const delay = Math.min(
+        this.config.retryBaseDelayMs * Math.pow(2, attempt - 1),
+        deadline - Date.now(),
+      );
       await new Promise((resolve) => setTimeout(resolve, delay));
 
+      const attemptBudget = deadline - Date.now();
+      if (attemptBudget <= 0) break;
+
       try {
-        await this.pushPolicyToGateway(endpoint, policy);
+        await this.pushPolicyToGateway(endpoint, policy, attemptBudget);
         const result: DistributionResult = {
           gatewayId,
           status: "delivered",
           timestamp: new Date(),
         };
         await this.updateDistributionStatus(gatewayId, policy, "delivered");
-        this.recordHistory(policy.version, result);
+        this.recordHistory(policy.organizationId, policy.version, result);
         return result;
       } catch (error) {
         lastErr = error;
@@ -274,7 +296,7 @@ export class PolicyDistributor {
       error: lastErr instanceof Error ? lastErr.message : String(lastErr),
     };
     await this.updateDistributionStatus(gatewayId, policy, "failed");
-    this.recordHistory(policy.version, result);
+    this.recordHistory(policy.organizationId, policy.version, result);
     return result;
   }
 
@@ -308,9 +330,10 @@ export class PolicyDistributor {
     }
   }
 
-  private recordHistory(policyVersion: number, result: DistributionResult): void {
+  private recordHistory(orgId: string, policyVersion: number, result: DistributionResult): void {
     this.history.push({
       id: crypto.randomUUID(),
+      organizationId: orgId,
       policyVersion,
       gatewayId: result.gatewayId,
       status: result.status,

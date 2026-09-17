@@ -1,7 +1,7 @@
 import { FastifyRequest } from "fastify";
 import { db } from "../db/connection";
 import { apiKeys } from "../db/schema";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { eq, and, gt, isNull, or } from "drizzle-orm";
 import { createHash } from "crypto";
 
 export interface AuthContext {
@@ -33,7 +33,7 @@ export async function authenticate(request: FastifyRequest): Promise<AuthContext
     where: and(
       eq(apiKeys.keyHash, keyHash),
       isNull(apiKeys.revokedAt),
-      gt(apiKeys.expiresAt || new Date(0), new Date())
+      or(isNull(apiKeys.expiresAt), gt(apiKeys.expiresAt, new Date()))
     ),
   });
 

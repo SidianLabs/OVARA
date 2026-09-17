@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { db } from "../db/connection";
 import { gateways } from "../db/schema";
 import { enrollGatewaySchema } from "../schemas";
-import { authenticate, requireOrg, requireScope } from "../middleware/auth";
+import { authenticate, requireScope } from "../middleware/auth";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
@@ -37,10 +37,13 @@ export function gatewayRoutes(app: FastifyInstance) {
   app.post("/confirm/:id", {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const existing = await db.query.gateways.findFirst({ where: eq(gateways.id, id) });
-    if (!existing) return reply.status(404).send({ error: "Gateway not found" });
-    await requireOrg(request, existing.organizationId);
+    // Uniform 404 for missing or cross-org gateways to avoid existence oracles.
+    if (!existing || existing.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Gateway not found" });
+    }
     const [gw] = await db.update(gateways)
       .set({ status: "active", enrollmentToken: null, enrollmentExpiresAt: null, updatedAt: new Date() })
       .where(eq(gateways.id, id))
@@ -65,20 +68,24 @@ export function gatewayRoutes(app: FastifyInstance) {
   app.get("/:id", {
     preHandler: [authenticate, requireScope("read")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const gw = await db.query.gateways.findFirst({ where: eq(gateways.id, id) });
-    if (!gw) return reply.status(404).send({ error: "Gateway not found" });
-    await requireOrg(request, gw.organizationId);
+    if (!gw || gw.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Gateway not found" });
+    }
     return reply.send(gw);
   });
 
   app.post("/:id/heartbeat", {
     preHandler: [authenticate, requireScope("write")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const existing = await db.query.gateways.findFirst({ where: eq(gateways.id, id) });
-    if (!existing) return reply.status(404).send({ error: "Gateway not found" });
-    await requireOrg(request, existing.organizationId);
+    if (!existing || existing.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Gateway not found" });
+    }
     const [gw] = await db.update(gateways)
       .set({ lastHeartbeat: new Date(), updatedAt: new Date() })
       .where(eq(gateways.id, id))
@@ -90,10 +97,12 @@ export function gatewayRoutes(app: FastifyInstance) {
   app.delete("/:id", {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const existing = await db.query.gateways.findFirst({ where: eq(gateways.id, id) });
-    if (!existing) return reply.status(404).send({ error: "Gateway not found" });
-    await requireOrg(request, existing.organizationId);
+    if (!existing || existing.organizationId !== auth.organizationId) {
+      return reply.status(404).send({ error: "Gateway not found" });
+    }
     await db.delete(gateways).where(eq(gateways.id, id));
     return reply.status(204).send();
   });
