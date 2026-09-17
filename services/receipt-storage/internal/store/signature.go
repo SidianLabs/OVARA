@@ -15,17 +15,16 @@ import (
 const signaturePrefix = "sig_v1:"
 
 // canonicalPayload builds the deterministic byte sequence that is verified.
-//
-// ASSUMPTION: the gateway signer signs fields this service does not store
-// (ActionDigest, PolicyVersion), so byte-exact RFC 0003 verification is not
-// possible here. We verify an HMAC-SHA256 over the documented canonical
-// format using the fields this service persists — the same field order used
-// by (*models.Receipt).Digest. Deployments needing byte-exact gateway
-// verification must extend the stored schema to include the missing fields.
+// The field order matches the gateway signer
+// (runtime/gateway/internal/receipt/signer.go):
+// ReceiptID|DecisionID|ActionDigest|ActionType|Resource|AgentID|Decision|PolicyVersion|TrustScore|IssuedAt
+// so signatures produced by the gateway verify byte-exact here. The stored
+// receipt ID serves as the gateway's ReceiptID.
 func canonicalPayload(r *models.Receipt) string {
-	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%.3f|%d",
-		r.ID, r.DecisionID, r.GatewayID, r.OrganizationID,
-		r.ActionType, r.Resource, r.Decision, r.AgentID,
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s|%f|%d",
+		r.ID, r.DecisionID, r.ActionDigest,
+		r.ActionType, r.Resource, r.AgentID,
+		r.Decision, r.PolicyVersion,
 		r.TrustScore, r.IssuedAt.Unix(),
 	)
 }

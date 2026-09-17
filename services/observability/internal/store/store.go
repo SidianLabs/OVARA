@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 
@@ -86,14 +87,16 @@ func (s *memoryStore) Ingest(event *models.TraceEvent) error {
 		return fmt.Errorf("store full: max %d events", s.maxSize)
 	}
 
-	s.events = append(s.events, event)
-
+	// Persist first so a failed write does not leave the event only in
+	// memory where it would be lost on restart anyway — and so memory
+	// never diverges from the durable log.
 	if s.filePath != "" {
 		if err := s.appendToFile(event); err != nil {
 			return fmt.Errorf("persist event: %w", err)
 		}
 	}
 
+	s.events = append(s.events, event)
 	return nil
 }
 
@@ -137,13 +140,22 @@ func (s *memoryStore) Query(filter TraceFilter) ([]*models.TraceEvent, error) {
 		if !filter.EndTime.IsZero() && evt.Timestamp.After(filter.EndTime) {
 			continue
 		}
-		results = append(results, evt)
+		cp := *evt
+		results = append(results, &cp)
 	}
 
-	if filter.Offset > 0 && filter.Offset < len(results) {
+	if filter.Offset >= len(results) {
+		results = results[:0]
+	} else if filter.Offset > 0 {
 		results = results[filter.Offset:]
 	}
-	if filter.Limit > 0 && filter.Limit < len(results) {
+	if filter.Limit <= 0 {
+		filter.Limit = 100
+	}
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
+	if filter.Limit < len(results) {
 		results = results[:filter.Limit]
 	}
 
@@ -176,7 +188,7 @@ func (s *memoryStore) GetTrace(traceID string) (*models.LineageRecord, error) {
 	return &models.LineageRecord{
 		ActionDigest: traceID,
 		AgentID:      agentID,
-		Events:       eventsToRef(events),
+		Events:       eventsToValue(events),
 		Graph:        graph,
 	}, nil
 }
@@ -186,9 +198,13 @@ func (s *memoryStore) GetAgentLineage(agentID string, limit int) ([]*models.Line
 	defer s.mu.RUnlock()
 
 	traceMap := make(map[string][]*models.TraceEvent)
+	firstSeen := make(map[string]time.Time)
 	for _, evt := range s.events {
 		if evt.AgentID == agentID {
 			traceMap[evt.TraceID] = append(traceMap[evt.TraceID], evt)
+			if t, ok := firstSeen[evt.TraceID]; !ok || evt.Timestamp.Before(t) {
+				firstSeen[evt.TraceID] = evt.Timestamp
+			}
 		}
 	}
 
@@ -196,18 +212,33 @@ func (s *memoryStore) GetAgentLineage(agentID string, limit int) ([]*models.Line
 		return []*models.LineageRecord{}, nil
 	}
 
+	// Sort trace IDs by their first event timestamp for deterministic
+	// ordering before truncating to limit.
+	traceIDs := make([]string, 0, len(traceMap))
+	for traceID := range traceMap {
+		traceIDs = append(traceIDs, traceID)
+	}
+	sort.Slice(traceIDs, func(i, j int) bool {
+		ti, tj := firstSeen[traceIDs[i]], firstSeen[traceIDs[j]]
+		if ti.Equal(tj) {
+			return traceIDs[i] < traceIDs[j]
+		}
+		return ti.Before(tj)
+	})
+	if limit > 0 && len(traceIDs) > limit {
+		traceIDs = traceIDs[:limit]
+	}
+
 	var records []*models.LineageRecord
-	for traceID, events := range traceMap {
+	for _, traceID := range traceIDs {
+		events := traceMap[traceID]
 		g := s.builder.BuildLineage(eventsToValue(events))
 		records = append(records, &models.LineageRecord{
 			ActionDigest: traceID,
 			AgentID:      agentID,
-			Events:       eventsToRef(events),
+			Events:       eventsToValue(events),
 			Graph:        g,
 		})
-		if limit > 0 && len(records) >= limit {
-			break
-		}
 	}
 
 	if records == nil {
@@ -242,14 +273,6 @@ func (s *memoryStore) Count() int {
 }
 
 func eventsToValue(events []*models.TraceEvent) []models.TraceEvent {
-	result := make([]models.TraceEvent, len(events))
-	for i, e := range events {
-		result[i] = *e
-	}
-	return result
-}
-
-func eventsToRef(events []*models.TraceEvent) []models.TraceEvent {
 	result := make([]models.TraceEvent, len(events))
 	for i, e := range events {
 		result[i] = *e

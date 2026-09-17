@@ -87,6 +87,8 @@ func (m *mockStore) ExpireOlderThan(before time.Time) (int, error) {
 	return count, nil
 }
 
+func (m *mockStore) EvictExpired() int { return 0 }
+
 func (m *mockStore) Count() int { return len(m.approvals) }
 
 type notFoundError struct{ id string }

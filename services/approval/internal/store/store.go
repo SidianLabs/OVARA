@@ -15,6 +15,7 @@ type Store interface {
 	List(filter ListFilter) ([]*models.Approval, error)
 	Resolve(id string, state models.ApprovalState, resolvedBy string, reason string) error
 	ExpireOlderThan(before time.Time) (int, error)
+	EvictExpired() int
 	Count() int
 }
 
@@ -64,7 +65,8 @@ func (s *memoryStore) Get(id string) (*models.Approval, error) {
 	if !ok {
 		return nil, fmt.Errorf("approval %s not found", id)
 	}
-	return a, nil
+	cp := *a
+	return &cp, nil
 }
 
 func (s *memoryStore) List(filter ListFilter) ([]*models.Approval, error) {
@@ -82,17 +84,26 @@ func (s *memoryStore) List(filter ListFilter) ([]*models.Approval, error) {
 		if filter.AgentID != "" && a.AgentID != filter.AgentID {
 			continue
 		}
-		results = append(results, a)
+		cp := *a
+		results = append(results, &cp)
 	}
 
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].CreatedAt.After(results[j].CreatedAt)
 	})
 
-	if filter.Offset > 0 && filter.Offset < len(results) {
+	if filter.Offset >= len(results) {
+		results = results[:0]
+	} else if filter.Offset > 0 {
 		results = results[filter.Offset:]
 	}
-	if filter.Limit > 0 && filter.Limit < len(results) {
+	if filter.Limit <= 0 {
+		filter.Limit = 100
+	}
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
+	if filter.Limit < len(results) {
 		results = results[:filter.Limit]
 	}
 
@@ -138,6 +149,22 @@ func (s *memoryStore) ExpireOlderThan(before time.Time) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+// EvictExpired removes approvals already marked expired so they stop
+// counting against maxSize.
+func (s *memoryStore) EvictExpired() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := 0
+	for id, a := range s.approvals {
+		if a.State == models.StateExpired {
+			delete(s.approvals, id)
+			count++
+		}
+	}
+	return count
 }
 
 func (s *memoryStore) Count() int {

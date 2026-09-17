@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"ovara.services.approval/internal/server"
 	"ovara.services.approval/internal/store"
@@ -32,6 +33,22 @@ func main() {
 	}
 
 	s := store.NewMemoryStore(0)
+
+	// Background sweeper: expire pending approvals past their TTL and
+	// evict expired entries so they stop counting against maxSize.
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if n, err := s.ExpireOlderThan(time.Now().UTC()); err == nil && n > 0 {
+				log.Printf("auto-expired %d approvals", n)
+			}
+			if n := s.EvictExpired(); n > 0 {
+				log.Printf("evicted %d expired approvals", n)
+			}
+		}
+	}()
+
 	srv := server.NewServer(*addr, s, tokenList...)
 
 	go func() {
