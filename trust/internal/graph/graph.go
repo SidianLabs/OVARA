@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"sort"
 	"sync"
@@ -93,7 +94,9 @@ func (tg *TrustGraph) Federate(source, target TrustDomain, trustLevel float64, t
 	now := time.Now().UTC()
 	targetNode := tg.nodes[target]
 	for _, key := range targetPublicKeys {
-		targetNode.PublicKeys = append(targetNode.PublicKeys, key)
+		if !containsKey(targetNode.PublicKeys, key) {
+			targetNode.PublicKeys = append(targetNode.PublicKeys, key)
+		}
 	}
 
 	if tg.edges[source] == nil {
@@ -104,7 +107,11 @@ func (tg *TrustGraph) Federate(source, target TrustDomain, trustLevel float64, t
 		existing.TrustLevel = trustLevel
 		existing.LastUpdated = now
 		existing.Active = true
-		existing.PublicKeys = append(existing.PublicKeys, targetPublicKeys...)
+		for _, key := range targetPublicKeys {
+			if !containsKey(existing.PublicKeys, key) {
+				existing.PublicKeys = append(existing.PublicKeys, key)
+			}
+		}
 	} else {
 		tg.edges[source][target] = &TrustRelationship{
 			SourceOrg:      source,
@@ -193,6 +200,16 @@ func (tg *TrustGraph) Snapshot() map[string]interface{} {
 	}
 }
 
+// containsKey reports whether key is already present in keys.
+func containsKey(keys [][]byte, key []byte) bool {
+	for _, k := range keys {
+		if subtle.ConstantTimeCompare(k, key) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
 func (tg *TrustGraph) requireNode(domain TrustDomain) error {
 	if _, exists := tg.nodes[domain]; !exists {
 		return fmt.Errorf("organization %s not found", domain)
@@ -222,9 +239,9 @@ func (tg *TrustGraph) GetRelationship(source, target TrustDomain) (*TrustRelatio
 // GraphSnapshot is a serializable representation of the entire trust graph.
 // Used for persistence and cross-instance sync.
 type GraphSnapshot struct {
-	Version       string                `json:"version"`
-	Nodes         []OrganizationNode    `json:"nodes"`
-	Relationships []TrustRelationship   `json:"relationships"`
+	Version       string              `json:"version"`
+	Nodes         []OrganizationNode  `json:"nodes"`
+	Relationships []TrustRelationship `json:"relationships"`
 }
 
 // SnapshotV2 returns a versioned, JSON-serializable snapshot of the graph.

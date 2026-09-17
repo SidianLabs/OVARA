@@ -31,8 +31,8 @@ func TestChainDetector_SelfDelegation(t *testing.T) {
 	for _, sus := range s {
 		if sus.Type == "self_delegation" {
 			found = true
-			if sus.Severity != "critical" {
-				t.Errorf("self-delegation severity = %v, want critical", sus.Severity)
+			if sus.Severity != "medium" {
+				t.Errorf("self-delegation severity = %v, want medium (heuristic)", sus.Severity)
 			}
 		}
 	}

@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -9,8 +10,8 @@ import (
 )
 
 type Authority struct {
-	Issuer     string    `json:"issuer"`
-	SubjectID  string    `json:"subject_id"`
+	Issuer      string    `json:"issuer"`
+	SubjectID   string    `json:"subject_id"`
 	DelegatedAt time.Time `json:"delegated_at,omitempty"`
 }
 
@@ -30,11 +31,7 @@ func NewDelegationChain(authorities []Authority) *DelegationChain {
 }
 
 func (d *DelegationChain) computeHash() string {
-	payload := fmt.Sprintf("%d|", len(d.Authorities))
-	for _, a := range d.Authorities {
-		payload += fmt.Sprintf("%s|%s|%d|", a.Issuer, a.SubjectID, a.DelegatedAt.Unix())
-	}
-	h := sha256.Sum256([]byte(payload))
+	h := sha256.Sum256(canonicalJSON(d.Authorities))
 	return hex.EncodeToString(h[:])
 }
 
@@ -42,7 +39,11 @@ func (d *DelegationChain) Verify() bool {
 	if d.ChainHash == "" {
 		return false
 	}
-	return d.ChainHash == d.computeHash()
+	// Depth must reflect the actual chain length, not a serialized claim.
+	if d.Depth != len(d.Authorities) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(d.ChainHash), []byte(d.computeHash())) == 1
 }
 
 func (d *DelegationChain) RootAuthority() (Authority, bool) {
@@ -73,7 +74,9 @@ func (d *DelegationChain) AllDelegators() []string {
 }
 
 func (d *DelegationChain) DepthExceeded(maxDepth int) bool {
-	return d.Depth > maxDepth
+	// Recompute depth from the actual chain; the serialized Depth field is
+	// not trustworthy on untrusted input.
+	return len(d.Authorities) > maxDepth
 }
 
 func (d *DelegationChain) Validate() []string {

@@ -45,6 +45,19 @@ func (s *LeaseStore) List() []*crypto.CapabilityLease {
 	return result
 }
 
+// Revoke marks a lease as revoked under the store lock. The lease record is
+// kept for audit purposes; IsExpired reports true for revoked leases.
+func (s *LeaseStore) Revoke(leaseID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lease, ok := s.leases[leaseID]
+	if !ok {
+		return fmt.Errorf("lease not found: %s", leaseID)
+	}
+	lease.Revoked = true
+	return nil
+}
+
 func (s *LeaseStore) ListBySubject(subject string) []*crypto.CapabilityLease {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
