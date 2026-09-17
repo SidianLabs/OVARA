@@ -18,7 +18,8 @@ receipts in microseconds.
 > actions the gateway executes itself. The target architecture — a
 > credential-starving executor proxy where every side effect physically
 > transits a notarizing chokepoint — is described in
-> [`docs/architecture/executor_proxy.md`](docs/architecture/executor_proxy.md).
+> [`docs/architecture/executor_proxy.md`](docs/architecture/executor_proxy.md);
+> the first slice has shipped in [`proxy/`](proxy/).
 
 ```text
 ┌────────────┐   ┌─────────────────────┐   ┌────────────────────┐
@@ -32,6 +33,37 @@ receipts in microseconds.
                                            │ (signed, auditable)│
                                            └────────────────────┘
 ```
+
+---
+
+## Quickstart
+
+One binary runs the whole local deployment — gateway plus executor proxy:
+
+```bash
+cd proxy
+go build -o ovara ./cmd/ovara
+./ovara demo            # 30-second self-contained proof, no setup
+./ovara init mydir      # generates keys, configs, policy, operator token
+./ovara run -dir mydir  # gateway + executor proxy in one process
+```
+
+Then wire your agent's environment to the proxy:
+
+```bash
+export HTTPS_PROXY=http://localhost:9443
+export SSL_CERT_FILE=mydir/var/ca.pem
+```
+
+Credentials: export real API keys (`GITHUB_TOKEN`, `OPENAI_API_KEY`, ...) in
+the **Ovara process** environment — the agent never sees them. The proxy
+injects them at the wire per the host bindings in `proxy.json`.
+
+**What makes it non-advisory:** the agent's environment must have no other
+egress — see `proxy/scripts/setup-egress-boundary.sh` (docker `--internal` /
+netns + nftables). Without that boundary the proxy is advisory: a cooperative
+agent uses it, an uncooperative one routes around it. HTTPS only. Details in
+[`proxy/DEPLOYMENT.md`](proxy/DEPLOYMENT.md).
 
 ---
 
@@ -133,7 +165,10 @@ Sub-10μs decision path — fast enough for inline interception in agent workflo
 
 ---
 
-## Quick Start
+## Quick Start (standalone gateway — advanced)
+
+The unified CLI above is the common path. This section runs the advisory
+gateway alone; the standalone proxy binary is `proxy/cmd/ovara-proxy`.
 
 ### Run the Gateway
 
@@ -259,6 +294,7 @@ ovara/
 ├── observability/          # Grafana dashboards, Prometheus alerts
 ├── packages/               # Cross-language shared types
 ├── policy/                 # OPA/Cedar adapters, policy compiler
+├── proxy/                  # Executor proxy + unified `ovara` CLI (init/run/demo)
 ├── research/               # Research notes
 ├── runtime/gateway/        # The main Go gateway
 ├── sdk/                    # TypeScript and Python SDKs
