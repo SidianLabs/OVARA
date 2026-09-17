@@ -1,9 +1,8 @@
-const { defineConfig } = require('../langchain/node_modules/vitest/dist/config.cjs');
-const path = require('path');
-
-module.exports = defineConfig({
+// Standalone vitest config — must not depend on a sibling package's
+// node_modules. Plain object export avoids importing vitest/config.
+module.exports = {
   test: {
     globals: true,
-    include: [path.resolve(__dirname, 'src/**/*.test.ts')],
+    include: ['src/**/*.test.ts'],
   },
-});
+};

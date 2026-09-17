@@ -175,7 +175,7 @@ class TestVerifyCapabilityLease:
     def test_valid_signature_passes(self):
         private_key, public_key = make_keypair()
         pk_hex = public_key_hex(public_key)
-        payload = f"lease-001|{pk_hex}|agent-001|['shell', 'exec']|*|9999999999|0|1234567890"
+        payload = f"lease-001|{pk_hex}|agent-001|[shell exec]|*|9999999999|0|1234567890"
         signature = sign_message(private_key, payload)
 
         lease = PortableLease(
@@ -226,116 +226,72 @@ class TestVerifyCapabilityLease:
         assert verify_capability_lease(lease, "00" * 32) is False
 
 
+def make_proxy_receipt(signature: str = "sig_v1:" + "00" * 64) -> PortableReceipt:
+    return PortableReceipt(
+        receipt_id="rcpt-001",
+        session_id="sess-1",
+        timestamp="2024-06-10T10:13:20.123456789Z",
+        method="POST",
+        url="https://api.example.com/v1",
+        decision="allow",
+        status=200,
+        prev_hash="",
+        signature=signature,
+    )
+
+
+# Canonical payload for make_proxy_receipt():
+# receipt_id|session_id|unixnano|method|url|decision|status|prev_hash
+# 2024-06-10T10:13:20.123456789Z -> 1718014400123456789
+PROXY_RECEIPT_CANONICAL = (
+    "rcpt-001|sess-1|1718014400123456789|POST|https://api.example.com/v1|allow|200|"
+)
+
+
 class TestVerifyReceipt:
     def test_valid_signature_passes(self):
         private_key, public_key = make_keypair()
-        payload = "|".join([
-            "rcpt-001", "dec-001", "gw-local", "org-demo",
-            "shell", "shell:ls", "allow", "agent-001",
-            "0.950", "1718000000",
-        ])
-        signature = sign_message(private_key, payload)
-
-        receipt = PortableReceipt(
-            receipt_id="rcpt-001",
-            decision_id="dec-001",
-            issuing_gateway="gw-local",
-            issuing_org="org-demo",
-            action_type="shell",
-            resource="shell:ls",
-            decision="allow",
-            agent_identity="agent-001",
-            trust_score=0.950,
-            timestamp=1718000000,
-            signature=signature,
-        )
+        signature = "sig_v1:" + sign_message(private_key, PROXY_RECEIPT_CANONICAL)
+        receipt = make_proxy_receipt(signature)
 
         assert verify_receipt(receipt, public_key_hex(public_key)) is True
 
     def test_tampered_signature_fails(self):
         private_key, public_key = make_keypair()
-        receipt = PortableReceipt(
-            receipt_id="rcpt-001",
-            decision_id="dec-001",
-            issuing_gateway="gw-local",
-            issuing_org="org-demo",
-            action_type="shell",
-            resource="shell:ls",
-            decision="allow",
-            agent_identity="agent-001",
-            trust_score=0.950,
-            timestamp=1718000000,
-            signature="00" * 64,
-        )
+        receipt = make_proxy_receipt()
+        assert verify_receipt(receipt, public_key_hex(public_key)) is False
+
+    def test_tampered_field_fails(self):
+        private_key, public_key = make_keypair()
+        signature = "sig_v1:" + sign_message(private_key, PROXY_RECEIPT_CANONICAL)
+        receipt = make_proxy_receipt(signature)
+        receipt.decision = "deny"
+        assert verify_receipt(receipt, public_key_hex(public_key)) is False
+
+    def test_missing_sig_v1_prefix_fails(self):
+        private_key, public_key = make_keypair()
+        signature = sign_message(private_key, PROXY_RECEIPT_CANONICAL)  # no prefix
+        receipt = make_proxy_receipt(signature)
         assert verify_receipt(receipt, public_key_hex(public_key)) is False
 
     def test_no_signature_returns_false(self):
-        receipt = PortableReceipt(
-            receipt_id="rcpt-001",
-            decision_id="dec-001",
-            issuing_gateway="gw-local",
-            issuing_org="org-demo",
-            action_type="shell",
-            resource="shell:ls",
-            decision="allow",
-            agent_identity="agent-001",
-            trust_score=0.950,
-            timestamp=1718000000,
-            signature=None,
-        )
+        receipt = make_proxy_receipt("")
         assert verify_receipt(receipt, "00" * 32) is False
 
     def test_no_public_key_returns_false(self):
-        receipt = PortableReceipt(
-            receipt_id="rcpt-001",
-            decision_id="dec-001",
-            issuing_gateway="gw-local",
-            issuing_org="org-demo",
-            action_type="shell",
-            resource="shell:ls",
-            decision="allow",
-            agent_identity="agent-001",
-            trust_score=0.950,
-            timestamp=1718000000,
-            signature="00" * 64,
-        )
-        assert verify_receipt(receipt, None) is False
+        receipt = make_proxy_receipt()
+        assert verify_receipt(receipt, "") is False
 
 
 class TestComputeReceiptDigest:
     def test_deterministic(self):
-        receipt = PortableReceipt(
-            receipt_id="rcpt-001",
-            decision_id="dec-001",
-            issuing_gateway="gw-local",
-            issuing_org="org-demo",
-            action_type="shell",
-            resource="shell:ls",
-            decision="allow",
-            agent_identity="agent-001",
-            trust_score=0.950,
-            timestamp=1718000000,
-            signature="00" * 64,
-        )
+        receipt = make_proxy_receipt()
         d1 = compute_receipt_digest(receipt)
         d2 = compute_receipt_digest(receipt)
         assert d1 == d2
 
     def test_hex_format(self):
-        receipt = PortableReceipt(
-            receipt_id="rcpt-001",
-            decision_id="dec-001",
-            issuing_gateway="gw-local",
-            issuing_org="org-demo",
-            action_type="shell",
-            resource="shell:ls",
-            decision="allow",
-            agent_identity="agent-001",
-            trust_score=0.950,
-            timestamp=1718000000,
-            signature="00" * 64,
-        )
-        digest = compute_receipt_digest(receipt)
+        digest = compute_receipt_digest(make_proxy_receipt())
         assert len(digest) == 64
 
 
@@ -446,7 +402,8 @@ class TestScopeCovers:
         assert scope_covers(lease, "shell:ls") is True
         assert scope_covers(lease, "shell:cat file.txt") is False
 
-    def test_empty_scope_covers_all(self):
+    def test_empty_scope_covers_nothing(self):
+        # The gateway requires a non-empty resource_scope; empty covers nothing.
         lease = PortableLease(
             lease_id="lease-001",
             issuer="00" * 32,
@@ -458,4 +415,4 @@ class TestScopeCovers:
             issued_at=0,
             signature="00" * 64,
         )
-        assert scope_covers(lease, "shell:anything") is True
+        assert scope_covers(lease, "shell:anything") is False

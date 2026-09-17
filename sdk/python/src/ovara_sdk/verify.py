@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
+
+from .types import PortableReceipt
 
 
 @dataclass
@@ -32,6 +34,42 @@ class PortableLease:
     delegation_depth: int
     issued_at: int
     signature: str
+
+
+def _go_string_slice(items: list[str]) -> str:
+    """Render a []string the way Go's fmt %v does: "[a b c]". The
+    gateway's lease canonical form (internal/identity/validator.go)
+    uses %v for allowed_actions, so verifiers must match it exactly."""
+    return "[" + " ".join(items) + "]"
+
+
+def _rfc3339_to_unix_nano(ts: str) -> int:
+    """Convert an RFC3339/RFC3339Nano timestamp to Unix nanoseconds,
+    matching Go's time.Time.UnixNano()."""
+    m = re.match(
+        r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})?$", ts
+    )
+    if not m:
+        return 0
+    tz = (m.group(3) or "Z").replace("Z", "+00:00")
+    base = datetime.fromisoformat(m.group(1) + tz)
+    frac = (m.group(2) or "").ljust(9, "0")[:9]
+    return int(base.timestamp()) * 1_000_000_000 + int(frac or "0")
+
+
+def _receipt_canonical(r: PortableReceipt) -> str:
+    """Mirrors Receipt.canonical() in proxy/internal/receipts/chain.go:
+    receipt_id|session_id|unixnano|method|url|decision|status|prev_hash"""
+    return "|".join([
+        r.receipt_id,
+        r.session_id,
+        str(_rfc3339_to_unix_nano(r.timestamp)),
+        r.method,
+        r.url,
+        r.decision,
+        str(r.status),
+        r.prev_hash,
+    ])
 
 
 def compute_identity_digest(identity: PortableIdentity) -> str:
@@ -63,33 +101,30 @@ def verify_capability_lease(lease: PortableLease, issuer_public_key_hex: str) ->
 
     payload = "|".join([
         lease.lease_id, lease.issuer, lease.subject,
-        str(lease.allowed_actions), lease.resource_scope,
+        _go_string_slice(lease.allowed_actions), lease.resource_scope,
         str(lease.expiry), str(lease.delegation_depth), str(lease.issued_at),
     ])
     return _ed25519_verify(issuer_public_key_hex, payload, lease.signature)
 
 
 def verify_receipt(receipt: PortableReceipt, public_key_hex: str) -> bool:
+    """Verify an Ovara *proxy* receipt: an ed25519 "sig_v1:<hex>" signature
+    over the proxy's canonical pipe-joined payload (see PortableReceipt).
+
+    The public key is distributed by the proxy alongside the receipt
+    chain. Gateway decision receipts are HMAC-signed and are NOT
+    verifiable with this function — use GET /v1/receipts/{id}.
+    """
     if not receipt.signature or not public_key_hex:
         return False
+    if not receipt.signature.startswith("sig_v1:"):
+        return False
 
-    payload = "|".join([
-        receipt.receipt_id, receipt.decision_id, receipt.issuing_gateway,
-        receipt.issuing_org, receipt.action_type, receipt.resource,
-        receipt.decision, receipt.agent_identity,
-        f"{receipt.trust_score:.3f}", str(receipt.timestamp),
-    ])
-    return _ed25519_verify(public_key_hex, payload, receipt.signature)
+    return _ed25519_verify(public_key_hex, _receipt_canonical(receipt), receipt.signature[7:])
 
 
 def compute_receipt_digest(receipt: PortableReceipt) -> str:
-    payload = "|".join([
-        receipt.receipt_id, receipt.decision_id, receipt.issuing_gateway,
-        receipt.issuing_org, receipt.action_type, receipt.resource,
-        receipt.decision, receipt.agent_identity,
-        f"{receipt.trust_score:.3f}", str(receipt.timestamp),
-    ])
-    return hashlib.sha256(payload.encode()).hexdigest()
+    return hashlib.sha256(_receipt_canonical(receipt).encode()).hexdigest()
 
 
 def is_lease_expired(lease: PortableLease) -> bool:
@@ -97,11 +132,17 @@ def is_lease_expired(lease: PortableLease) -> bool:
 
 
 def has_action(lease: PortableLease, action: str) -> bool:
+    if is_lease_expired(lease):
+        return False
     return action in lease.allowed_actions or "*" in lease.allowed_actions
 
 
 def scope_covers(lease: PortableLease, resource: str) -> bool:
-    return not lease.resource_scope or lease.resource_scope == "*" or lease.resource_scope == resource
+    # The gateway requires a non-empty resource_scope; an empty scope
+    # covers nothing rather than everything.
+    if not lease.resource_scope:
+        return False
+    return lease.resource_scope == "*" or lease.resource_scope == resource
 
 
 def _ed25519_verify(public_key_hex: str, message: str, signature_hex: str) -> bool:
@@ -113,7 +154,3 @@ def _ed25519_verify(public_key_hex: str, message: str, signature_hex: str) -> bo
         return True
     except (ValueError, InvalidSignature):
         return False
-
-
-# Re-export for convenience
-from .types import PortableReceipt

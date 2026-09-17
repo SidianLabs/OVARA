@@ -42,10 +42,10 @@ describe("OvaraGuard", () => {
 
   it("returns deny decision for blocked action", async () => {
     const mockCheck = vi.fn().mockResolvedValue({
-      requestId: "req-2",
+      decision_id: "dec-2",
       decision: "deny",
-      reason: "Production deploy blocked",
-      evaluatedAt: new Date().toISOString(),
+      reason_codes: ["Production deploy blocked"],
+      requires_approval: false,
     });
     (guard as any).client.check = mockCheck;
 

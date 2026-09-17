@@ -30,21 +30,20 @@ describe("Verification functions", () => {
     expect(d1).toHaveLength(64);
   });
 
+  const testReceipt: PortableReceipt = {
+    receiptId: "rcpt_abc123",
+    sessionId: "sess1",
+    timestamp: "2025-09-14T12:34:56.123456789Z",
+    method: "POST",
+    url: "https://api.example.com/v1",
+    decision: "allow",
+    status: 200,
+    prevHash: "",
+    signature: "sig_v1:00",
+  };
+
   it("computeReceiptDigest works", () => {
-    const receipt: PortableReceipt = {
-      receiptId: "r1",
-      decisionId: "d1",
-      issuingGateway: "gw1",
-      issuingOrg: "acme",
-      actionType: "shell.execute",
-      resource: "npm",
-      decision: "allow",
-      agentIdentity: "agt1",
-      trustScore: 0.95,
-      timestamp: 1_750_000_000,
-      signature: "sig",
-    };
-    const d1 = computeReceiptDigest(receipt);
+    const d1 = computeReceiptDigest(testReceipt);
     expect(d1).toHaveLength(64);
   });
 
@@ -97,13 +96,23 @@ describe("Verification functions", () => {
   });
 
   it("verifyReceipt returns false without signature", () => {
-    const receipt: PortableReceipt = {
-      receiptId: "r1", decisionId: "d1", issuingGateway: "g1",
-      issuingOrg: "org1", actionType: "shell", resource: "ls",
-      decision: "allow", agentIdentity: "a1", trustScore: 0.9,
-      timestamp: 1_750_000_000, signature: "",
-    };
-    expect(verifyReceipt(receipt, "abc")).toBe(false);
+    expect(verifyReceipt({ ...testReceipt, signature: "" }, "abc")).toBe(false);
+  });
+
+  it("verifyReceipt verifies a real proxy sig_v1 signature", () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicKeyHex = Buffer.from(
+      (publicKey.export({ format: "jwk" }) as { x: string }).x,
+      "base64url"
+    ).toString("hex");
+
+    // Canonical payload: receipt_id|session_id|unixnano|method|url|decision|status|prev_hash
+    // timestamp "2025-09-14T12:34:56.123456789Z" -> 1757853296123456789
+    const payload = "rcpt_abc123|sess1|1757853296123456789|POST|https://api.example.com/v1|allow|200|";
+    const sig = "sig_v1:" + cryptoSign(null, Buffer.from(payload), privateKey).toString("hex");
+
+    expect(verifyReceipt({ ...testReceipt, signature: sig }, publicKeyHex)).toBe(true);
+    expect(verifyReceipt({ ...testReceipt, signature: sig, decision: "deny" }, publicKeyHex)).toBe(false);
   });
 
   it("isLeaseExpired detects expired lease", () => {
@@ -144,7 +153,19 @@ describe("Verification functions", () => {
     const wildcardLease: PortableLease = { ...lease, resourceScope: "*" };
     expect(scopeCovers(wildcardLease, "anything")).toBe(true);
 
+    // Gateway requires a non-empty resource_scope: empty covers nothing.
     const emptyLease: PortableLease = { ...lease, resourceScope: "" };
-    expect(scopeCovers(emptyLease, "anything")).toBe(true);
+    expect(scopeCovers(emptyLease, "anything")).toBe(false);
+  });
+
+  it("hasAction returns false for expired lease", () => {
+    const expired: PortableLease = {
+      leaseId: "l1", issuer: "i1", subject: "s1",
+      allowedActions: ["shell.execute", "*"],
+      resourceScope: "*",
+      expiry: 1, delegationDepth: 0, issuedAt: 0,
+      signature: "sig",
+    };
+    expect(hasAction(expired, "shell.execute")).toBe(false);
   });
 });
