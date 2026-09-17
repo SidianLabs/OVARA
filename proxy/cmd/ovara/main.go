@@ -208,6 +208,10 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
 	srv := proxy.New(rootCA, gw, creds.Load(cfg.Credentials), chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
+	if cfg.GitGate != nil {
+		srv.SetGitGate(*cfg.GitGate)
+	}
+	srv.SetSensitiveHosts(cfg.SensitiveHosts)
 	return srv, rootCA, nil
 }
 

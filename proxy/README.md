@@ -76,6 +76,46 @@ an external sink:
 the default path) and checks each anchor's `head` against the recomputed
 chain head at that `seq` — first divergence flips `valid` to false.
 
+## Git push gating
+
+When a git smart-HTTP `POST .../git-receive-pack` transits the proxy, the
+proxy buffers up to 1MB of the request body, parses the pkt-line ref-update
+header, and appends the target ref names to the resource string sent to the
+gateway and recorded in receipts:
+
+```
+POST https://host/repo.git/git-receive-pack refs/heads/main,refs/heads/x
+```
+
+Branch deletes are marked `refs/heads/foo(delete)`. The body is restored
+before forwarding, so the push itself is unaffected. Enabled by default;
+set `"git_gate": false` in config to disable.
+
+**Known limit:** the gateway policy engine currently matches on
+`action_type` + `environment`, not on resource patterns — so ref-level
+allow/deny (e.g. "agents can't push to `main`") requires the gateway to
+grow resource matching. Today the enriched resource guarantees ref names
+are captured verbatim in receipts for audit, and a gateway-side rule that
+*can* match resource strings will work without further proxy changes.
+An unparseable push body still surfaces as `git-receive-pack` in the
+resource string.
+
+## Sensitive hosts (egress pivots)
+
+Reachable internal services are an escape hatch: an agent that exploits a
+package proxy or artifact registry inside its allowed path can pivot through
+it to the internet. List such hosts in `sensitive_hosts` (same glob syntax
+as credential bindings) and every request to them is forced down the
+escalate path — held for human approval regardless of policy:
+
+```json
+{"sensitive_hosts": ["artifactory.internal", "*.pkg.internal.corp"]}
+```
+
+This answers the failure mode where "isolated" environments still expose a
+routable service. It is a mitigation, not a fix: also put egress policy on
+the service itself where possible.
+
 ## Honest limits
 
 - **HTTPS only.** SSH, database wire protocols, gRPC need bespoke data

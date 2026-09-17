@@ -23,8 +23,17 @@ type Config struct {
 
 	FailOpen bool `json:"fail_open"` // DANGEROUS: allow when gateway unreachable
 
+	// GitGate controls git push (git-receive-pack) ref extraction: when on,
+	// target ref names are appended to the policy resource string so
+	// ref-level rules (e.g. "no push to main") can be expressed and are
+	// captured in receipts. Default ON in proxy.New; set false to disable.
+	// (Pointer so an absent field keeps the proxy default.)
+	GitGate *bool `json:"git_gate"`
+
 	EscalateTimeoutSec int `json:"escalate_timeout_sec"` // hold escalated requests this long; default 60
 	EscalatePollSec    int `json:"escalate_poll_sec"`    // approval status poll interval; default 2
+
+	SensitiveHosts []string `json:"sensitive_hosts"` // host globs that always escalate (pivot-risk services)
 
 	Credentials []creds.Binding `json:"credentials"`
 }
