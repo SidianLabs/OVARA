@@ -95,10 +95,9 @@ describe("OIDCProvider", () => {
     await expect(restrictedProvider.toUser(blocked)).rejects.toThrow("Domain evil.com is not allowed");
   });
 
-  it("toUser maps org by domain callback", async () => {
-    const orgMapping = (domain: string) => domain === "partner.com" ? "org-partner-001" : undefined;
+  it("toUser binds org from route param", async () => {
     const claims = { sub: "u1", email: "contact@partner.com" };
-    const user = await provider.toUser(claims, orgMapping);
+    const user = await provider.toUser(claims, "org-partner-001");
     expect(user.organizationId).toBe("org-partner-001");
   });
 });
@@ -111,6 +110,9 @@ describe("SAMLProvider", () => {
     x509Cert: "MIIC...cert",
     assertionConsumerUrl: "https://app.example.com/saml/callback",
     nameIdFormat: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+    // Signature verification is not implemented (no XML-DSig dep); tests
+    // exercise the parser via the explicit unsafe bypass flag.
+    samlUnsafeNoVerify: true,
   };
 
   let samlProvider: SAMLProvider;
@@ -188,5 +190,14 @@ describe("SAMLProvider", () => {
   it("throws on missing NameID", async () => {
     const samlResponse = Buffer.from("<samlp:Response></samlp:Response>").toString("base64");
     await expect(samlProvider.parseAssertionResponse(samlResponse)).rejects.toThrow("No NameID found");
+  });
+
+  it("fails closed when samlUnsafeNoVerify is not set", async () => {
+    const safeProvider = new SAMLProvider({ ...samlConfig, samlUnsafeNoVerify: undefined });
+    const samlResponse = Buffer.from(
+      `<samlp:Response><saml:Assertion><saml:Subject>` +
+      `<saml:NameID>attacker@evil.com</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>`
+    ).toString("base64");
+    await expect(safeProvider.parseAssertionResponse(samlResponse)).rejects.toThrow("disabled");
   });
 });

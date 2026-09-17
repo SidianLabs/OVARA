@@ -1,7 +1,17 @@
 import * as jose from "jose";
+import { randomUUID } from "crypto";
 import { SSOConfig, OIDCTokens, OIDCClaims, SSOUser } from "./types";
 
 type JWKSClient = ReturnType<typeof jose.createRemoteJWKSet>;
+
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
 
 export class OIDCProvider {
   private issuerClient: JWKSClient | null = null;
@@ -52,7 +62,10 @@ export class OIDCProvider {
 
   async verifyIdToken(idToken: string, nonce: string): Promise<OIDCClaims> {
     const jwks = await this.getJWKS();
-    const issuer = this.config.issuerUrl!;
+    const issuer = this.config.issuerUrl;
+    if (!issuer) {
+      throw new Error("issuerUrl is required to verify ID tokens");
+    }
 
     const { payload } = await jose.jwtVerify(idToken, jwks, {
       issuer,
@@ -61,6 +74,11 @@ export class OIDCProvider {
 
     if (payload.nonce !== nonce) {
       throw new Error("ID token nonce mismatch");
+    }
+
+    // If the provider asserts email_verified it must be true.
+    if (payload.email_verified === false) {
+      throw new Error("ID token email_verified is false");
     }
 
     return {
@@ -93,9 +111,8 @@ export class OIDCProvider {
     };
   }
 
-  async toUser(claims: OIDCClaims, orgMapping?: (domain: string) => string | undefined): Promise<SSOUser> {
+  async toUser(claims: OIDCClaims, organizationId?: string): Promise<SSOUser> {
     const domain = claims.email.split("@")[1] || "";
-    const organizationId = orgMapping?.(domain);
 
     if (this.config.domainWhitelist?.length && !this.config.domainWhitelist.includes(domain)) {
       throw new Error(`Domain ${domain} is not allowed`);
@@ -136,20 +153,34 @@ export class SAMLProvider {
   }
 
   private buildAuthnRequest(): string {
-    const id = `_${Date.now()}${Math.random().toString(36).slice(2)}`;
+    const id = `_${randomUUID()}`;
     return `<?xml version="1.0"?>
 <samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
   xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
   ID="${id}" Version="2.0"
   IssueInstant="${new Date().toISOString()}"
-  Destination="${this.config.ssoUrl}"
-  AssertionConsumerServiceURL="${this.config.assertionConsumerUrl}">
-  <saml:Issuer>${this.config.entityId}</saml:Issuer>
-  <samlp:NameIDPolicy Format="${this.config.nameIdFormat}" AllowCreate="true"/>
+  Destination="${escapeXml(this.config.ssoUrl)}"
+  AssertionConsumerServiceURL="${escapeXml(this.config.assertionConsumerUrl)}">
+  <saml:Issuer>${escapeXml(this.config.entityId)}</saml:Issuer>
+  <samlp:NameIDPolicy Format="${escapeXml(this.config.nameIdFormat)}" AllowCreate="true"/>
 </samlp:AuthnRequest>`;
   }
 
   async parseAssertionResponse(samlResponse: string): Promise<SSOUser> {
+    // FAIL CLOSED: there is no XML-DSig library in the dependency tree, so the
+    // assertion signature, Conditions (NotOnOrAfter, Audience), InResponseTo
+    // and RelayState cannot be verified. Refuse to authenticate unless the
+    // operator has explicitly set `samlUnsafeNoVerify: true` in the org's SAML
+    // config. Deploy real SAML via a proper library (e.g. passport-saml) —
+    // regex-extracting fields from an unsigned assertion accepts forged logins.
+    if (this.config.samlUnsafeNoVerify !== true) {
+      throw new Error(
+        "SAML assertion signature verification is not available: no XML-DSig library installed. " +
+        "SAML login is disabled. Set samlUnsafeNoVerify: true in the org SAML config to bypass " +
+        "(INSECURE — dev/test only) or integrate a SAML library for production use."
+      );
+    }
+
     const decoded = Buffer.from(samlResponse, "base64").toString("utf-8");
 
     const nameIdMatch = decoded.match(/<saml:NameID[^>]*>(.*?)<\/saml:NameID>/s);

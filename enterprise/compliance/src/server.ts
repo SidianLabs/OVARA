@@ -1,5 +1,6 @@
 import Fastify, { FastifyRequest, FastifyReply } from "fastify";
 import cors from "@fastify/cors";
+import { timingSafeEqual } from "crypto";
 import { ComplianceReportGenerator, AuditPipeline } from "./generator";
 import { ComplianceReport, AuditExport } from "./types";
 
@@ -24,8 +25,57 @@ function checkRateLimit(key: string): boolean {
   return true;
 }
 
-function validateOrgId(orgId: string): boolean {
-  return /^[a-zA-Z0-9_-]{1,64}$/.test(orgId);
+// Periodically evict expired entries so the store cannot grow unboundedly.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitStore) {
+    if (now > entry.resetAt) rateLimitStore.delete(key);
+  }
+}, RATE_LIMIT_WINDOW_MS).unref();
+
+function safeEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
+
+/**
+ * Bearer tokens bound to organizations, configured via env:
+ *   OVARA_COMPLIANCE_TOKENS="org1:token1,org2:token2"
+ * Fails closed: when no tokens are configured every authenticated route
+ * returns 503. organizationId is derived from the credential, never from
+ * caller-supplied fields.
+ */
+function loadTokens(): Map<string, string> {
+  const tokens = new Map<string, string>();
+  const raw = process.env.OVARA_COMPLIANCE_TOKENS || "";
+  for (const pair of raw.split(",")) {
+    const idx = pair.indexOf(":");
+    if (idx > 0) {
+      tokens.set(pair.slice(0, idx).trim(), pair.slice(idx + 1).trim());
+    }
+  }
+  return tokens;
+}
+
+const orgTokens = loadTokens();
+
+function authenticate(request: FastifyRequest, reply: FastifyReply): string | null {
+  if (orgTokens.size === 0) {
+    reply.status(503).send({ error: "Compliance API tokens not configured" });
+    return null;
+  }
+  const header = request.headers["authorization"];
+  const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) {
+    reply.status(401).send({ error: "Missing bearer token" });
+    return null;
+  }
+  for (const [orgId, expected] of orgTokens) {
+    if (safeEqual(token, expected)) return orgId;
+  }
+  reply.status(401).send({ error: "Invalid token" });
+  return null;
 }
 
 export async function buildApp() {
@@ -33,13 +83,15 @@ export async function buildApp() {
 
   app.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
     const clientIp = request.ip || request.socket.remoteAddress || "unknown";
-    const key = `${clientIp}:${request.url}`;
-    if (!checkRateLimit(key)) {
+    if (!checkRateLimit(clientIp)) {
       return reply.status(429).send({ error: "Rate limit exceeded" });
     }
   });
 
   app.post("/v1/compliance/ingest", async (request, reply) => {
+    const orgId = authenticate(request, reply);
+    if (!orgId) return;
+
     const { records } = request.body as { records: any[] };
     if (!records || !Array.isArray(records)) {
       return reply.status(400).send({ error: "records array required" });
@@ -51,8 +103,10 @@ export async function buildApp() {
 
     let ingested = 0;
     for (const r of records) {
-      if (r && typeof r === "object" && r.timestamp && r.organizationId) {
-        pipeline.ingest(r);
+      if (r && typeof r === "object" && r.timestamp) {
+        // Organization is bound to the authenticated credential; a caller
+        // can never write records under another org's ID.
+        pipeline.ingest({ ...r, organizationId: orgId });
         ingested++;
       }
     }
@@ -61,14 +115,13 @@ export async function buildApp() {
   });
 
   app.post("/v1/compliance/export", async (request, reply) => {
+    const orgId = authenticate(request, reply);
+    if (!orgId) return;
+
     const params = request.body as AuditExport;
 
-    if (!params.organizationId || !params.startDate || !params.endDate) {
-      return reply.status(400).send({ error: "organizationId, startDate, and endDate are required" });
-    }
-
-    if (!validateOrgId(params.organizationId)) {
-      return reply.status(400).send({ error: "Invalid organization ID" });
+    if (!params.startDate || !params.endDate) {
+      return reply.status(400).send({ error: "startDate and endDate are required" });
     }
 
     if (!["jsonl", "csv"].includes(params.format)) {
@@ -85,25 +138,24 @@ export async function buildApp() {
     }
 
     const records = pipeline.query({
-      organizationId: params.organizationId,
+      organizationId: orgId,
       startDate,
       endDate,
       limit: Math.min(params.batchSize || 1000, MAX_BATCH_SIZE),
     });
 
-    const result = await reportGenerator.generateExport(params, records);
+    const result = await reportGenerator.generateExport({ ...params, organizationId: orgId }, records);
     return reply.send(result);
   });
 
   app.post("/v1/compliance/report", async (request, reply) => {
+    const orgId = authenticate(request, reply);
+    if (!orgId) return;
+
     const params = request.body as ComplianceReport;
 
-    if (!params.organizationId || !params.reportType) {
-      return reply.status(400).send({ error: "organizationId and reportType are required" });
-    }
-
-    if (!validateOrgId(params.organizationId)) {
-      return reply.status(400).send({ error: "Invalid organization ID" });
+    if (!params.reportType) {
+      return reply.status(400).send({ error: "reportType is required" });
     }
 
     if (!["soc2", "gdpr", "audit"].includes(params.reportType)) {
@@ -111,7 +163,7 @@ export async function buildApp() {
     }
 
     const records = pipeline.query({
-      organizationId: params.organizationId,
+      organizationId: orgId,
       startDate: params.startDate ? new Date(params.startDate) : undefined,
       endDate: params.endDate ? new Date(params.endDate) : undefined,
     });
@@ -137,7 +189,18 @@ export async function buildApp() {
   });
 
   app.get("/v1/compliance/stats", async (request, reply) => {
-    return reply.send(pipeline.getStats());
+    const orgId = authenticate(request, reply);
+    if (!orgId) return;
+
+    // Scope stats to the authenticated org — never leak other orgs' IDs.
+    const records = pipeline.query({ organizationId: orgId, limit: MAX_BATCH_SIZE });
+    const gwSet = new Set<string>();
+    for (const r of records) gwSet.add(r.gatewayId);
+    return reply.send({
+      organizationId: orgId,
+      totalRecords: records.length,
+      uniqueGatewayIds: [...gwSet],
+    });
   });
 
   app.get("/health", async () => {
