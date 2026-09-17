@@ -51,15 +51,18 @@ modeling and security review.
 
 The gateway separates trusted and untrusted network traffic:
 
-- **Inbound from agents:** Untrusted. All requests are validated
-  against policy.
+- **Inbound to the gateway:** Untrusted. The gateway serves plain
+  HTTP — there is no TLS in the binary. Deployments must terminate
+  TLS in front (reverse proxy or load balancer). All requests are
+  validated against policy.
 - **Outbound to control plane:** Trusted. Uses TLS with certificate
   pinning in V2.
 - **Outbound to target systems:** Semi-trusted. Only allowed for
   actions that pass policy.
 
-**Mitigation:** TLS for all network communication. Mutual TLS for
-operator auth in high-security deployments.
+**Mitigation:** TLS terminated in front of the gateway for all network
+communication. Mutual TLS for operator auth in high-security
+deployments is a future option.
 
 ### 2. Process Trust Boundary
 
@@ -77,18 +80,24 @@ internal functions. All communication is via the HTTP API.
 
 ### 3. Identity Trust Boundary
 
-Issued identities (AgentIdentity, CapabilityLease) are trusted;
-self-asserted identities are not:
+The verifiable artifact is the `CapabilityLease`; the `AgentIdentity`
+on a request is self-asserted:
 
-- **Issued by gateway:** Trusted. The gateway signs and stores
-  these.
-- **Self-asserted by agent:** Not trusted. The agent cannot
-  create its own identity; the identity issuance service does.
+- **AgentIdentity:** Self-asserted. The gateway validates structure
+  only (issuer and subject_id present, length bounds). It carries no
+  signature and grants nothing by itself.
+- **CapabilityLease:** Verified. The lease must carry an ed25519
+  signature that verifies against the issuer's public key in the
+  gateway's `trusted_issuers` config registry. Unsigned leases and
+  unknown issuers are rejected.
+- **DelegationChain:** Integrity-checked. The keyless SHA-256
+  `chain_hash` detects corruption; entries are not signed, so the
+  chain alone proves nothing about authority.
 - **External (cross-org):** Semi-trusted. The trust graph tracks
   the level of trust between organizations.
 
-**Mitigation:** All identities are cryptographically signed.
-Verification is mandatory before granting any permissions.
+**Mitigation:** Lease signature verification against `trusted_issuers`
+is mandatory before any lease-derived authorization applies.
 
 ### 4. Policy Trust Boundary
 
@@ -107,14 +116,18 @@ gateway validates policy structure at load time.
 
 ### 5. Operator Trust Boundary
 
-Operators are trusted to a degree proportional to their role:
+The gateway has a single operator privilege level: any valid bearer
+token has full operator access. There is no RBAC on the gateway —
+there are no separate admin, approver, or read-only roles in the V1
+binary.
 
-- **Full admins:** Trusted to manage policies, issue leases, etc.
-- **Approvers:** Trusted only to approve/deny escalations.
-- **Read-only operators:** Trusted to view but not modify.
+- **Gateway:** Flat bearer tokens; one privilege level.
+- **Control plane:** API keys carry organization scope, which isolates
+  orgs from each other; finer-grained key scopes are limited.
 
-**Mitigation:** Role-based access control (RBAC) in the hosted
-control plane. Operator actions are logged for audit.
+**Mitigation:** Treat every operator token as full-access, scope
+physical access to the gateway accordingly, and rely on the audit log
+for accountability.
 
 ## Crossing Trust Boundaries
 
@@ -122,9 +135,9 @@ Each cross-boundary interaction has a defined protocol:
 
 | Boundary | Protocol | Authentication | Authorization |
 |----------|----------|----------------|---------------|
-| Agent → Gateway | HTTP/JSON | Lease signature | Policy evaluation |
-| Gateway → Control Plane | HTTP/JSON | API key | Org scope |
-| Operator → Gateway | HTTP/JSON | Bearer token | Token presence |
+| Agent → Gateway | HTTP/JSON (TLS terminated in front) | Lease signature vs `trusted_issuers` | Policy evaluation |
+| Gateway → Control Plane | HTTPS required by default | API key | Org scope |
+| Operator → Gateway | HTTP/JSON | Bearer token | Token presence (single level) |
 | Cross-org | HTTP/JSON | Trust graph | Path verification |
 
 ## Defense in Depth
@@ -133,7 +146,8 @@ Trust boundaries should be enforced at multiple levels:
 
 ```
 Network → Process → Identity → Policy → Application
-   TLS      Caps      Crypto    Rules    Code
+TLS in  Caps      Crypto    Rules    Code
+front
 ```
 
 A single layer failing should not be sufficient to compromise the

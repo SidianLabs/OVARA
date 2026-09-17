@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Capability lease trust anchor**: lease signatures are now verified against
+  a gateway-configured trusted-issuer registry (`trusted_issuers` in
+  config.json), never against keys carried in the request. Unsigned leases and
+  unknown issuers are rejected.
+- **Default decision is escalate**: requests matching no policy rule now
+  escalate for approval instead of being allowed by default.
+- **Control-plane tenant isolation**: API keys are bound to their
+  organization; cross-tenant requests are rejected.
+- **Approval service auth**: the standalone approval service now requires a
+  bearer token.
+- **Receipt storage verification**: real HMAC verification instead of a
+  signature-length check.
+- **Sandbox fixes**: corrected Docker container-create body so network
+  isolation and read-only rootfs actually apply; exec now reports the real
+  exit code.
+- **Executor hardening**: git `checkout` uses `--` separator (flag injection);
+  GitHub executor path-escapes URL segments.
+- **SDK verification fixes**: TypeScript ed25519 verification now uses a real
+  WebCrypto call; Python `verify_capability_lease`/`verify_agent_identity`
+  require a trusted public key parameter instead of self-asserted fields.
+
+### Documentation
+
+- Corrected claims across `docs/` where docs described unimplemented security
+  properties (mandatory verification, TLS, RBAC, signed delegation chains,
+  eBPF blocking, non-bypassable interception).
+- Added `docs/architecture/executor_proxy.md` — the V2 target architecture:
+  a credential-starving executor proxy where every side effect transits a
+  notarizing chokepoint.
+
 ## [1.0.0] - 2026-06-12
 
 ### Added

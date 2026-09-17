@@ -39,16 +39,26 @@ def compute_identity_digest(identity: PortableIdentity) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def verify_agent_identity(identity: PortableIdentity) -> bool:
-    if not identity.signature or not identity.public_key:
+def verify_agent_identity(identity: PortableIdentity, issuer_public_key_hex: str) -> bool:
+    """Verify an agent identity against a caller-supplied trusted public key.
+
+    The ``public_key`` field embedded in the identity is never used for
+    verification — doing so would let a forged identity attest itself.
+    """
+    if not identity.signature or not issuer_public_key_hex:
         return False
 
     payload = f"{identity.id}|{identity.issuer}|{identity.subject_id}|{identity.owner}|{identity.lifecycle}"
-    return _ed25519_verify(identity.public_key, payload, identity.signature)
+    return _ed25519_verify(issuer_public_key_hex, payload, identity.signature)
 
 
-def verify_capability_lease(lease: PortableLease) -> bool:
-    if not lease.signature:
+def verify_capability_lease(lease: PortableLease, issuer_public_key_hex: str) -> bool:
+    """Verify a capability lease against the issuer's trusted public key.
+
+    ``issuer_public_key_hex`` must come from a trusted source (e.g. key
+    resolution by ``lease.issuer``); the lease itself carries no usable key.
+    """
+    if not lease.signature or not issuer_public_key_hex:
         return False
 
     payload = "|".join([
@@ -56,7 +66,7 @@ def verify_capability_lease(lease: PortableLease) -> bool:
         str(lease.allowed_actions), lease.resource_scope,
         str(lease.expiry), str(lease.delegation_depth), str(lease.issued_at),
     ])
-    return _ed25519_verify(lease.issuer, payload, lease.signature)
+    return _ed25519_verify(issuer_public_key_hex, payload, lease.signature)
 
 
 def verify_receipt(receipt: PortableReceipt, public_key_hex: str) -> bool:

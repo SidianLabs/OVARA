@@ -55,4 +55,6 @@ export interface DistributorConfig {
   maxRetries?: number;
   retryBaseDelayMs?: number;
   requestTimeoutMs?: number;
+  /** Bearer token sent to gateways on policy push (Authorization header). */
+  apiKey?: string;
 }

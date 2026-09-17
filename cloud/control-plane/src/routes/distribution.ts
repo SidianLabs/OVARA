@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { db } from "../db/connection";
 import { policies, gateways, policyDistributions } from "../db/schema";
-import { authenticate, requireScope } from "../middleware/auth";
+import { authenticate, requireOrg, requireScope } from "../middleware/auth";
 import { eq, and } from "drizzle-orm";
 import { PolicyDistributor } from "../distribution/distributor";
 import type { Policy } from "../distribution/types";
@@ -13,13 +13,19 @@ export function distributionRoutes(app: FastifyInstance) {
   app.post("/publish", {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const { policyId, organizationId } = request.body as {
-      policyId: string;
-      organizationId: string;
+    const auth = await authenticate(request);
+    const { policyId, organizationId } = (request.body || {}) as {
+      policyId?: string;
+      organizationId?: string;
     };
 
-    if (!policyId || !organizationId) {
-      return reply.status(400).send({ error: "policyId and organizationId required" });
+    if (!policyId) {
+      return reply.status(400).send({ error: "policyId required" });
+    }
+    // organizationId is accepted for backwards compatibility but must match
+    // the authenticated org; the effective org always comes from auth.
+    if (organizationId && organizationId !== auth.organizationId) {
+      return reply.status(403).send({ error: "Forbidden: organization does not match authenticated credentials" });
     }
 
     const policy = await db.query.policies.findFirst({
@@ -28,6 +34,7 @@ export function distributionRoutes(app: FastifyInstance) {
     if (!policy) {
       return reply.status(404).send({ error: "Policy not found" });
     }
+    await requireOrg(request, policy.organizationId);
 
     const policyData: Policy = {
       id: policy.id,
@@ -39,10 +46,10 @@ export function distributionRoutes(app: FastifyInstance) {
       updatedAt: policy.updatedAt,
     };
 
-    const results = await distributor.distributePolicy(organizationId, policyData);
+    const results = await distributor.distributePolicy(auth.organizationId, policyData);
     return reply.send({
       policyId,
-      organizationId,
+      organizationId: auth.organizationId,
       results,
       summary: {
         total: results.length,
@@ -68,6 +75,7 @@ export function distributionRoutes(app: FastifyInstance) {
     if (!policy) {
       return reply.status(404).send({ error: "Policy not found" });
     }
+    await requireOrg(request, policy.organizationId);
 
     const gateway = await db.query.gateways.findFirst({
       where: eq(gateways.id, gatewayId),
@@ -75,6 +83,7 @@ export function distributionRoutes(app: FastifyInstance) {
     if (!gateway) {
       return reply.status(404).send({ error: "Gateway not found" });
     }
+    await requireOrg(request, gateway.organizationId);
 
     const policyData: Policy = {
       id: policy.id,
@@ -94,6 +103,7 @@ export function distributionRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireScope("read")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { orgId } = request.params as { orgId: string };
+    await requireOrg(request, orgId);
 
     const orgGateways = await db.query.gateways.findMany({
       where: eq(gateways.organizationId, orgId),
@@ -116,6 +126,7 @@ export function distributionRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { orgId } = request.params as { orgId: string };
+    await requireOrg(request, orgId);
     const results = await distributor.retryFailedDistributions(orgId);
     return reply.send({
       organizationId: orgId,

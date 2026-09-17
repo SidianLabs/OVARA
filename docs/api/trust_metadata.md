@@ -1,9 +1,15 @@
 # Trust Metadata API
 
+> **Status: designed, not consumed by the V1 gateway.** The
+> `TrustMetadata` type exists in the identity module, but the V1
+> gateway evaluator does not read posture attestations. The trust score
+> that influences decisions is computed from ShieldStore state and
+> request-pattern heuristics (see
+> [Trust Score Computation](#trust-score-computation) below). This page
+> documents the designed attestation format and the actual V1 score.
+
 Trust metadata is the signed posture attestation that agents publish
-periodically to indicate their current runtime state. The gateway uses
-trust metadata to compute trust scores and make authorization
-decisions.
+periodically to indicate their current runtime state.
 
 ## Posture Attestation
 
@@ -47,33 +53,37 @@ decisions.
 
 ## Trust Score Computation
 
-The gateway computes a trust score from multiple signals:
+The V1 evaluator computes the trust score in
+[`trust/evaluator.go`](../../runtime/gateway/internal/trust/evaluator.go).
+The score starts at **1.0** and deductions are subtracted for each
+observed risk signal:
 
-```
-trust_score = base_score
-            * isolation_multiplier
-            * patch_freshness
-            * drift_penalty
-            * degradation_penalty
-            + trust_score_hint * 0.1
-```
+| Signal | Deduction |
+|--------|-----------|
+| Agent restricted in ShieldStore | −0.40 |
+| Recorded risk events | −0.05 per event |
+| Last decision was `deny`/`escalate` within 30s | −0.10 |
+| Risky shell pattern in the request | −0.15 per signal |
+| Risky git pattern in the request | −0.15 per signal |
+| Production environment target | −0.20 |
+| Weak lease scope (wildcard `*` scope used for a `shell` action) | −0.10 |
+| Delegation chain depth greater than 3 | −0.10 |
 
-Where:
-
-- `base_score` = 0.5 (neutral)
-- `isolation_multiplier`: `none`=1.0, `docker`=1.05, `firecracker`=1.2, `gvisor`=1.15
-- `patch_freshness`: 1.0 if patched within 30 days, decaying to 0.5 at 90 days
-- `drift_penalty`: 1.0 - 0.5 * drift_score (from DriftDetector)
-- `degradation_penalty`: 1.0 - 0.5 * degradation_score (from DegradationModel)
-
-The final score is clamped to [0.0, 1.0] and mapped to a trust level:
+The score is clamped to [0.0, 1.0] and mapped to a trust level:
 
 | Score Range | Trust Level |
 |-------------|-------------|
 | 0.8 - 1.0 | `high` |
 | 0.5 - 0.8 | `medium` |
-| 0.2 - 0.5 | `low` |
-| 0.0 - 0.2 | `none` |
+| 0.0 - 0.5 | `low` |
+| 0.0 | `none` |
+
+A score below 0.6 activates the shield (`shield_active`); a score below
+0.5, or a `low`/`none` level, escalates an otherwise-allowed decision.
+Posture fields from TrustMetadata (isolation, patch level,
+`trust_score_hint`) do **not** feed this computation in V1 — the
+multiplicative formula previously described here was design intent, not
+implemented behavior.
 
 ## Trust-Dependent Policy Rules
 

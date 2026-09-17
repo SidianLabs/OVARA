@@ -14,6 +14,9 @@ const DEFAULT_CONFIG: Required<DistributorConfig> = {
   maxRetries: 3,
   retryBaseDelayMs: 1000,
   requestTimeoutMs: 10000,
+  // Bearer credential sent to gateways on policy push. Configure via
+  // OVARA_GATEWAY_API_KEY; when empty no Authorization header is sent.
+  apiKey: process.env.OVARA_GATEWAY_API_KEY ?? "",
 };
 
 export class PolicyDistributor {
@@ -64,8 +67,38 @@ export class PolicyDistributor {
       return result;
     }
 
+    // The push endpoint must be configured on the gateway record. We never
+    // fabricate a hostname (e.g. {id}.gateway.ovara.internal) — an unrouteable
+    // or attacker-predictable URL is worse than an explicit failure.
+    const endpoint = gateway.endpointUrl;
+    if (!endpoint) {
+      const result: DistributionResult = {
+        gatewayId,
+        status: "failed",
+        timestamp: new Date(),
+        error: "Gateway has no endpoint_url configured",
+      };
+      await this.updateDistributionStatus(gatewayId, policy, "failed");
+      this.recordHistory(policy.version, result);
+      return result;
+    }
+
     try {
-      await this.pushPolicyToGateway(gatewayId, policy);
+      this.validateEndpoint(endpoint, gateway.allowInsecure);
+    } catch (error) {
+      const result: DistributionResult = {
+        gatewayId,
+        status: "failed",
+        timestamp: new Date(),
+        error: error instanceof Error ? error.message : String(error),
+      };
+      await this.updateDistributionStatus(gatewayId, policy, "failed");
+      this.recordHistory(policy.version, result);
+      return result;
+    }
+
+    try {
+      await this.pushPolicyToGateway(endpoint, policy);
       const result: DistributionResult = {
         gatewayId,
         status: "delivered",
@@ -75,7 +108,7 @@ export class PolicyDistributor {
       this.recordHistory(policy.version, result);
       return result;
     } catch (error) {
-      const result = await this.retryDistribution(gatewayId, policy, error);
+      const result = await this.retryDistribution(gatewayId, endpoint, policy, error);
       return result;
     }
   }
@@ -154,21 +187,42 @@ export class PolicyDistributor {
 
     return orgGateways.map((gw) => ({
       gatewayId: gw.id,
-      url: `http://${gw.id}.gateway.ovara.internal:9443`,
+      url: gw.endpointUrl ?? "",
       orgId,
       status: gw.status as DistributionTarget["status"],
       lastSync: gw.lastHeartbeat ?? undefined,
     }));
   }
 
-  private async pushPolicyToGateway(gatewayId: string, policy: Policy): Promise<void> {
+  // HTTPS is required for policy push unless the gateway record explicitly
+  // sets allow_insecure (intended for local/dev deployments only).
+  private validateEndpoint(endpoint: string, allowInsecure: boolean): void {
+    let url: URL;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      throw new Error(`Invalid gateway endpoint_url: ${endpoint}`);
+    }
+    if (url.protocol !== "https:" && !allowInsecure) {
+      throw new Error(
+        `Gateway endpoint_url must use https (got ${url.protocol}); set allow_insecure to override`
+      );
+    }
+  }
+
+  private async pushPolicyToGateway(endpoint: string, policy: Policy): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
 
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.config.apiKey) {
+      headers["Authorization"] = `Bearer ${this.config.apiKey}`;
+    }
+
     try {
-      const response = await fetch(`http://${gatewayId}.gateway.ovara.internal:9443/v1/policy`, {
+      const response = await fetch(`${endpoint.replace(/\/$/, "")}/v1/policy`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           policyId: policy.id,
           version: policy.version,
@@ -188,6 +242,7 @@ export class PolicyDistributor {
 
   private async retryDistribution(
     gatewayId: string,
+    endpoint: string,
     policy: Policy,
     lastError: unknown,
   ): Promise<DistributionResult> {
@@ -198,7 +253,7 @@ export class PolicyDistributor {
       await new Promise((resolve) => setTimeout(resolve, delay));
 
       try {
-        await this.pushPolicyToGateway(gatewayId, policy);
+        await this.pushPolicyToGateway(endpoint, policy);
         const result: DistributionResult = {
           gatewayId,
           status: "delivered",

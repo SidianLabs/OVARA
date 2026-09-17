@@ -26,6 +26,13 @@ import (
 
 func TestRuntimeIntegration(t *testing.T) {
 	policyStore := policy.NewStore("test-v1")
+	// Explicit allow rule: the default decision for unmatched actions is
+	// now escalate, so the "safe action" subtests need a matching rule.
+	policyStore.AddRule(policy.Rule{
+		ActionType:  string(models.ActionTypeCIBuildTrigger),
+		Environment: "*",
+		Allow:       true,
+	})
 	shieldStore := trust.NewShieldStore()
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
 	receiptsStore := receipts.NewInMemoryStore()
@@ -80,8 +87,8 @@ func TestRuntimeIntegration(t *testing.T) {
 			t.Errorf("expected trust_score >= 0.8, got %f", resp.TrustScore)
 		}
 
-		if len(resp.ReasonCodes) == 0 || resp.ReasonCodes[0] != models.ReasonAllowed {
-			t.Errorf("expected reason_codes to contain allowed, got %v", resp.ReasonCodes)
+		if len(resp.ReasonCodes) == 0 || resp.ReasonCodes[0] != models.ReasonPolicyAllow {
+			t.Errorf("expected reason_codes to contain policy_allow, got %v", resp.ReasonCodes)
 		}
 
 		if resp.TrustContext != nil && len(resp.TrustContext.AnomalySignals) > 0 {

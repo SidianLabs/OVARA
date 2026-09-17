@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -55,7 +56,7 @@ func (g *GitHubActionsProvider) Trigger(ctx context.Context, action, resource st
 		ref = parts[2]
 	}
 
-	url := fmt.Sprintf("%s/repos/%s/%s/actions/workflows/%s/dispatches", g.BaseURL, owner, repo, workflow)
+	url := fmt.Sprintf("%s/repos/%s/%s/actions/workflows/%s/dispatches", g.BaseURL, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflow))
 	payload := map[string]interface{}{
 		"ref": ref,
 		"inputs": map[string]string{

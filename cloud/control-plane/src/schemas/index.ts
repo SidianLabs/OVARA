@@ -16,15 +16,15 @@ export const createOrganizationSchema = z.object({
 });
 
 export const enrollGatewaySchema = z.object({
-  organizationId: uuid(),
   name: z.string().min(3).max(255),
   environment: z.string().min(1).max(50).default("local"),
   region: z.string().min(1).max(50).default("us-east-1"),
   publicKey: z.string().min(1),
+  endpointUrl: z.string().url().optional(),
+  allowInsecure: z.boolean().default(false),
 });
 
 export const createPolicySchema = z.object({
-  organizationId: uuid(),
   name: z.string().min(3).max(255),
   rules: z.array(z.object({
     id: z.string(),
@@ -50,14 +50,12 @@ export const publishToGatewaySchema = z.object({
 });
 
 export const createApiKeySchema = z.object({
-  organizationId: uuid(),
   name: z.string().min(3).max(255),
   scopes: z.array(z.string()).min(1),
   expiresAt: timestamp().optional(),
 });
 
 export const createRevocationSchema = z.object({
-  organizationId: uuid(),
   leaseId: z.string().min(1),
   reason: z.string().optional(),
 });

@@ -70,6 +70,12 @@ func (e *Evaluator) SetChainDetector(cd *trust.ChainDetector) {
 	e.chainDetector = cd
 }
 
+// SetValidator configures the identity validator used for lease and
+// identity checks, e.g. one backed by a trusted-issuer key registry.
+func (e *Evaluator) SetValidator(v *identity.Validator) {
+	e.validator = v
+}
+
 func (e *Evaluator) SetRevocationChecker(rc RevocationChecker) {
 	e.revocationChecker = rc
 }
@@ -486,7 +492,9 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 		}
 	}
 
-	return RuleOutcome{Allowed: true, Reason: models.ReasonAllowed}
+	// Default decision is escalate: requests that match no explicit rule
+	// require approval rather than being silently allowed.
+	return RuleOutcome{Escalate: true, Reason: models.ReasonEscalate}
 }
 
 func (e *Evaluator) evaluateRulesWithStore(store *policy.Store, req *models.ActionRequest) RuleOutcome {

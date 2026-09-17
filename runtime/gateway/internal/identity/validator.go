@@ -21,10 +21,25 @@ func (v *ValidationResult) Add(reason string) {
 	v.Reasons = append(v.Reasons, reason)
 }
 
-type Validator struct{}
+type Validator struct {
+	// trustedKeys maps issuer ID to the ed25519 public key authorized to
+	// sign capability leases for that issuer. When empty, signed leases
+	// fail closed: there is no trust anchor to verify against.
+	trustedKeys map[string][]byte
+}
 
 func NewValidator() *Validator {
-	return &Validator{}
+	return &Validator{trustedKeys: map[string][]byte{}}
+}
+
+// NewValidatorWithTrustedKeys returns a Validator that verifies lease
+// signatures against the registry of trusted issuer keys (issuer ID ->
+// ed25519 public key bytes).
+func NewValidatorWithTrustedKeys(trustedKeys map[string][]byte) *Validator {
+	if trustedKeys == nil {
+		trustedKeys = map[string][]byte{}
+	}
+	return &Validator{trustedKeys: trustedKeys}
 }
 
 func (v *Validator) ValidateAgentIdentity(identity *models.AgentIdentity) *ValidationResult {
@@ -91,24 +106,24 @@ func (v *Validator) ValidateCapabilityLease(lease *models.CapabilityLease) *Vali
 		result.Add("capability_lease.delegation_depth must be non-negative")
 	}
 
-	if len(lease.Signature) > 0 {
-		if !v.verifyLeaseSignature(lease) {
-			result.Add("capability_lease.signature verification failed")
-		}
+	if len(lease.Signature) == 0 {
+		result.Add("capability_lease.signature is required")
+	} else if !v.verifyLeaseSignature(lease) {
+		result.Add("capability_lease.signature verification failed")
 	}
 
 	return result
 }
 
+// verifyLeaseSignature verifies the lease signature against the trusted
+// public key registered for lease.Issuer. The self-asserted
+// lease.VerifyKey field is never used for trust decisions.
 func (v *Validator) verifyLeaseSignature(lease *models.CapabilityLease) bool {
 	if len(lease.Signature) == 0 {
-		return true
-	}
-	if lease.VerifyKey == "" {
 		return false
 	}
-	verifyKey, err := hex.DecodeString(lease.VerifyKey)
-	if err != nil || len(verifyKey) != ed25519.PublicKeySize {
+	verifyKey, ok := v.trustedKeys[lease.Issuer]
+	if !ok || len(verifyKey) != ed25519.PublicKeySize {
 		return false
 	}
 	// Payload format must match ovara.identity module:

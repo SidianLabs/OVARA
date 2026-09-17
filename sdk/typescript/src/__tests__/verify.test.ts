@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { generateKeyPairSync, sign as cryptoSign } from "crypto";
 import {
   verifyAgentIdentity,
   verifyCapabilityLease,
@@ -55,6 +56,34 @@ describe("Verification functions", () => {
   it("verifyAgentIdentity returns false without public key", () => {
     const result = verifyAgentIdentity(testIdentity, "");
     expect(result).toBe(false);
+  });
+
+  it("verifyAgentIdentity verifies a real Ed25519 signature", () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const publicKeyHex = Buffer.from(
+      (publicKey.export({ format: "jwk" }) as { x: string }).x,
+      "base64url"
+    ).toString("hex");
+
+    const identity: PortableIdentity = {
+      id: "agt_real",
+      issuer: "ovara",
+      subjectId: "agent-007",
+      owner: "acme-corp",
+      lifecycle: "active",
+      publicKey: "embedded-not-used",
+    };
+    const payload = `${identity.id}|${identity.issuer}|${identity.subjectId}|${identity.owner}|${identity.lifecycle}`;
+    identity.signature = cryptoSign(null, Buffer.from(payload), privateKey).toString("hex");
+
+    expect(verifyAgentIdentity(identity, publicKeyHex)).toBe(true);
+
+    const otherKey = generateKeyPairSync("ed25519").publicKey;
+    const otherHex = Buffer.from(
+      (otherKey.export({ format: "jwk" }) as { x: string }).x,
+      "base64url"
+    ).toString("hex");
+    expect(verifyAgentIdentity(identity, otherHex)).toBe(false);
   });
 
   it("verifyCapabilityLease returns false without signature", () => {

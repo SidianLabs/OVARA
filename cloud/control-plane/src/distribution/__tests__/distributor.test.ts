@@ -55,6 +55,7 @@ describe("PolicyDistributor", () => {
       organizationId: testOrgId,
       name: "dist-gw-1",
       publicKey: "MCowBQYDK2VwAyEA1",
+      endpointUrl: "https://dist-gw-1.example.internal:9443",
       status: "online",
     }).returning();
     gw1Id = gw1.id;
@@ -63,6 +64,7 @@ describe("PolicyDistributor", () => {
       organizationId: testOrgId,
       name: "dist-gw-2",
       publicKey: "MCowBQYDK2VwAyEA2",
+      endpointUrl: "https://dist-gw-2.example.internal:9443",
       status: "online",
     }).returning();
     gw2Id = gw2.id;
@@ -81,6 +83,7 @@ describe("PolicyDistributor", () => {
 
   it("distributes policy to multiple gateways", async () => {
     if (!hasDB) return;
+    vi.spyOn(dist as any, "pushPolicyToGateway").mockResolvedValue(undefined);
     const policy = makePolicy();
     const results = await dist.distributePolicy(testOrgId, policy);
 
@@ -90,6 +93,7 @@ describe("PolicyDistributor", () => {
 
   it("distributes to a specific gateway", async () => {
     if (!hasDB) return;
+    vi.spyOn(dist as any, "pushPolicyToGateway").mockResolvedValue(undefined);
     const policy = makePolicy({ id: "00000000-0000-0000-0000-000000000101" });
     const result = await dist.distributeToGateway(gw1Id, policy);
 
@@ -119,6 +123,7 @@ describe("PolicyDistributor", () => {
       organizationId: testOrgId,
       name: "fail-gw",
       publicKey: "MCowBQYDK2VwAyEA4",
+      endpointUrl: "https://fail-gw.example.internal:9443",
       status: "online",
     }).returning();
 
@@ -135,6 +140,7 @@ describe("PolicyDistributor", () => {
 
   it("records distribution history", async () => {
     if (!hasDB) return;
+    vi.spyOn(dist as any, "pushPolicyToGateway").mockResolvedValue(undefined);
     const policy = makePolicy({ id: "00000000-0000-0000-0000-000000000104" });
     await dist.distributeToGateway(gw1Id, policy);
 

@@ -636,29 +636,36 @@ func (ge *GitExecutor) Execute(ctx context.Context, e *Execution) error {
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Reject branch names that look like flags so user input can never be
+	// interpreted as a git option, and use "--" to end option parsing.
+	if strings.HasPrefix(gitRes.Branch, "-") {
+		e.MarkFailed("git: invalid branch name (must not start with '-')", 1)
+		return fmt.Errorf("invalid branch name: %s", gitRes.Branch)
+	}
+
 	var args []string
 	switch e.ActionType {
 	case "git.push":
 		args = []string{"push"}
 		if gitRes.Branch != "" {
-			args = append(args, "origin", gitRes.Branch)
+			args = append(args, "--", "origin", gitRes.Branch)
 		}
 	case "git.pull":
 		args = []string{"pull"}
 		if gitRes.Branch != "" {
-			args = append(args, gitRes.Branch)
+			args = append(args, "--", gitRes.Branch)
 		}
 	case "git.fetch":
 		args = []string{"fetch"}
 		if gitRes.Branch != "" {
-			args = append(args, gitRes.Branch)
+			args = append(args, "--", gitRes.Branch)
 		}
 	case "git.checkout":
 		if gitRes.Branch == "" {
 			e.MarkFailed("git checkout: branch is required", 1)
 			return fmt.Errorf("branch is required for git checkout")
 		}
-		args = []string{"checkout", gitRes.Branch}
+		args = []string{"checkout", gitRes.Branch, "--"}
 	default:
 		e.MarkFailed("unsupported git action type: "+e.ActionType, 1)
 		return fmt.Errorf("unsupported git action type: %s", e.ActionType)

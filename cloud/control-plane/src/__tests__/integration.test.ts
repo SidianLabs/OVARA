@@ -6,6 +6,9 @@ let app: any = null;
 let tenantId = "";
 let orgId = "";
 
+// The mocked API key belongs to this org; all org-scoped resources must use it.
+const AUTH_ORG = "00000000-0000-0000-0000-000000000000";
+
 async function checkDB(): Promise<boolean> {
   try {
     const { db } = await import("../db/connection");
@@ -27,7 +30,7 @@ async function buildTestApp() {
   a.decorateRequest("auth", null);
   a.decorate("authenticate", async (request: any) => {
     request.auth = {
-      organizationId: "00000000-0000-0000-0000-000000000000",
+      organizationId: AUTH_ORG,
       scopes: ["admin", "read", "write"],
       keyId: "key-superadmin",
     };
@@ -90,7 +93,18 @@ describe("Cloud Control Plane Integration", () => {
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.payload);
-    orgId = body.id;
+
+    // The authenticated key is bound to AUTH_ORG; create that org directly so
+    // org-scoped requests below pass tenant isolation checks.
+    const { db } = await import("../db/connection");
+    const { organizations } = await import("../db/schema");
+    await db.insert(organizations).values({
+      id: AUTH_ORG,
+      tenantId,
+      name: "acme-auth-org",
+      displayName: "Acme Auth Org",
+    }).onConflictDoNothing();
+    orgId = AUTH_ORG;
   });
 
   it("enrolls a gateway", async () => {

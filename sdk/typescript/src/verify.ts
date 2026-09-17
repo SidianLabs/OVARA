@@ -1,5 +1,19 @@
-import { createHash } from "crypto";
-import { ed25519 } from "crypto";
+import { createHash, createPublicKey, verify as cryptoVerify } from "crypto";
+
+// verifyEd25519 checks an Ed25519 signature over payload using the caller-
+// supplied trusted public key (32 raw bytes, hex-encoded). The key is always
+// provided by the caller — never taken from the object being verified.
+function verifyEd25519(signatureHex: string, payload: string, publicKeyHex: string): boolean {
+  const key = createPublicKey({
+    key: {
+      kty: "OKP",
+      crv: "Ed25519",
+      x: Buffer.from(publicKeyHex, "hex").toString("base64url"),
+    },
+    format: "jwk",
+  });
+  return cryptoVerify(null, Buffer.from(payload), key, Buffer.from(signatureHex, "hex"));
+}
 
 export interface PortableIdentity {
   id: string;
@@ -44,11 +58,7 @@ export function verifyAgentIdentity(identity: PortableIdentity, publicKeyHex: st
   const payload = `${identity.id}|${identity.issuer}|${identity.subjectId}|${identity.owner}|${identity.lifecycle}`;
 
   try {
-    return ed25519.verify(
-      Buffer.from(identity.signature, "hex"),
-      Buffer.from(payload),
-      Buffer.from(publicKeyHex, "hex")
-    );
+    return verifyEd25519(identity.signature, payload, publicKeyHex);
   } catch {
     return false;
   }
@@ -60,11 +70,7 @@ export function verifyCapabilityLease(lease: PortableLease, publicKeyHex: string
   const payload = `${lease.leaseId}|${lease.issuer}|${lease.subject}|${JSON.stringify(lease.allowedActions)}|${lease.resourceScope}|${lease.expiry}|${lease.delegationDepth}|${lease.issuedAt}`;
 
   try {
-    return ed25519.verify(
-      Buffer.from(lease.signature, "hex"),
-      Buffer.from(payload),
-      Buffer.from(publicKeyHex, "hex")
-    );
+    return verifyEd25519(lease.signature, payload, publicKeyHex);
   } catch {
     return false;
   }
@@ -81,11 +87,7 @@ export function verifyReceipt(receipt: PortableReceipt, publicKeyHex: string): b
   ].join("|");
 
   try {
-    return ed25519.verify(
-      Buffer.from(receipt.signature, "hex"),
-      Buffer.from(payload),
-      Buffer.from(publicKeyHex, "hex")
-    );
+    return verifyEd25519(receipt.signature, payload, publicKeyHex);
   } catch {
     return false;
   }
