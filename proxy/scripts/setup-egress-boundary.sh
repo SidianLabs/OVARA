@@ -134,6 +134,14 @@ do_netns() {
   ip netns exec "${NS_NAME}" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
   ip netns exec "${NS_NAME}" sysctl -qw net.ipv6.conf.default.disable_ipv6=1
 
+  # Host-side INPUT: many hosts end INPUT with a REJECT rule, which would
+  # silently refuse the agent's only allowed flow. Ensure the proxy port on
+  # the veth is accepted before any catch-all reject. Idempotent.
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -i "${VETH_HOST}" -p tcp --dport "${PROXY_PORT}" -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -i "${VETH_HOST}" -p tcp --dport "${PROXY_PORT}" -j ACCEPT
+  fi
+
   # Host-side: NAT is deliberately NOT configured here. The host's default
   # posture should not masquerade agent traffic at all; the nft rules inside
   # the ns already deny everything except the proxy. If you add MASQUERADE

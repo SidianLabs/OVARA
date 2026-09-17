@@ -95,5 +95,6 @@ requirements:
 | Egress boundary scripts (nftables, netns, docker) | shipped, needs deployment |
 | Escalate → hold-and-resume on the hot path | shipped (`escalate_timeout_sec`, polls `/v1/approval/{id}`) |
 | External anchoring of chain head | shipped (`OVARA_ANCHOR_FILE/URL/EVERY`) |
-| Git smart-HTTP push gating (ref-level policy) | planned |
+| Git smart-HTTP push gating (ref-level policy) | shipped (refs enter policy resource + receipts; ref-level matching needs engine resource support) |
+| Pivot-risk host escalation (`sensitive_hosts`) | shipped |
 | SSH / database wire protocols | blocked by design — bastion or bespoke plane |

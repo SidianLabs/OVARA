@@ -13,6 +13,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -31,12 +32,17 @@ type Server struct {
 	transport       *http.Transport
 	escalateTimeout time.Duration
 	escalatePoll    time.Duration
+	gitGate         bool
+	sensitiveHosts  []string
 }
 
 func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts.Chain, failOpen bool) *Server {
 	return &Server{
 		ca: c, gw: gw, bindings: bindings, chain: chain, failOpen: failOpen,
 		escalateTimeout: 60 * time.Second,
+		// Git push gating is on by default: it only appends ref names to the
+		// policy resource string and changes nothing for non-push requests.
+		gitGate: true,
 		escalatePoll:    2 * time.Second,
 		transport: &http.Transport{
 			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
@@ -57,6 +63,28 @@ func (s *Server) SetEscalateWindow(timeout, poll time.Duration) {
 	if poll > 0 {
 		s.escalatePoll = poll
 	}
+}
+
+// SetGitGate enables/disables git push (git-receive-pack) ref extraction for
+// policy evaluation. Enabled by default in New.
+func (s *Server) SetGitGate(on bool) { s.gitGate = on }
+
+// SetSensitiveHosts marks host globs whose requests are always escalated to
+// human approval, even when policy allows them. Use it for reachable internal
+// services an agent could exploit as an egress pivot (package proxies,
+// artifact registries, internal dashboards).
+func (s *Server) SetSensitiveHosts(globs []string) { s.sensitiveHosts = globs }
+
+func matchHostGlob(globs []string, host string) bool {
+	for _, g := range globs {
+		if g == host {
+			return true
+		}
+		if ok, err := path.Match(g, host); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -131,6 +159,11 @@ func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }
 // handleRequest evaluates, executes, and receipts one request.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	url := r.URL.String()
+	// Git push gating: if this is a git-receive-pack request, append the
+	// target ref names to the resource string used for policy evaluation
+	// and receipts. The body is buffered (bounded) and restored so upstream
+	// still receives the full stream.
+	url += s.gitResourceSuffix(r)
 	decision := "error"
 	status := 0
 	defer func() {
@@ -149,6 +182,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		d = &gateway.Decision{Decision: "allow"}
+	}
+	// Pivot-risk hosts always require approval, regardless of policy allow.
+	if d.Decision == "allow" && matchHostGlob(s.sensitiveHosts, r.URL.Hostname()) {
+		d.Decision = "escalate"
+		d.ReasonCodes = append(d.ReasonCodes, "sensitive_host")
 	}
 	decision = d.Decision
 

@@ -59,6 +59,10 @@ func main() {
 
 	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
+	if cfg.GitGate != nil {
+		srv.SetGitGate(*cfg.GitGate)
+	}
+	srv.SetSensitiveHosts(cfg.SensitiveHosts)
 	log.Printf("ovara executor proxy on %s (gateway=%s env=%s bindings=%d fail_open=%v)",
 		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
