@@ -10,9 +10,22 @@ export const createTenantSchema = z.object({
 });
 
 export const createOrganizationSchema = z.object({
-  tenantId: uuid(),
+  // Accepted for backwards compatibility but ignored: the tenant is always
+  // derived from the authenticated organization's tenantId.
+  tenantId: uuid().optional(),
   name: z.string().min(3).max(255).regex(/^[a-z0-9-]+$/),
   displayName: z.string().min(1).max(255),
+});
+
+export const updateTenantSchema = z.object({
+  name: z.string().min(3).max(64).regex(/^[a-z0-9-]+$/).optional(),
+  displayName: z.string().min(1).max(255).optional(),
+  plan: z.enum(["free", "pro", "enterprise"]).optional(),
+});
+
+export const updateOrganizationSchema = z.object({
+  name: z.string().min(3).max(255).regex(/^[a-z0-9-]+$/).optional(),
+  displayName: z.string().min(1).max(255).optional(),
 });
 
 export const enrollGatewaySchema = z.object({
@@ -42,7 +55,9 @@ export const publishPolicySchema = z.object({
 
 export const publishToGatewaysSchema = z.object({
   policyId: uuid(),
-  organizationId: uuid(),
+  // Optional for backwards compatibility; when present it must match the
+  // authenticated organization.
+  organizationId: uuid().optional(),
 });
 
 export const publishToGatewaySchema = z.object({
@@ -66,7 +81,9 @@ export const paginationSchema = z.object({
 });
 
 export type CreateTenant = z.infer<typeof createTenantSchema>;
+export type UpdateTenant = z.infer<typeof updateTenantSchema>;
 export type CreateOrganization = z.infer<typeof createOrganizationSchema>;
+export type UpdateOrganization = z.infer<typeof updateOrganizationSchema>;
 export type EnrollGateway = z.infer<typeof enrollGatewaySchema>;
 export type CreatePolicy = z.infer<typeof createPolicySchema>;
 export type PublishPolicy = z.infer<typeof publishPolicySchema>;

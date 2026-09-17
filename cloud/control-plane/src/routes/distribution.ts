@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { db } from "../db/connection";
 import { policies, gateways, policyDistributions } from "../db/schema";
 import { authenticate, requireOrg, requireScope } from "../middleware/auth";
+import { publishToGatewaysSchema, publishToGatewaySchema, paginationSchema } from "../schemas";
 import { eq, and } from "drizzle-orm";
 import { PolicyDistributor } from "../distribution/distributor";
 import type { Policy } from "../distribution/types";
@@ -14,14 +15,9 @@ export function distributionRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = await authenticate(request);
-    const { policyId, organizationId } = (request.body || {}) as {
-      policyId?: string;
-      organizationId?: string;
-    };
+    const body = publishToGatewaysSchema.parse(request.body || {});
+    const { policyId, organizationId } = body;
 
-    if (!policyId) {
-      return reply.status(400).send({ error: "policyId required" });
-    }
     // organizationId is accepted for backwards compatibility but must match
     // the authenticated org; the effective org always comes from auth.
     if (organizationId && organizationId !== auth.organizationId) {
@@ -31,10 +27,10 @@ export function distributionRoutes(app: FastifyInstance) {
     const policy = await db.query.policies.findFirst({
       where: eq(policies.id, policyId),
     });
-    if (!policy) {
+    // Uniform 404 for missing or cross-org policies to avoid existence oracles.
+    if (!policy || policy.organizationId !== auth.organizationId) {
       return reply.status(404).send({ error: "Policy not found" });
     }
-    await requireOrg(request, policy.organizationId);
 
     const policyData: Policy = {
       id: policy.id,
@@ -62,28 +58,23 @@ export function distributionRoutes(app: FastifyInstance) {
   app.post("/publish/:gatewayId", {
     preHandler: [authenticate, requireScope("admin")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const auth = await authenticate(request);
     const { gatewayId } = request.params as { gatewayId: string };
-    const { policyId } = request.body as { policyId: string };
-
-    if (!policyId) {
-      return reply.status(400).send({ error: "policyId required" });
-    }
+    const { policyId } = publishToGatewaySchema.parse(request.body || {});
 
     const policy = await db.query.policies.findFirst({
       where: eq(policies.id, policyId),
     });
-    if (!policy) {
+    if (!policy || policy.organizationId !== auth.organizationId) {
       return reply.status(404).send({ error: "Policy not found" });
     }
-    await requireOrg(request, policy.organizationId);
 
     const gateway = await db.query.gateways.findFirst({
       where: eq(gateways.id, gatewayId),
     });
-    if (!gateway) {
+    if (!gateway || gateway.organizationId !== auth.organizationId) {
       return reply.status(404).send({ error: "Gateway not found" });
     }
-    await requireOrg(request, gateway.organizationId);
 
     const policyData: Policy = {
       id: policy.id,
@@ -138,10 +129,9 @@ export function distributionRoutes(app: FastifyInstance) {
   app.get("/history", {
     preHandler: [authenticate, requireScope("read")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
-    const { limit, offset } = (request.query as Record<string, string>) || {};
-    const allHistory = distributor.getHistory();
-    const lim = parseInt(limit || "50", 10);
-    const off = parseInt(offset || "0", 10);
-    return reply.send(allHistory.slice(off, off + lim));
+    const auth = await authenticate(request);
+    const { limit, offset } = paginationSchema.parse(request.query || {});
+    const orgHistory = distributor.getHistory(auth.organizationId);
+    return reply.send(orgHistory.slice(offset, offset + limit));
   });
 }
