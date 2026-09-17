@@ -74,99 +74,63 @@ func (s *Sweeper) IsRunning() bool {
 	return s.running
 }
 
-func (s *Sweeper) runSweep() {
-	now := time.Now().UTC()
+// expireDue scans non-terminal candidates and expires those that are due via
+// the atomic ExpireIfDue store method. The store rechecks the live state
+// under its lock, so a continuation claimed between the scan and the expiry
+// can never be flipped to expired mid-run.
+func (s *Sweeper) expireDue(now time.Time) (scanned, expired int) {
 	candidates := s.store.ListNonTerminal()
-
-	expiredCount := 0
 	for _, cnt := range candidates {
-		if cnt.ShouldExpire(now) {
-			cnt.MarkExpired()
-			s.store.Update(cnt)
-			expiredCount++
+		if !cnt.ShouldExpire(now) {
+			continue
+		}
+		exp, ok := s.store.ExpireIfDue(cnt.ContinuationID, now)
+		if !ok {
+			continue
+		}
+		expired++
 
-			if s.eventStore != nil {
-				evt := events.NewEvent(events.EventTypeContinuationExpired).
-					WithGatewayID(s.gatewayID).
-					WithDecisionID(cnt.DecisionID).
-					WithApprovalID(cnt.ApprovalID).
-					WithAgentID(cnt.AgentID).
-					WithContinuationID(cnt.ContinuationID).
-					WithPayload(map[string]any{
-						"continuation_id": cnt.ContinuationID,
-						"state":           string(cnt.State),
-						"reason":          "expired",
-					})
-				s.eventStore.Append(evt)
-			}
+		if s.eventStore != nil {
+			evt := events.NewEvent(events.EventTypeContinuationExpired).
+				WithGatewayID(s.gatewayID).
+				WithDecisionID(exp.DecisionID).
+				WithApprovalID(exp.ApprovalID).
+				WithAgentID(exp.AgentID).
+				WithContinuationID(exp.ContinuationID).
+				WithPayload(map[string]any{
+					"continuation_id": exp.ContinuationID,
+					"state":           string(exp.State),
+					"reason":          "expired",
+				})
+			s.eventStore.Append(evt)
 		}
 	}
+	return len(candidates), expired
+}
+
+func (s *Sweeper) runSweep() {
+	now := time.Now().UTC()
+	scanned, expiredCount := s.expireDue(now)
 
 	if expiredCount > 0 && s.eventStore != nil {
 		evt := events.NewEvent("continuation.sweep_completed").
 			WithGatewayID(s.gatewayID).
 			WithPayload(map[string]any{
 				"expired_count": expiredCount,
-				"scanned_count": len(candidates),
+				"scanned_count": scanned,
 			})
 		s.eventStore.Append(evt)
 	}
 
-	log.Printf("SWEEP continuations scanned=%d expired=%d", len(candidates), expiredCount)
+	log.Printf("SWEEP continuations scanned=%d expired=%d", scanned, expiredCount)
 }
 
 func (s *Sweeper) SweepNow() int {
-	now := time.Now().UTC()
-	candidates := s.store.ListNonTerminal()
-	expired := 0
-	for _, cnt := range candidates {
-		if cnt.ShouldExpire(now) {
-			cnt.MarkExpired()
-			s.store.Update(cnt)
-			expired++
-			if s.eventStore != nil {
-				evt := events.NewEvent(events.EventTypeContinuationExpired).
-					WithGatewayID(s.gatewayID).
-					WithDecisionID(cnt.DecisionID).
-					WithApprovalID(cnt.ApprovalID).
-					WithAgentID(cnt.AgentID).
-					WithContinuationID(cnt.ContinuationID).
-					WithPayload(map[string]any{
-						"continuation_id": cnt.ContinuationID,
-						"state":           string(cnt.State),
-						"reason":          "expired",
-					})
-				s.eventStore.Append(evt)
-			}
-		}
-	}
+	_, expired := s.expireDue(time.Now().UTC())
 	return expired
 }
 
 func (s *Sweeper) ReconcileOnStartup() int {
-	now := time.Now().UTC()
-	candidates := s.store.ListNonTerminal()
-	expired := 0
-	for _, cnt := range candidates {
-		if cnt.ShouldExpire(now) {
-			cnt.MarkExpired()
-			s.store.Update(cnt)
-			expired++
-			if s.eventStore != nil {
-				evt := events.NewEvent(events.EventTypeContinuationExpired).
-					WithGatewayID(s.gatewayID).
-					WithDecisionID(cnt.DecisionID).
-					WithApprovalID(cnt.ApprovalID).
-					WithAgentID(cnt.AgentID).
-					WithContinuationID(cnt.ContinuationID).
-					WithPayload(map[string]any{
-						"continuation_id": cnt.ContinuationID,
-						"state":           string(cnt.State),
-						"reason":          "expired",
-					})
-				s.eventStore.Append(evt)
-			}
-		}
-	}
+	_, expired := s.expireDue(time.Now().UTC())
 	return expired
 }

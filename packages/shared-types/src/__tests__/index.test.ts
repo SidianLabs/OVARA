@@ -252,33 +252,31 @@ describe('TrustContext', () => {
 describe('Approval', () => {
   it('pending approval', () => {
     const approval: Approval = {
-      id: 'apr-001',
+      approval_id: 'apr-001',
       decision_id: 'dec-001',
       action_type: 'git.push',
       resource: 'git:origin/main',
       agent_id: 'agent-001',
-      gateway_id: 'gw-001',
-      state: 'pending',
-      requested_at: '2026-06-11T00:00:00Z',
+      status: 'pending',
+      created_at: '2026-06-11T00:00:00Z',
     };
-    expect(approval.state).toBe('pending');
+    expect(approval.status).toBe('pending');
   });
 
   it('resolved approval', () => {
     const approval: Approval = {
-      id: 'apr-001',
+      approval_id: 'apr-001',
       decision_id: 'dec-001',
       action_type: 'shell',
       resource: 'shell:ls',
       agent_id: 'agent-001',
-      gateway_id: 'gw-001',
-      state: 'approved',
-      requested_at: '2026-06-11T00:00:00Z',
+      status: 'approved',
+      created_at: '2026-06-11T00:00:00Z',
       resolved_at: '2026-06-11T01:00:00Z',
       resolved_by: 'admin@example.com',
       reason: 'Approved for deployment',
     };
-    expect(approval.state).toBe('approved');
+    expect(approval.status).toBe('approved');
     expect(approval.resolved_by).toBe('admin@example.com');
   });
 });
@@ -291,7 +289,7 @@ describe('Receipt', () => {
       action_type: 'shell',
       resource: 'shell:ls',
       decision: 'allow',
-      agent_identity: 'agent-001',
+      agent_id: 'agent-001',
       trust_score: 0.95,
       policy_version: '1.0',
       issued_at: '2026-06-11T00:00:00Z',
@@ -313,7 +311,7 @@ describe('Receipt', () => {
       policy_version: '1.0',
       issued_at: '2026-06-11T00:00:00Z',
     };
-    expect(receipt.agent_identity).toBeUndefined();
+    expect(receipt.agent_id).toBeUndefined();
   });
 });
 

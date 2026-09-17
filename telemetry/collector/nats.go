@@ -13,39 +13,51 @@ import (
 )
 
 type Event struct {
-	EventID   string    `json:"event_id"`
-	EventType string    `json:"event_type"`
-	GatewayID string    `json:"gateway_id"`
-	AgentID   string    `json:"agent_id,omitempty"`
-	Decision  string    `json:"decision,omitempty"`
-	Action    string    `json:"action,omitempty"`
-	Resource  string    `json:"resource,omitempty"`
-	TrustScore float64  `json:"trust_score,omitempty"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	EventID    string          `json:"event_id"`
+	EventType  string          `json:"event_type"`
+	GatewayID  string          `json:"gateway_id"`
+	AgentID    string          `json:"agent_id,omitempty"`
+	Decision   string          `json:"decision,omitempty"`
+	Action     string          `json:"action,omitempty"`
+	Resource   string          `json:"resource,omitempty"`
+	TrustScore float64         `json:"trust_score,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+	Timestamp  time.Time       `json:"timestamp"`
 }
 
 type NATSCollector struct {
-	nc          *nats.Conn
-	js          nats.JetStreamContext
-	subject     string
-	streamName  string
-	mu          sync.RWMutex
-	sent        int64
-	dropped     int64
-	connected   bool
+	nc         *nats.Conn
+	js         nats.JetStreamContext
+	subject    string
+	streamName string
+	mu         sync.RWMutex
+	sent       int64
+	dropped    int64
+	connected  bool
 }
 
 func NewNATSCollector(url, subject string) (*NATSCollector, error) {
+	// c is assigned after Connect; handlers below update its connection state.
+	var c *NATSCollector
 	nc, err := nats.Connect(url,
 		nats.Timeout(5*time.Second),
 		nats.ReconnectWait(2*time.Second),
 		nats.MaxReconnects(-1),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
 			fmt.Printf("NATS disconnected: %v\n", err)
+			if c != nil {
+				c.mu.Lock()
+				c.connected = false
+				c.mu.Unlock()
+			}
 		}),
 		nats.ReconnectHandler(func(_ *nats.Conn) {
 			fmt.Println("NATS reconnected")
+			if c != nil {
+				c.mu.Lock()
+				c.connected = true
+				c.mu.Unlock()
+			}
 		}),
 	)
 	if err != nil {
@@ -58,13 +70,14 @@ func NewNATSCollector(url, subject string) (*NATSCollector, error) {
 		return nil, fmt.Errorf("JetStream context: %w", err)
 	}
 
-	return &NATSCollector{
-		nc:        nc,
-		js:        js,
-		subject:   subject,
+	c = &NATSCollector{
+		nc:         nc,
+		js:         js,
+		subject:    subject,
 		streamName: "OVARA_EVENTS",
-		connected: true,
-	}, nil
+		connected:  true,
+	}
+	return c, nil
 }
 
 func (c *NATSCollector) EnsureStream() error {
@@ -85,7 +98,10 @@ func (c *NATSCollector) EnsureStream() error {
 }
 
 func (c *NATSCollector) Publish(ctx context.Context, evt *Event) error {
-	if !c.connected {
+	c.mu.RLock()
+	connected := c.connected
+	c.mu.RUnlock()
+	if !connected {
 		atomic.AddInt64(&c.dropped, 1)
 		return fmt.Errorf("not connected")
 	}

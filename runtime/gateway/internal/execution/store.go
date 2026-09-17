@@ -70,15 +70,15 @@ func (e *Execution) MarkStarted() {
 func (e *Execution) MarkSucceeded(exitCode int, stdout, stderr string) {
 	e.State = StateSucceeded
 	e.ExitCode = exitCode
-	e.Stdout = stdout
-	e.Stderr = stderr
+	e.Stdout = Redact(stdout)
+	e.Stderr = Redact(stderr)
 	now := time.Now().UTC()
 	e.FinishedAt = &now
 }
 
 func (e *Execution) MarkFailed(errMsg string, exitCode int) {
 	e.State = StateFailed
-	e.Error = errMsg
+	e.Error = Redact(errMsg)
 	e.ExitCode = exitCode
 	now := time.Now().UTC()
 	e.FinishedAt = &now
@@ -735,6 +735,24 @@ type Store interface {
 	Stats() (total, succeeded, failed, running, timedOut int)
 }
 
+// snapshot returns a copy of the execution so callers never share the stored
+// object (which executor goroutines may otherwise race on while mutating
+// stdout/stderr).
+func (e *Execution) snapshot() *Execution {
+	cp := *e
+	return &cp
+}
+
+// sanitized returns a copy of e with Stdout/Stderr/Error scrubbed for common
+// secret patterns. Stored records must never carry raw secrets.
+func (e *Execution) sanitized() *Execution {
+	cp := *e
+	cp.Stdout = Redact(cp.Stdout)
+	cp.Stderr = Redact(cp.Stderr)
+	cp.Error = Redact(cp.Error)
+	return &cp
+}
+
 type InMemoryStore struct {
 	mu        sync.RWMutex
 	executions map[string]*Execution
@@ -752,7 +770,7 @@ func (s *InMemoryStore) Create(e *Execution) error {
 	if _, exists := s.executions[e.ExecutionID]; exists {
 		return fmt.Errorf("execution already exists: %s", e.ExecutionID)
 	}
-	s.executions[e.ExecutionID] = e
+	s.executions[e.ExecutionID] = e.sanitized()
 	return nil
 }
 
@@ -760,7 +778,10 @@ func (s *InMemoryStore) Get(id string) (*Execution, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e, ok := s.executions[id]
-	return e, ok
+	if !ok {
+		return nil, false
+	}
+	return e.snapshot(), true
 }
 
 func (s *InMemoryStore) Update(e *Execution) error {
@@ -769,7 +790,7 @@ func (s *InMemoryStore) Update(e *Execution) error {
 	if _, exists := s.executions[e.ExecutionID]; !exists {
 		return fmt.Errorf("execution not found: %s", e.ExecutionID)
 	}
-	s.executions[e.ExecutionID] = e
+	s.executions[e.ExecutionID] = e.sanitized()
 	return nil
 }
 
@@ -779,7 +800,7 @@ func (s *InMemoryStore) ListByContinuation(continuationID string) []*Execution {
 	var result []*Execution
 	for _, e := range s.executions {
 		if e.ContinuationID == continuationID {
-			result = append(result, e)
+			result = append(result, e.snapshot())
 		}
 	}
 	return result
@@ -791,7 +812,7 @@ func (s *InMemoryStore) ListByDecision(decisionID string) []*Execution {
 	var result []*Execution
 	for _, e := range s.executions {
 		if e.DecisionID == decisionID {
-			result = append(result, e)
+			result = append(result, e.snapshot())
 		}
 	}
 	return result
@@ -802,7 +823,7 @@ func (s *InMemoryStore) ListAll() []*Execution {
 	defer s.mu.RUnlock()
 	var result []*Execution
 	for _, e := range s.executions {
-		result = append(result, e)
+		result = append(result, e.snapshot())
 	}
 	return result
 }
@@ -813,7 +834,7 @@ func (s *InMemoryStore) ListByState(state State) []*Execution {
 	var result []*Execution
 	for _, e := range s.executions {
 		if e.State == state {
-			result = append(result, e)
+			result = append(result, e.snapshot())
 		}
 	}
 	return result

@@ -2,22 +2,35 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"ovara.runtime.gateway/internal/api"
-	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
 )
 
+// maxPolicyBodyBytes caps request bodies on policy endpoints.
+const maxPolicyBodyBytes = 10 << 20 // 10 MiB
+
+// maxSimulateBatch caps the number of requests in a single simulate-batch call.
+const maxSimulateBatch = 500
+
 type PolicyHandler struct {
-	evaluator *evaluator.Evaluator
-	store     *policy.Store
+	evaluator  *evaluator.Evaluator
+	store      *policy.Store
 	eventStore events.Store
 	gatewayID  string
 	history    *policy.PolicyHistorySnapshotter
+	// policyDir is the only directory from which caller-supplied file paths
+	// (file_path, candidate_file, ?file=) may be read. Empty means file-based
+	// inputs are rejected entirely.
+	policyDir string
 }
 
 func NewPolicyHandler(e *evaluator.Evaluator, s *policy.Store) *PolicyHandler {
@@ -34,6 +47,40 @@ func (h *PolicyHandler) SetEventStore(es events.Store) {
 
 func (h *PolicyHandler) SetGatewayID(id string) {
 	h.gatewayID = id
+}
+
+// SetPolicyDir configures the directory that caller-supplied policy file
+// paths are restricted to. Paths are cleaned and must resolve inside this
+// directory; anything else is rejected (path traversal protection).
+func (h *PolicyHandler) SetPolicyDir(dir string) {
+	if dir == "" {
+		h.policyDir = ""
+		return
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		h.policyDir = ""
+		return
+	}
+	h.policyDir = abs
+}
+
+// resolvePolicyPath validates that p is inside h.policyDir and returns the
+// cleaned absolute path. It returns an error when no policy dir is configured
+// or when p escapes it.
+func (h *PolicyHandler) resolvePolicyPath(p string) (string, error) {
+	if h.policyDir == "" {
+		return "", fmt.Errorf("file-based policy inputs are disabled (no policy_dir configured)")
+	}
+	cleaned, err := filepath.Abs(filepath.Clean(p))
+	if err != nil {
+		return "", fmt.Errorf("invalid path: %w", err)
+	}
+	root := h.policyDir + string(os.PathSeparator)
+	if cleaned != h.policyDir && !strings.HasPrefix(cleaned, root) {
+		return "", fmt.Errorf("path %q is outside the allowed policy directory", p)
+	}
+	return cleaned, nil
 }
 
 func (h *PolicyHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -63,7 +110,7 @@ func (h *PolicyHandler) handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ValidateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPolicyBodyBytes)).Decode(&req); err != nil {
 		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
@@ -76,7 +123,12 @@ func (h *PolicyHandler) handleValidate(w http.ResponseWriter, r *http.Request) {
 	if len(req.PolicyData) > 0 {
 		result, err = validator.ValidatePolicyData(req.PolicyData)
 	} else if req.FilePath != "" {
-		data, err := readFile(req.FilePath)
+		safePath, perr := h.resolvePolicyPath(req.FilePath)
+		if perr != nil {
+			api.JSONBadRequest(w, perr.Error())
+			return
+		}
+		data, err := readFile(safePath)
 		if err != nil {
 			api.JSONBadRequest(w, "failed to read file: "+err.Error())
 			return
@@ -98,8 +150,8 @@ func (h *PolicyHandler) handleValidate(w http.ResponseWriter, r *http.Request) {
 			evt.WithGatewayID(h.gatewayID)
 		}
 		evt.Payload = map[string]any{
-			"valid":   result.Valid,
-			"errors":  len(result.Errors),
+			"valid":    result.Valid,
+			"errors":   len(result.Errors),
 			"warnings": len(result.Warnings),
 		}
 		h.eventStore.Append(evt)
@@ -110,10 +162,10 @@ func (h *PolicyHandler) handleValidate(w http.ResponseWriter, r *http.Request) {
 }
 
 type SimulateRequest struct {
-	Request        *models.ActionRequest `json:"request"`
-	CandidatePolicy []byte             `json:"candidate_policy,omitempty"`
-	CandidateFile   string             `json:"candidate_file,omitempty"`
-	UseCurrent     bool               `json:"use_current,omitempty"`
+	Request         *models.ActionRequest `json:"request"`
+	CandidatePolicy []byte                `json:"candidate_policy,omitempty"`
+	CandidateFile   string                `json:"candidate_file,omitempty"`
+	UseCurrent      bool                  `json:"use_current,omitempty"`
 }
 
 func (h *PolicyHandler) handleSimulate(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +175,7 @@ func (h *PolicyHandler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SimulateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPolicyBodyBytes)).Decode(&req); err != nil {
 		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
@@ -143,7 +195,12 @@ func (h *PolicyHandler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 			}
 			candidateStore = fp
 		} else if req.CandidateFile != "" {
-			loaded, err := policy.LoadStoreFromFile(req.CandidateFile, h.store.Version())
+			safePath, perr := h.resolvePolicyPath(req.CandidateFile)
+			if perr != nil {
+				api.JSONBadRequest(w, perr.Error())
+				return
+			}
+			loaded, err := policy.LoadStoreFromFile(safePath, h.store.Version())
 			if err != nil {
 				api.JSONBadRequest(w, "failed to load candidate file: "+err.Error())
 				return
@@ -166,10 +223,10 @@ func (h *PolicyHandler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 			evt.WithGatewayID(h.gatewayID)
 		}
 		evt.Payload = map[string]any{
-			"action_type":  req.Request.ActionType,
-			"environment":  req.Request.Environment,
-			"decision":     result.Decision,
-			"changed":      result.DecisionChanged,
+			"action_type": req.Request.ActionType,
+			"environment": req.Request.Environment,
+			"decision":    result.Decision,
+			"changed":     result.DecisionChanged,
 		}
 		h.eventStore.Append(evt)
 	}
@@ -179,10 +236,10 @@ func (h *PolicyHandler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 }
 
 type SimulateBatchRequest struct {
-	Requests         []*models.ActionRequest `json:"requests"`
-	CandidatePolicy  []byte                `json:"candidate_policy,omitempty"`
-	CandidateFile    string                `json:"candidate_file,omitempty"`
-	UseCurrent       bool                  `json:"use_current,omitempty"`
+	Requests        []*models.ActionRequest `json:"requests"`
+	CandidatePolicy []byte                  `json:"candidate_policy,omitempty"`
+	CandidateFile   string                  `json:"candidate_file,omitempty"`
+	UseCurrent      bool                    `json:"use_current,omitempty"`
 }
 
 func (h *PolicyHandler) handleSimulateBatch(w http.ResponseWriter, r *http.Request) {
@@ -192,13 +249,17 @@ func (h *PolicyHandler) handleSimulateBatch(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req SimulateBatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPolicyBodyBytes)).Decode(&req); err != nil {
 		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
 	if len(req.Requests) == 0 {
 		api.JSONBadRequest(w, "requests array is required")
+		return
+	}
+	if len(req.Requests) > maxSimulateBatch {
+		api.JSONBadRequest(w, fmt.Sprintf("requests exceeds maximum batch size of %d", maxSimulateBatch))
 		return
 	}
 
@@ -212,7 +273,12 @@ func (h *PolicyHandler) handleSimulateBatch(w http.ResponseWriter, r *http.Reque
 			}
 			candidateStore = fp
 		} else if req.CandidateFile != "" {
-			loaded, err := policy.LoadStoreFromFile(req.CandidateFile, h.store.Version())
+			safePath, perr := h.resolvePolicyPath(req.CandidateFile)
+			if perr != nil {
+				api.JSONBadRequest(w, perr.Error())
+				return
+			}
+			loaded, err := policy.LoadStoreFromFile(safePath, h.store.Version())
 			if err != nil {
 				api.JSONBadRequest(w, "failed to load candidate file: "+err.Error())
 				return
@@ -242,7 +308,7 @@ func (h *PolicyHandler) handlePolicyDiff(w http.ResponseWriter, r *http.Request)
 
 	var req DiffRequest
 	if r.Method == http.MethodPost {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPolicyBodyBytes)).Decode(&req); err != nil {
 			api.JSONBadRequest(w, "invalid request body: "+err.Error())
 			return
 		}
@@ -259,7 +325,12 @@ func (h *PolicyHandler) handlePolicyDiff(w http.ResponseWriter, r *http.Request)
 		}
 		candidateStore = fp
 	} else if req.CandidateFile != "" {
-		loaded, err := policy.LoadStoreFromFile(req.CandidateFile, h.store.Version())
+		safePath, perr := h.resolvePolicyPath(req.CandidateFile)
+		if perr != nil {
+			api.JSONBadRequest(w, perr.Error())
+			return
+		}
+		loaded, err := policy.LoadStoreFromFile(safePath, h.store.Version())
 		if err != nil {
 			api.JSONBadRequest(w, "failed to load candidate file: "+err.Error())
 			return
@@ -312,7 +383,7 @@ func (h *PolicyHandler) handleCandidateLoad(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req LoadCandidateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPolicyBodyBytes)).Decode(&req); err != nil {
 		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
@@ -334,7 +405,12 @@ func (h *PolicyHandler) handleCandidateLoad(w http.ResponseWriter, r *http.Reque
 		fp.SetVersion(version)
 		store = fp
 	} else if req.FilePath != "" {
-		store, err = policy.LoadStoreFromFile(req.FilePath, version)
+		safePath, perr := h.resolvePolicyPath(req.FilePath)
+		if perr != nil {
+			api.JSONBadRequest(w, perr.Error())
+			return
+		}
+		store, err = policy.LoadStoreFromFile(safePath, version)
 		if err != nil {
 			api.JSONBadRequest(w, "failed to load file: "+err.Error())
 			return
@@ -348,8 +424,8 @@ func (h *PolicyHandler) handleCandidateLoad(w http.ResponseWriter, r *http.Reque
 	if vr := validator.ValidateRules(store.ListRules()); !vr.Valid {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"error":   "validation failed",
-			"errors":  vr.Errors,
+			"error":    "validation failed",
+			"errors":   vr.Errors,
 			"warnings": vr.Warnings,
 		})
 		return
@@ -413,9 +489,9 @@ func (h *PolicyHandler) handleCandidatePromote(w http.ResponseWriter, r *http.Re
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"status":   "promoted",
-		"version":   h.store.Version(),
-		"rules":    len(h.store.ListRules()),
+		"status":  "promoted",
+		"version": h.store.Version(),
+		"rules":   len(h.store.ListRules()),
 	})
 }
 
@@ -437,8 +513,8 @@ func (h *PolicyHandler) handleListRules(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"version":           h.store.Version(),
-		"rules":            rules,
-		"candidate_loaded": candidateLoaded,
+		"rules":             rules,
+		"candidate_loaded":  candidateLoaded,
 		"candidate_version": candidateVersion,
 	})
 }

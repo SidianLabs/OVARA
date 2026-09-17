@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"ovara.runtime.gateway/internal/approval"
@@ -13,6 +14,10 @@ import (
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/metrics"
 )
+
+// maxApprovalBodyBytes caps approval request bodies so a client cannot force
+// an unbounded io.ReadAll allocation.
+const maxApprovalBodyBytes = 10 << 20 // 10 MiB
 
 type ApprovalHandler struct {
 	service           *approval.Service
@@ -52,7 +57,7 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		api.JSONMethodNotAllowed(w)
 		return
 	}
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxApprovalBodyBytes))
 	if err != nil {
 		api.JSONBadRequest(w, "failed to read request body")
 		return
@@ -130,6 +135,20 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(created)
 }
 
+// writeResolveError maps approval resolution errors to honest status codes:
+// missing approval → 404, already-resolved → 409, anything else → 500.
+func writeResolveError(w http.ResponseWriter, op string, err error) {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "not found"):
+		api.JSONNotFound(w, msg)
+	case strings.Contains(msg, "not pending"):
+		api.JSONConflict(w, "failed to "+op+": "+msg)
+	default:
+		api.JSONInternalError(w, "failed to "+op+": "+msg)
+	}
+}
+
 func (h *ApprovalHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		api.JSONMethodNotAllowed(w)
@@ -165,7 +184,7 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		ResolvedBy string `json:"resolved_by"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxApprovalBodyBytes)).Decode(&body); err != nil {
 		api.JSONBadRequest(w, "invalid request body")
 		return
 	}
@@ -176,17 +195,15 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 
 	updated, err := h.service.Approve(id, body.ResolvedBy)
 	if err != nil {
-		api.JSONInternalError(w, "failed to approve: "+err.Error())
+		writeResolveError(w, "approve", err)
 		return
 	}
 
 	if h.continuationStore != nil {
-		list := h.continuationStore.ListByApprovalID(id)
-		for _, cnt := range list {
-			cnt.MarkApproved(body.ResolvedBy)
-			cnt.MarkQueued()
-			_ = h.continuationStore.Update(cnt)
-
+		// Apply approved→queued to all bound continuations atomically in the
+		// store: no stale snapshots, and an in-flight execution is never
+		// retargeted by a racing resolution.
+		for _, cnt := range h.continuationStore.ApplyApprovalDecision(id, true, body.ResolvedBy, "") {
 			if h.eventStore != nil {
 				evt := events.NewEvent(events.EventTypeContinuationQueued).
 					WithGatewayID(h.gatewayID).
@@ -235,7 +252,7 @@ func (h *ApprovalHandler) handleDeny(w http.ResponseWriter, r *http.Request) {
 		ResolvedBy string `json:"resolved_by"`
 		Reason     string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxApprovalBodyBytes)).Decode(&body); err != nil {
 		api.JSONBadRequest(w, "invalid request body")
 		return
 	}
@@ -246,16 +263,12 @@ func (h *ApprovalHandler) handleDeny(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := h.service.Deny(id, body.ResolvedBy, body.Reason)
 	if err != nil {
-		api.JSONInternalError(w, "failed to deny: "+err.Error())
+		writeResolveError(w, "deny", err)
 		return
 	}
 
 	if h.continuationStore != nil {
-		list := h.continuationStore.ListByApprovalID(id)
-		for _, cnt := range list {
-			cnt.MarkDenied(body.ResolvedBy, body.Reason)
-			_ = h.continuationStore.Update(cnt)
-
+		for _, cnt := range h.continuationStore.ApplyApprovalDecision(id, false, body.ResolvedBy, body.Reason) {
 			if h.eventStore != nil {
 				evt := events.NewEvent(events.EventTypeContinuationDenied).
 					WithGatewayID(h.gatewayID).
@@ -428,26 +441,40 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 
 	if h.continuationStore != nil {
 		list := h.continuationStore.ListByApprovalID(id)
-		for _, cnt := range list {
-			if !cnt.CanResume() {
-				api.JSONConflict(w, "continuation not ready for resume: state="+string(cnt.State))
+		// In the wired path continuations are approved→queued at approve
+		// time, so resume has nothing to do. Return an honest 409 rather
+		// than succeeding vacuously.
+		if len(list) > 0 {
+			anyResumable := false
+			for _, cnt := range list {
+				if cnt.CanResume() {
+					anyResumable = true
+					break
+				}
+			}
+			if !anyResumable {
+				api.JSONConflict(w, "continuation not ready for resume: state="+string(list[0].State))
 				return
 			}
 		}
 	}
 
+	// Single-use: ResumeAction atomically consumes the resume token, so a
+	// replayed request fails instead of re-resuming.
 	result, err := h.service.ResumeAction(id)
 	if err != nil {
-		api.JSONBadRequest(w, "resume failed: "+err.Error())
+		if strings.Contains(err.Error(), "not found") {
+			api.JSONNotFound(w, err.Error())
+			return
+		}
+		api.JSONConflict(w, "resume failed: "+err.Error())
 		return
 	}
 
+	var resumed []*continuation.Continuation
 	if h.continuationStore != nil {
-		list := h.continuationStore.ListByApprovalID(id)
-		for _, cnt := range list {
-			cnt.MarkResumed()
-			_ = h.continuationStore.Update(cnt)
-
+		resumed = h.continuationStore.ResumeForApproval(id)
+		for _, cnt := range resumed {
 			if h.eventStore != nil {
 				evt := events.NewEvent(events.EventTypeContinuationResumed).
 					WithGatewayID(h.gatewayID).
@@ -489,9 +516,14 @@ func (h *ApprovalHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		"restricted":        result.Restricted,
 	}
 
-	if h.continuationStore != nil {
-		list := h.continuationStore.ListByApprovalID(id)
-		if len(list) > 0 {
+	if len(resumed) > 0 {
+		cnt := resumed[0]
+		resp["continuation_id"] = cnt.ContinuationID
+		resp["policy_version"] = cnt.PolicyVersion
+		resp["capability_ref"] = cnt.CapabilityRef
+		resp["metadata"] = cnt.Metadata
+	} else if h.continuationStore != nil {
+		if list := h.continuationStore.ListByApprovalID(id); len(list) > 0 {
 			cnt := list[0]
 			resp["continuation_id"] = cnt.ContinuationID
 			resp["policy_version"] = cnt.PolicyVersion

@@ -101,7 +101,9 @@ func cursorFilter[T any](items []*T, cur Cursor, ascending bool, getTimestamp fu
 		} else {
 			if itemTS.Before(cur.Timestamp) {
 				afterCursor = true
-			} else if itemTS.Equal(cur.Timestamp) && itemID > cur.ID {
+			} else if itemTS.Equal(cur.Timestamp) && itemID < cur.ID {
+				// Descending order sorts by ID descending on timestamp
+				// ties, so items after the cursor have a SMALLER ID.
 				afterCursor = true
 			}
 		}
