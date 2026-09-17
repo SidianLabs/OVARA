@@ -115,16 +115,16 @@ describe('OvaraReceiptsTool', () => {
   });
 
   it('calls receipts endpoint with default pagination', async () => {
-    mockFetch([]);
+    mockFetch({ receipts: [], count: 0 });
 
     await OvaraReceiptsTool._call({});
 
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[0]).toContain('/v1/runtime/receipts?limit=20&offset=0');
+    expect(call[0]).toContain('/v1/receipts?limit=20&offset=0');
   });
 
   it('uses custom limit and offset', async () => {
-    mockFetch([]);
+    mockFetch({ receipts: [], count: 0 });
 
     await OvaraReceiptsTool._call({ limit: 50, offset: 10 });
 
@@ -134,7 +134,7 @@ describe('OvaraReceiptsTool', () => {
   });
 
   it('returns JSON string', async () => {
-    mockFetch([{ receipt_id: 'rcpt-001', decision: 'allow' }]);
+    mockFetch({ receipts: [{ receipt_id: 'rcpt-001', decision: 'allow' }], count: 1 });
 
     const result = await OvaraReceiptsTool._call({ limit: 10 });
 
@@ -163,7 +163,7 @@ describe('ToolResult interface compliance', () => {
     const result2 = await OvaraStatusTool._call({});
     expect(() => JSON.parse(result2)).not.toThrow();
 
-    mockFetch([]);
+    mockFetch({ receipts: [], count: 0 });
     const result3 = await OvaraReceiptsTool._call({});
     expect(() => JSON.parse(result3)).not.toThrow();
   });

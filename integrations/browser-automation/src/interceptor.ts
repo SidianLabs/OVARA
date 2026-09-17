@@ -29,17 +29,32 @@ export class BrowserInterceptor {
     const actionType = this.mapTargetToAction(request.target);
     const resource = request.url || request.filePath || "unknown";
 
-    const result = await this.client.check({
-      actionType,
-      resource,
-      environment: request.environment || "local",
-    });
+    let result;
+    try {
+      result = await this.client.check({
+        actionType,
+        resource,
+        environment: request.environment || "local",
+      });
+    } catch (err: any) {
+      // Gateway unreachable/errored: with blockOnDeny we fail closed
+      // (deny), otherwise we fail open and log the error.
+      const reason = `gateway_error: ${err?.message || err}`;
+      if (this.logDecisions || this.blockOnDeny) {
+        console.warn(`[Ovara] ${request.target}: ${reason} — ${resource}`);
+      }
+      return {
+        allowed: !this.blockOnDeny,
+        decision: "deny",
+        reason,
+      };
+    }
 
     const decision: InterceptDecision = {
       allowed: result.decision === "allow",
       decision: result.decision,
-      reason: result.reason,
-      receiptId: result.receiptId,
+      reason: result.reason_codes?.join(", "),
+      receiptId: result.receipt_stub?.receipt_id,
     };
 
     if (this.logDecisions) {
@@ -49,43 +64,79 @@ export class BrowserInterceptor {
     return decision;
   }
 
-  interceptNavigation(page: PageLike, environment?: string): void {
-    page.on("request", async (req: any) => {
-      if (req.isNavigationRequest?.() || req.frame?.() === page) {
-        const decision = await this.evaluate({
-          target: "navigation",
-          url: req.url?.() || req.url,
-          environment: (environment as any) || "local",
+  // attachRequestInterception enables real (blocking) interception on the
+  // page: page.route() for Playwright, setRequestInterception for
+  // Puppeteer. Without one of these, "request" events are observational
+  // only and cannot block.
+  private async attachRequestInterception(
+    page: PageLike,
+    handle: (req: any, ctx: { abort: () => void; proceed: () => void }) => Promise<void>
+  ): Promise<void> {
+    if (typeof page.route === "function") {
+      // Playwright: route handler must call route.abort() or route.continue().
+      await page.route("**/*", async (route: any, request: any) => {
+        await handle(request, {
+          abort: () => route.abort("blockedbyclient"),
+          proceed: () => route.continue(),
         });
+      });
+      return;
+    }
+    if (typeof page.setRequestInterception === "function") {
+      // Puppeteer: must enable interception before "request" events can block.
+      await page.setRequestInterception(true);
+      page.on("request", async (req: any) => {
+        await handle(req, {
+          abort: () => req.abort("blockedbyclient"),
+          proceed: () => req.continue(),
+        });
+      });
+      return;
+    }
+    throw new Error(
+      "Page does not support request interception (need page.route or page.setRequestInterception)"
+    );
+  }
 
-        if (!decision.allowed && this.blockOnDeny) {
-          if (typeof req.abort === "function") {
-            req.abort("blockedbyclient");
-          } else if (typeof req.respond === "function") {
-            req.respond({ status: 403, body: "Blocked by Ovara policy" });
-          }
-        }
+  async interceptNavigation(page: PageLike, environment?: string): Promise<void> {
+    await this.attachRequestInterception(page, async (req, ctx) => {
+      if (!(req.isNavigationRequest?.() || req.frame?.() === page)) {
+        ctx.proceed();
+        return;
       }
+      const decision = await this.evaluate({
+        target: "navigation",
+        url: req.url?.() || req.url,
+        environment: (environment as any) || "local",
+      });
+
+      if (!decision.allowed && this.blockOnDeny) {
+        ctx.abort();
+        return;
+      }
+      ctx.proceed();
     });
   }
 
-  interceptFormSubmissions(page: PageLike, environment?: string): void {
-    page.on("request", async (req: any) => {
+  async interceptFormSubmissions(page: PageLike, environment?: string): Promise<void> {
+    await this.attachRequestInterception(page, async (req, ctx) => {
       const method = (req.method?.() || req.method || "").toUpperCase();
-      if (method === "POST" || method === "PUT" || method === "PATCH") {
-        const decision = await this.evaluate({
-          target: "form_submit",
-          url: req.url?.() || req.url,
-          method,
-          environment: (environment as any) || "local",
-        });
-
-        if (!decision.allowed && this.blockOnDeny) {
-          if (typeof req.abort === "function") {
-            req.abort("blockedbyclient");
-          }
-        }
+      if (method !== "POST" && method !== "PUT" && method !== "PATCH") {
+        ctx.proceed();
+        return;
       }
+      const decision = await this.evaluate({
+        target: "form_submit",
+        url: req.url?.() || req.url,
+        method,
+        environment: (environment as any) || "local",
+      });
+
+      if (!decision.allowed && this.blockOnDeny) {
+        ctx.abort();
+        return;
+      }
+      ctx.proceed();
     });
   }
 
@@ -108,7 +159,8 @@ export class BrowserInterceptor {
 
   interceptUploads(page: PageLike, environment?: string): void {
     page.on("filechooser", async (fileChooser: any) => {
-      const pageUrl = "";
+      // Evaluate against the page the chooser was opened on.
+      const pageUrl = typeof page.url === "function" ? page.url() : "unknown";
       const decision = await this.evaluate({
         target: "file_upload",
         url: pageUrl,

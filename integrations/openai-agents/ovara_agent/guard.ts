@@ -24,9 +24,9 @@ export class OvaraGuard {
     });
     return {
       decision: result.decision,
-      reason: result.reason,
-      trustScore: result.trustScore,
-      receiptId: result.receiptId,
+      reason: result.reason_codes?.join(", "),
+      trustScore: result.trust_score,
+      receiptId: result.receipt_stub?.receipt_id,
     };
   }
 
