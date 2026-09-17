@@ -116,6 +116,15 @@ credential binding.
 3. Completeness argument: because the boundary is default-deny, any side
    effect that is *not* in the chain never happened. The chain is the full
    record — but only as strong as the boundary verification above.
-4. External anchoring (periodically publishing the chain head) is the
-   intended anti-rollback measure; treat unanchored chains as
-   "tamper-evident since last anchor", not absolute.
+4. External anchoring is implemented and env-configured: every
+   `OVARA_ANCHOR_EVERY` receipts (default 1) the proxy appends
+   `{"seq": N, "head": "<chain head hash>", "time": "..."}` to
+   `OVARA_ANCHOR_FILE` (default `var/anchors.jsonl`) and optionally POSTs it
+   to `OVARA_ANCHOR_URL`. For it to mean anything the sink must be outside
+   the proxy host's blast radius — ship the anchor file off-box (object
+   store, log aggregator, separate mount) or set the URL to a third-party
+   collector. `-verify` checks each anchor's head against the recomputed
+   chain head at that sequence and reports the first divergence.
+5. Anchors prove the chain was not rewritten *after* each anchor — they do
+   not prove completeness (that still rests on the boundary). Treat history
+   before the first anchor as "tamper-evident, not anchored".

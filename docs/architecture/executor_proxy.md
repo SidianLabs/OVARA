@@ -1,8 +1,12 @@
 # Executor Proxy — Target Architecture
 
-Status: **design direction for V2**. Not implemented in V1.0.0. This document
-describes where Ovara is going and why; it is not a description of current
-code.
+Status: **first slice shipped** (`proxy/` module). The universal HTTPS
+executor proxy — CONNECT+MITM, host-glob credential injection, per-request
+gateway evaluation, hash-chained ed25519 receipts — is implemented and
+verified end-to-end. The egress-boundary tooling (`proxy/scripts/`,
+`proxy/DEPLOYMENT.md`) exists but requires deployment to be meaningful.
+Escalate hold-and-resume, external chain anchoring, and non-HTTPS data
+planes are in flight or planned; see "Roadmap" below.
 
 ## The Problem With Advisory Gateways
 
@@ -80,3 +84,16 @@ requirements:
   work.
 - Human approval on the hot path requires the async continuation machinery
   already present in V1 — a blocking policy call is not sufficient.
+
+## Roadmap
+
+| Item | Status |
+|---|---|
+| HTTPS MITM proxy, universal host bindings | shipped (`proxy/`) |
+| Per-request policy eval, fail-closed | shipped |
+| Hash-chained ed25519 receipts, offline verify | shipped |
+| Egress boundary scripts (nftables, netns, docker) | shipped, needs deployment |
+| Escalate → hold-and-resume on the hot path | shipped (`escalate_timeout_sec`, polls `/v1/approval/{id}`) |
+| External anchoring of chain head | shipped (`OVARA_ANCHOR_FILE/URL/EVERY`) |
+| Git smart-HTTP push gating (ref-level policy) | planned |
+| SSH / database wire protocols | blocked by design — bastion or bespoke plane |

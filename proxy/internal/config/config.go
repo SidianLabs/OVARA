@@ -9,10 +9,10 @@ import (
 )
 
 type Config struct {
-	ListenAddr  string `json:"listen_addr"`  // default :9443
-	GatewayURL  string `json:"gateway_url"`  // ovara gateway base URL
+	ListenAddr   string `json:"listen_addr"`   // default :9443
+	GatewayURL   string `json:"gateway_url"`   // ovara gateway base URL
 	GatewayToken string `json:"gateway_token"` // bearer token if gateway auth_enabled
-	Environment string `json:"environment"`  // dev/staging/production; default dev
+	Environment  string `json:"environment"`   // dev/staging/production; default dev
 
 	CACertFile string `json:"ca_cert_file"` // persisted CA cert (distribute to agent trust store)
 	CAKeyFile  string `json:"ca_key_file"`
@@ -22,6 +22,9 @@ type Config struct {
 	PubKeyFile     string `json:"pubkey_file"`      // where to write the receipt verify pubkey
 
 	FailOpen bool `json:"fail_open"` // DANGEROUS: allow when gateway unreachable
+
+	EscalateTimeoutSec int `json:"escalate_timeout_sec"` // hold escalated requests this long; default 60
+	EscalatePollSec    int `json:"escalate_poll_sec"`    // approval status poll interval; default 2
 
 	Credentials []creds.Binding `json:"credentials"`
 }
@@ -55,6 +58,12 @@ func Load(path string) (*Config, error) {
 	}
 	if c.PubKeyFile == "" {
 		c.PubKeyFile = "var/receipt_pubkey.hex"
+	}
+	if c.EscalateTimeoutSec <= 0 {
+		c.EscalateTimeoutSec = 60
+	}
+	if c.EscalatePollSec <= 0 {
+		c.EscalatePollSec = 2
 	}
 	return &c, nil
 }

@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
 
 	"ovara.proxy/internal/ca"
 	"ovara.proxy/internal/config"
@@ -42,10 +44,21 @@ func main() {
 	if err != nil {
 		log.Fatalf("receipts: %v", err)
 	}
+	// External anchoring, env-configured: OVARA_ANCHOR_FILE (default
+	// var/anchors.jsonl), OVARA_ANCHOR_URL (optional POST sink),
+	// OVARA_ANCHOR_EVERY (default 1 = anchor every receipt).
+	anchorFile := os.Getenv("OVARA_ANCHOR_FILE")
+	if anchorFile == "" {
+		anchorFile = "var/anchors.jsonl"
+	}
+	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
+	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
+	log.Printf("anchoring chain head to %s (every=%d url=%q)", anchorFile, max(anchorEvery, 1), os.Getenv("OVARA_ANCHOR_URL"))
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
 	bindings := creds.Load(cfg.Credentials)
 
 	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
+	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
 	log.Printf("ovara executor proxy on %s (gateway=%s env=%s bindings=%d fail_open=%v)",
 		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
@@ -68,6 +81,15 @@ func runVerify(path, pubHex string) {
 		}
 	}
 	res := receipts.VerifyFile(path, ed25519.PublicKey(keyBytes))
+	// If anchors exist (OVARA_ANCHOR_FILE, or the default sink), verify each
+	// anchor's head against the recomputed chain head at that sequence.
+	anchorPath := os.Getenv("OVARA_ANCHOR_FILE")
+	if anchorPath == "" {
+		anchorPath = "var/anchors.jsonl"
+	}
+	if _, err := os.Stat(anchorPath); err == nil {
+		res = receipts.VerifyAnchorFile(anchorPath, path, ed25519.PublicKey(keyBytes))
+	}
 	out, _ := json.MarshalIndent(res, "", "  ")
 	fmt.Println(string(out))
 	if !res.Valid {
