@@ -38,7 +38,13 @@ func extractID(path, prefix string) string {
 	return id
 }
 
+// maxBodyBytes caps request bodies decoded by this service.
+const maxBodyBytes = 10 << 20 // 10MB
+
 func (h *Handlers) HandleApproval(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	}
 	path := r.URL.Path
 
 	if path == "/v1/approvals" {

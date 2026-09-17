@@ -76,7 +76,8 @@ func (s *memoryStore) Get(id string) (*models.Receipt, error) {
 	if !ok {
 		return nil, fmt.Errorf("receipt %s not found", id)
 	}
-	return r, nil
+	cp := *r
+	return &cp, nil
 }
 
 func (s *memoryStore) List(filter ListFilter) ([]*models.Receipt, error) {
@@ -103,17 +104,26 @@ func (s *memoryStore) List(filter ListFilter) ([]*models.Receipt, error) {
 		if !filter.EndDate.IsZero() && r.IssuedAt.After(filter.EndDate) {
 			continue
 		}
-		results = append(results, r)
+		cp := *r
+		results = append(results, &cp)
 	}
 
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].IssuedAt.After(results[j].IssuedAt)
 	})
 
-	if filter.Offset > 0 && filter.Offset < len(results) {
+	if filter.Offset >= len(results) {
+		results = results[:0]
+	} else if filter.Offset > 0 {
 		results = results[filter.Offset:]
 	}
-	if filter.Limit > 0 && filter.Limit < len(results) {
+	if filter.Limit <= 0 {
+		filter.Limit = 100
+	}
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
+	if filter.Limit < len(results) {
 		results = results[:filter.Limit]
 	}
 
