@@ -175,7 +175,7 @@ function parseRego(source: string): { package: string; rules: RawRule[]; errors:
  *   input.environment == "local"
  *   input.agent_id == "agt-001"
  */
-function extractInputConditions(body: string): {
+function extractInputConditions(body: string, ruleName: string, ruleLine: number): {
   actionType?: string;
   environment?: string;
   other: Record<string, string>;
@@ -183,9 +183,16 @@ function extractInputConditions(body: string): {
   const conditions: { actionType?: string; environment?: string; other: Record<string, string> } = { other: {} };
   for (const line of body.split('\n')) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
+    // Skip blank lines, comments, and bare braces.
+    if (!trimmed || trimmed.startsWith('#') || /^[{}]*$/.test(trimmed)) continue;
     const m = trimmed.match(/^input\.(\w+)\s*==\s*"([^"]*)"$/);
-    if (!m) continue;
+    if (!m) {
+      // Fail closed: an expression we cannot translate must not be silently
+      // dropped, or the resulting rule would be broader than the source.
+      throw new Error(
+        `[opa-adapter:semantic] unhandled body expression in rule '${ruleName}': ${trimmed} (line ${ruleLine})`
+      );
+    }
     const field = m[1];
     const value = m[2];
     if (field === 'action_type') conditions.actionType = value;
@@ -196,7 +203,7 @@ function extractInputConditions(body: string): {
 }
 
 function mapRule(rule: RawRule): OvaraRule {
-  const conds = extractInputConditions(rule.body);
+  const conds = extractInputConditions(rule.body, rule.name, rule.line);
   const ovaraRule: OvaraRule = {
     action_type: conds.actionType ?? '*',
     environment: conds.environment ?? '*',
@@ -240,8 +247,8 @@ export function translateRego(rego: string): OvaraPolicy {
     throw new Error("[opa-adapter:semantic] missing 'package' declaration");
   }
 
-  if (!pkg.startsWith('ovara')) {
-    throw new Error(`[opa-adapter:semantic] package must start with 'ovara', got '${pkg}'`);
+  if (pkg !== 'ovara' && !pkg.startsWith('ovara.')) {
+    throw new Error(`[opa-adapter:semantic] package must start with 'ovara' or 'ovara.', got '${pkg}'`);
   }
 
   if (rules.length === 0) {
@@ -273,7 +280,13 @@ export function translateRego(rego: string): OvaraPolicy {
     };
   }
 
-  const ovaraRules = explicitRules.map(mapRule);
+  // Emit deny rules before allow rules: Ovara evaluates denies with
+  // priority, and ordering them first preserves fail-closed semantics.
+  const mapped = explicitRules.map(mapRule);
+  const ovaraRules = [
+    ...mapped.filter(r => r.deny),
+    ...mapped.filter(r => !r.deny),
+  ];
 
   // If the package default-deny (no default allow=true), add a catch-all
   // escalate to ensure unknown actions get a human review.

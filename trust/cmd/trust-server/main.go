@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,24 +19,24 @@ import (
 )
 
 type Server struct {
-	mux       *http.ServeMux
-	graph     *graph.TrustGraph
-	store     *FileStore
-	storePath string
-	mu        sync.RWMutex
+	mux        *http.ServeMux
+	graph      *graph.TrustGraph
+	store      *graph.GraphStore
+	identities map[string]*receipt.FederatedIdentity
+	mu         sync.RWMutex
 }
 
 func NewServer(dataPath string) *Server {
 	s := &Server{
-		mux:   http.NewServeMux(),
-		graph: graph.NewTrustGraph(),
+		mux:        http.NewServeMux(),
+		graph:      graph.NewTrustGraph(),
+		identities: make(map[string]*receipt.FederatedIdentity),
 	}
-	s.storePath = dataPath
 	if dataPath != "" {
-		s.store = NewFileStore(dataPath)
-		if err := s.store.Load(s.graph); err == nil {
-			fmt.Printf("Loaded trust graph from %s\n", dataPath)
-		}
+		store, g := graph.NewGraphStore(dataPath)
+		s.store = store
+		s.graph = g
+		fmt.Printf("Loaded trust graph from %s\n", dataPath)
 	}
 	s.routes()
 	return s
@@ -107,12 +109,12 @@ func (s *Server) listDomains(w http.ResponseWriter, r *http.Request) {
 	orgs := s.graph.GetAllOrganizations()
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"organizations": orgs,
-		"count":        len(orgs),
+		"count":         len(orgs),
 	})
 }
 
 func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
-	domain := stripPrefix(r.URL.Path, "/v1/domains/")
+	domain := strings.TrimPrefix(r.URL.Path, "/v1/domains/")
 	node, ok := s.graph.GetNode(graph.TrustDomain(domain))
 	if !ok {
 		http.Error(w, "domain not found", http.StatusNotFound)
@@ -121,12 +123,12 @@ func (s *Server) getDomain(w http.ResponseWriter, r *http.Request) {
 	neighbors := s.graph.GetNeighbors(graph.TrustDomain(domain))
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"organization": node,
-		"neighbors":   neighbors,
+		"neighbors":    neighbors,
 	})
 }
 
 func (s *Server) removeDomain(w http.ResponseWriter, r *http.Request) {
-	domain := stripPrefix(r.URL.Path, "/v1/domains/")
+	domain := strings.TrimPrefix(r.URL.Path, "/v1/domains/")
 	err := s.graph.RemoveOrganization(graph.TrustDomain(domain))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -164,9 +166,11 @@ func (s *Server) createFederation(w http.ResponseWriter, r *http.Request) {
 	var pubKeys [][]byte
 	for _, k := range req.TargetKeys {
 		b, err := hex.DecodeString(k)
-		if err == nil {
-			pubKeys = append(pubKeys, b)
+		if err != nil {
+			http.Error(w, "invalid target public key hex: "+err.Error(), http.StatusBadRequest)
+			return
 		}
+		pubKeys = append(pubKeys, b)
 	}
 	err := s.graph.Federate(graph.TrustDomain(req.Source), graph.TrustDomain(req.Target), req.TrustLevel, pubKeys)
 	if err != nil {
@@ -179,13 +183,13 @@ func (s *Server) createFederation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) revokeFederation(w http.ResponseWriter, r *http.Request) {
-	path := stripPrefix(r.URL.Path, "/v1/federations/")
-	parts := splitTwo(path, "/")
-	if parts[0] == "" || parts[1] == "" {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/federations/")
+	source, target, _ := strings.Cut(path, "/")
+	if source == "" || target == "" {
 		http.Error(w, "source and target domain required", http.StatusBadRequest)
 		return
 	}
-	err := s.graph.RevokeFederation(graph.TrustDomain(parts[0]), graph.TrustDomain(parts[1]))
+	err := s.graph.RevokeFederation(graph.TrustDomain(source), graph.TrustDomain(target))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -243,9 +247,19 @@ func (s *Server) registerFederatedIdentity(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "identity_digest, domain, public_key, and signature are required", http.StatusBadRequest)
 		return
 	}
+	node, ok := s.graph.GetNode(graph.TrustDomain(req.Domain))
+	if !ok {
+		http.Error(w, "domain not registered", http.StatusNotFound)
+		return
+	}
 	pubKeyBytes, err := hex.DecodeString(req.PublicKey)
 	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
 		http.Error(w, "invalid public key", http.StatusBadRequest)
+		return
+	}
+	// The presented public key must be one of the domain's registered keys.
+	if !keyRegistered(node.PublicKeys, pubKeyBytes) {
+		http.Error(w, "public key is not registered for domain", http.StatusBadRequest)
 		return
 	}
 	sigBytes, err := hex.DecodeString(req.Signature)
@@ -256,22 +270,28 @@ func (s *Server) registerFederatedIdentity(w http.ResponseWriter, r *http.Reques
 	now := time.Now().UTC()
 	issuedAt := now
 	if req.IssuedAt != "" {
-		if t, err := time.Parse(time.RFC3339, req.IssuedAt); err == nil {
-			issuedAt = t
+		t, err := time.Parse(time.RFC3339, req.IssuedAt)
+		if err != nil {
+			http.Error(w, "invalid issued_at timestamp", http.StatusBadRequest)
+			return
 		}
+		issuedAt = t
 	}
 	expiresAt := now.Add(24 * time.Hour)
 	if req.ExpiresAt != "" {
-		if t, err := time.Parse(time.RFC3339, req.ExpiresAt); err == nil {
-			expiresAt = t
+		t, err := time.Parse(time.RFC3339, req.ExpiresAt)
+		if err != nil {
+			http.Error(w, "invalid expires_at timestamp", http.StatusBadRequest)
+			return
 		}
+		expiresAt = t
 	}
 	if issuedAt.After(now.Add(5 * time.Minute)) {
 		http.Error(w, "issued_at is too far in the future", http.StatusBadRequest)
 		return
 	}
-	if expiresAt.Before(now) {
-		http.Error(w, "expires_at is in the past", http.StatusBadRequest)
+	if expiresAt.Before(now) || expiresAt.After(now.Add(30*24*time.Hour)) {
+		http.Error(w, "expires_at is in the past or more than 30 days out", http.StatusBadRequest)
 		return
 	}
 	fid := &receipt.FederatedIdentity{
@@ -286,6 +306,9 @@ func (s *Server) registerFederatedIdentity(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "signature verification failed", http.StatusBadRequest)
 		return
 	}
+	s.mu.Lock()
+	s.identities[req.Domain+"/"+req.IdentityDigest] = fid
+	s.mu.Unlock()
 	s.save()
 	jsonResponse(w, http.StatusCreated, fid)
 }
@@ -309,10 +332,17 @@ func (s *Server) verifyFederatedIdentity(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	pubKeyBytes, err := hex.DecodeString(req.PubKey)
-	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
-		http.Error(w, "invalid public key", http.StatusBadRequest)
+	// Public keys are resolved from the trust graph — never from the request.
+	node, ok := s.graph.GetNode(graph.TrustDomain(req.Domain))
+	if !ok {
+		http.Error(w, "domain not registered", http.StatusNotFound)
 		return
+	}
+	if req.PubKey != "" {
+		if b, err := hex.DecodeString(req.PubKey); err != nil || len(b) != ed25519.PublicKeySize {
+			http.Error(w, "invalid public key", http.StatusBadRequest)
+			return
+		}
 	}
 	sigBytes, err := hex.DecodeString(req.Signature)
 	if err != nil {
@@ -321,24 +351,36 @@ func (s *Server) verifyFederatedIdentity(w http.ResponseWriter, r *http.Request)
 	}
 	issuedAt := time.Now().UTC()
 	if req.IssuedAt != "" {
-		if t, err := time.Parse(time.RFC3339, req.IssuedAt); err == nil {
-			issuedAt = t
+		t, err := time.Parse(time.RFC3339, req.IssuedAt)
+		if err != nil {
+			http.Error(w, "invalid issued_at timestamp", http.StatusBadRequest)
+			return
 		}
+		issuedAt = t
 	}
 	expiresAt := time.Now().UTC().Add(24 * time.Hour)
 	if req.ExpiresAt != "" {
-		if t, err := time.Parse(time.RFC3339, req.ExpiresAt); err == nil {
-			expiresAt = t
+		t, err := time.Parse(time.RFC3339, req.ExpiresAt)
+		if err != nil {
+			http.Error(w, "invalid expires_at timestamp", http.StatusBadRequest)
+			return
 		}
+		expiresAt = t
 	}
 	fid := &receipt.FederatedIdentity{
 		IdentityDigest: req.IdentityDigest,
-		Domain:        req.Domain,
-		IssuedAt:      issuedAt,
-		ExpiresAt:     expiresAt,
-		Signature:     sigBytes,
+		Domain:         req.Domain,
+		IssuedAt:       issuedAt,
+		ExpiresAt:      expiresAt,
+		Signature:      sigBytes,
 	}
-	valid := fid.Verify(ed25519.PublicKey(pubKeyBytes))
+	valid := false
+	for _, k := range node.PublicKeys {
+		if fid.Verify(ed25519.PublicKey(k)) {
+			valid = true
+			break
+		}
+	}
 	now := time.Now().UTC()
 	notExpired := now.Before(expiresAt)
 	jsonResponse(w, http.StatusOK, map[string]any{
@@ -350,18 +392,18 @@ func (s *Server) verifyFederatedIdentity(w http.ResponseWriter, r *http.Request)
 }
 
 type verifyReceiptReq struct {
-	ReceiptID      string `json:"receipt_id"`
-	DecisionID     string `json:"decision_id"`
-	IssuingGateway string `json:"issuing_gateway"`
-	IssuingOrg     string `json:"issuing_org"`
-	ActionType     string `json:"action_type"`
-	Resource       string `json:"resource"`
-	Decision       string `json:"decision"`
-	AgentIdentity  string `json:"agent_identity"`
+	ReceiptID      string  `json:"receipt_id"`
+	DecisionID     string  `json:"decision_id"`
+	IssuingGateway string  `json:"issuing_gateway"`
+	IssuingOrg     string  `json:"issuing_org"`
+	ActionType     string  `json:"action_type"`
+	Resource       string  `json:"resource"`
+	Decision       string  `json:"decision"`
+	AgentIdentity  string  `json:"agent_identity"`
 	TrustScore     float64 `json:"trust_score"`
-	Timestamp      string `json:"timestamp"`
-	Signature      string `json:"signature"`
-	PubKey         string `json:"public_key"`
+	Timestamp      string  `json:"timestamp"`
+	Signature      string  `json:"signature"`
+	PubKey         string  `json:"public_key"`
 }
 
 func (s *Server) verifyCrossOrgReceipt(w http.ResponseWriter, r *http.Request) {
@@ -374,10 +416,17 @@ func (s *Server) verifyCrossOrgReceipt(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	pubKeyBytes, err := hex.DecodeString(req.PubKey)
-	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
-		http.Error(w, "invalid public key", http.StatusBadRequest)
+	// Public keys are resolved from the trust graph — never from the request.
+	node, ok := s.graph.GetNode(graph.TrustDomain(req.IssuingOrg))
+	if !ok {
+		http.Error(w, "issuing org not registered", http.StatusNotFound)
 		return
+	}
+	if req.PubKey != "" {
+		if b, err := hex.DecodeString(req.PubKey); err != nil || len(b) != ed25519.PublicKeySize {
+			http.Error(w, "invalid public key", http.StatusBadRequest)
+			return
+		}
 	}
 	sigBytes, err := hex.DecodeString(req.Signature)
 	if err != nil {
@@ -415,7 +464,13 @@ func (s *Server) verifyCrossOrgReceipt(w http.ResponseWriter, r *http.Request) {
 		Timestamp:      timestamp,
 		Signature:      sigBytes,
 	}
-	valid := receipt.Verify(pubKeyBytes)
+	valid := false
+	for _, k := range node.PublicKeys {
+		if receipt.Verify(k) {
+			valid = true
+			break
+		}
+	}
 	jsonResponse(w, http.StatusOK, map[string]any{
 		"valid":       valid,
 		"receipt_id":  req.ReceiptID,
@@ -424,7 +479,7 @@ func (s *Server) verifyCrossOrgReceipt(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) trustStatus(w http.ResponseWriter, r *http.Request) {
-	domain := stripPrefix(r.URL.Path, "/v1/trust-status/")
+	domain := strings.TrimPrefix(r.URL.Path, "/v1/trust-status/")
 	node, ok := s.graph.GetNode(graph.TrustDomain(domain))
 	if !ok {
 		http.Error(w, "domain not found", http.StatusNotFound)
@@ -460,7 +515,9 @@ func (s *Server) graphSnapshot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) save() {
 	if s.store != nil {
-		s.store.Save(s.graph)
+		if err := s.store.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to persist trust graph: %v\n", err)
+		}
 	}
 }
 
@@ -468,61 +525,20 @@ func (s *Server) Serve(addr string) error {
 	return http.ListenAndServe(addr, s.mux)
 }
 
-type FileStore struct {
-	path string
-}
-
-func NewFileStore(path string) *FileStore {
-	return &FileStore{path: path}
-}
-
-func (fs *FileStore) Save(g *graph.TrustGraph) {
-	data, _ := json.Marshal(g.Snapshot())
-	os.WriteFile(fs.path, data, 0644)
-}
-
-func (fs *FileStore) Load(g *graph.TrustGraph) error {
-	data, err := os.ReadFile(fs.path)
-	if err != nil {
-		return err
-	}
-	var snap map[string]interface{}
-	if err := json.Unmarshal(data, &snap); err != nil {
-		return err
-	}
-	if orgs, ok := snap["organizations"].([]interface{}); ok {
-		for _, o := range orgs {
-			if omap, ok := o.(map[string]interface{}); ok {
-				if domain, ok := omap["domain"].(string); ok {
-					name, _ := omap["name"].(string)
-					g.AddOrganization(graph.TrustDomain(domain), name, nil)
-				}
-			}
+// keyRegistered reports whether pubKey is among the domain's registered keys.
+func keyRegistered(registered [][]byte, pubKey []byte) bool {
+	for _, k := range registered {
+		if subtle.ConstantTimeCompare(k, pubKey) == 1 {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
 func jsonResponse(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
-}
-
-func stripPrefix(path, prefix string) string {
-	if len(path) > len(prefix) && path[:len(prefix)] == prefix {
-		return path[len(prefix):]
-	}
-	return ""
-}
-
-func splitTwo(s, sep string) [2]string {
-	for i := 0; i < len(s); i++ {
-		if s[i:i+len(sep)] == sep {
-			return [2]string{s[:i], s[i+len(sep):]}
-		}
-	}
-	return [2]string{s, ""}
 }
 
 var domainRegex = regexp.MustCompile("^[a-zA-Z0-9.-]+$")

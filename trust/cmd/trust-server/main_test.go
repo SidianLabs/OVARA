@@ -139,8 +139,8 @@ func TestCreateFederation(t *testing.T) {
 	srv.graph.AddOrganization("b.com", "Org B", nil)
 
 	body := map[string]interface{}{
-		"source":    "a.com",
-		"target":    "b.com",
+		"source":      "a.com",
+		"target":      "b.com",
 		"trust_level": 0.8,
 	}
 	b, _ := json.Marshal(body)
@@ -224,6 +224,7 @@ func TestComputePath_NoPath(t *testing.T) {
 func TestRegisterFederatedIdentity(t *testing.T) {
 	srv := NewServer("")
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	srv.graph.AddOrganization("acme.com", "Acme Corp", [][]byte{pub})
 
 	issuedAt := time.Now().UTC()
 	expiresAt := issuedAt.Add(24 * time.Hour)
@@ -263,6 +264,7 @@ func TestRegisterFederatedIdentity(t *testing.T) {
 func TestVerifyFederatedIdentity(t *testing.T) {
 	srv := NewServer("")
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	srv.graph.AddOrganization("acme.com", "Acme Corp", [][]byte{pub})
 	issuedAt := time.Now().UTC()
 	expiresAt := issuedAt.Add(24 * time.Hour)
 
@@ -276,11 +278,11 @@ func TestVerifyFederatedIdentity(t *testing.T) {
 
 	body := map[string]interface{}{
 		"identity_digest": fid.IdentityDigest,
-		"domain":         fid.Domain,
-		"signature":      hex.EncodeToString(fid.Signature),
-		"public_key":     hex.EncodeToString(pub),
-		"issued_at":      issuedAt.Format(time.RFC3339),
-		"expires_at":     expiresAt.Format(time.RFC3339),
+		"domain":          fid.Domain,
+		"signature":       hex.EncodeToString(fid.Signature),
+		"public_key":      hex.EncodeToString(pub),
+		"issued_at":       issuedAt.Format(time.RFC3339),
+		"expires_at":      expiresAt.Format(time.RFC3339),
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/identities/verify", bytes.NewReader(b))
@@ -300,6 +302,7 @@ func TestVerifyFederatedIdentity(t *testing.T) {
 func TestVerifyFederatedIdentity_Expired(t *testing.T) {
 	srv := NewServer("")
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	srv.graph.AddOrganization("acme.com", "Acme Corp", [][]byte{pub})
 	issuedAt := time.Now().UTC().Add(-48 * time.Hour)
 	expiresAt := issuedAt.Add(1 * time.Hour)
 
@@ -313,11 +316,11 @@ func TestVerifyFederatedIdentity_Expired(t *testing.T) {
 
 	body := map[string]interface{}{
 		"identity_digest": fid.IdentityDigest,
-		"domain":         fid.Domain,
-		"signature":      hex.EncodeToString(fid.Signature),
-		"public_key":     hex.EncodeToString(pub),
-		"issued_at":      issuedAt.Format(time.RFC3339),
-		"expires_at":     expiresAt.Format(time.RFC3339),
+		"domain":          fid.Domain,
+		"signature":       hex.EncodeToString(fid.Signature),
+		"public_key":      hex.EncodeToString(pub),
+		"issued_at":       issuedAt.Format(time.RFC3339),
+		"expires_at":      expiresAt.Format(time.RFC3339),
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/identities/verify", bytes.NewReader(b))
@@ -334,6 +337,7 @@ func TestVerifyFederatedIdentity_Expired(t *testing.T) {
 func TestVerifyCrossOrgReceipt(t *testing.T) {
 	srv := NewServer("")
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	srv.graph.AddOrganization("acme.com", "Acme Corp", [][]byte{pub})
 	timestamp := time.Now().UTC()
 
 	crossOrgReceipt := &receipt.CrossOrgReceipt{
@@ -354,15 +358,15 @@ func TestVerifyCrossOrgReceipt(t *testing.T) {
 		"receipt_id":      crossOrgReceipt.ReceiptID,
 		"decision_id":     crossOrgReceipt.DecisionID,
 		"issuing_gateway": crossOrgReceipt.IssuingGateway,
-		"issuing_org":    crossOrgReceipt.IssuingOrg,
-		"action_type":    crossOrgReceipt.ActionType,
-		"resource":       crossOrgReceipt.Resource,
-		"decision":      crossOrgReceipt.Decision,
-		"agent_identity": crossOrgReceipt.AgentIdentity,
-		"trust_score":    crossOrgReceipt.TrustScore,
-		"timestamp":      timestamp.Format(time.RFC3339),
-		"signature":      hex.EncodeToString(crossOrgReceipt.Signature),
-		"public_key":     hex.EncodeToString(pub),
+		"issuing_org":     crossOrgReceipt.IssuingOrg,
+		"action_type":     crossOrgReceipt.ActionType,
+		"resource":        crossOrgReceipt.Resource,
+		"decision":        crossOrgReceipt.Decision,
+		"agent_identity":  crossOrgReceipt.AgentIdentity,
+		"trust_score":     crossOrgReceipt.TrustScore,
+		"timestamp":       timestamp.Format(time.RFC3339),
+		"signature":       hex.EncodeToString(crossOrgReceipt.Signature),
+		"public_key":      hex.EncodeToString(pub),
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/receipts/verify", bytes.NewReader(b))
@@ -446,6 +450,7 @@ func TestComputePath_MissingParams(t *testing.T) {
 func TestRegisterFederatedIdentity_InvalidSignature(t *testing.T) {
 	srv := NewServer("")
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	srv.graph.AddOrganization("acme.com", "Acme Corp", [][]byte{pub})
 	body := map[string]interface{}{
 		"identity_digest": hex.EncodeToString([]byte("agent-123")),
 		"domain":          "acme.com",
@@ -464,11 +469,13 @@ func TestRegisterFederatedIdentity_InvalidSignature(t *testing.T) {
 
 func TestVerifyFederatedIdentity_InvalidPubKey(t *testing.T) {
 	srv := NewServer("")
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	srv.graph.AddOrganization("acme.com", "Acme Corp", [][]byte{pub})
 	body := map[string]interface{}{
 		"identity_digest": hex.EncodeToString([]byte("agent-123")),
-		"domain":         "acme.com",
-		"signature":      hex.EncodeToString(make([]byte, 64)),
-		"public_key":     "invalid",
+		"domain":          "acme.com",
+		"signature":       hex.EncodeToString(make([]byte, 64)),
+		"public_key":      "invalid",
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/identities/verify", bytes.NewReader(b))
@@ -482,10 +489,13 @@ func TestVerifyFederatedIdentity_InvalidPubKey(t *testing.T) {
 
 func TestVerifyCrossOrgReceipt_InvalidPubKey(t *testing.T) {
 	srv := NewServer("")
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	srv.graph.AddOrganization("acme.com", "Acme Corp", [][]byte{pub})
 	body := map[string]interface{}{
-		"receipt_id": "r-123",
-		"signature":  hex.EncodeToString(make([]byte, 64)),
-		"public_key": "invalid",
+		"receipt_id":  "r-123",
+		"issuing_org": "acme.com",
+		"signature":   hex.EncodeToString(make([]byte, 64)),
+		"public_key":  "invalid",
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/receipts/verify", bytes.NewReader(b))
@@ -522,8 +532,8 @@ func TestCreateFederation_SameOrg(t *testing.T) {
 	srv.graph.AddOrganization("a.com", "Org A", nil)
 
 	body := map[string]interface{}{
-		"source":     "a.com",
-		"target":     "a.com",
+		"source":      "a.com",
+		"target":      "a.com",
 		"trust_level": 0.8,
 	}
 	b, _ := json.Marshal(body)

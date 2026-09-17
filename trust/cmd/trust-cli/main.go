@@ -30,12 +30,28 @@ func main() {
 	domain := flag.String("domain", "", "Federated identity domain")
 	pubKeyHex := flag.String("pubkey", "", "Hex-encoded ed25519 public key for verification")
 	sigHex := flag.String("sig", "", "Hex-encoded signature for verification")
+	graphFile := flag.String("graph-file", "trust_graph.json", "Path to persist the trust graph (empty = ephemeral, in-memory)")
 	stateFile := flag.String("state-file", "trust_state.json", "Path to trust state file")
 	stateAction := flag.String("state-action", "", "State action: save, load, export, import")
 	statePath := flag.String("state-path", "", "Path for state import")
 	flag.Parse()
 
-	tg := graph.NewTrustGraph()
+	var tg *graph.TrustGraph
+	var gs *graph.GraphStore
+	if *graphFile != "" {
+		gs, tg = graph.NewGraphStore(*graphFile)
+	} else {
+		tg = graph.NewTrustGraph()
+	}
+	saveGraph := func() {
+		if gs == nil {
+			return
+		}
+		if err := gs.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving graph: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	switch *cmd {
 	case "add-org":
@@ -47,6 +63,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		saveGraph()
 		fmt.Printf("Organization %s (%s) added\n", *source, *name)
 
 	case "list-orgs":
@@ -67,6 +84,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		saveGraph()
 		fmt.Printf("Federation %s -> %s (trust=%.2f) created\n", *source, *target, *trustLevel)
 
 	case "revoke-federation":
@@ -78,6 +96,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		saveGraph()
 		fmt.Printf("Federation %s -> %s revoked\n", *source, *target)
 
 	case "compute-path":
@@ -129,6 +148,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error importing graph: %v\n", err)
 			os.Exit(1)
 		}
+		saveGraph()
 		fmt.Printf("Trust graph imported: %d organizations, %d relationships\n",
 			len(state.Organizations), len(state.Relationships))
 
@@ -156,6 +176,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error merging graph: %v\n", err)
 			os.Exit(1)
 		}
+		saveGraph()
 		orgs := tg.GetAllOrganizations()
 		fmt.Printf("Merged graph now has %d organizations\n", len(orgs))
 
@@ -259,9 +280,9 @@ func main() {
 			chainState := chainDet.ExportState()
 
 			export := map[string]interface{}{
-				"drift":    driftState,
+				"drift":       driftState,
 				"degradation": degState,
-				"chain":    chainState,
+				"chain":       chainState,
 			}
 			out, _ := json.MarshalIndent(export, "", "  ")
 			fmt.Println(string(out))
@@ -354,8 +375,8 @@ func mergeStates(ds drift.DriftState, deg degradation.DegradationState, cs chain
 			as.DriftWindow = make([]state.ActionRecord, len(das.Actions))
 			for i, a := range das.Actions {
 				as.DriftWindow[i] = state.ActionRecord{
-					IsRisky:  a.IsRisky,
-					Action:   a.Action,
+					IsRisky:   a.IsRisky,
+					Action:    a.Action,
 					Timestamp: timeFromNano(a.Timestamp),
 				}
 			}
