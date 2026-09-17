@@ -28,15 +28,24 @@ type Receipt struct {
 	URL       string    `json:"url"`
 	Decision  string    `json:"decision"` // allow | deny | escalate | error
 	Status    int       `json:"status"`   // upstream status, 0 if not forwarded
-	PrevHash  string    `json:"prev_hash"`
-	Signature string    `json:"signature"` // sig_v1:<hex ed25519>
+	// ApprovalID links an escalated-then-approved receipt to the approval
+	// that authorized it. Additive to the canonical form (appended only
+	// when non-empty), so sig_v1 verification stays consistent for receipts
+	// written before this field existed.
+	ApprovalID string `json:"approval_id,omitempty"`
+	PrevHash   string `json:"prev_hash"`
+	Signature  string `json:"signature"` // sig_v1:<hex ed25519>
 }
 
 // canonical payload: pipe-delimited, excludes signature itself.
 func (r *Receipt) canonical() string {
-	return fmt.Sprintf("%s|%s|%d|%s|%s|%s|%d|%s",
+	c := fmt.Sprintf("%s|%s|%d|%s|%s|%s|%d|%s",
 		r.ReceiptID, r.SessionID, r.Timestamp.UnixNano(), r.Method,
 		r.URL, r.Decision, r.Status, r.PrevHash)
+	if r.ApprovalID != "" {
+		c += "|" + r.ApprovalID
+	}
+	return c
 }
 
 func (r *Receipt) hash() string {
@@ -63,6 +72,11 @@ type Chain struct {
 func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
 	key, err := loadKey(keyFile)
 	if err != nil {
+		// A missing key generates a fresh one; a corrupt one must never be
+		// silently replaced — that would orphan every existing signature.
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("receipt key %s: %w (refusing to overwrite)", keyFile, err)
+		}
 		_, key, err = ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			return nil, err
@@ -80,9 +94,12 @@ func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
 			c.seq++
 		}
 		var last Receipt
-		if json.Unmarshal(lastNonEmptyLine(data), &last) == nil {
-			c.prevHash = last.hash()
+		// An unparseable tail means corruption or truncation; forking a new
+		// chain over it would hide that. Refuse instead.
+		if err := json.Unmarshal(lastNonEmptyLine(data), &last); err != nil {
+			return nil, fmt.Errorf("receipts %s: unparseable last line: %w (refusing to fork chain)", path, err)
 		}
+		c.prevHash = last.hash()
 	}
 	return c, nil
 }
@@ -101,7 +118,7 @@ func loadKey(f string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := hex.DecodeString(string(data))
+	raw, err := hex.DecodeString(strings.TrimSpace(string(data)))
 	if err != nil || len(raw) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("bad receipt key")
 	}
@@ -135,26 +152,29 @@ func lastLine(path string) ([]byte, error) {
 	return lastNonEmptyLine(data), nil
 }
 
-// Record appends a receipt and returns it.
-func (c *Chain) Record(method, url, decision string, status int) (*Receipt, error) {
+// Record appends a receipt and returns it. approvalID links the receipt to
+// the gateway approval that authorized it ("" when none was involved).
+func (c *Chain) Record(method, url, decision string, status int, approvalID string) (*Receipt, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := &Receipt{
-		ReceiptID: "rcpt_" + newID(),
-		SessionID: c.sessionID,
-		Timestamp: time.Now().UTC(),
-		Method:    method,
-		URL:       url,
-		Decision:  decision,
-		Status:    status,
-		PrevHash:  c.prevHash,
+		ReceiptID:  "rcpt_" + newID(),
+		SessionID:  c.sessionID,
+		Timestamp:  time.Now().UTC(),
+		Method:     method,
+		URL:        url,
+		Decision:   decision,
+		Status:     status,
+		ApprovalID: approvalID,
+		PrevHash:   c.prevHash,
 	}
 	r.Signature = "sig_v1:" + hex.EncodeToString(ed25519.Sign(c.key, []byte(r.canonical())))
 	line, _ := json.Marshal(r)
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o755); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(c.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// 0600: receipts contain request URLs — not world-readable.
+	f, err := os.OpenFile(c.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -89,6 +90,12 @@ func load(certFile, keyFile string) (*x509.Certificate, *ecdsa.PrivateKey, error
 	if err != nil {
 		return nil, nil, err
 	}
+	// A key that doesn't match the cert silently mints unusable leaves —
+	// fail loudly at load instead.
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !key.PublicKey.Equal(pub) {
+		return nil, nil, fmt.Errorf("CA key does not match CA certificate")
+	}
 	return cert, key, nil
 }
 
@@ -114,11 +121,16 @@ func (c *CA) persist(certFile, keyFile string) error {
 // CertPEM returns the CA certificate PEM for distribution to trust stores.
 func (c *CA) CertPEM() []byte { return c.certPEM }
 
+// maxCertCache bounds the leaf cache; eviction is a single arbitrary entry
+// — minting is cheap and an unbounded map is a memory-growth vector.
+const maxCertCache = 1000
+
 // CertFor returns a cached or freshly minted leaf certificate for host.
 func (c *CA) CertFor(host string) (*tls.Certificate, error) {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
+	host = strings.ToLower(host)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if cert, ok := c.cache[host]; ok {
@@ -149,6 +161,12 @@ func (c *CA) CertFor(host string) (*tls.Certificate, error) {
 	cert := &tls.Certificate{
 		Certificate: [][]byte{der},
 		PrivateKey:  leafKey,
+	}
+	if len(c.cache) >= maxCertCache {
+		for k := range c.cache {
+			delete(c.cache, k)
+			break
+		}
 	}
 	c.cache[host] = cert
 	return cert, nil

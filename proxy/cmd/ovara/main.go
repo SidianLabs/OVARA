@@ -169,6 +169,11 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		{filepath.Join(dir, "policy.json"), mustJSON(policy), 0o644},
 		{filepath.Join(dir, "proxy.json"), mustJSON(proxyCfg), 0o600},
 	}
+	// The receipt signing key anchors every receipt ever written; init is
+	// never a key-rotation path — refuse to overwrite it even under -force.
+	if _, err := os.Stat(filepath.Join(dir, "var", "receipt.key")); err == nil {
+		return "", fmt.Errorf("var/receipt.key already exists; refusing to overwrite it (rotate receipt keys manually)")
+	}
 	if !force {
 		for _, f := range files {
 			if _, err := os.Stat(f.path); err == nil {
@@ -313,6 +318,9 @@ func cmdDemo() error {
 	if err != nil {
 		return err
 	}
+	// The demo upstream is loopback — the SSRF destination guard would
+	// correctly refuse it, so it is disabled for the demo only.
+	srv.SetPublicEgressOnly(false)
 	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -330,7 +338,7 @@ func cmdDemo() error {
 	}}
 
 	target := upstream.URL + "/v1/models"
-	fmt.Printf("→ agent request: GET %s (via proxy %s)\n", target, proxyURL.Host)
+	fmt.Printf("→ agent request: GET %s (via proxy %s, plain-HTTP path)\n", target, proxyURL.Host)
 	resp, err := client.Get(target)
 	if err != nil {
 		return fmt.Errorf("proxied request: %w", err)
@@ -377,6 +385,7 @@ func cmdDemo() error {
 		return fmt.Errorf("chain verification failed at %d: %s", res.FailAt, res.Reason)
 	}
 	fmt.Println("✓ request executed through the chokepoint and receipted — chain valid")
+	fmt.Println("  (this exercises the plain-HTTP proxy path; CONNECT+MITM is covered by internal/proxy tests)")
 	return nil
 }
 

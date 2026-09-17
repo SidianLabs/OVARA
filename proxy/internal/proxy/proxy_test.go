@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,12 +46,12 @@ func newFixture(t *testing.T, gwDecision string, bindings []creds.Binding) *fixt
 		json.NewEncoder(w).Encode(map[string]any{"decision": gwDecision, "decision_id": "d-test"})
 	}))
 	t.Cleanup(gw.Close)
-	return &fixture{
-		srv:       New(c, gateway.New(gw.URL, "", "test"), bindings, chain, false),
-		chainFile: chainFile,
-		pubFile:   pubFile,
-		ca:        c,
-	}
+	srv := New(c, gateway.New(gw.URL, "", "test"), bindings, chain, false)
+	// Test upstreams are loopback on random ports — the SSRF guard and the
+	// CONNECT :443 restriction would (correctly) refuse them.
+	srv.SetPublicEgressOnly(false)
+	srv.SetConnectPort443Only(false)
+	return &fixture{srv: srv, chainFile: chainFile, pubFile: pubFile, ca: c}
 }
 
 func (f *fixture) lastReceipt(t *testing.T) receipts.Receipt {
@@ -79,7 +80,9 @@ func readLastLine(path string) ([]byte, error) {
 	return data, nil
 }
 
-func TestPlainHTTPAllowInjectsCredsAndReceipts(t *testing.T) {
+// Plain-HTTP requests to a credentialed host are still evaluated and
+// receipted, but nothing is injected: secrets never transit in cleartext.
+func TestPlainHTTPAllowNoCredLeakAndReceipts(t *testing.T) {
 	var sawHeader string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawHeader = r.Header.Get("Authorization")
@@ -93,19 +96,108 @@ func TestPlainHTTPAllowInjectsCredsAndReceipts(t *testing.T) {
 		{Host: host, Headers: map[string]string{"Authorization": "Bearer real"}},
 	})
 
-	req, _ := http.NewRequest("GET", upstream.URL+"/path", nil)
+	req, _ := http.NewRequest("GET", upstream.URL+"/path?api_key=secret", nil)
 	rec := httptest.NewRecorder()
 	f.srv.ServeHTTP(rec, req)
 
 	if rec.Code != 201 || rec.Body.String() != "upstream-body" {
 		t.Fatalf("bad proxied response: %d %q", rec.Code, rec.Body.String())
 	}
-	if sawHeader != "Bearer real" {
-		t.Fatalf("credential not injected, upstream saw %q", sawHeader)
+	if sawHeader != "" {
+		t.Fatalf("credential leaked over plaintext http: upstream saw %q", sawHeader)
 	}
 	r := f.lastReceipt(t)
 	if r.Decision != "allow" || r.Status != 201 || r.Method != "GET" {
 		t.Fatalf("bad receipt: %+v", r)
+	}
+	if strings.Contains(r.URL, "api_key") {
+		t.Fatalf("query secret leaked into receipt URL: %s", r.URL)
+	}
+}
+
+// Credentials ARE injected for https requests — exercised here through the
+// CONNECT+MITM path against a TLS upstream the proxy trusts.
+func TestConnectMITMInjectsCreds(t *testing.T) {
+	var sawHeader string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHeader = r.Header.Get("Authorization")
+		fmt.Fprint(w, "tls-body")
+	}))
+	defer upstream.Close()
+	target := mustHostPort(t, upstream.URL)
+	host := mustHost(t, upstream.URL)
+
+	f := newFixture(t, "allow", []creds.Binding{
+		{Host: host, Headers: map[string]string{"Authorization": "Bearer real"}},
+	})
+	// Trust the test upstream's cert so the proxied TLS succeeds.
+	pool := x509.NewCertPool()
+	pool.AddCert(upstream.Certificate())
+	f.srv.transport.TLSClientConfig.RootCAs = pool
+
+	proxySrv := httptest.NewServer(f.srv)
+	defer proxySrv.Close()
+
+	conn, err := net.DialTimeout("tcp", mustHostPort(t, proxySrv.URL), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("CONNECT response: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("CONNECT status %d", resp.StatusCode)
+	}
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(f.ca.CertPEM())
+	tlsConn := tls.Client(conn, &tls.Config{RootCAs: caPool, ServerName: host})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("MITM handshake: %v", err)
+	}
+	fmt.Fprintf(tlsConn, "GET /x HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", target)
+	tresp, err := http.ReadResponse(bufio.NewReader(tlsConn), nil)
+	if err != nil {
+		t.Fatalf("read tunneled response: %v", err)
+	}
+	tresp.Body.Close()
+	if tresp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", tresp.StatusCode)
+	}
+	if sawHeader != "Bearer real" {
+		t.Fatalf("credential not injected over https, upstream saw %q", sawHeader)
+	}
+}
+
+// The SSRF guard refuses loopback/private destinations outright.
+func TestSSRFDeniesLoopback(t *testing.T) {
+	f := newFixture(t, "allow", nil)
+	f.srv.SetPublicEgressOnly(true)
+	req, _ := http.NewRequest("GET", "http://127.0.0.1:1/", nil)
+	rec := httptest.NewRecorder()
+	f.srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for loopback destination, got %d", rec.Code)
+	}
+	r := f.lastReceipt(t)
+	if r.Decision != "deny" {
+		t.Fatalf("expected deny receipt, got %+v", r)
+	}
+}
+
+// CONNECT to a non-443 port is refused when the port restriction is on.
+func TestConnectNon443Denied(t *testing.T) {
+	f := newFixture(t, "allow", nil)
+	f.srv.SetConnectPort443Only(true)
+	req, _ := http.NewRequest("CONNECT", "//example.com:22", nil)
+	req.Host = "example.com:22"
+	rec := httptest.NewRecorder()
+	f.srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for CONNECT :22, got %d", rec.Code)
 	}
 }
 

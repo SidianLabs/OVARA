@@ -48,7 +48,7 @@ func readLines(t *testing.T, path string) [][]byte {
 
 func TestRecordAndVerify(t *testing.T) {
 	c, chainFile, pub := newChain(t)
-	r, err := c.Record("GET", "https://a.com/x", "allow", 200)
+	r, err := c.Record("GET", "https://a.com/x", "allow", 200, "")
 	if err != nil {
 		t.Fatalf("Record: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestChainLinkage(t *testing.T) {
 	c, chainFile, pub := newChain(t)
 	var rs []*Receipt
 	for i := 0; i < 3; i++ {
-		r, err := c.Record("GET", "https://a.com/", "allow", 200)
+		r, err := c.Record("GET", "https://a.com/", "allow", 200, "")
 		if err != nil {
 			t.Fatalf("Record %d: %v", i, err)
 		}
@@ -105,7 +105,7 @@ func tamper(t *testing.T, path string, lineIdx int, fn func(*Receipt)) {
 func TestTamperedURLFails(t *testing.T) {
 	c, chainFile, pub := newChain(t)
 	for i := 0; i < 3; i++ {
-		c.Record("GET", "https://a.com/", "allow", 200)
+		c.Record("GET", "https://a.com/", "allow", 200, "")
 	}
 	tamper(t, chainFile, 1, func(r *Receipt) { r.URL = "https://evil.com/" })
 	res := VerifyFile(chainFile, pub)
@@ -119,7 +119,7 @@ func TestTamperedURLFails(t *testing.T) {
 
 func TestTamperedSignatureFails(t *testing.T) {
 	c, chainFile, pub := newChain(t)
-	c.Record("GET", "https://a.com/", "allow", 200)
+	c.Record("GET", "https://a.com/", "allow", 200, "")
 	tamper(t, chainFile, 0, func(r *Receipt) {
 		r.Signature = "sig_v1:" + strings.Repeat("00", ed25519.SignatureSize)
 	})
@@ -146,14 +146,14 @@ func TestEmptyAndMissingFiles(t *testing.T) {
 
 func TestRestartResumesChain(t *testing.T) {
 	c, chainFile, pub := newChain(t)
-	c.Record("GET", "https://a.com/1", "allow", 200)
+	c.Record("GET", "https://a.com/1", "allow", 200, "")
 	// simulate restart: new Chain over same files
 	dir := filepath.Dir(chainFile)
 	c2, err := LoadOrCreate(chainFile, filepath.Join(dir, "receipts.key"), filepath.Join(dir, "receipts.pub"))
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	r2, err := c2.Record("GET", "https://a.com/2", "deny", 0)
+	r2, err := c2.Record("GET", "https://a.com/2", "deny", 0, "")
 	if err != nil {
 		t.Fatalf("record after restart: %v", err)
 	}

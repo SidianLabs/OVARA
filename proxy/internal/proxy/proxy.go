@@ -13,8 +13,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"ovara.proxy/internal/ca"
@@ -30,6 +33,9 @@ type Server struct {
 	chain           *receipts.Chain
 	failOpen        bool
 	transport       *http.Transport
+	dialer          *net.Dialer
+	publicEgress    bool // SSRF guard: only public destinations may be dialed
+	connectPort443  bool // CONNECT targets restricted to :443
 	escalateTimeout time.Duration
 	escalatePoll    time.Duration
 	gitGate         bool
@@ -37,20 +43,29 @@ type Server struct {
 }
 
 func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts.Chain, failOpen bool) *Server {
-	return &Server{
+	s := &Server{
 		ca: c, gw: gw, bindings: bindings, chain: chain, failOpen: failOpen,
 		escalateTimeout: 60 * time.Second,
 		// Git push gating is on by default: it only appends ref names to the
 		// policy resource string and changes nothing for non-push requests.
-		gitGate: true,
-		escalatePoll:    2 * time.Second,
+		gitGate:        true,
+		publicEgress:   true,
+		connectPort443: true,
+		escalatePoll:   2 * time.Second,
+		dialer:         &net.Dialer{Timeout: 10 * time.Second},
 		transport: &http.Transport{
-			TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
-			MaxIdleConns:        100,
-			IdleConnTimeout:     90 * time.Second,
-			TLSHandshakeTimeout: 10 * time.Second,
+			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
 		},
 	}
+	// Upstream dials go through the SSRF guard: the transport uses our
+	// resolution, so a DNS rebind between check and dial cannot slip a
+	// private address through (the classic TOCTOU hole in check-then-dial).
+	s.transport.DialContext = s.dialChecked
+	return s
 }
 
 // SetEscalateWindow configures the hold-and-resume bounds for escalate
@@ -75,6 +90,14 @@ func (s *Server) SetGitGate(on bool) { s.gitGate = on }
 // artifact registries, internal dashboards).
 func (s *Server) SetSensitiveHosts(globs []string) { s.sensitiveHosts = globs }
 
+// SetPublicEgressOnly toggles the SSRF destination guard. It defaults ON;
+// disable only in tests/demos where upstreams are legitimately loopback.
+func (s *Server) SetPublicEgressOnly(on bool) { s.publicEgress = on }
+
+// SetConnectPort443Only toggles the CONNECT :443 restriction. Defaults ON;
+// disable only in tests against non-443 upstreams.
+func (s *Server) SetConnectPort443Only(on bool) { s.connectPort443 = on }
+
 func matchHostGlob(globs []string, host string) bool {
 	for _, g := range globs {
 		if g == host {
@@ -85,6 +108,120 @@ func matchHostGlob(globs []string, host string) bool {
 		}
 	}
 	return false
+}
+
+// nonPublicNets is the destination denylist for the SSRF guard: loopback,
+// private, link-local, CGNAT, reserved, and multicast space. The guard is
+// strict — ANY non-public answer refuses the request, so a hostname that
+// returns mixed public/private answers cannot smuggle an internal target.
+var nonPublicNets []*net.IPNet
+
+func init() {
+	for _, c := range []string{
+		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+		"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+		"192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+		"224.0.0.0/4", "240.0.0.0/4",
+		"::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
+	} {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic(err)
+		}
+		nonPublicNets = append(nonPublicNets, n)
+	}
+}
+
+func isPublicIP(ip net.IP) bool {
+	for _, n := range nonPublicNets {
+		if n.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolvePublic resolves host (bounded) and returns a public IP to dial.
+// Errors on resolution failure or if ANY resolved address is non-public.
+func resolvePublic(ctx context.Context, host string) (net.IP, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		if !isPublicIP(ip) {
+			return nil, fmt.Errorf("non-public address %s", ip)
+		}
+		return ip, nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(rctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no addresses for %s", host)
+	}
+	for _, ip := range ips {
+		if !isPublicIP(ip) {
+			return nil, fmt.Errorf("%s resolves to non-public address %s", host, ip)
+		}
+	}
+	return ips[0], nil
+}
+
+// checkDestination refuses requests to non-public destinations (SSRF).
+func (s *Server) checkDestination(ctx context.Context, host string) error {
+	if !s.publicEgress {
+		return nil
+	}
+	_, err := resolvePublic(ctx, host)
+	return err
+}
+
+// dialChecked is the transport's dial path: resolve ourselves, reject
+// non-public answers, and dial the checked IP. Residual risk: an attacker
+// who controls DNS *and* rotates records faster than our resolve→dial
+// within this single call still cannot inject a private address, because
+// we dial the exact IP we validated.
+func (s *Server) dialChecked(ctx context.Context, network, addr string) (net.Conn, error) {
+	if !s.publicEgress {
+		return s.dialer.DialContext(ctx, network, addr)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ip, err := resolvePublic(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	return s.dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+}
+
+// redactURL strips query and fragment — both can carry secrets that must
+// not reach the gateway resource string or the receipt log.
+func redactURL(u *url.URL) string {
+	c := *u
+	c.RawQuery = ""
+	c.RawFragment = ""
+	c.Fragment = ""
+	return c.String()
+}
+
+// hopHeaders are connection-scoped headers that must never be forwarded.
+// Token names carried in the Connection value are stripped too.
+var hopHeaders = []string{
+	"Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization",
+	"Proxy-Connection", "TE", "Trailer", "Transfer-Encoding", "Upgrade",
+}
+
+func stripHopHeaders(h http.Header) {
+	for _, tok := range strings.Split(h.Get("Connection"), ",") {
+		if t := strings.TrimSpace(tok); t != "" {
+			h.Del(t)
+		}
+	}
+	for _, k := range hopHeaders {
+		h.Del(k)
+	}
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +235,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleConnect hijacks the tunnel and MITMs the TLS inside it.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
+	hostname, port, err := net.SplitHostPort(r.Host)
+	if err != nil {
+		// CONNECT authority without a port is TLS by convention.
+		hostname, port = r.Host, "443"
+	}
+	hostname = strings.ToLower(hostname)
+	// CONNECT is for HTTPS tunneling only — an arbitrary port would turn
+	// this into a generic TCP relay (SSH, redis, ...) past the boundary.
+	if s.connectPort443 && port != "443" {
+		http.Error(w, "CONNECT limited to port 443", http.StatusForbidden)
+		return
+	}
+	if err := s.checkDestination(r.Context(), hostname); err != nil {
+		log.Printf("connect: destination %s rejected: %v", hostname, err)
+		http.Error(w, "destination not allowed", http.StatusForbidden)
+		return
+	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "hijacking unsupported", http.StatusInternalServerError)
@@ -108,13 +261,15 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	if _, err := fmt.Fprint(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+	// Mint before answering 200: a cert failure must not leave the client
+	// believing the tunnel exists.
+	cert, err := s.ca.CertFor(hostname)
+	if err != nil {
+		log.Printf("mitm: cert for %s: %v", hostname, err)
 		client.Close()
 		return
 	}
-	cert, err := s.ca.CertFor(host)
-	if err != nil {
-		log.Printf("mitm: cert for %s: %v", host, err)
+	if _, err := fmt.Fprint(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		client.Close()
 		return
 	}
@@ -122,21 +277,51 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	tlsConn := tls.Server(client, &tls.Config{
 		Certificates: []tls.Certificate{*cert},
 		NextProtos:   []string{"http/1.1"},
+		MinVersion:   tls.VersionTLS12,
 	})
 	if err := tlsConn.Handshake(); err != nil {
-		log.Printf("mitm: handshake with client for %s: %v", host, err)
+		log.Printf("mitm: handshake with client for %s: %v", hostname, err)
 		client.Close()
 		return
 	}
 	// Serve HTTP inside the TLS tunnel. One CONNECT = one host; keep-alive
-	// handled by the one-shot server.
-	listener := &oneShotListener{conn: tlsConn, done: make(chan struct{})}
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.URL.Scheme = "https"
-		r.URL.Host = host
-		s.handleRequest(w, r)
-	})}
+	// handled by the one-shot server. done fires on conn EOF/close so the
+	// pending Accept (and this goroutine) exit instead of leaking.
+	done := make(chan struct{})
+	listener := &oneShotListener{conn: &eofConn{Conn: tlsConn, done: done}, done: done}
+	srv := &http.Server{
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.URL.Scheme = "https"
+			r.URL.Host = net.JoinHostPort(hostname, port)
+			s.handleRequest(w, r)
+		}),
+	}
 	go srv.Serve(listener)
+}
+
+// eofConn closes done when the wrapped connection ends (EOF or Close), so
+// the one-shot listener's parked Accept can return.
+type eofConn struct {
+	net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *eofConn) finish() { c.once.Do(func() { close(c.done) }) }
+
+func (c *eofConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if err != nil {
+		c.finish()
+	}
+	return n, err
+}
+
+func (c *eofConn) Close() error {
+	c.finish()
+	return c.Conn.Close()
 }
 
 type oneShotListener struct {
@@ -153,12 +338,21 @@ func (l *oneShotListener) Accept() (net.Conn, error) {
 	l.once = true
 	return l.conn, nil
 }
-func (l *oneShotListener) Close() error   { close(l.done); return l.conn.Close() }
+func (l *oneShotListener) Close() error {
+	select {
+	case <-l.done:
+	default:
+		close(l.done)
+	}
+	return l.conn.Close()
+}
 func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }
 
 // handleRequest evaluates, executes, and receipts one request.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
-	url := r.URL.String()
+	// Query strings can carry secrets (tokens, SAS sigs) — the gateway and
+	// the receipt log get host+path only.
+	url := redactURL(r.URL)
 	// Git push gating: if this is a git-receive-pack request, append the
 	// target ref names to the resource string used for policy evaluation
 	// and receipts. The body is buffered (bounded) and restored so upstream
@@ -166,9 +360,16 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	url += s.gitResourceSuffix(r)
 	decision := "error"
 	status := 0
+	approvalID := ""
 	defer func() {
-		if _, err := s.chain.Record(r.Method, url, decision, status); err != nil {
-			log.Printf("receipt: %v", err)
+		if _, err := s.chain.Record(r.Method, url, decision, status, approvalID); err != nil {
+			// A transit without a receipt is a boundary breach: scream to
+			// stderr in fail-closed mode, not just the log stream.
+			msg := fmt.Sprintf("receipt record failed for %s %s: %v", r.Method, url, err)
+			log.Printf("CRITICAL: %s", msg)
+			if !s.failOpen {
+				fmt.Fprintf(os.Stderr, "CRITICAL: %s\n", msg)
+			}
 		}
 	}()
 
@@ -202,7 +403,8 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes})
 		return
 	case "escalate":
-		outcome, approvalID := s.awaitEscalation(r.Context(), d, r.Method, url)
+		outcome, id := s.awaitEscalation(r.Context(), d, r.Method, url)
+		approvalID = id
 		switch outcome {
 		case "approved":
 			decision = "allow"
@@ -217,34 +419,52 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// allow: inject real credentials for this host, execute on behalf.
+	// SSRF guard: the policy decision says nothing about WHERE this goes —
+	// refuse loopback/private/link-local/metadata destinations outright.
 	host := r.URL.Hostname()
-	if headers := creds.Match(s.bindings, host); headers != nil {
-		for k, v := range headers {
-			r.Header.Set(k, v)
+	if err := s.checkDestination(r.Context(), host); err != nil {
+		log.Printf("destination %s rejected: %v", host, err)
+		decision = "deny"
+		http.Error(w, "destination not allowed", http.StatusForbidden)
+		status = http.StatusForbidden
+		return
+	}
+
+	// Inject real credentials for this host — https only. A plaintext http
+	// request to a credentialed host is still evaluated and receipted, but
+	// nothing is injected: secrets must never transit in cleartext.
+	if r.URL.Scheme == "https" {
+		if headers := creds.Match(s.bindings, host); headers != nil {
+			for k, v := range headers {
+				r.Header.Set(k, v)
+			}
 		}
 	}
 	r.RequestURI = ""
-	r.Header.Del("Proxy-Connection")
-	r.Header.Del("Proxy-Authorization")
+	// Strip hop-by-hop headers — notably Upgrade/Connection, which would
+	// otherwise turn one approved GET into an uninspected byte stream.
+	stripHopHeaders(r.Header)
 	resp, err := s.transport.RoundTrip(r)
 	if err != nil {
 		decision = "error"
-		http.Error(w, fmt.Sprintf("upstream error: %v", err), http.StatusBadGateway)
+		log.Printf("upstream %s %s: %v", r.Method, url, err)
+		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 	status = resp.StatusCode
+	stripHopHeaders(resp.Header)
 	for k, vv := range resp.Header {
 		for _, v := range vv {
-			if strings.EqualFold(k, "Transfer-Encoding") {
-				continue
-			}
 			w.Header().Add(k, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
+	// resp.Trailer values populate after body read; forward them properly.
+	for k, vv := range resp.Trailer {
+		w.Header()[http.TrailerPrefix+k] = vv
+	}
 }
 
 // awaitEscalation registers an approval request for an escalated decision and
