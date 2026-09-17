@@ -30,7 +30,7 @@ import (
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/proxy"
 	"ovara.proxy/internal/receipts"
-	"ovara.runtime.gateway/server"
+	"ovara.runtime.gateway/pkg/server"
 )
 
 func main() {

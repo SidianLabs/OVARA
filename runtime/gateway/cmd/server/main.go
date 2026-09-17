@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"ovara.runtime.gateway/server"
+	"ovara.runtime.gateway/pkg/server"
 )
 
 func main() {
