@@ -13,6 +13,7 @@ type OTLPExporter struct {
 	maxSpans    int
 	flushPeriod time.Duration
 	stopCh      chan struct{}
+	closeOnce   sync.Once
 }
 
 type OTLPSpan struct {
@@ -93,6 +94,7 @@ func (e *OTLPExporter) Spans() []OTLPSpan {
 }
 
 func (e *OTLPExporter) Close() error {
-	close(e.stopCh)
+	// Guard against double-close: a second Close must not panic.
+	e.closeOnce.Do(func() { close(e.stopCh) })
 	return nil
 }

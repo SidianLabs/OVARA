@@ -38,6 +38,9 @@ func (s *Sweeper) Start(intervalSec int) {
 		s.mu.Unlock()
 		return
 	}
+	// stopChan is closed by Stop; recreate it so Start-after-Stop works and
+	// a second Stop does not panic on a closed channel.
+	s.stopChan = make(chan struct{})
 	s.running = true
 	s.mu.Unlock()
 

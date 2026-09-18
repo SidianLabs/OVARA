@@ -65,6 +65,13 @@ type Config struct {
 	// and lease validation fails closed.
 	TrustedIssuers map[string]string `json:"trusted_issuers"`
 
+	// AllowUnsignedLeases is an explicit opt-in that permits
+	// /v1/capabilities/track to accept leases without signature
+	// verification when no trusted_issuers are configured. Default false:
+	// with no issuers configured, track rejects unsigned leases so prod
+	// cannot silently skip verification.
+	AllowUnsignedLeases bool `json:"allow_unsigned_leases"`
+
 	OTELEnabled    bool    `json:"otel_enabled"`
 	OTELEndpoint   string  `json:"otel_endpoint"`
 	OTELSampleRate float64 `json:"otel_sample_rate"`

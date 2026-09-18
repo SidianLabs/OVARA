@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/evaluator"
@@ -31,6 +32,10 @@ type PolicyHandler struct {
 	// (file_path, candidate_file, ?file=) may be read. Empty means file-based
 	// inputs are rejected entirely.
 	policyDir string
+	// policyDirReal is policyDir after symlink resolution, cached by
+	// SetPolicyDir so resolvePolicyPath can compare canonical paths and
+	// reject symlink escapes that a lexical prefix check would miss.
+	policyDirReal string
 }
 
 func NewPolicyHandler(e *evaluator.Evaluator, s *policy.Store) *PolicyHandler {
@@ -55,14 +60,24 @@ func (h *PolicyHandler) SetGatewayID(id string) {
 func (h *PolicyHandler) SetPolicyDir(dir string) {
 	if dir == "" {
 		h.policyDir = ""
+		h.policyDirReal = ""
 		return
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		h.policyDir = ""
+		h.policyDirReal = ""
 		return
 	}
+	// Cache the symlink-resolved directory so per-request checks compare
+	// canonical paths; a lexical prefix check alone can be escaped by
+	// symlinks inside the directory.
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		real = abs
+	}
 	h.policyDir = abs
+	h.policyDirReal = real
 }
 
 // resolvePolicyPath validates that p is inside h.policyDir and returns the
@@ -80,7 +95,22 @@ func (h *PolicyHandler) resolvePolicyPath(p string) (string, error) {
 	if cleaned != h.policyDir && !strings.HasPrefix(cleaned, root) {
 		return "", fmt.Errorf("path %q is outside the allowed policy directory", p)
 	}
-	return cleaned, nil
+	// Resolve symlinks on the target and re-check against the canonical
+	// policy dir: the lexical check above passes for paths like
+	// policyDir/link -> /etc/passwd.
+	dir := h.policyDirReal
+	if dir == "" {
+		dir = h.policyDir
+	}
+	real, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve path %q: %w", p, err)
+	}
+	realRoot := dir + string(os.PathSeparator)
+	if real != dir && !strings.HasPrefix(real, realRoot) {
+		return "", fmt.Errorf("path %q is outside the allowed policy directory", p)
+	}
+	return real, nil
 }
 
 func (h *PolicyHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -206,8 +236,8 @@ func (h *PolicyHandler) handleSimulate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			candidateStore = loaded
-		} else if candidatePolicyStore != nil {
-			candidateStore = candidatePolicyStore
+		} else if cand := getCandidatePolicyStore(); cand != nil {
+			candidateStore = cand
 		}
 	}
 
@@ -284,8 +314,8 @@ func (h *PolicyHandler) handleSimulateBatch(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			candidateStore = loaded
-		} else if candidatePolicyStore != nil {
-			candidateStore = candidatePolicyStore
+		} else if cand := getCandidatePolicyStore(); cand != nil {
+			candidateStore = cand
 		}
 	}
 
@@ -368,7 +398,24 @@ type CandidateState struct {
 	Loaded  bool          `json:"loaded"`
 }
 
-var candidatePolicyStore *policy.Store
+// candidatePolicyStore is shared across handlers; candidatePolicyStoreMu
+// guards all reads and writes so concurrent requests cannot race on it.
+var (
+	candidatePolicyStore   *policy.Store
+	candidatePolicyStoreMu sync.RWMutex
+)
+
+func getCandidatePolicyStore() *policy.Store {
+	candidatePolicyStoreMu.RLock()
+	defer candidatePolicyStoreMu.RUnlock()
+	return candidatePolicyStore
+}
+
+func setCandidatePolicyStore(s *policy.Store) {
+	candidatePolicyStoreMu.Lock()
+	defer candidatePolicyStoreMu.Unlock()
+	candidatePolicyStore = s
+}
 
 type LoadCandidateRequest struct {
 	PolicyData []byte `json:"policy_data,omitempty"`
@@ -431,7 +478,7 @@ func (h *PolicyHandler) handleCandidateLoad(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	candidatePolicyStore = store
+	setCandidatePolicyStore(store)
 
 	if h.eventStore != nil {
 		evt := events.NewEvent(events.EventTypePolicyCandidateLoaded)
@@ -459,7 +506,8 @@ func (h *PolicyHandler) handleCandidatePromote(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if candidatePolicyStore == nil {
+	cand := getCandidatePolicyStore()
+	if cand == nil {
 		api.JSONBadRequest(w, "no candidate policy loaded")
 		return
 	}
@@ -467,7 +515,7 @@ func (h *PolicyHandler) handleCandidatePromote(w http.ResponseWriter, r *http.Re
 	previousVersion := h.store.Version()
 	h.history.SnapshotFromStore(h.store, policy.PolicySourcePromote, previousVersion, h.gatewayID)
 
-	if err := h.store.ReloadFromStore(candidatePolicyStore); err != nil {
+	if err := h.store.ReloadFromStore(cand); err != nil {
 		api.JSONBadRequest(w, "failed to promote candidate: "+err.Error())
 		return
 	}
@@ -478,14 +526,14 @@ func (h *PolicyHandler) handleCandidatePromote(w http.ResponseWriter, r *http.Re
 			evt.WithGatewayID(h.gatewayID)
 		}
 		evt.Payload = map[string]any{
-			"version":          candidatePolicyStore.Version(),
-			"rules":            len(candidatePolicyStore.ListRules()),
+			"version":          cand.Version(),
+			"rules":            len(cand.ListRules()),
 			"previous_version": previousVersion,
 		}
 		h.eventStore.Append(evt)
 	}
 
-	candidatePolicyStore = nil
+	setCandidatePolicyStore(nil)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
@@ -505,9 +553,9 @@ func (h *PolicyHandler) handleListRules(w http.ResponseWriter, r *http.Request) 
 
 	var candidateLoaded bool
 	var candidateVersion string
-	if candidatePolicyStore != nil {
+	if cand := getCandidatePolicyStore(); cand != nil {
 		candidateLoaded = true
-		candidateVersion = candidatePolicyStore.Version()
+		candidateVersion = cand.Version()
 	}
 
 	w.Header().Set("Content-Type", "application/json")

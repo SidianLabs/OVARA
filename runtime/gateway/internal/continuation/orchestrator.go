@@ -28,6 +28,11 @@ type Orchestrator struct {
 
 	stuckSweepInterval     time.Duration
 	stuckRecoveryThreshold time.Duration
+
+	// execSem bounds concurrent executions globally across all drainQueue
+	// ticks; a per-tick semaphore would let the bound grow unboundedly over
+	// successive polls.
+	execSem chan struct{}
 }
 
 func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
@@ -37,6 +42,7 @@ func NewOrchestrator(store Store, execStore execution.Store, registry *execution
 		registry:     registry,
 		pollInterval: 2 * time.Second,
 		stopChan:    make(chan struct{}),
+		execSem:     make(chan struct{}, maxConcurrentExecutions),
 		logger:      log.Default(),
 	}
 }
@@ -59,6 +65,9 @@ func (o *Orchestrator) Start() {
 	if o.running {
 		return
 	}
+	// stopChan is closed by Stop; recreate it so Start-after-Stop works and
+	// a second Stop does not panic on a closed channel.
+	o.stopChan = make(chan struct{})
 	o.sweepStuckExecuting()
 	o.running = true
 	o.wg.Add(1)
@@ -153,11 +162,10 @@ func (o *Orchestrator) drainQueue() {
 	o.pausedMu.RUnlock()
 
 	candidates := o.store.ListByState(StateQueued)
-	sem := make(chan struct{}, maxConcurrentExecutions)
 	for _, cnt := range candidates {
-		sem <- struct{}{}
+		o.execSem <- struct{}{}
 		go func(c *Continuation) {
-			defer func() { <-sem }()
+			defer func() { <-o.execSem }()
 			o.executeOne(c)
 		}(cnt)
 	}

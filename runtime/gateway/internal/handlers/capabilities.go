@@ -23,8 +23,12 @@ type CapabilitiesHandler struct {
 	gatewayID    string
 	// leaseValidator verifies lease signatures against trusted issuer keys
 	// before a lease is accepted for tracking/revocation. When nil, leases
-	// are tracked without signature verification (legacy/dev mode).
+	// are tracked without signature verification only if allowUnsignedLeases
+	// was explicitly opted in.
 	leaseValidator *identity.Validator
+	// allowUnsignedLeases permits track to accept leases without signature
+	// verification when no validator is configured (dev mode opt-in).
+	allowUnsignedLeases bool
 }
 
 func NewCapabilitiesHandler(s capabilities.Store) *CapabilitiesHandler {
@@ -50,6 +54,13 @@ func (h *CapabilitiesHandler) SetHistoryStore(hs *capabilities.FileBackedHistory
 // /v1/capabilities/track rejects leases whose signature does not verify.
 func (h *CapabilitiesHandler) SetLeaseValidator(v *identity.Validator) {
 	h.leaseValidator = v
+}
+
+// SetAllowUnsignedLeases opts in to accepting unsigned leases when no lease
+// validator is configured. Default is false: track rejects leases it cannot
+// verify.
+func (h *CapabilitiesHandler) SetAllowUnsignedLeases(allow bool) {
+	h.allowUnsignedLeases = allow
 }
 
 func (h *CapabilitiesHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -179,6 +190,13 @@ func (h *CapabilitiesHandler) handleTrack(w http.ResponseWriter, r *http.Request
 			api.JSONBadRequest(w, "lease validation failed: "+strings.Join(vr.Reasons, "; "))
 			return
 		}
+	} else if !h.allowUnsignedLeases {
+		// Fail closed: with no trusted issuers configured there is no way to
+		// verify the lease, and accepting it silently would let an attacker
+		// track or spoof capabilities. Requires the explicit
+		// allow_unsigned_leases config opt-in.
+		api.JSONBadRequest(w, "lease verification unavailable: no trusted_issuers configured and allow_unsigned_leases is not set")
+		return
 	}
 
 	id := h.store.Track(req.Lease, h.gatewayID)
