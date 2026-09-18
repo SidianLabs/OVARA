@@ -101,14 +101,26 @@ export async function buildApp() {
       return reply.status(400).send({ error: `Batch size exceeds maximum of ${MAX_BATCH_SIZE}` });
     }
 
+    // Every record must carry the fields the CSV export and report
+    // generator dereference (see AuditRecord / generateCSV columns).
+    // organizationId is not required from the caller — it is bound to the
+    // authenticated credential below.
+    const REQUIRED_FIELDS = ["timestamp", "gatewayId", "actor", "action", "resource", "decision"];
+    for (const r of records) {
+      if (!r || typeof r !== "object" ||
+          REQUIRED_FIELDS.some((f) => typeof r[f] !== "string" || r[f].length === 0)) {
+        return reply.status(400).send({
+          error: `Malformed audit record: required fields are ${REQUIRED_FIELDS.join(", ")}`,
+        });
+      }
+    }
+
     let ingested = 0;
     for (const r of records) {
-      if (r && typeof r === "object" && r.timestamp) {
-        // Organization is bound to the authenticated credential; a caller
-        // can never write records under another org's ID.
-        pipeline.ingest({ ...r, organizationId: orgId });
-        ingested++;
-      }
+      // Organization is bound to the authenticated credential; a caller
+      // can never write records under another org's ID.
+      pipeline.ingest({ ...r, organizationId: orgId });
+      ingested++;
     }
 
     return reply.send({ ingested, total: pipeline.getStats().totalRecords });

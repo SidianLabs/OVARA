@@ -10,6 +10,10 @@ import type {
   DistributorConfig,
 } from "./types";
 
+// Minimum budget that must remain after a backoff sleep for the next
+// attempt to be worth making; below this we fail immediately.
+const MIN_ATTEMPT_BUDGET_MS = 1000;
+
 const DEFAULT_CONFIG: Required<DistributorConfig> = {
   maxRetries: 3,
   retryBaseDelayMs: 1000,
@@ -269,6 +273,9 @@ export class PolicyDistributor {
         this.config.retryBaseDelayMs * Math.pow(2, attempt - 1),
         deadline - Date.now(),
       );
+      // If sleeping would leave too little budget for the next attempt to
+      // be meaningful, fail now instead of burning the rest of the window.
+      if (deadline - Date.now() - delay < MIN_ATTEMPT_BUDGET_MS) break;
       await new Promise((resolve) => setTimeout(resolve, delay));
 
       const attemptBudget = deadline - Date.now();

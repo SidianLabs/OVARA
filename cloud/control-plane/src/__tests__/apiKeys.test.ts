@@ -63,8 +63,8 @@ describe("API Keys API", () => {
     if (app) await app.close();
   });
 
-  it("creates an API key", async () => {
-    if (!hasDB) return;
+  it("creates an API key", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({
       method: "POST",
@@ -78,8 +78,8 @@ describe("API Keys API", () => {
     expect(body.scopes).toEqual(["read", "write"]);
   });
 
-  it("lists keys for org (without hash)", async () => {
-    if (!hasDB) return;
+  it("lists keys for org (without hash)", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({ method: "GET", url: `/v1/api-keys?organizationId=${orgId}` });
     expect(res.statusCode).toBe(200);
@@ -91,8 +91,8 @@ describe("API Keys API", () => {
     });
   });
 
-  it("revokes an API key", async () => {
-    if (!hasDB) return;
+  it("revokes an API key", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const create = await a.inject({
       method: "POST",

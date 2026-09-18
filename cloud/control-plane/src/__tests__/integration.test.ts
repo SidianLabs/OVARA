@@ -73,8 +73,8 @@ describe("Cloud Control Plane Integration", () => {
     if (app) await app.close();
   });
 
-  it("creates a tenant", async () => {
-    if (!hasDB) return;
+  it("creates a tenant", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const res = await app.inject({
       method: "POST", url: "/v1/tenants",
       payload: { name: "acme-corp", displayName: "Acme Corporation", plan: "enterprise" },
@@ -85,8 +85,8 @@ describe("Cloud Control Plane Integration", () => {
     tenantId = body.id;
   });
 
-  it("creates an organization under tenant", async () => {
-    if (!hasDB) return;
+  it("creates an organization under tenant", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const res = await app.inject({
       method: "POST", url: "/v1/organizations",
       payload: { tenantId, name: "acme-engineering", displayName: "Acme Engineering" },
@@ -107,8 +107,8 @@ describe("Cloud Control Plane Integration", () => {
     orgId = AUTH_ORG;
   });
 
-  it("enrolls a gateway", async () => {
-    if (!hasDB) return;
+  it("enrolls a gateway", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const res = await app.inject({
       method: "POST", url: "/v1/gateways/enroll",
       payload: { organizationId: orgId, name: "prod-gw-us-east", environment: "production", region: "us-east-1", publicKey: "MCowBQYDK2VwAyEAproductionKey1234567890abcdef" },
@@ -116,8 +116,8 @@ describe("Cloud Control Plane Integration", () => {
     expect(res.statusCode).toBe(201);
   });
 
-  it("creates and publishes a policy", async () => {
-    if (!hasDB) return;
+  it("creates and publishes a policy", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const create = await app.inject({
       method: "POST", url: "/v1/policies",
       payload: {
@@ -134,8 +134,8 @@ describe("Cloud Control Plane Integration", () => {
     expect(publish.statusCode).toBe(200);
   });
 
-  it("creates and revokes an API key", async () => {
-    if (!hasDB) return;
+  it("creates and revokes an API key", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const create = await app.inject({
       method: "POST", url: "/v1/api-keys",
       payload: { organizationId: orgId, name: "ci-key", scopes: ["read", "write"] },
@@ -146,14 +146,14 @@ describe("Cloud Control Plane Integration", () => {
     expect(revoke.statusCode).toBe(200);
   });
 
-  it("lists gateways", async () => {
-    if (!hasDB) return;
+  it("lists gateways", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const res = await app.inject({ method: "GET", url: `/v1/gateways?organizationId=${orgId}` });
     expect(res.statusCode).toBe(200);
   });
 
-  it("lists policies", async () => {
-    if (!hasDB) return;
+  it("lists policies", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const res = await app.inject({ method: "GET", url: `/v1/policies?organizationId=${orgId}` });
     expect(res.statusCode).toBe(200);
   });
