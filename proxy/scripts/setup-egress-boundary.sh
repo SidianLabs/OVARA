@@ -45,6 +45,9 @@ DOCKER_IMAGE="ubuntu:24.04"
 VETH_HOST="veth-ova-h"
 VETH_NS="veth-ova-n"
 NS_ADDR_BASE="10.200.0"   # /24 inside the netns; host takes .1, ns takes .10
+# Derived after arg parsing: veth names and the /24 subnet are per-netns so
+# multiple boundaries can coexist on one host. IFNAMSIZ limit is 15 chars.
+SUBNET_IDX=""           # --subnet-idx N -> NS_ADDR_BASE=10.200.N
 
 shift || true
 while [[ $# -gt 0 ]]; do
@@ -55,9 +58,25 @@ while [[ $# -gt 0 ]]; do
     --proxy-port) PROXY_PORT="$2"; shift 2;;
     --resolver)   RESOLVER="$2"; shift 2;;
     --image)      DOCKER_IMAGE="$2"; shift 2;;
+    --subnet-idx) SUBNET_IDX="$2"; shift 2;;
     *) echo "unknown flag: $1" >&2; exit 2;;
   esac
 done
+
+# Per-netns veth names + subnet: a second boundary must not collide with the
+# first (hardcoded names used to leave new netns with no interface at all).
+# Octet is a stable hash of the name (1..250) unless --subnet-idx overrides.
+if [[ "${MODE}" == "netns" ]]; then
+  short="$(echo "${NS_NAME}" | tr -cd '[:alnum:]' | cut -c1-9)"
+  VETH_HOST="vo-${short}-h"
+  VETH_NS="vo-${short}-n"
+  if [[ -n "${SUBNET_IDX}" ]]; then
+    NS_ADDR_BASE="10.200.${SUBNET_IDX}"
+  else
+    h=$(echo -n "${NS_NAME}" | cksum | cut -d' ' -f1)
+    NS_ADDR_BASE="10.200.$(( h % 250 + 1 ))"
+  fi
+fi
 
 warn() { echo "WARNING: $*" >&2; }
 
@@ -210,6 +229,12 @@ do_docker() {
       "-s 172.30.0.0/24 -j DROP"; do
       iptables -C DOCKER-USER ${rule} 2>/dev/null || iptables -A DOCKER-USER ${rule}
     done
+    # DOCKER-USER only sees FORWARDED traffic. Packets to the bridge gateway
+    # IP (${PROXY_IP} = the host itself) go through INPUT — hosts whose INPUT
+    # ends in a catch-all REJECT/DROP silently refuse the agent's only allowed
+    # flow. Open the proxy port from the bridge subnet before that reject.
+    iptables -C INPUT -s 172.30.0.0/24 -d ${PROXY_IP} -p tcp --dport ${PROXY_PORT} -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -s 172.30.0.0/24 -d ${PROXY_IP} -p tcp --dport ${PROXY_PORT} -j ACCEPT
   else
     warn "iptables not found — DOCKER-USER restrictions NOT applied; the agent can hit the bridge gateway on all ports"
   fi
