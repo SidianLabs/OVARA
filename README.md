@@ -89,7 +89,7 @@ Ovara provides that missing layer.
 |---------|--------|-------------|
 | **Ovara Runtime** | ✅ GA | Single-binary Go gateway: interception, policy evaluation, approvals, execution, receipts |
 | **Ovara Identity** | ✅ GA | Machine identity primitives (ed25519) with capability leases and delegation chains |
-| **Ovara Observe** | ✅ GA | Action lineage, traces, OTLP/NATS telemetry, ClickHouse analytics |
+| **Ovara Observe** | 🚧 Partial | Action lineage & event log today; OTLP/NATS telemetry + ClickHouse analytics planned (not wired — see `observability/README.md`) |
 | **Ovara Shield** | ✅ GA | Anomaly signals, trust degradation, containment hooks |
 | **Ovara Cloud** | ✅ GA | Hosted control plane, gateway enrollment, policy distribution, multi-tenant |
 | **Ovara Federation** | ✅ GA | Cross-organization trust graph with portable receipts |
@@ -101,7 +101,7 @@ Ovara provides that missing layer.
 
 ## What You Get
 
-### 11 Execution Surfaces
+### 12 Execution Surfaces
 
 `shell` · `exec` · `git.push` · `git.pull` · `git.fetch` · `git.checkout` ·
 `github.push` · `github.pr` · `github.merge` · `github.delete_branch` ·
@@ -135,7 +135,8 @@ Ovara provides that missing layer.
 - SLA health diagnostics, stuck-executing recovery, panic recovery
 - Batch check endpoint (`POST /v1/runtime/batch-check`)
 - File-backed stores with configurable retention
-- Prometheus metrics, OpenTelemetry traces
+- Structured JSONL event/decision logs (`/var/data/*.jsonl`), `GET /v1/events`, `GET /v1/runtime/metrics`
+- *Planned (not wired yet):* OTLP/NATS telemetry pipeline, Prometheus `ovara_*` metrics — see `observability/README.md`
 
 ### Production Hardening
 
@@ -143,7 +144,7 @@ Ovara provides that missing layer.
 - eBPF ring-buffer syscall interceptor
 - Seccomp syscall allowlist (~130 syscalls)
 - Firecracker microVM sandbox config
-- Multi-region Terraform K8s manifests
+- Terraform K8s manifests (single-region deployable; multi-region layout in `regions.tf` is scaffolded but not wired — modules commented out)
 - systemd, Docker, and Docker Compose deployment
 
 ---
@@ -152,16 +153,16 @@ Ovara provides that missing layer.
 
 | Operation | Latency |
 |-----------|---------|
-| Policy-only decision | 5,374 ns |
-| Decision with identity | 6,126 ns |
-| Decision with anomaly | 6,210 ns |
-| Full identity+lease decision | 7,669 ns |
-| Evaluator (no HTTP) | 1,271 ns |
-| HMAC-SHA256 sign | 598 ns |
-| HMAC-SHA256 verify | 614 ns |
-| Decision cache get/put | 38-39 ns |
+| Policy-only decision (httptest, in-process) | ~9.7 µs |
+| Decision with identity | ~10.7 µs |
+| Decision with trust anomaly | ~10.7 µs |
+| Full identity+lease decision | ~12.9 µs |
+| Evaluator (no HTTP) | ~2.7 µs |
+| HMAC-SHA256 sign | ~620 ns |
+| HMAC-SHA256 verify | ~650 ns |
+| Decision cache get/put | ~39-40 ns |
 
-Sub-10μs decision path — fast enough for inline interception in agent workflows.
+~10-13µs decision path and ~115k decisions/sec on loopback (see `docs/BENCHMARKS.md`) — fast enough for inline interception in agent workflows.
 
 ---
 

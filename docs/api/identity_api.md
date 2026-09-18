@@ -163,8 +163,8 @@ as `identity_invalid`, `capability_expired`, `capability_revoked`,
 Identity management is performed by the gateway's internal
 [`identity` module](../../runtime/gateway/internal/identity/) and
 the standalone [`identity/`](../../identity/) module. The hosted
-control plane exposes identity operations via its own API
-(see [Cloud API](cloud_api.md)).
+control plane exposes its own organization/gateway/policy APIs
+(see `cloud/control-plane/src/routes/`).
 
 ## Revocation
 
@@ -179,15 +179,18 @@ The TypeScript and Python SDKs include identity verification helpers:
 ```typescript
 import { verifyAgentIdentity, verifyCapabilityLease, verifyReceipt } from '@ovara/sdk';
 
-const valid = verifyAgentIdentity(identity, expectedIssuer);
-const leaseValid = verifyCapabilityLease(lease);
-const receiptValid = verifyReceipt(receipt, signingKey);
+// All verify functions take the issuer's hex-encoded ed25519 public key.
+const valid = verifyAgentIdentity(identity, publicKeyHex);
+const leaseValid = verifyCapabilityLease(lease, publicKeyHex);
+// NOTE: verifyReceipt verifies *proxy* receipts (PortableReceipt, ed25519
+// "sig_v1:<hex>") — not the gateway's HMAC-SHA256 receipts.
+const receiptValid = verifyReceipt(receipt, publicKeyHex);
 ```
 
 ```python
 from ovara_sdk import verify_agent_identity, verify_capability_lease, verify_receipt
 
-valid = verify_agent_identity(identity, expected_issuer)
-lease_valid = verify_capability_lease(lease)
-receipt_valid = verify_receipt(receipt, signing_key)
+valid = verify_agent_identity(identity, issuer_public_key_hex)
+lease_valid = verify_capability_lease(lease, issuer_public_key_hex)
+receipt_valid = verify_receipt(receipt, public_key_hex)  # proxy receipts only
 ```

@@ -1,4 +1,5 @@
 {
+  "_note": "File-loaded rules honor ONLY action_type/environment/allow/deny/escalate. LoadStoreFromFile parses `conditions` then discards it (patterns, require_explicit_approval, agent_id, resource_pattern are no-ops) and never reads min_trust_score/min_trust_level. The keys below are renamed to _conditions_ignored so they document intent without silently implying enforcement.",
   "version": "v1",
   "rules": [
     {
@@ -35,7 +36,7 @@
       "action_type": "shell",
       "environment": "dev",
       "escalate": true,
-      "conditions": {
+      "_conditions_ignored": {
         "patterns": ["curl |sh", "rm -rf /", "mkfs", ":(){:|:&};"]
       },
       "description": "Dangerous shell patterns in dev escalate for safety review"
@@ -50,7 +51,7 @@
       "action_type": "*",
       "environment": "production",
       "escalate": true,
-      "conditions": {
+      "_conditions_ignored": {
         "require_explicit_approval": true
       },
       "description": "Catch-all: all actions in production require explicit approval"

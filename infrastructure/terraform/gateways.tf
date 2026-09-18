@@ -1,6 +1,12 @@
 # Regional Runtime Gateways
 
-resource "kubernetes_config_map" "gateway_config" {
+# Gateway config contains secrets (operator_tokens, receipt_signing_key),
+# so it lives in a Secret, not a ConfigMap. Keys not present in the
+# gateway Config struct (runtime/gateway/internal/config/config.go) —
+# e.g. environment/region/control_plane_url — were removed: the gateway
+# ignores them and control-plane enrollment is driven by OVARA_* env
+# plus on-disk enrollment state.
+resource "kubernetes_secret" "gateway_config" {
   metadata {
     name      = "gateway-config"
     namespace = kubernetes_namespace.ovara.metadata[0].name
@@ -12,15 +18,12 @@ resource "kubernetes_config_map" "gateway_config" {
       gateway_name         = "production-gateway"
       gateway_version      = "1.0.0"
       policy_version       = "v1-prod"
-      environment          = var.environment
-      region               = var.region
-      policy_file          = "/etc/ovara/policy.json"
+      policy_file          = "/etc/ovara-policy/policy.json"
       fail_closed          = true
       auth_enabled         = true
+      operator_tokens      = var.operator_tokens
       log_level            = "info"
-      receipt_signing_key  = var.jwt_secret
-      control_plane_url    = "http://control-plane.${kubernetes_namespace.ovara.metadata[0].name}.svc.cluster.local"
-      control_plane_api_key = var.operator_api_key
+      receipt_signing_key  = var.receipt_signing_key
       heartbeat_interval_secs = 30
       policy_refresh_interval = 60
       decision_log_file    = "/var/data/ovara/decisions.jsonl"
@@ -87,16 +90,17 @@ resource "kubernetes_deployment" "gateway" {
             value = var.environment
           }
           env {
-            name  = "OVARA_REGION"
-            value = var.region
-          }
-          env {
             name  = "OVARA_CONFIG"
             value = "/etc/ovara/config.json"
           }
           volume_mount {
             name       = "config"
             mount_path = "/etc/ovara"
+            read_only  = true
+          }
+          volume_mount {
+            name       = "policy"
+            mount_path = "/etc/ovara-policy"
             read_only  = true
           }
           volume_mount {
@@ -133,14 +137,66 @@ resource "kubernetes_deployment" "gateway" {
 
         volume {
           name = "config"
+          secret {
+            secret_name = kubernetes_secret.gateway_config.metadata[0].name
+          }
+        }
+        volume {
+          name = "policy"
           config_map {
-            name = kubernetes_config_map.gateway_config.metadata[0].name
+            name = kubernetes_config_map.gateway_policy.metadata[0].name
           }
         }
         volume {
           name = "data"
-          empty_dir {}
+          # Receipts, approvals, events, and audit files live under
+          # /var/data/ovara — a PVC is required so they survive pod
+          # restarts (empty_dir would lose signed receipts).
+          persistent_volume_claim {
+            claim_name = kubernetes_persistent_volume_claim.gateway_data.metadata[0].name
+          }
         }
+      }
+    }
+  }
+}
+
+# Default file policy mounted at /etc/ovara-policy/policy.json.
+# Note: file-loaded rules honor only action_type / environment /
+# allow / deny / escalate — `conditions` and `min_trust_*` fields are
+# parsed-then-dropped by LoadStoreFromFile today.
+resource "kubernetes_config_map" "gateway_policy" {
+  metadata {
+    name      = "gateway-policy"
+    namespace = kubernetes_namespace.ovara.metadata[0].name
+  }
+
+  data = {
+    "policy.json" = jsonencode({
+      version = "v1-prod"
+      rules = [
+        {
+          action_type = "*"
+          environment = var.environment
+          escalate    = true
+          description = "Default: escalate all actions for approval"
+        }
+      ]
+    })
+  }
+}
+
+resource "kubernetes_persistent_volume_claim" "gateway_data" {
+  metadata {
+    name      = "gateway-data"
+    namespace = kubernetes_namespace.ovara.metadata[0].name
+  }
+
+  spec {
+    access_modes = ["ReadWriteOnce"]
+    resources {
+      requests = {
+        storage = "10Gi"
       }
     }
   }

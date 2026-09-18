@@ -61,6 +61,18 @@ variable "operator_api_key" {
   sensitive = true
 }
 
+variable "operator_tokens" {
+  description = "Bearer tokens accepted by the gateway operator API (auth_enabled). Required — an empty list fails closed and rejects all operator calls."
+  type        = list(string)
+  sensitive   = true
+}
+
+variable "receipt_signing_key" {
+  description = "HMAC-SHA256 key for gateway receipt signing. Must be independent of jwt_secret."
+  type        = string
+  sensitive   = true
+}
+
 resource "random_id" "cluster_suffix" {
   byte_length = 4
 }
