@@ -256,12 +256,16 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	hostname = strings.ToLower(hostname)
 	// CONNECT is for HTTPS tunneling only — an arbitrary port would turn
 	// this into a generic TCP relay (SSH, redis, ...) past the boundary.
+	// Tunnel-layer rejects are receipted too: a probing agent must leave
+	// evidence, not just an invisible 403.
 	if s.connectPort443 && port != "443" {
+		s.recordDenied("CONNECT", r.Host)
 		http.Error(w, "CONNECT limited to port 443", http.StatusForbidden)
 		return
 	}
 	if err := s.checkDestination(r.Context(), hostname); err != nil {
 		log.Printf("connect: destination %s rejected: %v", hostname, err)
+		s.recordDenied("CONNECT", r.Host)
 		http.Error(w, "destination not allowed", http.StatusForbidden)
 		return
 	}
@@ -317,6 +321,15 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}),
 	}
 	go srv.Serve(listener)
+}
+
+// recordDenied appends a deny receipt for requests rejected before the
+// policy pipeline (CONNECT-layer rejects). Best-effort: a chain failure is
+// logged, not retried — same posture as the deferred receipt path.
+func (s *Server) recordDenied(method, target string) {
+	if _, err := s.chain.Record(method, target, "deny", http.StatusForbidden, ""); err != nil {
+		log.Printf("CRITICAL: receipt record failed for denied %s %s: %v", method, target, err)
+	}
 }
 
 // eofConn closes done when the wrapped connection ends (EOF or Close), so
@@ -414,6 +427,8 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch d.Decision {
+	case "allow":
+		// proceed to execution below
 	case "deny":
 		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes})
 		return
@@ -432,6 +447,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			writeJSON(http.StatusForbidden, map[string]any{"error": "action requires approval", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": d.ReasonCodes})
 			return
 		}
+	default:
+		// Unknown/malformed decision strings must never reach execution:
+		// a truncated or confused gateway response is not an allow.
+		decision = "deny"
+		writeJSON(http.StatusBadGateway, map[string]any{"error": "malformed gateway decision"})
+		return
 	}
 
 	// SSRF guard: the policy decision says nothing about WHERE this goes —
@@ -448,10 +469,14 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Inject real credentials for this host — https only. A plaintext http
 	// request to a credentialed host is still evaluated and receipted, but
 	// nothing is injected: secrets must never transit in cleartext.
+	var injected [][]byte
 	if r.URL.Scheme == "https" {
 		if headers := creds.Match(s.bindings, host); headers != nil {
 			for k, v := range headers {
 				r.Header.Set(k, v)
+				if v != "" {
+					injected = append(injected, []byte(v))
+				}
 			}
 		}
 	}
@@ -478,13 +503,25 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	status = resp.StatusCode
 	stripHopHeaders(resp.Header)
+	// Reflector-class exfil: a bound host that echoes request data
+	// (httpbin /headers, debug endpoints, request-bin services) would hand
+	// the injected credentials straight back to the agent. Scrub the exact
+	// injected values from response headers and body — the agent sees
+	// "[REDACTED]" where its own credential was reflected.
 	for k, vv := range resp.Header {
 		for _, v := range vv {
+			for _, secret := range injected {
+				v = strings.ReplaceAll(v, string(secret), "[REDACTED]")
+			}
 			w.Header().Add(k, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	body := io.Reader(resp.Body)
+	if len(injected) > 0 {
+		body = newScrubReader(resp.Body, injected)
+	}
+	io.Copy(w, body)
 	// resp.Trailer values populate after body read; forward them properly.
 	for k, vv := range resp.Trailer {
 		w.Header()[http.TrailerPrefix+k] = vv

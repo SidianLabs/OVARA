@@ -9,6 +9,11 @@ import (
 
 type Config struct {
 	ServerPort    string `json:"server_port"`
+	// ListenAddr overrides the bind address (default "0.0.0.0:<port>" for
+	// backward compat). Set "127.0.0.1" when the only legitimate clients are
+	// on-box — e.g. the executor proxy — so a bounded agent can never reach
+	// the approval API and approve its own escalations.
+	ListenAddr    string `json:"listen_addr"`
 	PolicyVersion string `json:"policy_version"`
 	PolicyFile    string `json:"policy_file"`
 	// PolicyDir restricts all caller-supplied file paths on the policy

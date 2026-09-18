@@ -84,7 +84,7 @@ warn() { echo "WARNING: $*" >&2; }
 
 case "$MODE" in
   netns)  : "${PROXY_IP:=${NS_ADDR_BASE}.1}"; : "${RESOLVER:=${NS_ADDR_BASE}.1}" ;;
-  docker) : "${PROXY_IP:=172.30.0.1}";       : "${RESOLVER:=172.30.0.2}" ;;
+  docker) : "${PROXY_IP:=172.30.0.1}";       : "${RESOLVER:=172.30.0.1}" ;;
   *) echo "usage: $0 {netns|docker} [flags]" >&2; exit 2;;
 esac
 
@@ -155,10 +155,21 @@ do_netns() {
   ip netns exec "${NS_NAME}" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
   ip netns exec "${NS_NAME}" sysctl -qw net.ipv6.conf.default.disable_ipv6=1
 
-  # Host-side INPUT: many hosts end INPUT with a REJECT rule, which would
-  # silently refuse the agent's only allowed flow. Ensure the proxy port on
-  # the veth is accepted before any catch-all reject. Idempotent.
+  # Host-side INPUT: two-direction hardening, idempotent.
+  # (a) Many hosts end INPUT with a catch-all REJECT — open the proxy port
+  #     and the resolver's DNS ports before it.
+  # (b) Defense in depth: the in-ns nft ruleset is the primary boundary, but
+  #     if it is ever weakened (bug, misapply, or a privileged agent), the
+  #     host must not give the veth a free pass to every host service
+  #     (sshd, docker.sock HTTP, kubelet :10250). DROP everything else from
+  #     this interface. Inserted in reverse order so ACCEPTs end up first.
   if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -i "${VETH_HOST}" -j DROP 2>/dev/null \
+      || iptables -I INPUT 1 -i "${VETH_HOST}" -j DROP
+    iptables -C INPUT -i "${VETH_HOST}" -d "${RESOLVER}" -p udp -m multiport --dports 53,5353 -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -i "${VETH_HOST}" -d "${RESOLVER}" -p udp -m multiport --dports 53,5353 -j ACCEPT
+    iptables -C INPUT -i "${VETH_HOST}" -d "${RESOLVER}" -p tcp -m multiport --dports 53,5353 -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -i "${VETH_HOST}" -d "${RESOLVER}" -p tcp -m multiport --dports 53,5353 -j ACCEPT
     iptables -C INPUT -i "${VETH_HOST}" -p tcp --dport "${PROXY_PORT}" -j ACCEPT 2>/dev/null \
       || iptables -I INPUT 1 -i "${VETH_HOST}" -p tcp --dport "${PROXY_PORT}" -j ACCEPT
   fi
@@ -213,6 +224,7 @@ do_docker() {
     docker network create \
       --internal \
       --driver bridge \
+      -o com.docker.network.bridge.enable_icc=false \
       --subnet 172.30.0.0/24 \
       "${DOCKER_NET}"
   fi
@@ -230,9 +242,18 @@ do_docker() {
       iptables -C DOCKER-USER ${rule} 2>/dev/null || iptables -A DOCKER-USER ${rule}
     done
     # DOCKER-USER only sees FORWARDED traffic. Packets to the bridge gateway
-    # IP (${PROXY_IP} = the host itself) go through INPUT — hosts whose INPUT
-    # ends in a catch-all REJECT/DROP silently refuse the agent's only allowed
-    # flow. Open the proxy port from the bridge subnet before that reject.
+    # IP (${PROXY_IP} = the host itself) go through INPUT — and on a
+    # default-ACCEPT host the agent would reach EVERY host-bound service:
+    # sshd, docker.sock, kubelet :10250, and the gateway's approval API (an
+    # agent that can reach the gateway can approve its own escalations).
+    # Open only the proxy port and resolver DNS, then DROP the rest from the
+    # bridge subnet. DROP is inserted first so the ACCEPTs land above it.
+    iptables -C INPUT -s 172.30.0.0/24 -j DROP 2>/dev/null \
+      || iptables -I INPUT 1 -s 172.30.0.0/24 -j DROP
+    iptables -C INPUT -s 172.30.0.0/24 -d ${RESOLVER} -p udp -m multiport --dports 53,5353 -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -s 172.30.0.0/24 -d ${RESOLVER} -p udp -m multiport --dports 53,5353 -j ACCEPT
+    iptables -C INPUT -s 172.30.0.0/24 -d ${RESOLVER} -p tcp -m multiport --dports 53,5353 -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -s 172.30.0.0/24 -d ${RESOLVER} -p tcp -m multiport --dports 53,5353 -j ACCEPT
     iptables -C INPUT -s 172.30.0.0/24 -d ${PROXY_IP} -p tcp --dport ${PROXY_PORT} -j ACCEPT 2>/dev/null \
       || iptables -I INPUT 1 -s 172.30.0.0/24 -d ${PROXY_IP} -p tcp --dport ${PROXY_PORT} -j ACCEPT
   else
