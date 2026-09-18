@@ -62,28 +62,21 @@ func IssueCapabilityLease(issuer *AgentIdentity, issuerKey ed25519.PrivateKey, s
 	return cl, nil
 }
 
-// digestPayload returns the canonical (JSON) byte representation of the
-// fields covered by the lease signature.
+// digestPayload returns the canonical byte representation of the fields
+// covered by the lease signature. The format MUST byte-match what the
+// gateway verifier builds in
+// runtime/gateway/internal/identity/validator.go (verifyLeaseSignature)
+// and what both SDKs use:
+//
+//	LeaseID|Issuer|Subject|[AllowedActions]|ResourceScope|ExpiryUnix|DelegationDepth|IssuedAtUnix
+//
+// where [AllowedActions] is Go's fmt %v rendering of a []string
+// ("[a b c]") and the timestamps are Unix seconds.
 func (c *CapabilityLease) digestPayload() []byte {
-	return canonicalJSON(struct {
-		LeaseID         string   `json:"lease_id"`
-		Issuer          string   `json:"issuer"`
-		Subject         string   `json:"subject"`
-		AllowedActions  []string `json:"allowed_actions"`
-		ResourceScope   string   `json:"resource_scope"`
-		Expiry          int64    `json:"expiry"`
-		DelegationDepth int      `json:"delegation_depth"`
-		IssuedAt        int64    `json:"issued_at"`
-	}{
-		LeaseID:         c.LeaseID,
-		Issuer:          c.Issuer,
-		Subject:         c.Subject,
-		AllowedActions:  c.AllowedActions,
-		ResourceScope:   c.ResourceScope,
-		Expiry:          c.Expiry.Unix(),
-		DelegationDepth: c.DelegationDepth,
-		IssuedAt:        c.IssuedAt.Unix(),
-	})
+	return []byte(fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
+		c.LeaseID, c.Issuer, c.Subject, c.AllowedActions,
+		c.ResourceScope, c.Expiry.Unix(), c.DelegationDepth, c.IssuedAt.Unix(),
+	))
 }
 
 func (c *CapabilityLease) Digest() string {

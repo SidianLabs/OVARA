@@ -83,7 +83,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { identity, public_key } = args as any;
       // Local signature verification against a caller-supplied trusted
       // key — the gateway has no verify-identity endpoint.
-      const result = { valid: verifyAgentIdentity(identity, public_key) };
+      // Normalize wire (snake_case) or SDK (camelCase) field names to
+      // the camelCase PortableIdentity the SDK expects.
+      const normalized = {
+        id: identity.id,
+        issuer: identity.issuer,
+        subjectId: identity.subjectId ?? identity.subject_id,
+        owner: identity.owner,
+        lifecycle: identity.lifecycle,
+        publicKey: identity.publicKey ?? identity.public_key ?? "",
+        signature: identity.signature,
+      };
+      const result = { valid: verifyAgentIdentity(normalized, public_key) };
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
     default:

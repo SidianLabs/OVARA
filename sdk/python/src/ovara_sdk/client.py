@@ -12,6 +12,7 @@ from .types import (
     AgentIdentity,
     CapabilityLease,
     DecisionResponse,
+    DelegationChain,
     GatewayStatus,
     ReceiptRecord,
 )
@@ -61,6 +62,21 @@ def _serialize_capability_lease(lease: CapabilityLease) -> dict:
     return out
 
 
+def _serialize_delegation_chain(chain: DelegationChain) -> dict:
+    """Map to the gateway's delegation_chain JSON tags."""
+    authorities = []
+    for a in chain.authorities:
+        entry: dict = {"issuer": a.issuer, "subject_id": a.subject_id}
+        if a.delegated_at is not None:
+            entry["delegated_at"] = a.delegated_at
+        authorities.append(entry)
+    return {
+        "authorities": authorities,
+        "chain_hash": chain.chain_hash,
+        "depth": chain.depth,
+    }
+
+
 def _serialize_action_request(request: ActionRequest) -> dict:
     return {
         "action_type": request.action_type,
@@ -74,6 +90,11 @@ def _serialize_action_request(request: ActionRequest) -> dict:
         "capability_lease": (
             _serialize_capability_lease(request.capability_lease)
             if request.capability_lease
+            else None
+        ),
+        "delegation_chain": (
+            _serialize_delegation_chain(request.delegation_chain)
+            if request.delegation_chain
             else None
         ),
         "metadata": request.metadata,
@@ -111,7 +132,7 @@ class OvaraClient:
 
     async def allow(self, action_type: str, resource: str, env: str = "local") -> bool:
         resp = await self.check(
-            ActionRequest(action_type=action_type, resource=resource, environment=env, trace_id=uuid.uuid4().hex)
+            ActionRequest(action_type=action_type, resource=resource, environment=env, nonce=uuid.uuid4().hex)
         )
         return resp.get("decision") == "allow"
 

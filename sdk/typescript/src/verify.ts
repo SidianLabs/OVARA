@@ -34,6 +34,12 @@ export interface PortableLease {
   expiry: number;
   delegationDepth: number;
   issuedAt: number;
+  /**
+   * ed25519 signature over the pipe-joined canonical lease payload.
+   * Hex-encoded here. NOTE: on the gateway wire the signature is base64
+   * (Go []byte marshals to base64 in JSON) — decode it before calling
+   * verifyCapabilityLease, which accepts both hex and base64 input.
+   */
   signature: string;
 }
 
@@ -57,6 +63,12 @@ export interface PortableReceipt {
   url: string;
   decision: string;
   status: number;
+  /**
+   * Links an escalated-then-approved receipt to the approval that
+   * authorized it. Present only on such receipts; it is part of the
+   * signed canonical payload (appended as "|approval_id").
+   */
+  approvalId?: string;
   prevHash: string;
   /** "sig_v1:<hex ed25519>" */
   signature: string;
@@ -81,8 +93,10 @@ function rfc3339ToUnixNano(ts: string): bigint {
 
 // receiptCanonical mirrors Receipt.canonical() in the proxy:
 // receipt_id|session_id|unixnano|method|url|decision|status|prev_hash
+// with "|approval_id" appended when approval_id is non-empty
+// (proxy/internal/receipts/chain.go).
 function receiptCanonical(r: PortableReceipt): string {
-  return [
+  let c = [
     r.receiptId,
     r.sessionId,
     rfc3339ToUnixNano(r.timestamp).toString(),
@@ -92,6 +106,24 @@ function receiptCanonical(r: PortableReceipt): string {
     String(r.status),
     r.prevHash,
   ].join("|");
+  if (r.approvalId) {
+    c += "|" + r.approvalId;
+  }
+  return c;
+}
+
+// signatureToHex normalizes a signature to hex. The SDK carries
+// hex-encoded signatures, but the Go side marshals []byte to base64 on
+// the wire — accept that form too.
+function signatureToHex(signature: string): string {
+  if (/^[0-9a-fA-F]+$/.test(signature) && signature.length % 2 === 0) {
+    return signature;
+  }
+  try {
+    return Buffer.from(signature, "base64").toString("hex");
+  } catch {
+    return signature;
+  }
 }
 
 export function verifyAgentIdentity(identity: PortableIdentity, publicKeyHex: string): boolean {
@@ -112,7 +144,7 @@ export function verifyCapabilityLease(lease: PortableLease, publicKeyHex: string
   const payload = `${lease.leaseId}|${lease.issuer}|${lease.subject}|${goStringSlice(lease.allowedActions)}|${lease.resourceScope}|${lease.expiry}|${lease.delegationDepth}|${lease.issuedAt}`;
 
   try {
-    return verifyEd25519(lease.signature, payload, publicKeyHex);
+    return verifyEd25519(signatureToHex(lease.signature), payload, publicKeyHex);
   } catch {
     return false;
   }
@@ -137,9 +169,21 @@ export function verifyReceipt(receipt: PortableReceipt, publicKeyHex: string): b
   }
 }
 
+// identityCanonical mirrors AgentIdentity.Digest() in
+// identity/internal/crypto/identity.go: compact JSON (Go json.Marshal
+// output — no spaces, fields in struct declaration order).
+function identityCanonical(identity: PortableIdentity): string {
+  return JSON.stringify({
+    id: identity.id,
+    issuer: identity.issuer,
+    subject_id: identity.subjectId,
+    owner: identity.owner,
+    lifecycle: identity.lifecycle,
+  });
+}
+
 export function computeIdentityDigest(identity: PortableIdentity): string {
-  const payload = `${identity.id}|${identity.issuer}|${identity.subjectId}|${identity.owner}|${identity.lifecycle}`;
-  return createHash("sha256").update(payload).digest("hex");
+  return createHash("sha256").update(identityCanonical(identity)).digest("hex");
 }
 
 export function computeReceiptDigest(receipt: PortableReceipt): string {

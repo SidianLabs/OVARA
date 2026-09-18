@@ -4,6 +4,7 @@ import {
   ActionRequest,
   AgentIdentity,
   CapabilityLease,
+  DelegationChain,
   DecisionResponse,
   GatewayStatus,
   HealthStatus,
@@ -47,6 +48,21 @@ function serializeCapabilityLease(lease: CapabilityLease): Record<string, unknow
   return out;
 }
 
+function serializeDelegationChain(chain: DelegationChain): Record<string, unknown> {
+  return {
+    authorities: chain.authorities.map((a) => {
+      const out: Record<string, unknown> = {
+        issuer: a.issuer,
+        subject_id: a.subjectId,
+      };
+      if (a.delegatedAt !== undefined) out.delegated_at = a.delegatedAt;
+      return out;
+    }),
+    chain_hash: chain.chainHash,
+    depth: chain.depth,
+  };
+}
+
 function serializeActionRequest(request: ActionRequest): Record<string, unknown> {
   return {
     action_type: request.actionType,
@@ -57,6 +73,9 @@ function serializeActionRequest(request: ActionRequest): Record<string, unknown>
       : undefined,
     capability_lease: request.capabilityLease
       ? serializeCapabilityLease(request.capabilityLease)
+      : undefined,
+    delegation_chain: request.delegationChain
+      ? serializeDelegationChain(request.delegationChain)
       : undefined,
     metadata: request.metadata,
     nonce: request.nonce || randomUUID(),
@@ -97,7 +116,7 @@ export class OvaraClient {
       actionType,
       resource,
       environment: env as any,
-      traceId: randomUUID(),
+      nonce: randomUUID(),
     });
     return resp.decision === "allow";
   }
