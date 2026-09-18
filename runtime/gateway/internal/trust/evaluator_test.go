@@ -720,7 +720,11 @@ func TestEvaluator_Evaluate(t *testing.T) {
 		}
 	})
 
-	t.Run("last_decision_no_penalty_after_30_seconds", func(t *testing.T) {
+	t.Run("last_decision_penalty_still_applies_after_35ms", func(t *testing.T) {
+		// The penalty window is a hardcoded 30s (evaluator.go) and is not
+		// injectable, so we cannot cheaply cross it. Instead assert the
+		// penalty is still in effect 35ms after the recorded decision —
+		// i.e. the penalty did not evaporate immediately.
 		store := NewShieldStore()
 		evaluator := NewEvaluator(store)
 
@@ -737,6 +741,8 @@ func TestEvaluator_Evaluate(t *testing.T) {
 		}
 
 		result := evaluator.Evaluate(req)
-		_ = result.Score
+		if result.Score >= 0.9 {
+			t.Errorf("expected escalation penalty to still apply 35ms after decision, got score %v", result.Score)
+		}
 	})
 }

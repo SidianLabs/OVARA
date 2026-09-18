@@ -263,10 +263,10 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 			exitCode = exitErr.ExitCode()
 		}
 		if execCtx.Err() == context.DeadlineExceeded {
-			e.Error = fmt.Sprintf("shell: command timed out after %v", timeout)
+			e.Error = Redact(fmt.Sprintf("shell: command timed out after %v", timeout))
 			e.MarkTimedOut()
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = se.StdoutLimitBytes
@@ -274,8 +274,8 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 			return err
 		}
 		e.MarkFailed(stderrBuf.buf.String(), exitCode)
-		e.Stdout = stdoutBuf.buf.String()
-		e.Stderr = stderrBuf.buf.String()
+		e.Stdout = Redact(stdoutBuf.buf.String())
+		e.Stderr = Redact(stderrBuf.buf.String())
 		e.StdoutTruncated = stdoutBuf.truncated
 		e.StderrTruncated = stderrBuf.truncated
 		e.StdoutLimitBytes = se.StdoutLimitBytes
@@ -473,8 +473,8 @@ func (de *DirectExecutor) Execute(ctx context.Context, e *Execution) error {
 		} else if strings.Contains(err.Error(), "executable file not found") || strings.Contains(err.Error(), "no such file or directory") {
 			exitCode = 127
 			e.MarkFailed("exec: binary not found: "+binary, exitCode)
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = de.StdoutLimitBytes
@@ -482,10 +482,10 @@ func (de *DirectExecutor) Execute(ctx context.Context, e *Execution) error {
 			return nil
 		}
 		if execCtx.Err() == context.DeadlineExceeded {
-			e.Error = fmt.Sprintf("exec: command timed out after %v", timeout)
+			e.Error = Redact(fmt.Sprintf("exec: command timed out after %v", timeout))
 			e.MarkTimedOut()
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = de.StdoutLimitBytes
@@ -493,8 +493,8 @@ func (de *DirectExecutor) Execute(ctx context.Context, e *Execution) error {
 			return err
 		}
 		e.MarkFailed(stderrBuf.buf.String(), exitCode)
-		e.Stdout = stdoutBuf.buf.String()
-		e.Stderr = stderrBuf.buf.String()
+		e.Stdout = Redact(stdoutBuf.buf.String())
+		e.Stderr = Redact(stderrBuf.buf.String())
 		e.StdoutTruncated = stdoutBuf.truncated
 		e.StderrTruncated = stderrBuf.truncated
 		e.StdoutLimitBytes = de.StdoutLimitBytes
@@ -687,8 +687,8 @@ func (ge *GitExecutor) Execute(ctx context.Context, e *Execution) error {
 		} else if strings.Contains(err.Error(), "executable file not found") || strings.Contains(err.Error(), "no such file or directory") {
 			exitCode = 127
 			e.MarkFailed("git: binary not found in PATH", exitCode)
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = ge.StdoutLimitBytes
@@ -696,10 +696,10 @@ func (ge *GitExecutor) Execute(ctx context.Context, e *Execution) error {
 			return nil
 		}
 		if execCtx.Err() == context.DeadlineExceeded {
-			e.Error = fmt.Sprintf("git: command timed out after %v", timeout)
+			e.Error = Redact(fmt.Sprintf("git: command timed out after %v", timeout))
 			e.MarkTimedOut()
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = ge.StdoutLimitBytes
@@ -707,8 +707,8 @@ func (ge *GitExecutor) Execute(ctx context.Context, e *Execution) error {
 			return err
 		}
 		e.MarkFailed(stderrBuf.buf.String(), exitCode)
-		e.Stdout = stdoutBuf.buf.String()
-		e.Stderr = stderrBuf.buf.String()
+		e.Stdout = Redact(stdoutBuf.buf.String())
+		e.Stderr = Redact(stderrBuf.buf.String())
 		e.StdoutTruncated = stdoutBuf.truncated
 		e.StderrTruncated = stderrBuf.truncated
 		e.StdoutLimitBytes = ge.StdoutLimitBytes

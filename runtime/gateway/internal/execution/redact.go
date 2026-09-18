@@ -12,7 +12,7 @@ const maxResponseBodyBytes = 10 << 20 // 10 MiB
 // returned so secrets are not persisted in the execution store, audit
 // exports, or API responses.
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)authorization:\s*\S+`),
+	regexp.MustCompile(`(?i)authorization:\s*[^\r\n]+`),
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/=-]+`),
 	regexp.MustCompile(`(?i)(token|api[_-]?key|secret|password|passwd|credential)(=|:)\s*\S+`),
 }

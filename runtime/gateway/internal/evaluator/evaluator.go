@@ -234,6 +234,12 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 		}
 	}
 
+	// Lease validation only runs when a lease is PRESENT in the request.
+	// A nil lease is not an error: leases are optional for policy-level
+	// checks, and lease-less requests are decided on policy rules plus
+	// agent identity alone. However, a lease that is present but unsigned,
+	// tampered, expired, revoked, or out of scope always denies below — a
+	// caller cannot weaken a decision by attaching a garbage lease.
 	if decision == "" && req.CapabilityLease != nil {
 		if e.revocationChecker != nil && e.revocationChecker.IsRevoked(req.CapabilityLease.LeaseID) {
 			reasons = append(reasons, models.ReasonCapabilityRevoked)

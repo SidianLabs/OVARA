@@ -686,9 +686,18 @@ func (h *ContinuationHandler) handleRecoverExecuting(w http.ResponseWriter, r *h
 			continue
 		}
 
+		// Measure age from the claim time (ExecutingAt), not CreatedAt: a
+		// continuation that sat queued before being claimed must not be
+		// "recovered" while it is legitimately executing. Falls back to
+		// CreatedAt for records claimed before the field existed (mirrors
+		// the orchestrator's claimTime logic).
+		at := snap.CreatedAt
+		if snap.ExecutingAt != nil && !snap.ExecutingAt.IsZero() {
+			at = *snap.ExecutingAt
+		}
 		ageSeconds := int64(0)
-		if !snap.CreatedAt.IsZero() {
-			ageSeconds = int64(now.Sub(snap.CreatedAt).Seconds())
+		if !at.IsZero() {
+			ageSeconds = int64(now.Sub(at).Seconds())
 		}
 
 		if olderThanMins > 0 {

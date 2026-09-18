@@ -155,26 +155,23 @@ func TestSigner_SignatureFormat(t *testing.T) {
 	}
 }
 
-func TestSigner_emptyKey(t *testing.T) {
-	signer := NewSigner([]byte(""))
+func TestSigner_emptyKey_rejected(t *testing.T) {
+	// An empty key is public knowledge: receipts signed with it are forgeable
+	// by anyone. NewSigner must reject it at construction.
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected NewSigner to panic on empty key")
+		}
+	}()
+	NewSigner([]byte(""))
+}
 
-	r := &models.Receipt{
-		ReceiptID:     "rec-006",
-		DecisionID:    "dec-006",
-		ActionDigest:  "abc123",
-		ActionType:    "shell",
-		Resource:      "repo:example/web",
-		AgentID:       "agent-1",
-		Decision:      "allowed",
-		PolicyVersion: "v1-local",
-		TrustScore:    0.95,
-		IssuedAt:      time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC),
-	}
-
-	sig := signer.Sign(r)
-	r.Signature = sig
-
-	if !signer.Verify(r) {
-		t.Fatal("Verify returned false for receipt signed with empty key")
-	}
+func TestSigner_allZeroKey_rejected(t *testing.T) {
+	// An all-zero key is equally forgeable and must also be rejected.
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected NewSigner to panic on all-zero key")
+		}
+	}()
+	NewSigner(make([]byte, 32))
 }

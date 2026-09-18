@@ -19,7 +19,24 @@ type Signer struct {
 }
 
 // NewSigner returns a Signer backed by the supplied secret key bytes.
+// The key must be non-empty and not all-zero: such a key is public
+// knowledge, so receipts signed with it are forgeable by anyone. NewSigner
+// panics on an empty or all-zero key so the misconfiguration surfaces at
+// construction rather than producing silently forgeable receipts.
 func NewSigner(key []byte) *Signer {
+	if len(key) == 0 {
+		panic("receipt: NewSigner called with empty signing key")
+	}
+	allZero := true
+	for _, b := range key {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		panic("receipt: NewSigner called with all-zero signing key")
+	}
 	return &Signer{key: key}
 }
 

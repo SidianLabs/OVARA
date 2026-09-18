@@ -207,9 +207,36 @@ var gitEnvDenylist = map[string]bool{
 	"GIT_EXTERNAL_DIFF":     true,
 	"GIT_PAGER":             true,
 	"GIT_EDITOR":            true,
-	"LD_PRELOAD":            true,
-	"LD_LIBRARY_PATH":       true,
-	"DYLD_INSERT_LIBRARIES": true,
+	"GIT_ASKPASS":           true,
+	"SSH_ASKPASS":           true,
+	"GIT_TEMPLATE_DIR":      true,
+	"GIT_DIR":               true,
+	"GIT_OBJECT_DIRECTORY":  true,
+}
+
+// gitEnvDeniedPrefixes are stripped by prefix so entire families of dangerous
+// variables cannot be smuggled past the denylist by enumeration:
+//   - GIT_CONFIG* lets a caller inject arbitrary git configuration (including
+//     core.sshCommand / core.fsmonitor hooks) via env (GIT_CONFIG_COUNT,
+//     GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*, GIT_CONFIG_PARAMETERS, etc.)
+//   - LD_*/DYLD_* are dynamic-loader variables (LD_PRELOAD, LD_AUDIT,
+//     DYLD_INSERT_LIBRARIES, ...) that inject code into the spawned binary.
+var gitEnvDeniedPrefixes = []string{
+	"GIT_CONFIG",
+	"LD_",
+	"DYLD_",
+}
+
+func gitEnvDenied(name string) bool {
+	if gitEnvDenylist[name] {
+		return true
+	}
+	for _, p := range gitEnvDeniedPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizedEnv() []string {
@@ -220,7 +247,7 @@ func sanitizedEnv() []string {
 		if idx := strings.IndexByte(kv, '='); idx >= 0 {
 			name = kv[:idx]
 		}
-		if gitEnvDenylist[name] {
+		if gitEnvDenied(name) {
 			continue
 		}
 		out = append(out, kv)

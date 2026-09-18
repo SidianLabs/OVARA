@@ -219,7 +219,7 @@ func TestShellExecutor(t *testing.T) {
 func TestShellExecutor_StdoutTruncation(t *testing.T) {
 	ctx := context.Background()
 	exec := NewShellExecutorWithLimits(10, 20, 256*1024)
-	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:printf 'A%.0s' {1..100}", 10)
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:i=0; while [ $i -lt 300 ]; do printf 'xy'; i=$((i+1)); done", 10)
 	err := exec.Execute(ctx, exe)
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
@@ -241,7 +241,7 @@ func TestShellExecutor_StdoutTruncation(t *testing.T) {
 func TestShellExecutor_StderrTruncation(t *testing.T) {
 	ctx := context.Background()
 	exec := NewShellExecutorWithLimits(10, 1024*1024, 20)
-	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:printf 'B%.0s' 1>&2 {1..100}", 10)
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:i=0; while [ $i -lt 300 ]; do printf 'xy' 1>&2; i=$((i+1)); done", 10)
 	err := exec.Execute(ctx, exe)
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)

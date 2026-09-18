@@ -41,10 +41,15 @@ type SandboxResult struct {
 }
 
 type ContainerInfo struct {
-	ID    string
-	State string
-	Image string
+	ID    string   `json:"id"`
+	State string   `json:"state"`
+	Image string   `json:"image"`
+	Names []string `json:"names,omitempty"`
 }
+
+// maxExecOutputBytes caps the docker exec output stream read from the
+// daemon so a runaway container cannot exhaust gateway memory.
+const maxExecOutputBytes = 1 << 20 // 1 MiB
 
 type DockerSocker struct {
 	socketPath string
@@ -204,9 +209,15 @@ func (d *DockerSocker) ExecInContainer(ctx context.Context, containerID, command
 		return nil, fmt.Errorf("docker exec start returned %d: %s", startResp.StatusCode, string(respBody))
 	}
 
-	raw, err := io.ReadAll(startResp.Body)
+	// Cap the exec output stream; read one extra byte to detect truncation.
+	raw, err := io.ReadAll(io.LimitReader(startResp.Body, maxExecOutputBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading exec output: %w", err)
+	}
+	outputTruncated := false
+	if len(raw) > maxExecOutputBytes {
+		raw = raw[:maxExecOutputBytes]
+		outputTruncated = true
 	}
 
 	// The exec start response is a docker-multiplexed stream: each frame is an
@@ -221,13 +232,17 @@ func (d *DockerSocker) ExecInContainer(ctx context.Context, containerID, command
 		return nil, fmt.Errorf("inspect exec: %w", err)
 	}
 
-	return &SandboxResult{
+	res := &SandboxResult{
 		ContainerID: containerID,
 		ExitCode:    exitCode,
 		Stdout:      stdout.String(),
 		Stderr:      stderr.String(),
 		Duration:    time.Since(start),
-	}, nil
+	}
+	if outputTruncated {
+		res.Error = fmt.Sprintf("exec output truncated at %d bytes", maxExecOutputBytes)
+	}
+	return res, nil
 }
 
 // demuxDockerStream splits a raw docker attach/exec output stream into
@@ -318,6 +333,7 @@ func (d *DockerSocker) ListContainers(ctx context.Context) ([]ContainerInfo, err
 	var containers []struct {
 		ID    string   `json:"Id"`
 		State string   `json:"State"`
+		Image string   `json:"Image"`
 		Names []string `json:"Names"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&containers); err != nil {
@@ -329,6 +345,8 @@ func (d *DockerSocker) ListContainers(ctx context.Context) ([]ContainerInfo, err
 		result = append(result, ContainerInfo{
 			ID:    c.ID,
 			State: c.State,
+			Image: c.Image,
+			Names: c.Names,
 		})
 	}
 	return result, nil

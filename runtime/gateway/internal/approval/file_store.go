@@ -3,6 +3,7 @@ package approval
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 
@@ -138,7 +139,12 @@ func (s *FileBackedStore) ConsumeResume(id string) (*ApprovalRequest, error) {
 	}
 	req.MarkResumed()
 	if err := s.persistAll(); err != nil {
-		return nil, err
+		// The in-memory resume was already applied; returning the error here
+		// would tell the caller the consume failed and invite a retry that
+		// then sees "already resumed". Match the continuation store's
+		// persistLocked approach: log the write failure and still report
+		// success so in-memory and reported state stay consistent.
+		log.Printf("approval store: failed to persist resume of %s: %v", id, err)
 	}
 	return snapshotOf(req), nil
 }

@@ -294,8 +294,11 @@ func Run(configPath string) error {
 	capabilitiesHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	if leaseValidator != nil {
 		capabilitiesHandler.SetLeaseValidator(leaseValidator)
+	} else if cfg.AllowUnsignedLeases {
+		capabilitiesHandler.SetAllowUnsignedLeases(true)
+		log.Printf("WARNING: no trusted_issuers configured and allow_unsigned_leases=true; /v1/capabilities/track accepts leases WITHOUT signature verification")
 	} else {
-		log.Printf("WARNING: no trusted_issuers configured; /v1/capabilities/track accepts leases WITHOUT signature verification")
+		log.Printf("WARNING: no trusted_issuers configured; /v1/capabilities/track rejects leases it cannot verify. Set allow_unsigned_leases=true to opt in to unsigned leases (dev only).")
 	}
 	if capabilitiesHistoryStore != nil {
 		capabilitiesHandler.SetHistoryStore(capabilitiesHistoryStore)
@@ -501,7 +504,7 @@ func Run(configPath string) error {
 	case cfg.AuthEnabled && len(cfg.OperatorTokens) > 0:
 		log.Printf("AUTH: auth_enabled=true with %d operator token(s) configured", len(cfg.OperatorTokens))
 	case cfg.AuthEnabled && len(cfg.OperatorTokens) == 0:
-		log.Printf("AUTH WARNING: auth_enabled=true but operator_tokens is empty — gateway is running OPEN (no auth enforced). Configure operator_tokens to lock down.")
+		log.Printf("AUTH WARNING: auth_enabled=true but operator_tokens is empty — gateway will DENY ALL requests until operator_tokens is configured (fail-closed).")
 	default:
 		log.Printf("AUTH: auth_enabled=false — gateway open (set auth_enabled=true and configure operator_tokens to lock down)")
 	}
