@@ -40,7 +40,7 @@ rules. If no rule matches, the gateway's default is to **escalate**
 | `allow` | bool | one of | If true, allow the action |
 | `deny` | bool | one of | If true, deny the action |
 | `escalate` | bool | one of | If true, escalate for human approval |
-| `conditions` | object | no | Additional conditions (e.g., `agent_id`, `resource_pattern`) |
+| `conditions` | object | no | ⚠️ Parsed then **discarded** by `LoadStoreFromFile` — currently inert, see below |
 | `description` | string | no | Human-readable description |
 
 A rule must have at least one of `allow`, `deny`, or `escalate` set to
@@ -52,14 +52,22 @@ escalate, so the additional flag has no effect on the outcome.
 
 ## Condition Fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `patterns` | array of strings | Shell patterns to match against the resource |
-| `require_explicit_approval` | bool | Force escalation regardless of other rules |
-| `agent_id` | string | Restrict rule to a specific agent |
-| `resource_pattern` | string | Glob pattern to match against the resource |
-| `min_trust_score` | number | Minimum trust score (0.0-1.0) required |
-| `min_trust_level` | string | Minimum trust level: `high`, `medium`, `low`, `none` |
+> **Status: all fields below are inert today.** `fileRule` parses
+> `conditions` into a map and `LoadStoreFromFile` then drops it — no
+> field affects evaluation for file-loaded policies. Likewise,
+> `min_trust_score` / `min_trust_level` exist on the in-memory `Rule`
+> struct but are **never parsed from a policy file**, so they too are
+> no-ops on disk. Only `action_type`, `environment`, `allow`, `deny`,
+> and `escalate` are honored from a file.
+
+| Field | Type | Status | Description |
+|-------|------|--------|-------------|
+| `patterns` | array of strings | inert | Shell patterns to match against the resource |
+| `require_explicit_approval` | bool | inert | Force escalation regardless of other rules |
+| `agent_id` | string | inert | Restrict rule to a specific agent |
+| `resource_pattern` | string | inert | Glob pattern to match against the resource |
+| `min_trust_score` | number | inert (never parsed from file) | Minimum trust score (0.0-1.0) required |
+| `min_trust_level` | string | inert (never parsed from file) | Minimum trust level: `high`, `medium`, `low`, `none` |
 
 ## Endpoints
 

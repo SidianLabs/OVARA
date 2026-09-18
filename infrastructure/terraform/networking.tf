@@ -17,14 +17,29 @@ resource "kubernetes_ingress_v1" "api" {
     rule {
       host = "api.${var.environment}.ovara.io"
       http {
-        path {
-          path      = "/v1/runtime"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = kubernetes_service.gateway.metadata[0].name
-              port {
-                number = 80
+        # Control plane (Fastify, cloud/control-plane/src/server.ts) serves
+        # exactly these prefixes; every other /v1/* route is served by the
+        # runtime gateway.
+        dynamic "path" {
+          for_each = [
+            "/v1/tenants",
+            "/v1/organizations",
+            "/v1/gateways",
+            "/v1/policies",
+            "/v1/revocations",
+            "/v1/api-keys",
+            "/v1/distribution",
+            "/health",
+          ]
+          content {
+            path      = path.value
+            path_type = "Prefix"
+            backend {
+              service {
+                name = kubernetes_service.control_plane.metadata[0].name
+                port {
+                  number = 80
+                }
               }
             }
           }
@@ -34,7 +49,7 @@ resource "kubernetes_ingress_v1" "api" {
           path_type = "Prefix"
           backend {
             service {
-              name = kubernetes_service.control_plane.metadata[0].name
+              name = kubernetes_service.gateway.metadata[0].name
               port {
                 number = 80
               }
@@ -96,6 +111,25 @@ resource "kubernetes_network_policy" "control_plane_isolate" {
         protocol = "TCP"
       }
     }
+
+    # DNS — required to resolve the postgres service name.
+    egress {
+      to {
+        namespace_selector {
+          match_labels = {
+            name = "kube-system"
+          }
+        }
+      }
+      ports {
+        port     = "53"
+        protocol = "UDP"
+      }
+      ports {
+        port     = "53"
+        protocol = "TCP"
+      }
+    }
   }
 }
 
@@ -133,5 +167,29 @@ resource "kubernetes_network_policy" "gateway_isolate" {
         }
       }
     }
+
+    # DNS — without kube-dns egress the gateway cannot resolve
+    # control-plane.<ns>.svc.cluster.local (or any other name).
+    egress {
+      to {
+        namespace_selector {
+          match_labels = {
+            name = "kube-system"
+          }
+        }
+      }
+      ports {
+        port     = "53"
+        protocol = "UDP"
+      }
+      ports {
+        port     = "53"
+        protocol = "TCP"
+      }
+    }
+    # NOTE: additional egress will be needed for any external control
+    # plane, OTLP collector, or NATS endpoint the gateway is configured
+    # to reach — this policy currently permits only cluster DNS and
+    # control-plane pods.
   }
 }

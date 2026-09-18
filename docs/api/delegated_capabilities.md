@@ -103,7 +103,7 @@ being used to mint leases with broader permissions.
 ```typescript
 import { verifyCapabilityLease, hasAction, isLeaseExpired, scopeCovers } from '@ovara/sdk';
 
-verifyCapabilityLease(lease);  // verifies signature + structural validity
+verifyCapabilityLease(lease, publicKeyHex);  // verifies ed25519 signature against the issuer's hex public key + structural validity
 hasAction(lease, 'shell');     // checks if action is in allowed_actions
 isLeaseExpired(lease);         // checks expiry against current time
 scopeCovers(lease, 'shell:ls'); // checks if resource matches scope

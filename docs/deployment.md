@@ -37,7 +37,7 @@ Create `etc/config.json`:
   "policy_version": "v1-prod",
   "policy_file": "etc/policy.json",
   "policy_refresh_interval": 0,
-  "fail_closed": false,
+  "fail_closed": true,
   "auth_enabled": true,
   "operator_tokens": ["sk_operator_token_here"],
   "trusted_issuers": {

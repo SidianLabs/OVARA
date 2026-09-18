@@ -4,6 +4,7 @@
   "policy_file": "./examples/sample_policy_local.json",
   "policy_refresh_interval": 10,
   "log_level": "info",
+  "_note_fail_closed": "fail_closed:false means policy-load failures are silently allowed — fine for local dev, NEVER for production. Set true in any deployed config.",
   "fail_closed": false,
   "decision_log_file": "var/log/decisions.jsonl",
   "gateway_name": "local-demo-gateway",

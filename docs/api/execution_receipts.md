@@ -103,15 +103,17 @@ the HMAC, then compare in constant time.
 Receipts are stored in the
 [`runtime/gateway/internal/receipts`](../../runtime/gateway/internal/receipts/)
 package. The store supports both in-memory and file-backed persistence.
-Default retention is 365 days. The standalone
-[receipt-storage service](../../services/receipt-storage/) provides a
-durable archive with verification API.
+Default retention is **60 minutes** (`receipts_max_age_minutes`, default
+60; `receipts_max_size` bounds the count). For long-term archival use
+the standalone [receipt-storage service](../../services/receipt-storage/),
+which provides durable storage and a verification API.
 
 ## Tamper Detection
 
-Modifying any field of a receipt invalidates its signature. The
-verification function will return `false` and the `verify` endpoint
-will respond with `{"valid": false, "reason": "signature_mismatch"}`.
+Modifying any field of a receipt invalidates its signature. There is no
+gateway HTTP verify endpoint — verify with the SDK helpers above
+(`verifyReceipt` / `verify_receipt`), which return `false` on mismatch,
+or via the receipt-storage service's verification API.
 
 ## Cross-Org Receipts
 
