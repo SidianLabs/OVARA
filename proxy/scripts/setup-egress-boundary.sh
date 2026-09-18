@@ -82,8 +82,8 @@ table inet egress_boundary {
   # exfil tunnel.
   chain nat_output {
     type nat hook output priority -100; policy accept;
-    udp dport 53 dnat to ${RESOLVER}:5353
-    tcp dport 53 dnat to ${RESOLVER}:5353
+    udp dport 53 dnat ip to ${RESOLVER}:5353
+    tcp dport 53 dnat ip to ${RESOLVER}:5353
   }
 
   chain output {

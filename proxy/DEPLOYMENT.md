@@ -34,7 +34,11 @@ exist; treat per-protocol coverage as uneven.
 ```
 
 Boundary setup is in `proxy/scripts/setup-egress-boundary.sh` (netns and
-docker modes). Resolver setup is in `proxy/scripts/resolver.md`.
+docker modes) — also embedded in the `ovara` binary, so
+`ovara run -dir DIR --boundary netns` sets up the namespace and starts the
+stack in one command (requires root; `--boundary docker` applies the
+docker `--internal`-network recipe).
+Resolver setup is in `proxy/scripts/resolver.md`.
 
 ## Trust store injection
 
