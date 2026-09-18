@@ -81,9 +81,16 @@ the **Ovara process** environment — the agent never sees them. The proxy
 injects them at the wire per the host bindings in `proxy.json`.
 
 **What makes it non-advisory:** the agent's environment must have no other
-egress — see `proxy/scripts/setup-egress-boundary.sh` (docker `--internal` /
-netns + nftables). Without that boundary the proxy is advisory: a cooperative
-agent uses it, an uncooperative one routes around it. HTTPS only. Details in
+egress. The boundary is built into the binary — run as root:
+
+```bash
+ovara run -dir mydir --boundary netns    # creates agent0 netns + nftables deny-all
+ovara run -dir mydir --boundary docker   # docker --internal network recipe
+```
+
+then run your agent inside it (the command prints the exact `ip netns exec`
+line). Without that boundary the proxy is advisory: a cooperative agent uses
+it, an uncooperative one routes around it. HTTPS only. Details in
 [`proxy/DEPLOYMENT.md`](proxy/DEPLOYMENT.md).
 
 ---

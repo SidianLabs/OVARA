@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/proxy"
 	"ovara.proxy/internal/receipts"
+	"ovara.proxy/scripts"
 	"ovara.runtime.gateway/pkg/server"
 )
 
@@ -256,6 +258,8 @@ func waitForGateway(base string, timeout time.Duration) error {
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "deployment directory from ovara init")
+	boundary := fs.String("boundary", "", "set up an egress boundary before starting: netns or docker (requires root)")
+	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
 	fs.Parse(args)
 	if err := os.Chdir(*dir); err != nil {
 		return err
@@ -263,6 +267,11 @@ func cmdRun(args []string) error {
 	cfg, err := config.Load("proxy.json")
 	if err != nil {
 		return fmt.Errorf("proxy.json: %w (run `ovara init` first)", err)
+	}
+	if *boundary != "" {
+		if err := setupBoundary(*boundary, *boundaryName, cfg); err != nil {
+			return fmt.Errorf("boundary setup: %w", err)
+		}
 	}
 	go func() {
 		if err := server.Run("config.json"); err != nil {
@@ -281,6 +290,67 @@ func cmdRun(args []string) error {
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
 	return http.ListenAndServe(cfg.ListenAddr, srv)
+}
+
+// setupBoundary runs the embedded egress-boundary script so the agent
+// environment has no path around the proxy. Requires root (or passwordless
+// sudo); the script is idempotent-ish and safe to re-run.
+func setupBoundary(mode, name string, cfg *config.Config) error {
+	if mode != "netns" && mode != "docker" {
+		return fmt.Errorf("--boundary must be netns or docker, got %q", mode)
+	}
+	f, err := os.CreateTemp("", "ovara-boundary-*.sh")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(scripts.EgressBoundary); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+	if err := os.Chmod(f.Name(), 0o755); err != nil {
+		return err
+	}
+
+	args := []string{f.Name(), mode, "--proxy-port", strings.TrimPrefix(cfg.ListenAddr, ":")}
+	if name != "" {
+		if mode == "netns" {
+			args = append(args, "--name", name)
+		} else {
+			args = append(args, "--net", name)
+		}
+	}
+	var cmd *exec.Cmd
+	if os.Geteuid() == 0 {
+		cmd = exec.Command("bash", args...)
+	} else {
+		cmd = exec.Command("sudo", append([]string{"bash"}, args...)...)
+	}
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	log.Printf("setting up %s egress boundary (requires root)...", mode)
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	ns := name
+	if ns == "" {
+		ns = "agent0"
+	}
+	if mode == "netns" {
+		log.Printf("boundary up — run your agent inside it:")
+		log.Printf("  sudo ip netns exec %s env HTTPS_PROXY=http://10.200.0.1%s SSL_CERT_FILE=%s/var/ca.pem <agent>", ns, cfg.ListenAddr, mustGetwd())
+	} else {
+		log.Printf("boundary network ready — launch the agent per the docker recipe above")
+	}
+	return nil
+}
+
+func mustGetwd() string {
+	d, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return d
 }
 
 // --- demo ------------------------------------------------------------------
