@@ -121,8 +121,9 @@ func init() {
 		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
 		"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
 		"192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
-		"224.0.0.0/4", "240.0.0.0/4",
-		"::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
+		"192.88.99.0/24", "224.0.0.0/4", "240.0.0.0/4",
+		"::/128", "::1/128", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64",
+		"2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8",
 	} {
 		_, n, err := net.ParseCIDR(c)
 		if err != nil {
@@ -141,14 +142,15 @@ func isPublicIP(ip net.IP) bool {
 	return true
 }
 
-// resolvePublic resolves host (bounded) and returns a public IP to dial.
-// Errors on resolution failure or if ANY resolved address is non-public.
-func resolvePublic(ctx context.Context, host string) (net.IP, error) {
+// resolvePublic resolves host (bounded) and returns the validated public
+// IPs to dial, in resolver order. Errors on resolution failure or if ANY
+// resolved address is non-public.
+func resolvePublic(ctx context.Context, host string) ([]net.IP, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		if !isPublicIP(ip) {
 			return nil, fmt.Errorf("non-public address %s", ip)
 		}
-		return ip, nil
+		return []net.IP{ip}, nil
 	}
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -164,7 +166,7 @@ func resolvePublic(ctx context.Context, host string) (net.IP, error) {
 			return nil, fmt.Errorf("%s resolves to non-public address %s", host, ip)
 		}
 	}
-	return ips[0], nil
+	return ips, nil
 }
 
 // checkDestination refuses requests to non-public destinations (SSRF).
@@ -189,11 +191,22 @@ func (s *Server) dialChecked(ctx context.Context, network, addr string) (net.Con
 	if err != nil {
 		return nil, err
 	}
-	ip, err := resolvePublic(ctx, host)
+	ips, err := resolvePublic(ctx, host)
 	if err != nil {
 		return nil, err
 	}
-	return s.dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	// Try every validated address in resolver order: a stale first answer
+	// must not kill the request when other addrs work. Only IPs that
+	// passed the non-public check above are ever dialed.
+	var lastErr error
+	for _, ip := range ips {
+		conn, err := s.dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // redactURL strips query and fragment — both can carry secrets that must
@@ -288,7 +301,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// handled by the one-shot server. done fires on conn EOF/close so the
 	// pending Accept (and this goroutine) exit instead of leaking.
 	done := make(chan struct{})
-	listener := &oneShotListener{conn: &eofConn{Conn: tlsConn, done: done}, done: done}
+	var doneOnce sync.Once
+	listener := &oneShotListener{
+		conn: &eofConn{Conn: tlsConn, done: done, once: &doneOnce},
+		done: done,
+		once: &doneOnce,
+	}
 	srv := &http.Server{
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       90 * time.Second,
@@ -306,7 +324,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 type eofConn struct {
 	net.Conn
 	done chan struct{}
-	once sync.Once
+	once *sync.Once // shared with oneShotListener so done closes exactly once
 }
 
 func (c *eofConn) finish() { c.once.Do(func() { close(c.done) }) }
@@ -327,23 +345,20 @@ func (c *eofConn) Close() error {
 type oneShotListener struct {
 	conn net.Conn
 	done chan struct{}
-	once bool
+	once *sync.Once // shared with the wrapped eofConn
+	served bool
 }
 
 func (l *oneShotListener) Accept() (net.Conn, error) {
-	if l.once {
+	if l.served {
 		<-l.done
 		return nil, fmt.Errorf("closed")
 	}
-	l.once = true
+	l.served = true
 	return l.conn, nil
 }
 func (l *oneShotListener) Close() error {
-	select {
-	case <-l.done:
-	default:
-		close(l.done)
-	}
+	l.once.Do(func() { close(l.done) })
 	return l.conn.Close()
 }
 func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }
@@ -441,6 +456,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	r.RequestURI = ""
+	// Reconcile the wire Host header with the enforced destination: in the
+	// MITM path r.URL.Host is rewritten to the CONNECT target while r.Host
+	// keeps the client's inner Host header, and net/http prefers r.Host on
+	// the wire. Without this a client could CONNECT to an allowed host but
+	// have upstream see a different vhost (vhost confusion / soft SSRF),
+	// and creds.Match would disagree with the wire Host. Pin r.Host to the
+	// checked destination in this single chokepoint covering both the
+	// plain-proxy and MITM paths.
+	r.Host = r.URL.Host
 	// Strip hop-by-hop headers — notably Upgrade/Connection, which would
 	// otherwise turn one approved GET into an uninspected byte stream.
 	stripHopHeaders(r.Header)
