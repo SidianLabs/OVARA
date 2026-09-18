@@ -150,7 +150,9 @@ func (e *Engine) EvaluateRules(ev Event) []*models.Alert {
 			State:          models.AlertStateNew,
 		}
 
-		key := dedupeKey(alert)
+		// Rule alerts must not share the triggering event's dedupe key —
+		// include the rule ID so each rule dedupes independently.
+		key := "rule:" + rule.ID + ":" + dedupeKey(alert)
 		e.mu.Lock()
 		if lastSeen, ok := e.dedupe[key]; ok {
 			if e.nowFunc().Sub(lastSeen) < e.dedupeTTL {

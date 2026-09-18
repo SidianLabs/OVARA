@@ -79,7 +79,11 @@ func TestRegistry_ListActive(t *testing.T) {
 	r.Register(id1)
 	r.Register(id2)
 
-	id1.Suspend()
+	// Suspend via the registry — mutating the caller's pointer must not
+	// affect stored state.
+	if err := r.Suspend(id1.ID); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
 
 	active := r.ListActive()
 	if len(active) != 1 {

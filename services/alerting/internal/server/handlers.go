@@ -162,13 +162,22 @@ func (h *Handlers) ingest(w http.ResponseWriter, r *http.Request) {
 		ev.Severity = models.SeverityMedium
 	}
 
+	// Evaluate rules first so rule alerts still fire for events that are
+	// dedupe-skipped by ProcessEvent.
+	ruleAlerts := h.Engine.EvaluateRules(ev)
+
 	alert, err := h.Engine.ProcessEvent(ev)
 	if err != nil {
+		if len(ruleAlerts) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":       err.Error(),
+				"rule_alerts": ruleAlerts,
+			})
+			return
+		}
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
-
-	ruleAlerts := h.Engine.EvaluateRules(ev)
 
 	response := map[string]any{
 		"alert": alert,

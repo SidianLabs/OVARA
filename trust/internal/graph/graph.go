@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"crypto/ed25519"
 	"crypto/subtle"
 	"fmt"
 	"sort"
@@ -53,7 +54,7 @@ func (tg *TrustGraph) AddOrganization(domain TrustDomain, name string, publicKey
 	tg.nodes[domain] = &OrganizationNode{
 		Domain:     domain,
 		Name:       name,
-		PublicKeys: publicKeys,
+		PublicKeys: cloneKeys(publicKeys),
 		JoinedAt:   time.Now().UTC(),
 		Active:     true,
 	}
@@ -93,9 +94,16 @@ func (tg *TrustGraph) Federate(source, target TrustDomain, trustLevel float64, t
 
 	now := time.Now().UTC()
 	targetNode := tg.nodes[target]
+	// Federation may only reference keys already registered to the target via
+	// /v1/domains. Accepting arbitrary keys here would let any registered org
+	// inject attacker-controlled keys into a victim domain and verify
+	// receipts as the victim.
 	for _, key := range targetPublicKeys {
+		if len(key) != ed25519.PublicKeySize {
+			return fmt.Errorf("target public key must be %d bytes, got %d", ed25519.PublicKeySize, len(key))
+		}
 		if !containsKey(targetNode.PublicKeys, key) {
-			targetNode.PublicKeys = append(targetNode.PublicKeys, key)
+			return fmt.Errorf("target public key %x… is not registered for %s", key[:4], target)
 		}
 	}
 
@@ -120,7 +128,7 @@ func (tg *TrustGraph) Federate(source, target TrustDomain, trustLevel float64, t
 			FederatedSince: now,
 			LastUpdated:    now,
 			Active:         true,
-			PublicKeys:     targetPublicKeys,
+			PublicKeys:     cloneKeys(targetPublicKeys),
 		}
 	}
 	return nil
@@ -153,7 +161,7 @@ func (tg *TrustGraph) GetNeighbors(domain TrustDomain) []TrustRelationship {
 	var rels []TrustRelationship
 	if edges, ok := tg.edges[domain]; ok {
 		for _, rel := range edges {
-			rels = append(rels, *rel)
+			rels = append(rels, *cloneRelationship(rel))
 		}
 	}
 	sort.Slice(rels, func(i, j int) bool {
@@ -168,7 +176,7 @@ func (tg *TrustGraph) GetAllOrganizations() []OrganizationNode {
 
 	var orgs []OrganizationNode
 	for _, node := range tg.nodes {
-		orgs = append(orgs, *node)
+		orgs = append(orgs, *cloneNode(node))
 	}
 	sort.Slice(orgs, func(i, j int) bool {
 		return orgs[i].Domain < orgs[j].Domain
@@ -182,13 +190,13 @@ func (tg *TrustGraph) Snapshot() map[string]interface{} {
 
 	nodes := make([]OrganizationNode, 0, len(tg.nodes))
 	for _, n := range tg.nodes {
-		nodes = append(nodes, *n)
+		nodes = append(nodes, *cloneNode(n))
 	}
 
 	edges := make([]TrustRelationship, 0)
 	for _, targets := range tg.edges {
 		for _, rel := range targets {
-			edges = append(edges, *rel)
+			edges = append(edges, *cloneRelationship(rel))
 		}
 	}
 
@@ -217,21 +225,70 @@ func (tg *TrustGraph) requireNode(domain TrustDomain) error {
 	return nil
 }
 
-// GetNode returns an organization node by domain (read-only).
+func cloneKeys(keys [][]byte) [][]byte {
+	if keys == nil {
+		return nil
+	}
+	out := make([][]byte, len(keys))
+	for i, k := range keys {
+		kc := make([]byte, len(k))
+		copy(kc, k)
+		out[i] = kc
+	}
+	return out
+}
+
+func cloneMetadata(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneNode(n *OrganizationNode) *OrganizationNode {
+	if n == nil {
+		return nil
+	}
+	cp := *n
+	cp.PublicKeys = cloneKeys(n.PublicKeys)
+	cp.Metadata = cloneMetadata(n.Metadata)
+	return &cp
+}
+
+func cloneRelationship(r *TrustRelationship) *TrustRelationship {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	cp.PublicKeys = cloneKeys(r.PublicKeys)
+	return &cp
+}
+
+// GetNode returns a copy of an organization node by domain. The returned
+// node is a deep copy — mutating it does not affect graph state.
 func (tg *TrustGraph) GetNode(domain TrustDomain) (*OrganizationNode, bool) {
 	tg.mu.RLock()
 	defer tg.mu.RUnlock()
 	node, ok := tg.nodes[domain]
-	return node, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneNode(node), true
 }
 
-// GetRelationship returns the trust relationship between source and target (read-only).
+// GetRelationship returns a copy of the trust relationship between source
+// and target.
 func (tg *TrustGraph) GetRelationship(source, target TrustDomain) (*TrustRelationship, bool) {
 	tg.mu.RLock()
 	defer tg.mu.RUnlock()
 	if targets, ok := tg.edges[source]; ok {
-		rel, ok := targets[target]
-		return rel, ok
+		if rel, ok := targets[target]; ok {
+			return cloneRelationship(rel), true
+		}
 	}
 	return nil, false
 }
@@ -251,13 +308,13 @@ func (tg *TrustGraph) SnapshotV2() GraphSnapshot {
 
 	nodes := make([]OrganizationNode, 0, len(tg.nodes))
 	for _, n := range tg.nodes {
-		nodes = append(nodes, *n)
+		nodes = append(nodes, *cloneNode(n))
 	}
 
 	edges := make([]TrustRelationship, 0)
 	for _, targets := range tg.edges {
 		for _, rel := range targets {
-			edges = append(edges, *rel)
+			edges = append(edges, *cloneRelationship(rel))
 		}
 	}
 

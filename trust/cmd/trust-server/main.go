@@ -33,7 +33,12 @@ func NewServer(dataPath string) *Server {
 		identities: make(map[string]*receipt.FederatedIdentity),
 	}
 	if dataPath != "" {
-		store, g := graph.NewGraphStore(dataPath)
+		store, g, err := graph.NewGraphStore(dataPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "FATAL: trust graph at %s is corrupted or unreadable: %v\n", dataPath, err)
+			fmt.Fprintf(os.Stderr, "Refusing to start with an empty trust graph — restore the file or pass -data '' to start fresh.\n")
+			os.Exit(1)
+		}
 		s.store = store
 		s.graph = g
 		fmt.Printf("Loaded trust graph from %s\n", dataPath)
@@ -87,11 +92,19 @@ func (s *Server) registerDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid domain format", http.StatusBadRequest)
 		return
 	}
+	if len(req.PubKeys) == 0 {
+		http.Error(w, "at least one public key is required", http.StatusBadRequest)
+		return
+	}
 	var pubKeys [][]byte
 	for _, k := range req.PubKeys {
 		b, err := hex.DecodeString(k)
 		if err != nil {
 			http.Error(w, "invalid public key hex: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(b) != ed25519.PublicKeySize {
+			http.Error(w, fmt.Sprintf("public key must be %d bytes, got %d", ed25519.PublicKeySize, len(b)), http.StatusBadRequest)
 			return
 		}
 		pubKeys = append(pubKeys, b)
@@ -400,6 +413,7 @@ type verifyReceiptReq struct {
 	Resource       string  `json:"resource"`
 	Decision       string  `json:"decision"`
 	AgentIdentity  string  `json:"agent_identity"`
+	LeaseDigest    string  `json:"lease_digest"`
 	TrustScore     float64 `json:"trust_score"`
 	Timestamp      string  `json:"timestamp"`
 	Signature      string  `json:"signature"`
@@ -460,6 +474,7 @@ func (s *Server) verifyCrossOrgReceipt(w http.ResponseWriter, r *http.Request) {
 		Resource:       req.Resource,
 		Decision:       req.Decision,
 		AgentIdentity:  req.AgentIdentity,
+		LeaseDigest:    req.LeaseDigest,
 		TrustScore:     req.TrustScore,
 		Timestamp:      timestamp,
 		Signature:      sigBytes,

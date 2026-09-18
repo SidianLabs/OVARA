@@ -96,8 +96,24 @@ func (s *memoryStore) Ingest(event *models.TraceEvent) error {
 		}
 	}
 
-	s.events = append(s.events, event)
+	s.events = append(s.events, cloneEvent(event))
 	return nil
+}
+
+// cloneEvent returns a deep copy of a TraceEvent so stored events and
+// returned copies do not share the Metadata map with callers.
+func cloneEvent(e *models.TraceEvent) *models.TraceEvent {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	if e.Metadata != nil {
+		cp.Metadata = make(map[string]string, len(e.Metadata))
+		for k, v := range e.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
 }
 
 func (s *memoryStore) appendToFile(event *models.TraceEvent) error {
@@ -140,8 +156,7 @@ func (s *memoryStore) Query(filter TraceFilter) ([]*models.TraceEvent, error) {
 		if !filter.EndTime.IsZero() && evt.Timestamp.After(filter.EndTime) {
 			continue
 		}
-		cp := *evt
-		results = append(results, &cp)
+		results = append(results, cloneEvent(evt))
 	}
 
 	if filter.Offset >= len(results) {
@@ -275,7 +290,7 @@ func (s *memoryStore) Count() int {
 func eventsToValue(events []*models.TraceEvent) []models.TraceEvent {
 	result := make([]models.TraceEvent, len(events))
 	for i, e := range events {
-		result[i] = *e
+		result[i] = *cloneEvent(e)
 	}
 	return result
 }
