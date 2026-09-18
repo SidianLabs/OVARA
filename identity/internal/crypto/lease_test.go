@@ -1,6 +1,9 @@
 package crypto
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -231,6 +234,47 @@ func TestCapabilityLease_Digest(t *testing.T) {
 	d2 := cl.Digest()
 	if d1 != d2 {
 		t.Error("digest is not deterministic")
+	}
+}
+
+// TestCapabilityLease_DigestPayload_PipeFormat is the cross-module test
+// vector: the signed payload MUST byte-match the canonical form the
+// gateway verifier builds (runtime/gateway/internal/identity/
+// validator.go) and that both SDKs reconstruct:
+//
+//	LeaseID|Issuer|Subject|[AllowedActions]|ResourceScope|ExpiryUnix|DelegationDepth|IssuedAtUnix
+func TestCapabilityLease_DigestPayload_PipeFormat(t *testing.T) {
+	expiry := time.Unix(2_000_000_000, 0).UTC()
+	issuedAt := time.Unix(1_750_000_000, 0).UTC()
+	cl := &CapabilityLease{
+		LeaseID:         "lse_abc123",
+		Issuer:          "agt_issuer",
+		Subject:         "agent-2",
+		AllowedActions:  []string{"shell", "git.push"},
+		ResourceScope:   "repo:example/*",
+		Expiry:          expiry,
+		DelegationDepth: 2,
+		IssuedAt:        issuedAt,
+	}
+
+	want := "lse_abc123|agt_issuer|agent-2|[shell git.push]|repo:example/*|2000000000|2|1750000000"
+	if got := string(cl.digestPayload()); got != want {
+		t.Errorf("digestPayload = %q, want %q", got, want)
+	}
+
+	// Same expectation built the way the gateway builds it (fmt %v for
+	// the actions slice, Unix seconds for the timestamps).
+	gateway := fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
+		cl.LeaseID, cl.Issuer, cl.Subject, cl.AllowedActions,
+		cl.ResourceScope, cl.Expiry.Unix(), cl.DelegationDepth, cl.IssuedAt.Unix(),
+	)
+	if string(cl.digestPayload()) != gateway {
+		t.Error("digestPayload does not match gateway canonical form")
+	}
+
+	wantDigest := sha256.Sum256([]byte(want))
+	if cl.Digest() != hex.EncodeToString(wantDigest[:]) {
+		t.Errorf("Digest() = %s, want sha256(%q)", cl.Digest(), want)
 	}
 }
 

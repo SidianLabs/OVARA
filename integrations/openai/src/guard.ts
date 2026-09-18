@@ -1,4 +1,5 @@
 import { createClient } from "@ovara/sdk";
+import type { Environment } from "@ovara/sdk";
 
 const OVARA_URL = process.env.OVARA_GATEWAY_URL || "http://localhost:8080";
 const OVARA_KEY = process.env.OVARA_API_KEY || "";
@@ -27,7 +28,7 @@ export async function handleOvaraToolCall(args: Record<string, unknown>): Promis
   const result = await client.check({
     actionType: args.action as string,
     resource: args.resource as string,
-    environment: (args.environment as string) || "local",
+    environment: (args.environment as Environment | undefined) || "local",
   });
   return JSON.stringify(result);
 }

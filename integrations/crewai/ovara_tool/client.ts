@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import type { Environment } from "./types.js";
 
 export interface OvaraClientOptions {
@@ -45,6 +46,9 @@ export class OvaraClient {
         action_type: request.actionType,
         resource: request.resource,
         environment: request.environment,
+        // Gateway ActionRequest.Validate() requires nonce and issued_at.
+        nonce: randomUUID(),
+        issued_at: new Date().toISOString(),
       }),
     });
   }

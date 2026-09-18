@@ -27,7 +27,28 @@ class CapabilityLease:
     """Unix seconds; serialized to RFC3339 for the gateway."""
     issued_at: int = 0
     revocation_handle: Optional[str] = None
+    """ed25519 signature over the canonical lease payload. On the
+    gateway wire this is base64 (Go []byte marshals to base64 in JSON)."""
     signature: Optional[str] = None
+
+
+@dataclass
+class DelegationAuthority:
+    """Mirrors models.Authority in the gateway (snake_case on the wire:
+    subject_id, delegated_at)."""
+
+    issuer: str
+    subject_id: str
+    delegated_at: Optional[str] = None  # RFC3339
+
+
+@dataclass
+class DelegationChain:
+    """Mirrors models.DelegationChain in the gateway."""
+
+    authorities: list[DelegationAuthority] = field(default_factory=list)
+    chain_hash: Optional[str] = None
+    depth: int = 0
 
 
 @dataclass
@@ -37,8 +58,8 @@ class ActionRequest:
     environment: str = "local"
     agent_identity: Optional[AgentIdentity] = None
     capability_lease: Optional[CapabilityLease] = None
+    delegation_chain: Optional[DelegationChain] = None
     metadata: Optional[dict] = None
-    trace_id: Optional[str] = None
     nonce: Optional[str] = None
     issued_at: Optional[str] = None
 
@@ -136,5 +157,9 @@ class PortableReceipt:
     url: str
     decision: str
     status: int
-    prev_hash: str
-    signature: str  # "sig_v1:<hex ed25519>"
+    # Links an escalated-then-approved receipt to the approval that
+    # authorized it. Present only on such receipts; it is part of the
+    # signed canonical payload (appended as "|approval_id").
+    approval_id: Optional[str] = None
+    prev_hash: str = ""
+    signature: str = ""  # "sig_v1:<hex ed25519>"

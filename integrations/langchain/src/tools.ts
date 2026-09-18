@@ -1,3 +1,5 @@
+import { randomUUID } from "crypto";
+
 interface ToolResult {
   name: string;
   description: string;
@@ -37,6 +39,9 @@ export const OvaraCheckTool: ToolResult = {
       action_type: input.action,
       resource: input.resource,
       environment: input.environment || "local",
+      // Gateway ActionRequest.Validate() requires nonce and issued_at.
+      nonce: randomUUID(),
+      issued_at: new Date().toISOString(),
     });
     return JSON.stringify(result);
   },

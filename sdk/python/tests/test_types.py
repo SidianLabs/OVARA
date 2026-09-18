@@ -49,7 +49,9 @@ class TestActionRequest:
         assert request.agent_identity is None
         assert request.capability_lease is None
         assert request.metadata is None
-        assert request.trace_id is None
+        assert request.delegation_chain is None
+        assert request.nonce is None
+        assert request.issued_at is None
 
 
 class TestDecisionResponse:

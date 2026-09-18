@@ -22,7 +22,28 @@ export interface CapabilityLease {
   revocationHandle?: string;
   /** Unix seconds; serialized to RFC3339 for the gateway. */
   issuedAt?: number;
+  /**
+   * ed25519 signature over the canonical lease payload. On the gateway
+   * wire this is base64 (Go []byte marshals to base64 in JSON).
+   */
   signature?: string;
+}
+
+/**
+ * Mirrors models.DelegationChain in the gateway. Wire JSON uses
+ * snake_case (subject_id, delegated_at, chain_hash).
+ */
+export interface DelegationAuthority {
+  issuer: string;
+  subjectId: string;
+  /** RFC3339 timestamp, optional. */
+  delegatedAt?: string;
+}
+
+export interface DelegationChain {
+  authorities: DelegationAuthority[];
+  chainHash?: string;
+  depth: number;
 }
 
 export interface ActionRequest {
@@ -31,8 +52,8 @@ export interface ActionRequest {
   environment: Environment;
   agentIdentity?: AgentIdentity;
   capabilityLease?: CapabilityLease;
+  delegationChain?: DelegationChain;
   metadata?: Record<string, unknown>;
-  traceId?: string;
   nonce?: string;
   issuedAt?: string;
 }

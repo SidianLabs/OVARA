@@ -11,6 +11,16 @@ export class BrowserInterceptor {
   private client: OvaraClient;
   private blockOnDeny: boolean;
   private logDecisions: boolean;
+  /**
+   * Per-page interception state. A page gets ONE request handler (a
+   * second page.route()/setRequestInterception registration would throw
+   * when both handlers try to continue/abort the same request); the
+   * handler consults these flags to decide which checks to apply.
+   */
+  private attachedPages = new WeakMap<
+    PageLike,
+    { navigation: boolean; formSubmissions: boolean; environment?: string }
+  >();
 
   constructor(config?: InterceptorConfig) {
     const url = config?.baseUrl || process.env.OVARA_GATEWAY_URL || "http://localhost:8080";
@@ -98,46 +108,82 @@ export class BrowserInterceptor {
     );
   }
 
-  async interceptNavigation(page: PageLike, environment?: string): Promise<void> {
-    await this.attachRequestInterception(page, async (req, ctx) => {
-      if (!(req.isNavigationRequest?.() || req.frame?.() === page)) {
-        ctx.proceed();
-        return;
-      }
-      const decision = await this.evaluate({
-        target: "navigation",
-        url: req.url?.() || req.url,
-        environment: (environment as any) || "local",
-      });
+  /**
+   * ensureAttached installs the page's single request handler (once).
+   * The handler applies whichever checks are enabled in attachedPages
+   * and ALWAYS resolves the request — a throw inside evaluate() must
+   * not leave the request hanging.
+   */
+  private async ensureAttached(page: PageLike): Promise<void> {
+    if (this.attachedPages.has(page)) {
+      return;
+    }
+    const state = { navigation: false, formSubmissions: false, environment: undefined as string | undefined };
+    this.attachedPages.set(page, state);
 
-      if (!decision.allowed && this.blockOnDeny) {
-        ctx.abort();
-        return;
+    await this.attachRequestInterception(page, async (req, ctx) => {
+      try {
+        const isNavigation = !!(req.isNavigationRequest?.() || req.frame?.() === page);
+        const method = (req.method?.() || req.method || "").toUpperCase();
+        const isFormSubmit =
+          method === "POST" || method === "PUT" || method === "PATCH";
+
+        let target: "navigation" | "form_submit" | null = null;
+        if (state.navigation && isNavigation) {
+          target = "navigation";
+        } else if (state.formSubmissions && isFormSubmit) {
+          target = "form_submit";
+        }
+
+        if (target === null) {
+          ctx.proceed();
+          return;
+        }
+
+        const decision = await this.evaluate({
+          target,
+          url: req.url?.() || req.url,
+          method,
+          environment: (state.environment as any) || "local",
+        });
+
+        if (!decision.allowed && this.blockOnDeny) {
+          ctx.abort();
+          return;
+        }
+        ctx.proceed();
+      } catch (err) {
+        // Never leave the request hanging: fail closed (abort) when
+        // blockOnDeny is set, otherwise let it through.
+        try {
+          if (this.blockOnDeny) {
+            ctx.abort();
+          } else {
+            ctx.proceed();
+          }
+        } catch {
+          /* request already settled */
+        }
       }
-      ctx.proceed();
     });
   }
 
-  async interceptFormSubmissions(page: PageLike, environment?: string): Promise<void> {
-    await this.attachRequestInterception(page, async (req, ctx) => {
-      const method = (req.method?.() || req.method || "").toUpperCase();
-      if (method !== "POST" && method !== "PUT" && method !== "PATCH") {
-        ctx.proceed();
-        return;
-      }
-      const decision = await this.evaluate({
-        target: "form_submit",
-        url: req.url?.() || req.url,
-        method,
-        environment: (environment as any) || "local",
-      });
+  async interceptNavigation(page: PageLike, environment?: string): Promise<void> {
+    await this.ensureAttached(page);
+    const state = this.attachedPages.get(page)!;
+    state.navigation = true;
+    if (environment !== undefined) {
+      state.environment = environment;
+    }
+  }
 
-      if (!decision.allowed && this.blockOnDeny) {
-        ctx.abort();
-        return;
-      }
-      ctx.proceed();
-    });
+  async interceptFormSubmissions(page: PageLike, environment?: string): Promise<void> {
+    await this.ensureAttached(page);
+    const state = this.attachedPages.get(page)!;
+    state.formSubmissions = true;
+    if (environment !== undefined) {
+      state.environment = environment;
+    }
   }
 
   interceptDownloads(browser: BrowserLike, environment?: string): void {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +35,9 @@ class PortableLease:
     expiry: int
     delegation_depth: int
     issued_at: int
+    """ed25519 signature over the pipe-joined canonical lease payload,
+    hex-encoded. On the gateway wire it is base64 (Go []byte marshals to
+    base64 in JSON) — verify_capability_lease accepts both forms."""
     signature: str
 
 
@@ -59,8 +64,9 @@ def _rfc3339_to_unix_nano(ts: str) -> int:
 
 def _receipt_canonical(r: PortableReceipt) -> str:
     """Mirrors Receipt.canonical() in proxy/internal/receipts/chain.go:
-    receipt_id|session_id|unixnano|method|url|decision|status|prev_hash"""
-    return "|".join([
+    receipt_id|session_id|unixnano|method|url|decision|status|prev_hash
+    with "|approval_id" appended when approval_id is non-empty."""
+    c = "|".join([
         r.receipt_id,
         r.session_id,
         str(_rfc3339_to_unix_nano(r.timestamp)),
@@ -70,11 +76,41 @@ def _receipt_canonical(r: PortableReceipt) -> str:
         str(r.status),
         r.prev_hash,
     ])
+    if r.approval_id:
+        c += "|" + r.approval_id
+    return c
+
+
+def _identity_canonical(identity: PortableIdentity) -> str:
+    """Mirrors AgentIdentity.Digest() in identity/internal/crypto/
+    identity.go: compact JSON (Go json.Marshal output — no spaces,
+    fields in struct declaration order)."""
+    return json.dumps(
+        {
+            "id": identity.id,
+            "issuer": identity.issuer,
+            "subject_id": identity.subject_id,
+            "owner": identity.owner,
+            "lifecycle": identity.lifecycle,
+        },
+        separators=(",", ":"),
+    )
+
+
+def _signature_to_hex(signature: str) -> str:
+    """Normalize a signature to hex. The SDK carries hex-encoded
+    signatures, but Go marshals []byte to base64 on the wire — accept
+    that form too."""
+    if re.fullmatch(r"[0-9a-fA-F]+", signature) and len(signature) % 2 == 0:
+        return signature
+    try:
+        return base64.b64decode(signature).hex()
+    except ValueError:
+        return signature
 
 
 def compute_identity_digest(identity: PortableIdentity) -> str:
-    payload = f"{identity.id}|{identity.issuer}|{identity.subject_id}|{identity.owner}|{identity.lifecycle}"
-    return hashlib.sha256(payload.encode()).hexdigest()
+    return hashlib.sha256(_identity_canonical(identity).encode()).hexdigest()
 
 
 def verify_agent_identity(identity: PortableIdentity, issuer_public_key_hex: str) -> bool:
@@ -104,7 +140,7 @@ def verify_capability_lease(lease: PortableLease, issuer_public_key_hex: str) ->
         _go_string_slice(lease.allowed_actions), lease.resource_scope,
         str(lease.expiry), str(lease.delegation_depth), str(lease.issued_at),
     ])
-    return _ed25519_verify(issuer_public_key_hex, payload, lease.signature)
+    return _ed25519_verify(issuer_public_key_hex, payload, _signature_to_hex(lease.signature))
 
 
 def verify_receipt(receipt: PortableReceipt, public_key_hex: str) -> bool:
