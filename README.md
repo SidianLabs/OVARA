@@ -38,14 +38,35 @@ receipts in microseconds.
 
 ## Quickstart
 
-One binary runs the whole local deployment — gateway plus executor proxy:
+One binary runs the whole local deployment — gateway plus executor proxy.
+
+**Install** (requires git + Go 1.25+):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/feat/executor-proxy/install.sh | sh
+```
+
+or build from source:
 
 ```bash
 cd proxy
 go build -o ovara ./cmd/ovara
-./ovara demo            # 30-second self-contained proof, no setup
-./ovara init mydir      # generates keys, configs, policy, operator token
-./ovara run -dir mydir  # gateway + executor proxy in one process
+```
+
+**Run:**
+
+```bash
+ovara demo            # 30-second self-contained proof, no setup
+ovara init mydir      # generates keys, configs, policy, operator token
+ovara run -dir mydir  # gateway + executor proxy in one process
+```
+
+**Docker** (build context is the repo root):
+
+```bash
+docker build -f proxy/Dockerfile -t ovara .
+docker run -v ovara-data:/data -p 8080:8080 -p 9443:9443 ovara init /data
+docker run -v ovara-data:/data -p 8080:8080 -p 9443:9443 ovara run -dir /data
 ```
 
 Then wire your agent's environment to the proxy:
