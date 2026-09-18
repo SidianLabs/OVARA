@@ -511,6 +511,9 @@ func Run(configPath string) error {
 	wrappedMux := authMw.Authenticate(mux)
 
 	addr := ":" + cfg.ServerPort
+	if cfg.ListenAddr != "" {
+		addr = cfg.ListenAddr + ":" + cfg.ServerPort
+	}
 	log.Printf("ovara runtime gateway v%s listening on %s", cfg.GatewayVersion, addr)
 	log.Printf("gateway_id=%s enrollment_state=%s environment=%s",
 		enrollmentSvc.GetIdentity().ID,

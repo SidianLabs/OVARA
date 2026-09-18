@@ -459,8 +459,13 @@ type RuleOutcome struct {
 }
 
 func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
+	// A rule only applies when its resource pattern matches the request
+	// resource; empty patterns match everything (pre-resource rules keep
+	// their semantics).
+	res := func(r policy.Rule) bool { return policy.MatchResource(r.Resource, req.Resource) }
+
 	for _, r := range actionRules {
-		if r.Deny && (r.Environment == "*" || r.Environment == string(req.Environment)) {
+		if res(r) && r.Deny && (r.Environment == "*" || r.Environment == string(req.Environment)) {
 			if req.Environment == models.EnvironmentProduction {
 				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
 			}
@@ -468,7 +473,7 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 		}
 	}
 	for _, r := range envRules {
-		if r.Deny && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
+		if res(r) && r.Deny && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
 			if req.Environment == models.EnvironmentProduction {
 				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
 			}
@@ -477,23 +482,23 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 	}
 
 	for _, r := range actionRules {
-		if r.Allow && (r.Environment == "*" || r.Environment == string(req.Environment)) {
+		if res(r) && r.Allow && (r.Environment == "*" || r.Environment == string(req.Environment)) {
 			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow}
 		}
 	}
 	for _, r := range envRules {
-		if r.Allow && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
+		if res(r) && r.Allow && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
 			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow}
 		}
 	}
 
 	for _, r := range actionRules {
-		if r.Escalate && (r.Environment == "*" || r.Environment == string(req.Environment)) {
+		if res(r) && r.Escalate && (r.Environment == "*" || r.Environment == string(req.Environment)) {
 			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
 		}
 	}
 	for _, r := range envRules {
-		if r.Escalate && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
+		if res(r) && r.Escalate && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
 			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
 		}
 	}

@@ -112,6 +112,10 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 
 	gwConfig := map[string]any{
 		"server_port":         gatewayPort,
+		// Loopback-only: the approval/decision API must never be reachable
+		// from a bounded agent, or the agent could approve its own
+		// escalations. `ovara run` keeps gateway+proxy on the same host.
+		"listen_addr":         "127.0.0.1",
 		"policy_version":      "v1-local",
 		"policy_file":         "policy.json",
 		"log_level":           "info",
