@@ -12,6 +12,19 @@ type Registry struct {
 	identities map[string]*crypto.AgentIdentity
 }
 
+// cloneIdentity returns a deep copy of an identity so callers cannot
+// mutate registry-owned state through shared slices.
+func cloneIdentity(id *crypto.AgentIdentity) *crypto.AgentIdentity {
+	if id == nil {
+		return nil
+	}
+	cp := *id
+	if id.PublicKey != nil {
+		cp.PublicKey = append([]byte(nil), id.PublicKey...)
+	}
+	return &cp
+}
+
 func NewRegistry() *Registry {
 	return &Registry{
 		identities: make(map[string]*crypto.AgentIdentity),
@@ -29,7 +42,7 @@ func (r *Registry) Register(id *crypto.AgentIdentity) error {
 			return fmt.Errorf("identity with subject_id=%q and issuer=%q already exists", id.SubjectID, id.Issuer)
 		}
 	}
-	r.identities[id.ID] = id
+	r.identities[id.ID] = cloneIdentity(id)
 	return nil
 }
 
@@ -37,7 +50,10 @@ func (r *Registry) Get(id string) (*crypto.AgentIdentity, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	identity, ok := r.identities[id]
-	return identity, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneIdentity(identity), true
 }
 
 func (r *Registry) List() []*crypto.AgentIdentity {
@@ -45,7 +61,7 @@ func (r *Registry) List() []*crypto.AgentIdentity {
 	defer r.mu.RUnlock()
 	result := make([]*crypto.AgentIdentity, 0, len(r.identities))
 	for _, id := range r.identities {
-		result = append(result, id)
+		result = append(result, cloneIdentity(id))
 	}
 	return result
 }
@@ -56,7 +72,7 @@ func (r *Registry) ListActive() []*crypto.AgentIdentity {
 	var result []*crypto.AgentIdentity
 	for _, id := range r.identities {
 		if id.IsActive() {
-			result = append(result, id)
+			result = append(result, cloneIdentity(id))
 		}
 	}
 	return result

@@ -39,7 +39,12 @@ func main() {
 	var tg *graph.TrustGraph
 	var gs *graph.GraphStore
 	if *graphFile != "" {
-		gs, tg = graph.NewGraphStore(*graphFile)
+		var err error
+		gs, tg, err = graph.NewGraphStore(*graphFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading trust graph %s: %v\n", *graphFile, err)
+			os.Exit(1)
+		}
 	} else {
 		tg = graph.NewTrustGraph()
 	}

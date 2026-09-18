@@ -79,6 +79,20 @@ interface RawRule {
  * such constraint becomes a field on the resulting Ovara rule. Bodies
  * with no input constraints produce a wildcard rule.
  */
+/**
+ * Strip `#` comments from a line while preserving `#` characters that
+ * appear inside quoted strings.
+ */
+function stripComment(line: string): string {
+  let inStr = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"' && line[i - 1] !== '\\') inStr = !inStr;
+    else if (ch === '#' && !inStr) return line.slice(0, i);
+  }
+  return line;
+}
+
 function parseRego(source: string): { package: string; rules: RawRule[]; errors: AdapterError[] } {
   const errors: AdapterError[] = [];
   let pkg = '';
@@ -87,9 +101,17 @@ function parseRego(source: string): { package: string; rules: RawRule[]; errors:
   const lines = source.split('\n');
   let inBlock: { name: string; depth: number; body: string[]; isDefault: boolean; defaultValue: boolean | null; line: number } | null = null;
   let pendingDefault: { ident: string; value: boolean } | null = null;
+  let lastRuleName: string | null = null;
+  let lastRuleLine = 0;
+
+  const pushRule = (name: string, body: string[], line: number) => {
+    rules.push({ name, body: body.join('\n'), isDefault: false, defaultValue: null, line });
+    lastRuleName = name;
+    lastRuleLine = line;
+  };
 
   for (let lineNum = 0; lineNum < lines.length; lineNum++) {
-    const line = lines[lineNum];
+    const line = stripComment(lines[lineNum]);
     const trimmed = line.trim();
 
     if (inBlock) {
@@ -99,26 +121,24 @@ function parseRego(source: string): { package: string; rules: RawRule[]; errors:
         else if (ch === '}') inBlock.depth--;
       }
       if (inBlock.depth <= 0) {
-        rules.push({
-          name: inBlock.name,
-          body: inBlock.body.join('\n'),
-          isDefault: inBlock.isDefault,
-          defaultValue: inBlock.defaultValue,
-          line: inBlock.line,
-        });
+        pushRule(inBlock.name, inBlock.body, inBlock.line);
         inBlock = null;
       }
       continue;
     }
 
-    if (!trimmed || trimmed.startsWith('#')) continue;
+    if (!trimmed) continue;
 
     if (trimmed.startsWith('package ')) {
       pkg = trimmed.slice('package '.length).trim();
       continue;
     }
 
-    const defaultMatch = trimmed.match(/^default\s+(\w+)\s*=\s*(true|false)\s*$/);
+    // `import rego.v1`, `import future.keywords.*`, `import data.x` — imports
+    // affect name resolution only; our supported grammar needs none of them.
+    if (/^import\s+/.test(trimmed)) continue;
+
+    const defaultMatch = trimmed.match(/^default\s+(\w+)\s*(?::=|=)\s*(true|false)\s*$/);
     if (defaultMatch) {
       // Always emit the default declaration as a rule (even if no body follows),
       // so the translator can detect default-allow/deny.
@@ -133,22 +153,102 @@ function parseRego(source: string): { package: string; rules: RawRule[]; errors:
       continue;
     }
 
-    const ruleMatch = trimmed.match(/^(\w+)(?:\s*\([^)]*\))?\s*\{\s*$/);
-    if (ruleMatch) {
-      inBlock = {
-        name: ruleMatch[1],
-        depth: 1,
-        body: [],
-        isDefault: false,
-        defaultValue: null,
-        line: lineNum + 1,
-      };
-      // Consume the pending default if it matches — we don't need it anymore
-      // since the default declaration was already pushed as a rule above.
-      if (pendingDefault?.ident === ruleMatch[1]) {
-        pendingDefault = null;
+    // `else` / `else <expr>` / `else if {` — continue the previous rule.
+    // Semantically `else` only fires when the prior body failed; treating it
+    // as an independent rule of the same name over-denies for `deny` (safe,
+    // fail-closed) but would over-allow for `allow`, which we reject.
+    const elseMatch = trimmed.match(/^else\b(.*)$/);
+    if (elseMatch) {
+      if (!lastRuleName) {
+        errors.push({ message: `'else' without preceding rule`, line: lineNum + 1, source: 'parse' });
+        continue;
+      }
+      if (lastRuleName !== 'deny') {
+        errors.push({
+          message: `'else' after '${lastRuleName}' is untranslatable (would broaden ${lastRuleName}); only deny-chains are supported`,
+          line: lastRuleLine, source: 'semantic',
+        });
+        continue;
+      }
+      const rest = elseMatch[1].trim();
+      const braceIdx = rest.indexOf('{');
+      if (braceIdx === -1) {
+        errors.push({ message: `unparseable else head: ${trimmed}`, line: lineNum + 1, source: 'parse' });
+        continue;
+      }
+      const head = rest.slice(0, braceIdx).trim();
+      if (head && head !== 'if') {
+        errors.push({ message: `unparseable else head: ${trimmed}`, line: lineNum + 1, source: 'parse' });
+        continue;
+      }
+      const afterBrace = rest.slice(braceIdx + 1);
+      const closeIdx = afterBrace.indexOf('}');
+      if (closeIdx !== -1) {
+        // Single-line else: `else { exprs }`
+        pushRule('deny', [afterBrace.slice(0, closeIdx)], lineNum + 1);
+      } else {
+        inBlock = {
+          name: 'deny', depth: 1,
+          body: afterBrace.trim() ? [afterBrace] : [],
+          isDefault: false, defaultValue: null, line: lineNum + 1,
+        };
       }
       continue;
+    }
+
+    // Rule heads:
+    //   name {                 name if {              name if <exprs>
+    //   name(args) {           name contains x if {   (rejected below)
+    const headMatch = trimmed.match(/^(\w+)(?:\s*\([^)]*\))?(?:\s+contains\s+\S+)?(?:\s+if\b)?\s*(.*)$/);
+    if (headMatch) {
+      const name = headMatch[1];
+      const rest = headMatch[2].trim();
+
+      if (/\bcontains\b/.test(trimmed.slice(name.length).split('{')[0])) {
+        errors.push({
+          message: `partial-set rule '${name} contains ...' is untranslatable to a boolean Ovara rule`,
+          line: lineNum + 1, source: 'semantic',
+        });
+        continue;
+      }
+
+      if (rest.startsWith('{')) {
+        const afterBrace = rest.slice(1);
+        const closeIdx = afterBrace.indexOf('}');
+        if (closeIdx !== -1) {
+          // Single-line rule: `name if { exprs }`
+          pushRule(name, [afterBrace.slice(0, closeIdx)], lineNum + 1);
+        } else {
+          inBlock = {
+            name, depth: 1,
+            body: afterBrace.trim() ? [afterBrace] : [],
+            isDefault: false, defaultValue: null, line: lineNum + 1,
+          };
+        }
+        if (pendingDefault?.ident === name) pendingDefault = null;
+        continue;
+      }
+
+      // `name if` with no body — invalid Rego, do not treat as unconditional.
+      if (/\bif\b/.test(trimmed) && !rest) {
+        errors.push({ message: `unparseable rule head: ${trimmed}`, line: lineNum + 1, source: 'parse' });
+        continue;
+      }
+
+      // `name if <exprs>` — single-line rule with inline body.
+      if (/\bif\b/.test(trimmed) && rest) {
+        pushRule(name, [rest], lineNum + 1);
+        if (pendingDefault?.ident === name) pendingDefault = null;
+        continue;
+      }
+
+      // Bare `name` line (e.g. `allow` alone = unconditional true) is a
+      // boolean assignment in Rego; map it to an unconditional rule.
+      if (rest === '' && (name === 'allow' || name === 'deny')) {
+        pushRule(name, [], lineNum + 1);
+        if (pendingDefault?.ident === name) pendingDefault = null;
+        continue;
+      }
     }
 
     // Lone default declaration with no body was already pushed as a rule
@@ -181,23 +281,92 @@ function extractInputConditions(body: string, ruleName: string, ruleLine: number
   other: Record<string, string>;
 } {
   const conditions: { actionType?: string; environment?: string; other: Record<string, string> } = { other: {} };
-  for (const line of body.split('\n')) {
-    const trimmed = line.trim();
-    // Skip blank lines, comments, and bare braces.
-    if (!trimmed || trimmed.startsWith('#') || /^[{}]*$/.test(trimmed)) continue;
-    const m = trimmed.match(/^input\.(\w+)\s*==\s*"([^"]*)"$/);
-    if (!m) {
-      // Fail closed: an expression we cannot translate must not be silently
-      // dropped, or the resulting rule would be broader than the source.
-      throw new Error(
-        `[opa-adapter:semantic] unhandled body expression in rule '${ruleName}': ${trimmed} (line ${ruleLine})`
-      );
-    }
-    const field = m[1];
-    const value = m[2];
+
+  // Local `ident := "literal"` bindings we can substitute into constraints.
+  const vars: Record<string, string> = {};
+
+  const setField = (field: string, value: string) => {
     if (field === 'action_type') conditions.actionType = value;
     else if (field === 'environment') conditions.environment = value;
     else conditions.other[field] = value;
+  };
+
+  // Split the body into expressions: Rego joins body expressions with
+  // newlines or `;`.
+  const exprs = body.split(/[;\n]/);
+
+  for (const raw of exprs) {
+    const e = stripComment(raw).trim();
+    // Skip blank lines, comments, and bare braces.
+    if (!e || /^[{}]*$/.test(e)) continue;
+
+    const fail = () => {
+      // Fail closed: an expression we cannot translate must not be silently
+      // dropped, or the resulting rule would be broader than the source.
+      throw new Error(
+        `[opa-adapter:semantic] unhandled body expression in rule '${ruleName}': ${e} (line ${ruleLine})`
+      );
+    };
+
+    // `x := "literal"` local binding — record for later substitution.
+    let m = e.match(/^([a-zA-Z_]\w*)\s*:=\s*"([^"]*)"$/);
+    if (m) { vars[m[1]] = m[2]; continue; }
+    m = e.match(/^([a-zA-Z_]\w*)\s*:=\s*(\d+(?:\.\d+)?)$/);
+    if (m) { vars[m[1]] = m[2]; continue; }
+    // `x := input.field` — alias; record with input. prefix.
+    m = e.match(/^([a-zA-Z_]\w*)\s*:=\s*(input\.\w+)$/);
+    if (m) { vars[m[1]] = m[2]; continue; }
+
+    // `some x` / `some x, y` declarations only introduce variables used
+    // elsewhere — safe to skip. `some x in ...` iteration is NOT (it adds
+    // an existential constraint we cannot express).
+    if (/^some\s+[\w,\s]+$/.test(e)) continue;
+    if (/^some\b/.test(e)) fail();
+
+    // `input.field[_] == "v"` array-membership — untranslatable without
+    // knowing which element matched; fail closed.
+    if (/\[\s*[_\w]*\s*\]/.test(e)) fail();
+
+    // startswith/endswith/contains on an input field → glob in conditions.
+    m = e.match(/^(startswith|endswith|contains)\(\s*input\.(\w+)\s*,\s*"([^"]*)"\s*\)$/);
+    if (m) {
+      const [, fn, field, val] = m;
+      setField(field, fn === 'startswith' ? `${val}*` : fn === 'endswith' ? `*${val}` : `*${val}*`);
+      continue;
+    }
+
+    // Comparisons on input fields: ==, !=, >, <, >=, <=.
+    m = e.match(/^input\.(\w+)\s*(==|!=|>=|<=|>|<)\s*"([^"]*)"$/);
+    if (m) {
+      const [, field, op, val] = m;
+      setField(field, op === '==' ? val : `${op}${val}`);
+      continue;
+    }
+    m = e.match(/^input\.(\w+)\s*(==|!=|>=|<=|>|<)\s*(\d+(?:\.\d+)?)$/);
+    if (m) {
+      const [, field, op, val] = m;
+      setField(field, op === '==' ? val : `${op}${val}`);
+      continue;
+    }
+
+    // Comparison against a bound variable: `input.field == x`.
+    m = e.match(/^input\.(\w+)\s*(==|!=)\s*([a-zA-Z_]\w*)$/);
+    if (m && m[3] in vars) {
+      const bound = vars[m[3]];
+      // Variable aliasing another input field → field-to-field comparison,
+      // which we cannot express. Fail closed.
+      if (bound.startsWith('input.')) fail();
+      setField(m[1], m[2] === '==' ? bound : `${m[2]}${bound}`);
+      continue;
+    }
+    // `x == "v"` where x aliases input.field.
+    m = e.match(/^([a-zA-Z_]\w*)\s*==\s*"([^"]*)"$/);
+    if (m && m[1] in vars && vars[m[1]].startsWith('input.')) {
+      setField(vars[m[1]].slice('input.'.length), m[2]);
+      continue;
+    }
+
+    fail();
   }
   return conditions;
 }
@@ -260,9 +429,10 @@ export function translateRego(rego: string): OvaraPolicy {
     r => r.isDefault && r.name === 'allow' && r.defaultValue === true
   );
 
-  // Explicit allow/deny rules (non-default, with a body)
+  // Explicit allow/deny rules (non-default). An empty body means the rule
+  // is unconditional (e.g. a bare `allow` line) and maps to a wildcard.
   const explicitRules = rules.filter(
-    r => !r.isDefault && (r.name === 'allow' || r.name === 'deny') && r.body.length > 0
+    r => !r.isDefault && (r.name === 'allow' || r.name === 'deny')
   );
 
   if (explicitRules.length === 0) {

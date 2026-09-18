@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,8 +33,9 @@ func TestHealthHandler(t *testing.T) {
 func TestRegisterDomain(t *testing.T) {
 	srv := NewServer("")
 	body := map[string]interface{}{
-		"domain": "acme.com",
-		"name":   "Acme Corp",
+		"domain":      "acme.com",
+		"name":        "Acme Corp",
+		"public_keys": []string{strings.Repeat("ab", 32)},
 	}
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/domains", bytes.NewReader(b))
@@ -48,8 +50,9 @@ func TestRegisterDomain(t *testing.T) {
 func TestRegisterDomain_Duplicate(t *testing.T) {
 	srv := NewServer("")
 	body := map[string]interface{}{
-		"domain": "acme.com",
-		"name":   "Acme Corp",
+		"domain":      "acme.com",
+		"name":        "Acme Corp",
+		"public_keys": []string{strings.Repeat("cd", 32)},
 	}
 	b, _ := json.Marshal(body)
 

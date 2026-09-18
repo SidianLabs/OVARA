@@ -40,13 +40,23 @@ func TestTrustGraph_RemoveOrganization(t *testing.T) {
 
 func TestTrustGraph_Federate(t *testing.T) {
 	tg := NewTrustGraph()
-	tg.AddOrganization("a.com", "Org A", nil)
-	tg.AddOrganization("b.com", "Org B", nil)
-
 	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	tg.AddOrganization("a.com", "Org A", nil)
+	tg.AddOrganization("b.com", "Org B", [][]byte{pub})
+
 	err := tg.Federate("a.com", "b.com", 0.8, [][]byte{pub})
 	if err != nil {
 		t.Fatalf("Federate failed: %v", err)
+	}
+
+	// Keys not registered to the target must be rejected (key injection).
+	attacker, _, _ := ed25519.GenerateKey(rand.Reader)
+	if err := tg.Federate("a.com", "b.com", 0.8, [][]byte{attacker}); err == nil {
+		t.Fatal("expected error federating with unregistered target key")
+	}
+	// Wrong-size keys must be rejected.
+	if err := tg.Federate("a.com", "b.com", 0.8, [][]byte{[]byte("short")}); err == nil {
+		t.Fatal("expected error federating with wrong-size key")
 	}
 
 	neighbors := tg.GetNeighbors("a.com")

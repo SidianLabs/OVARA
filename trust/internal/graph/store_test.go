@@ -10,7 +10,10 @@ func TestGraphStore_NewGraphStore_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "graph.json")
 
-	gs, g := NewGraphStore(path)
+	gs, g, err := NewGraphStore(path)
+	if err != nil {
+		t.Fatalf("NewGraphStore failed: %v", err)
+	}
 	if gs == nil || g == nil {
 		t.Fatal("NewGraphStore returned nil")
 	}
@@ -24,7 +27,10 @@ func TestGraphStore_SaveAndLoad(t *testing.T) {
 	path := filepath.Join(dir, "graph.json")
 
 	// Create and populate
-	gs, g := NewGraphStore(path)
+	gs, g, err := NewGraphStore(path)
+	if err != nil {
+		t.Fatalf("NewGraphStore failed: %v", err)
+	}
 	g.AddOrganization("a.com", "Org A", nil)
 	g.AddOrganization("b.com", "Org B", nil)
 	g.Federate("a.com", "b.com", 0.7, nil)
@@ -39,7 +45,10 @@ func TestGraphStore_SaveAndLoad(t *testing.T) {
 	}
 
 	// Load into a new store
-	_, g2 := NewGraphStore(path)
+	_, g2, err := NewGraphStore(path)
+	if err != nil {
+		t.Fatalf("NewGraphStore failed: %v", err)
+	}
 	if len(g2.GetAllOrganizations()) != 2 {
 		t.Errorf("expected 2 orgs after reload, got %d", len(g2.GetAllOrganizations()))
 	}
@@ -57,7 +66,10 @@ func TestGraphStore_SaveDetectsCorruption(t *testing.T) {
 	path := filepath.Join(dir, "graph.json")
 
 	// Create valid file
-	gs, g := NewGraphStore(path)
+	gs, g, err := NewGraphStore(path)
+	if err != nil {
+		t.Fatalf("NewGraphStore failed: %v", err)
+	}
 	g.AddOrganization("a.com", "Org A", nil)
 	if err := gs.Save(); err != nil {
 		t.Fatalf("Save failed: %v", err)
@@ -68,16 +80,21 @@ func TestGraphStore_SaveDetectsCorruption(t *testing.T) {
 		t.Fatalf("failed to corrupt: %v", err)
 	}
 
-	// Loading should fail with checksum error
-	_, g2 := NewGraphStore(path)
-	_ = g2
+	// Loading must fail loudly on corrupted data.
+	_, _, err = NewGraphStore(path)
+	if err == nil {
+		t.Fatal("expected error loading corrupted graph file")
+	}
 }
 
 func TestGraphStore_GraphAccessor(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "graph.json")
 
-	gs, g := NewGraphStore(path)
+	gs, g, err := NewGraphStore(path)
+	if err != nil {
+		t.Fatalf("NewGraphStore failed: %v", err)
+	}
 	if gs.Graph() != g {
 		t.Error("Graph() should return the underlying graph")
 	}
@@ -87,7 +104,10 @@ func TestGraphStore_SaveCreatesTempFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "graph.json")
 
-	gs, g := NewGraphStore(path)
+	gs, g, err := NewGraphStore(path)
+	if err != nil {
+		t.Fatalf("NewGraphStore failed: %v", err)
+	}
 	g.AddOrganization("a.com", "Org A", nil)
 	if err := gs.Save(); err != nil {
 		t.Fatalf("Save failed: %v", err)

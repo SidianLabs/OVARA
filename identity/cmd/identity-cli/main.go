@@ -207,11 +207,15 @@ func loadState(path string, r *store.Registry, ls *store.LeaseStore) error {
 	}
 	for _, id := range st.Identities {
 		if _, ok := r.Get(id.ID); !ok {
-			r.Register(id)
+			if err := r.Register(id); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skipping identity %s from %s: %v\n", id.ID, path, err)
+			}
 		}
 	}
 	for _, l := range st.Leases {
-		ls.Store(l)
+		if err := ls.Store(l); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping lease %s from %s: %v\n", l.LeaseID, path, err)
+		}
 	}
 	return nil
 }
