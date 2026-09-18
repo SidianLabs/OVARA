@@ -68,7 +68,7 @@ func usage() {
 
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	force := fs.Bool("force", false, "overwrite existing files")
+	force := fs.Bool("force", false, "overwrite existing files (an existing var/receipt.key is always kept)")
 	fs.Parse(args)
 	dir := fs.Arg(0)
 	if dir == "" {
@@ -170,9 +170,23 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		{filepath.Join(dir, "proxy.json"), mustJSON(proxyCfg), 0o600},
 	}
 	// The receipt signing key anchors every receipt ever written; init is
-	// never a key-rotation path — refuse to overwrite it even under -force.
+	// never a key-rotation path. Under -force we keep the existing key (and
+	// its matching public half) instead of failing outright; without -force
+	// any existing file is an error.
 	if _, err := os.Stat(filepath.Join(dir, "var", "receipt.key")); err == nil {
-		return "", fmt.Errorf("var/receipt.key already exists; refusing to overwrite it (rotate receipt keys manually)")
+		if !force {
+			return "", fmt.Errorf("var/receipt.key already exists (use -force to re-init; the existing receipt key will be kept)")
+		}
+		fmt.Println("keeping existing receipt key (var/receipt.key)")
+		kept := make([]file, 0, len(files))
+		for _, f := range files {
+			base := filepath.Base(f.path)
+			if base == "receipt.key" || base == "receipt_pubkey.hex" {
+				continue
+			}
+			kept = append(kept, f)
+		}
+		files = kept
 	}
 	if !force {
 		for _, f := range files {
