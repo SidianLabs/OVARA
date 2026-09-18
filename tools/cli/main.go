@@ -15,6 +15,7 @@ import (
 var (
 	gatewayURL = flag.String("gateway", "http://localhost:8080", "Gateway URL")
 	apiKey     = flag.String("key", "", "API key")
+	resolvedBy = flag.String("by", "cli", "Identity recorded as resolved_by on approve/deny")
 	osExit     = os.Exit
 )
 
@@ -147,7 +148,7 @@ func doApprovals(args []string) {
 			return
 		}
 		id := args[1]
-		resp := post("/v1/approval/"+id+"/approve", nil)
+		resp := post("/v1/approval/"+id+"/approve", map[string]string{"resolved_by": *resolvedBy})
 		if resp != nil {
 			printJSON(resp)
 		}
@@ -166,7 +167,7 @@ func doApprovals(args []string) {
 				reason = strings.TrimPrefix(a, "--reason=")
 			}
 		}
-		body := map[string]string{"reason": reason}
+		body := map[string]string{"reason": reason, "resolved_by": *resolvedBy}
 		resp := post("/v1/approval/"+id+"/deny", body)
 		if resp != nil {
 			printJSON(resp)
@@ -211,7 +212,7 @@ func doTrust(args []string) {
 }
 
 func doVerify(args []string) {
-	if len(args)< 1 {
+	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: ovara verify <receipt-id>")
 		return
 	}
@@ -229,6 +230,11 @@ func get(path string) map[string]interface{} {
 }
 
 func post(path string, body interface{}) map[string]interface{} {
+	if body == nil {
+		// Send an empty JSON object rather than "null", which the gateway
+		// cannot decode into request structs.
+		body = map[string]interface{}{}
+	}
 	data, _ := json.Marshal(body)
 	req, _ := http.NewRequest(http.MethodPost, strings.TrimRight(*gatewayURL, "/")+path, bytes.NewReader(data))
 	setHeaders(req)

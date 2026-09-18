@@ -104,12 +104,15 @@ Returns gateway readiness status.
 Wrap shell command execution through the gateway:
 
 ```go
-import "ovara.runtime.gateway/interceptors/shell"
+import (
+    "ovara.runtime.gateway/interceptors/shell"
+    "ovara.runtime.gateway/internal/models"
+)
 
 func main() {
     i := shell.New("http://localhost:8080", "agent-001")
     result := i.Execute(ctx, "echo hello")
-    if result.Decision == shell.DecisionAllow {
+    if result.Decision == models.DecisionAllow {
         fmt.Println(string(result.Output))
     }
 }
@@ -120,13 +123,19 @@ func main() {
 Wrap git operations through the gateway:
 
 ```go
-import "ovara.runtime.gateway/interceptors/git"
+import (
+    "ovara.runtime.gateway/interceptors/git"
+    "ovara.runtime.gateway/internal/models"
+)
 
 func main() {
     i := git.New("http://localhost:8080", "agent-001")
-    result := i.Push(ctx, "origin", "main")
-    if result.Decision == git.DecisionAllow {
-        // push succeeded
+    // Execute takes the git subcommand and its args; force flags (-f,
+    // --force, --force-with-lease, -uf, ...) are classified as git.force_push.
+    result := i.Execute(ctx, "push", []string{"origin", "main"},
+        git.WithRepo("git:acme/api"))
+    if result.Decision == models.DecisionAllow {
+        // push ran to completion; check result.ExitCode / result.Error
     }
 }
 ```

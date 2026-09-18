@@ -1,0 +1,21 @@
+{
+  "_comment": "Dev defaults for docker-compose.full.yml. operator_tokens is empty so the operator API fails CLOSED — add your token here before use. Set receipt_signing_key for cross-restart receipt verification. Unknown keys like _comment are ignored by the gateway.",
+  "server_port": "8080",
+  "gateway_name": "compose-gateway",
+  "gateway_version": "1.0.0",
+  "policy_version": "v1-local",
+  "log_level": "info",
+  "fail_closed": true,
+  "auth_enabled": true,
+  "operator_tokens": [],
+  "decision_log_file": "/var/data/ovara/decisions.jsonl",
+  "receipts_file": "/var/data/ovara/receipts.json",
+  "approvals_file": "/var/data/ovara/approvals.json",
+  "events_file": "/var/data/ovara/events.jsonl",
+  "continuations_file": "/var/data/ovara/continuations.jsonl",
+  "execution_file": "/var/data/ovara/executions.jsonl",
+  "capabilities_file": "/var/data/ovara/capabilities.json",
+  "enrollment_file": "/var/data/ovara/enrollment.json",
+  "heartbeat_interval_secs": 30,
+  "execution_working_dir": "/tmp/ovara-exec"
+}

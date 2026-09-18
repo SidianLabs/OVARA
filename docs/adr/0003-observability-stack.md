@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Accepted — **implementation pending**: the pipeline code exists under
+`runtime/gateway/internal/observe/` but is not instantiated in
+`server.go`; no `ovara_*` metrics are exported yet.
 
 ## Decision
 

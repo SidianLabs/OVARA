@@ -16,10 +16,10 @@ import (
 type Interceptor struct {
 	gatewayURL string
 	agentID    string
-	client    *client.GatewayClient
-	timeout   time.Duration
-	env       []string
-	dir       string
+	client     *client.GatewayClient
+	timeout    time.Duration
+	env        []string
+	dir        string
 }
 
 type Option func(*Interceptor)
@@ -71,6 +71,8 @@ func (i *Interceptor) normaliseAction(cmd string, opts ...ActionOption) *models.
 
 	resource := action.Resource
 	if resource == "" {
+		// Default: derive the resource from the command itself so the policy
+		// always evaluates what will actually be executed.
 		resource = "shell:" + cmd
 	}
 
@@ -92,6 +94,13 @@ func encodeMetadata(m map[string]any) json.RawMessage {
 
 type ActionOption func(*Action)
 
+// WithResource overrides the resource string sent to the gateway for policy
+// evaluation. SECURITY NOTE: when set, the gateway evaluates THIS resource,
+// not the command actually executed — so a caller could label a dangerous
+// command with a benign resource and be allowed. Only use WithResource when
+// the value faithfully describes the command (e.g. a canonical name for the
+// same command). When omitted, the resource defaults to "shell:<command>",
+// i.e. the exact command string, which is the safe default.
 func WithResource(resource string) ActionOption {
 	return func(a *Action) {
 		a.Resource = resource
@@ -166,7 +175,7 @@ func (i *Interceptor) Execute(ctx context.Context, cmd string, opts ...ActionOpt
 		DecisionID: resp.DecisionID,
 		Output:     stdout.Bytes(),
 		ExitCode:   exitCode,
-		Error:     err,
+		Error:      err,
 	}
 }
 

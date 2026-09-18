@@ -170,18 +170,26 @@ func TestExpireOlderThan(t *testing.T) {
 
 	a1 := newTestApproval()
 	a1.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	a1.ExpiresAt = time.Now().UTC().Add(-90 * time.Minute)
 	s.Create(a1)
 
 	a2 := newTestApproval()
 	a2.CreatedAt = time.Now().UTC().Add(-1 * time.Hour)
+	a2.ExpiresAt = time.Now().UTC().Add(-45 * time.Minute)
 	s.Create(a2)
 
 	a3 := newTestApproval()
 	a3.CreatedAt = time.Now().UTC()
+	a3.ExpiresAt = time.Now().UTC().Add(-time.Hour)
 	a3.State = models.StateApproved
 	s.Create(a3)
 
-	count, err := s.ExpireOlderThan(time.Now().UTC().Add(-30 * time.Minute))
+	// Pending approval whose deadline has not yet passed must NOT expire.
+	a4 := newTestApproval()
+	a4.ExpiresAt = time.Now().UTC().Add(30 * time.Minute)
+	s.Create(a4)
+
+	count, err := s.ExpireOlderThan(time.Now().UTC())
 	if err != nil {
 		t.Fatalf("ExpireOlderThan failed: %v", err)
 	}

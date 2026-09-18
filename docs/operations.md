@@ -85,10 +85,10 @@ curl -X POST "http://localhost:8080/v1/continuations/{id}/recover-executing"
 When performing maintenance that requires pausing automatic execution:
 ```bash
 # Pause (stop picking up new continuations)
-curl -X POST "http://localhost:8080/v1/admin/orchestrator/pause"
+curl -X POST "http://localhost:8080/v1/continuations/queue/pause"
 
 # Resume
-curl -X POST "http://localhost:8080/v1/admin/orchestrator/resume"
+curl -X POST "http://localhost:8080/v1/continuations/queue/resume"
 ```
 
 ### Clear Agent Restrictions
@@ -141,7 +141,7 @@ On Apple M4:
 ### Continuations stuck in "escalated"
 No one has approved them. Check pending approvals:
 ```bash
-curl "http://localhost:8080/v1/approval/list?status=pending"
+curl "http://localhost:8080/v1/approvals?status=pending"
 ```
 
 ### Executor not running

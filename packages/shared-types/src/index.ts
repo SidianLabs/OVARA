@@ -1,6 +1,7 @@
 export type ActionType =
   | "shell"
   | "exec"
+  | "shell.sandboxed"
   | "git.push"
   | "git.pull"
   | "git.fetch"
@@ -123,27 +124,33 @@ export interface AnomalySignal {
 }
 
 export interface Approval {
-  id: string;
+  approval_id: string;
   decision_id: string;
   action_type: ActionType;
   resource: string;
-  agent_id: string;
-  gateway_id: string;
-  state: ApprovalState;
-  requested_at: string;
+  environment?: Environment;
+  status: ApprovalState;
+  agent_id?: string;
+  created_at: string;
   resolved_at?: string;
   resolved_by?: string;
   reason?: string;
+  trust_score?: number;
+  trust_level?: TrustLevel;
 }
 
 export interface Receipt {
   receipt_id: string;
   decision_id: string;
+  action_digest?: string;
   action_type: string;
   resource: string;
   decision: Decision;
-  agent_identity?: string;
+  agent_id?: string;
+  capability_lease_id?: string;
+  approval_id?: string;
   trust_score: number;
+  trust_level?: TrustLevel;
   policy_version: string;
   issued_at: string;
   signature?: string;

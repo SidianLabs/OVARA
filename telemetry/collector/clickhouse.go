@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,10 @@ type ClickHouseWriter struct {
 	written    int64
 	failed     int64
 }
+
+// validDatabaseName guards the database identifier interpolated into the
+// INSERT statement — ClickHouse does not support parameterized identifiers.
+var validDatabaseName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
 func NewClickHouseWriter(endpoint, database, username, password string) *ClickHouseWriter {
 	return &ClickHouseWriter{
@@ -50,14 +55,21 @@ func (w *ClickHouseWriter) WriteEvents(ctx context.Context, events []*Event) err
 		))
 	}
 
+	if !validDatabaseName.MatchString(w.database) {
+		atomic.AddInt64(&w.failed, int64(len(events)))
+		return fmt.Errorf("invalid clickhouse database name %q", w.database)
+	}
+
 	query := fmt.Sprintf(
 		"INSERT INTO %s.events (event_id,event_type,event_version,timestamp,seq,gateway_id,agent_id,trace_id,decision_id,receipt_id,approval_id,payload) VALUES %s",
 		w.database, strings.Join(rows, ","),
 	)
 
+	// Send the query in the POST body: URL query interpolation breaks on
+	// payloads containing spaces, quotes, or '&'/'%'.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("%s/?query=%s", w.endpoint, strings.ReplaceAll(query, " ", "%20")),
-		nil,
+		w.endpoint+"/",
+		strings.NewReader(query),
 	)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)

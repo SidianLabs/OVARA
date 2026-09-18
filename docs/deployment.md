@@ -37,9 +37,12 @@ Create `etc/config.json`:
   "policy_version": "v1-prod",
   "policy_file": "etc/policy.json",
   "policy_refresh_interval": 0,
-  "fail_closed": false,
+  "fail_closed": true,
   "auth_enabled": true,
   "operator_tokens": ["sk_operator_token_here"],
+  "trusted_issuers": {
+    "ovara": "<hex-encoded ed25519 public key of the lease issuer>"
+  },
   "receipt_signing_key": "your-secret-signing-key-min-32-chars",
   "decision_log_file": "var/log/decisions.jsonl",
   "events_file": "var/data/events.jsonl",
@@ -159,6 +162,15 @@ curl http://localhost:8080/v1/runtime/health
 # Full status
 curl http://localhost:8080/v1/runtime/status
 ```
+
+## Transport Security
+
+The gateway serves plain HTTP — there is no TLS in the binary. In any
+non-local deployment, terminate TLS in front of it (reverse proxy or
+load balancer) and restrict network access to the gateway port.
+`trusted_issuers` controls which lease issuers can produce verifiable
+signatures; a lease signed by an issuer not in the map is rejected, as
+is an unsigned lease.
 
 ## Scaling
 

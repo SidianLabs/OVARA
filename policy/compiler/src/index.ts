@@ -53,7 +53,8 @@ export function compilePolicy(doc: PolicyDocument): { valid: boolean; errors: st
 
 export function simulateDecision(doc: PolicyDocument, action: string, resource: string): { decision: string; matchedRule?: string } {
   const compiled = compilePolicy(doc);
-  if (!compiled.valid || !compiled.compiled) return { decision: doc.defaultEffect || "deny" };
+  // Fail closed: never trust the unvalidated caller-supplied defaultEffect.
+  if (!compiled.valid || !compiled.compiled) return { decision: "deny" };
 
   const rules = (compiled.compiled as any).rules as PolicyRule[];
   for (const rule of rules) {
@@ -65,7 +66,7 @@ export function simulateDecision(doc: PolicyDocument, action: string, resource: 
     }
   }
 
-  return { decision: doc.defaultEffect || "deny" };
+  return { decision: ((compiled.compiled as any).default_effect as string) || "deny" };
 }
 
 export function diffPolicies(oldDoc: PolicyDocument, newDoc: PolicyDocument): Record<string, unknown> {

@@ -8,85 +8,107 @@ import (
 )
 
 type Config struct {
-	ServerPort            string   `json:"server_port"`
-	PolicyVersion         string   `json:"policy_version"`
-	PolicyFile            string   `json:"policy_file"`
-	LogLevel              string   `json:"log_level"`
-	FailClosed            bool     `json:"fail_closed"`
-	DecisionLogFile       string   `json:"decision_log_file"`
-	GatewayID             string   `json:"gateway_id"`
-	GatewayName           string   `json:"gateway_name"`
-	GatewayVersion        string   `json:"gateway_version"`
-	PolicyRefreshInterval int      `json:"policy_refresh_interval"`
-	ReceiptsFile          string   `json:"receipts_file"`
-	ReceiptsMaxSize       int      `json:"receipts_max_size"`
-	ReceiptsMaxAgeMinutes  int      `json:"receipts_max_age_minutes"`
-	ApprovalsFile         string   `json:"approvals_file"`
-	EventsFile            string   `json:"events_file"`
-	EventsMaxSize         int      `json:"events_max_size"`
-	ReceiptLogEnabled     bool     `json:"receipt_log_enabled"`
-	DecisionCacheMaxSize  int      `json:"decision_cache_max_size"`
-	DecisionCacheTTLMin   int      `json:"decision_cache_ttl_minutes"`
-	EnrollmentFile        string   `json:"enrollment_file"`
-	HeartbeatIntervalSec  int      `json:"heartbeat_interval_secs"`
-	ContinuationsFile    string   `json:"continuations_file"`
-	ContinuationsMaxSize  int      `json:"continuations_max_size"`
-	ContinuationSweepIntervalSec int `json:"continuation_sweep_interval_secs"`
-	ContinuationRetentionDays   int    `json:"continuation_retention_days"`
-	ContinuationMaxRecords      int    `json:"continuation_max_records"`
-	EventsRetentionDays         int    `json:"events_retention_days"`
-	EventsMaxRecords            int    `json:"events_max_records"`
-	ExecutionFile               string `json:"execution_file"`
-	ExecutionsMaxSize           int    `json:"executions_max_size"`
-	ExecutionRetentionDays      int    `json:"execution_retention_days"`
-	ExecutionMaxRecords         int    `json:"execution_max_records"`
-	ExecutionSweepIntervalSec   int    `json:"execution_sweep_interval_secs"`
-	ExecutionStdoutLimitBytes   int    `json:"execution_stdout_limit_bytes"`
-	ExecutionStderrLimitBytes   int    `json:"execution_stderr_limit_bytes"`
-	ExecutionWorkingDir         string `json:"execution_working_dir"`
-	ExecutionAllowedEnvVars     []string `json:"execution_allowed_env_vars"`
-	CapabilitiesFile            string   `json:"capabilities_file"`
-	CapabilitiesMaxSize         int      `json:"capabilities_max_size"`
+	ServerPort    string `json:"server_port"`
+	// ListenAddr overrides the bind address (default "0.0.0.0:<port>" for
+	// backward compat). Set "127.0.0.1" when the only legitimate clients are
+	// on-box — e.g. the executor proxy — so a bounded agent can never reach
+	// the approval API and approve its own escalations.
+	ListenAddr    string `json:"listen_addr"`
+	PolicyVersion string `json:"policy_version"`
+	PolicyFile    string `json:"policy_file"`
+	// PolicyDir restricts all caller-supplied file paths on the policy
+	// endpoints (file_path, candidate_file, ?file=) to this directory.
+	// When empty, the directory containing PolicyFile is used; when neither
+	// is set, file-based policy inputs are rejected.
+	PolicyDir                    string   `json:"policy_dir"`
+	LogLevel                     string   `json:"log_level"`
+	FailClosed                   bool     `json:"fail_closed"`
+	DecisionLogFile              string   `json:"decision_log_file"`
+	GatewayID                    string   `json:"gateway_id"`
+	GatewayName                  string   `json:"gateway_name"`
+	GatewayVersion               string   `json:"gateway_version"`
+	PolicyRefreshInterval        int      `json:"policy_refresh_interval"`
+	ReceiptsFile                 string   `json:"receipts_file"`
+	ReceiptsMaxSize              int      `json:"receipts_max_size"`
+	ReceiptsMaxAgeMinutes        int      `json:"receipts_max_age_minutes"`
+	ApprovalsFile                string   `json:"approvals_file"`
+	EventsFile                   string   `json:"events_file"`
+	EventsMaxSize                int      `json:"events_max_size"`
+	ReceiptLogEnabled            bool     `json:"receipt_log_enabled"`
+	DecisionCacheMaxSize         int      `json:"decision_cache_max_size"`
+	DecisionCacheTTLMin          int      `json:"decision_cache_ttl_minutes"`
+	EnrollmentFile               string   `json:"enrollment_file"`
+	HeartbeatIntervalSec         int      `json:"heartbeat_interval_secs"`
+	ContinuationsFile            string   `json:"continuations_file"`
+	ContinuationsMaxSize         int      `json:"continuations_max_size"`
+	ContinuationSweepIntervalSec int      `json:"continuation_sweep_interval_secs"`
+	ContinuationRetentionDays    int      `json:"continuation_retention_days"`
+	ContinuationMaxRecords       int      `json:"continuation_max_records"`
+	EventsRetentionDays          int      `json:"events_retention_days"`
+	EventsMaxRecords             int      `json:"events_max_records"`
+	ExecutionFile                string   `json:"execution_file"`
+	ExecutionsMaxSize            int      `json:"executions_max_size"`
+	ExecutionRetentionDays       int      `json:"execution_retention_days"`
+	ExecutionMaxRecords          int      `json:"execution_max_records"`
+	ExecutionSweepIntervalSec    int      `json:"execution_sweep_interval_secs"`
+	ExecutionStdoutLimitBytes    int      `json:"execution_stdout_limit_bytes"`
+	ExecutionStderrLimitBytes    int      `json:"execution_stderr_limit_bytes"`
+	ExecutionWorkingDir          string   `json:"execution_working_dir"`
+	ExecutionAllowedEnvVars      []string `json:"execution_allowed_env_vars"`
+	CapabilitiesFile             string   `json:"capabilities_file"`
+	CapabilitiesMaxSize          int      `json:"capabilities_max_size"`
 	CapabilitiesHistoryFile      string   `json:"capabilities_history_file"`
-	OperatorTokens              []string `json:"operator_tokens"`
-	AuthEnabled                 bool     `json:"auth_enabled"`
-	BulkMaxBatchCap             int      `json:"bulk_max_batch_cap"`
-	BulkDefaultBatch            int      `json:"bulk_default_batch"`
+	OperatorTokens               []string `json:"operator_tokens"`
+	AuthEnabled                  bool     `json:"auth_enabled"`
+	BulkMaxBatchCap              int      `json:"bulk_max_batch_cap"`
+	BulkDefaultBatch             int      `json:"bulk_default_batch"`
 
-	ReceiptSigningKey          string `json:"receipt_signing_key"`
+	ReceiptSigningKey string `json:"receipt_signing_key"`
 
-	OTELEnabled        bool    `json:"otel_enabled"`
-	OTELEndpoint       string  `json:"otel_endpoint"`
-	OTELSampleRate     float64 `json:"otel_sample_rate"`
+	// TrustedIssuers maps capability-lease issuer ID to hex-encoded
+	// ed25519 public key. If empty, signed leases cannot be verified
+	// and lease validation fails closed.
+	TrustedIssuers map[string]string `json:"trusted_issuers"`
+
+	// AllowUnsignedLeases is an explicit opt-in that permits
+	// /v1/capabilities/track to accept leases without signature
+	// verification when no trusted_issuers are configured. Default false:
+	// with no issuers configured, track rejects unsigned leases so prod
+	// cannot silently skip verification.
+	AllowUnsignedLeases bool `json:"allow_unsigned_leases"`
+
+	OTELEnabled    bool    `json:"otel_enabled"`
+	OTELEndpoint   string  `json:"otel_endpoint"`
+	OTELSampleRate float64 `json:"otel_sample_rate"`
 
 	StuckExecutingSweepIntervalSec     int `json:"stuck_executing_sweep_interval_secs"`
 	StuckExecutingRecoveryThresholdMin int `json:"stuck_executing_recovery_threshold_min"`
 
-	GitHubToken     string `json:"github_token"`
-	CIToken         string `json:"ci_token"`
-	CIWebhookURL    string `json:"ci_webhook_url"`
+	GitHubToken  string `json:"github_token"`
+	CIToken      string `json:"ci_token"`
+	CIWebhookURL string `json:"ci_webhook_url"`
 
-	SLAApprovalMaxAgeMin          int              `json:"sla_approval_max_age_min"`
-	SLARetryableMaxAgeMin         int              `json:"sla_retryable_max_age_min"`
-	SLAPendingApprovalMaxAgeMin   int              `json:"sla_pending_approval_max_age_min"`
-	SLAExecutingMaxAgeMin         int              `json:"sla_executing_max_age_min"`
-	SLAThresholds                 map[string]int   `json:"sla_thresholds"`
+	SLAApprovalMaxAgeMin        int            `json:"sla_approval_max_age_min"`
+	SLARetryableMaxAgeMin       int            `json:"sla_retryable_max_age_min"`
+	SLAPendingApprovalMaxAgeMin int            `json:"sla_pending_approval_max_age_min"`
+	SLAExecutingMaxAgeMin       int            `json:"sla_executing_max_age_min"`
+	SLAThresholds               map[string]int `json:"sla_thresholds"`
 }
 
 type Enrollment struct {
-	GatewayID      string    `json:"gateway_id"`
-	GatewayName    string    `json:"gateway_name"`
-	Version        string    `json:"version"`
-	Status         string    `json:"status"`
-	EnrolledAt     time.Time `json:"enrolled_at,omitempty"`
-	LastSeenAt     time.Time `json:"last_seen_at,omitempty"`
-	ControlPlaneURL string   `json:"control_plane_url,omitempty"`
+	GatewayID       string    `json:"gateway_id"`
+	GatewayName     string    `json:"gateway_name"`
+	Version         string    `json:"version"`
+	Status          string    `json:"status"`
+	EnrolledAt      time.Time `json:"enrolled_at,omitempty"`
+	LastSeenAt      time.Time `json:"last_seen_at,omitempty"`
+	ControlPlaneURL string    `json:"control_plane_url,omitempty"`
 }
 
 const (
 	EnrollmentStatusLocal    = "local"
 	EnrollmentStatusEnrolled = "enrolled"
-	EnrollmentStatusPending = "pending"
+	EnrollmentStatusPending  = "pending"
 )
 
 func (e *Enrollment) IsLocal() bool {
@@ -99,52 +121,52 @@ func (e *Enrollment) IsEnrolled() bool {
 
 func Default() *Config {
 	return &Config{
-		ServerPort:            "8080",
-		PolicyVersion:         "v1-local",
-		LogLevel:              "info",
-		FailClosed:            false,
-		DecisionLogFile:       "var/log/decisions.jsonl",
-		GatewayID:              newGatewayID(),
-		GatewayName:           "local-gateway",
-		GatewayVersion:        "0.8.0",
-		PolicyRefreshInterval:  0,
-		ReceiptsFile:           "var/data/receipts.json",
-		ReceiptsMaxSize:        10000,
-		ReceiptsMaxAgeMinutes:  60,
-		ApprovalsFile:         "var/data/approvals.json",
-		EventsFile:            "var/data/events.jsonl",
-		EventsMaxSize:         50000,
-		ReceiptLogEnabled:      true,
-		DecisionCacheMaxSize:   10000,
-		DecisionCacheTTLMin:    10,
-		EnrollmentFile:         "var/data/enrollment.json",
-		HeartbeatIntervalSec:    30,
-		ContinuationsFile:      "var/data/continuations.jsonl",
-		ContinuationsMaxSize:   10000,
+		ServerPort:                   "8080",
+		PolicyVersion:                "v1-local",
+		LogLevel:                     "info",
+		FailClosed:                   false,
+		DecisionLogFile:              "var/log/decisions.jsonl",
+		GatewayID:                    newGatewayID(),
+		GatewayName:                  "local-gateway",
+		GatewayVersion:               "0.8.0",
+		PolicyRefreshInterval:        0,
+		ReceiptsFile:                 "var/data/receipts.json",
+		ReceiptsMaxSize:              10000,
+		ReceiptsMaxAgeMinutes:        60,
+		ApprovalsFile:                "var/data/approvals.json",
+		EventsFile:                   "var/data/events.jsonl",
+		EventsMaxSize:                50000,
+		ReceiptLogEnabled:            true,
+		DecisionCacheMaxSize:         10000,
+		DecisionCacheTTLMin:          10,
+		EnrollmentFile:               "var/data/enrollment.json",
+		HeartbeatIntervalSec:         30,
+		ContinuationsFile:            "var/data/continuations.jsonl",
+		ContinuationsMaxSize:         10000,
 		ContinuationSweepIntervalSec: 60,
-		ContinuationRetentionDays:     7,
+		ContinuationRetentionDays:    7,
 		ContinuationMaxRecords:       10000,
-		EventsRetentionDays:           7,
-		EventsMaxRecords:              50000,
-		ExecutionFile:             "var/data/executions.jsonl",
-		ExecutionsMaxSize:         10000,
-		ExecutionRetentionDays:    7,
-		ExecutionMaxRecords:       10000,
-		ExecutionSweepIntervalSec: 300,
-		ExecutionStdoutLimitBytes: 1024 * 1024,  // 1 MB
-		ExecutionStderrLimitBytes: 256 * 1024,   // 256 KB
-		ExecutionAllowedEnvVars:   []string{},
-		CapabilitiesFile:           "var/data/capabilities.json",
-		CapabilitiesMaxSize:        10000,
-		CapabilitiesHistoryFile:     "var/data/capabilities_history.jsonl",
-		OperatorTokens:            []string{},
-		AuthEnabled:              false,
-		BulkMaxBatchCap:          100,
-		BulkDefaultBatch:         20,
+		EventsRetentionDays:          7,
+		EventsMaxRecords:             50000,
+		ExecutionFile:                "var/data/executions.jsonl",
+		ExecutionsMaxSize:            10000,
+		ExecutionRetentionDays:       7,
+		ExecutionMaxRecords:          10000,
+		ExecutionSweepIntervalSec:    300,
+		ExecutionStdoutLimitBytes:    1024 * 1024, // 1 MB
+		ExecutionStderrLimitBytes:    256 * 1024,  // 256 KB
+		ExecutionAllowedEnvVars:      []string{},
+		CapabilitiesFile:             "var/data/capabilities.json",
+		CapabilitiesMaxSize:          10000,
+		CapabilitiesHistoryFile:      "var/data/capabilities_history.jsonl",
+		OperatorTokens:               []string{},
+		AuthEnabled:                  false,
+		BulkMaxBatchCap:              100,
+		BulkDefaultBatch:             20,
 
-		OTELEnabled:        false,
-		OTELEndpoint:       "localhost:4317",
-		OTELSampleRate:     1.0,
+		OTELEnabled:    false,
+		OTELEndpoint:   "localhost:4317",
+		OTELSampleRate: 1.0,
 
 		StuckExecutingSweepIntervalSec:     0,
 		StuckExecutingRecoveryThresholdMin: 30,

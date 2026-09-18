@@ -6,9 +6,9 @@ import (
 )
 
 type ExportedTrustState struct {
-	Version       string            `json:"version"`
-	ExportedAt    string            `json:"exported_at"`
-	Organizations []OrganizationNode `json:"organizations"`
+	Version       string              `json:"version"`
+	ExportedAt    string              `json:"exported_at"`
+	Organizations []OrganizationNode  `json:"organizations"`
 	Relationships []TrustRelationship `json:"relationships"`
 }
 
@@ -50,6 +50,9 @@ func (tg *TrustGraph) Import(state *ExportedTrustState) error {
 	if state.Version == "" {
 		return fmt.Errorf("missing version in trust state")
 	}
+	if state.Version != "1.0" {
+		return fmt.Errorf("unsupported trust state version: %s", state.Version)
+	}
 
 	tg.mu.Lock()
 	defer tg.mu.Unlock()
@@ -64,6 +67,12 @@ func (tg *TrustGraph) Import(state *ExportedTrustState) error {
 
 	for _, rel := range state.Relationships {
 		relationship := rel
+		if relationship.TrustLevel < 0 {
+			relationship.TrustLevel = 0
+		}
+		if relationship.TrustLevel > 1 {
+			relationship.TrustLevel = 1
+		}
 		if tg.edges[rel.SourceOrg] == nil {
 			tg.edges[rel.SourceOrg] = make(map[TrustDomain]*TrustRelationship)
 		}
@@ -101,9 +110,16 @@ func (tg *TrustGraph) Merge(other *TrustGraph) error {
 		if tg.edges[rel.SourceOrg] == nil {
 			tg.edges[rel.SourceOrg] = make(map[TrustDomain]*TrustRelationship)
 		}
-		existing, ok := tg.edges[rel.SourceOrg][rel.TargetOrg]
-		if !ok || rel.TrustLevel > existing.TrustLevel {
+		// Existing relationships keep their local trust level: a merged graph
+		// must not be able to inflate trust that was deliberately set lower.
+		if _, ok := tg.edges[rel.SourceOrg][rel.TargetOrg]; !ok {
 			relationship := rel
+			if relationship.TrustLevel < 0 {
+				relationship.TrustLevel = 0
+			}
+			if relationship.TrustLevel > 1 {
+				relationship.TrustLevel = 1
+			}
 			tg.edges[rel.SourceOrg][rel.TargetOrg] = &relationship
 		}
 	}

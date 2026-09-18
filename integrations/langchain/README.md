@@ -1,6 +1,11 @@
 # Ovara LangChain Integration
 
-LangChain tools that let AI agents check actions against Ovara runtime trust policies.
+Advisory check tools that let AI agents consult Ovara runtime trust
+policies before acting.
+
+> **Note:** these are advisory checks only — a tool result informs the
+> agent but does not enforce policy. Enforcement happens at the Ovara
+> egress proxy, which records a signed receipt chain for all egress.
 
 | Tool | Description |
 |------|-------------|
@@ -11,5 +16,10 @@ LangChain tools that let AI agents check actions against Ovara runtime trust pol
 ```typescript
 import { OvaraCheckTool, OvaraStatusTool } from "@ovara/integrations-langchain";
 
-const tools = [new OvaraCheckTool(), new OvaraStatusTool()];
+// Tools are plain duck-typed objects ({ name, description, schema, _call }),
+// not LangChain StructuredTool instances — the @langchain/core dependency
+// is intentionally not required. Wrap them in StructuredTool yourself if
+// your agent runtime requires it.
+const tools = [OvaraCheckTool, OvaraStatusTool];
+const result = await OvaraCheckTool._call({ action: "shell", resource: "shell:ls" });
 ```

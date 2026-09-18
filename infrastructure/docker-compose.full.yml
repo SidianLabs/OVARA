@@ -1,13 +1,23 @@
 # Ovara Full Stack — Docker Compose
 #
 # Starts: control plane, PostgreSQL, Gateway, NATS, ClickHouse, enterprise services
+#
+# ⚠️  DEV/LOCAL USE ONLY — NOT A PRODUCTION DEPLOYMENT.
+# Secrets have no defaults: PG_PASSWORD, JWT_SECRET, OPERATOR_API_KEY,
+# and CH_PASSWORD MUST be set in the environment (e.g. via a .env file)
+# or compose will refuse to start. The gateway reads its secrets from
+# the mounted ./gateway_config.json — edit that file to add
+# operator_tokens and receipt_signing_key before use.
+# NODE_ENV defaults to development here; do not ship this file to prod.
+# Databases/brokers bind to localhost ports (5432/8123/9000/4222) — firewall
+# them off or remove the port mappings before exposing this stack anywhere.
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ovara
-      POSTGRES_PASSWORD: ${PG_PASSWORD:-ovara}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in the environment}
       POSTGRES_DB: ovara_control
     ports:
       - "5432:5432"
@@ -24,10 +34,10 @@ services:
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: postgres://ovara:${PG_PASSWORD:-ovara}@postgres:5432/ovara_control
-      JWT_SECRET: ${JWT_SECRET:-ovara-dev-secret}
-      OPERATOR_API_KEY: ${OPERATOR_API_KEY:-sk_operator_dev}
-      NODE_ENV: ${NODE_ENV:-production}
+      DATABASE_URL: postgres://ovara:${PG_PASSWORD:?set PG_PASSWORD}@postgres:5432/ovara_control
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      OPERATOR_API_KEY: ${OPERATOR_API_KEY:?set OPERATOR_API_KEY}
+      NODE_ENV: ${NODE_ENV:-development}
       PORT: "3000"
     depends_on:
       postgres:
@@ -43,8 +53,10 @@ services:
     environment:
       OVARA_ENVIRONMENT: ${ENVIRONMENT:-local}
       OVARA_CONFIG: /etc/ovara/config.json
-      CONTROL_PLANE_URL: http://control-plane:3000
-      CONTROL_PLANE_API_KEY: ${OPERATOR_API_KEY:-sk_operator_dev}
+      # NOTE: the gateway binary reads only OVARA_CONFIG and
+      # OVARA_ENVIRONMENT. operator_tokens / receipt_signing_key come from
+      # the mounted ./gateway_config.json — edit that file to insert your
+      # dev token and signing key before starting the stack.
     volumes:
       - gateway_data:/var/data/ovara
       - ./gateway_config.json:/etc/ovara/config.json:ro
@@ -68,7 +80,7 @@ services:
     environment:
       CLICKHOUSE_DB: ovara_telemetry
       CLICKHOUSE_USER: ovara
-      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-ovara}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:?set CH_PASSWORD}
     volumes:
       - chdata:/var/lib/clickhouse
       - ../../telemetry/schema/clickhouse_init.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -79,9 +91,9 @@ services:
     ports:
       - "3001:3001"
     environment:
-      JWT_SECRET: ${JWT_SECRET:-ovara-dev-secret}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       PORT: "3001"
-      NODE_ENV: ${NODE_ENV:-production}
+      NODE_ENV: ${NODE_ENV:-development}
     restart: unless-stopped
 
   compliance:
@@ -90,7 +102,7 @@ services:
       - "3002:3002"
     environment:
       PORT: "3002"
-      NODE_ENV: ${NODE_ENV:-production}
+      NODE_ENV: ${NODE_ENV:-development}
     restart: unless-stopped
 
   analytics:
@@ -99,19 +111,19 @@ services:
       - "3003:3003"
     environment:
       PORT: "3003"
-      NODE_ENV: ${NODE_ENV:-production}
+      NODE_ENV: ${NODE_ENV:-development}
     restart: unless-stopped
 
   approval-service:
     build: ../../services/approval
     ports:
-      - "3004:3004"
+      - "3004:8081"  # approval service listens on :8081
     restart: unless-stopped
 
   receipt-storage:
     build: ../../services/receipt-storage
     ports:
-      - "3005:3005"
+      - "3005:8082"  # receipt-storage listens on :8082
     restart: unless-stopped
 
   alerting:
@@ -134,7 +146,7 @@ services:
       NATS_URL: nats://nats:4222
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_USER: ovara
-      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:-ovara}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD:?set CH_PASSWORD}
     depends_on:
       - nats
       - clickhouse

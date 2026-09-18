@@ -109,7 +109,7 @@ curl_cmd -X POST "$GATEWAY/v1/runtime/check" \
 echo ""
 
 echo "=== 9. Policy Rules ==="
-curl_cmd "$GATEWAY/v1/runtime/policy" | python3 -m json.tool 2>/dev/null || curl_cmd "$GATEWAY/v1/runtime/policy"
+curl_cmd "$GATEWAY/v1/policy/rules" | python3 -m json.tool 2>/dev/null || curl_cmd "$GATEWAY/v1/policy/rules"
 echo ""
 
 echo "=== 10. Runtime Metrics ==="
@@ -117,7 +117,7 @@ curl_cmd "$GATEWAY/v1/runtime/metrics" | python3 -m json.tool 2>/dev/null || cur
 echo ""
 
 echo "=== 11. List Receipts ==="
-curl_cmd "$GATEWAY/v1/runtime/receipts" | python3 -m json.tool 2>/dev/null || curl_cmd "$GATEWAY/v1/runtime/receipts"
+curl_cmd "$GATEWAY/v1/receipts" | python3 -m json.tool 2>/dev/null || curl_cmd "$GATEWAY/v1/receipts"
 echo ""
 
 echo "============================================"

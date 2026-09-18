@@ -31,7 +31,13 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, apiError{Error: msg})
 }
 
+// maxBodyBytes caps request bodies decoded by this service.
+const maxBodyBytes = 10 << 20 // 10MB
+
 func (h *Handlers) HandleReceipt(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	}
 	path := r.URL.Path
 
 	if path == "/v1/receipts" {
@@ -69,10 +75,13 @@ func (h *Handlers) HandleReceipt(w http.ResponseWriter, r *http.Request) {
 }
 
 type archiveRequest struct {
+	ReceiptID     string  `json:"receipt_id"`
 	DecisionID    string  `json:"decision_id"`
 	GatewayID     string  `json:"gateway_id"`
 	OrganizationID string `json:"organization_id"`
 	ActionType    string  `json:"action_type"`
+	ActionDigest  string  `json:"action_digest"`
+	PolicyVersion string  `json:"policy_version"`
 	Resource      string  `json:"resource"`
 	Decision      string  `json:"decision"`
 	AgentID       string  `json:"agent_id"`
@@ -96,17 +105,28 @@ func (h *Handlers) archive(w http.ResponseWriter, r *http.Request) {
 	issuedAt := time.Now().UTC()
 	if req.IssuedAt != "" {
 		parsed, err := time.Parse(time.RFC3339, req.IssuedAt)
-		if err == nil {
-			issuedAt = parsed
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid issued_at, use RFC3339")
+			return
 		}
+		issuedAt = parsed
+	}
+
+	// Prefer the gateway-supplied receipt_id — the gateway signs over it,
+	// so minting a server-side ID would break signature verification.
+	receiptID := req.ReceiptID
+	if receiptID == "" {
+		receiptID = uuid.New().String()
 	}
 
 	receipt := &models.Receipt{
-		ID:             uuid.New().String(),
+		ID:             receiptID,
 		DecisionID:     req.DecisionID,
 		GatewayID:      req.GatewayID,
 		OrganizationID: req.OrganizationID,
 		ActionType:     req.ActionType,
+		ActionDigest:   req.ActionDigest,
+		PolicyVersion:  req.PolicyVersion,
 		Resource:       req.Resource,
 		Decision:       req.Decision,
 		AgentID:        req.AgentID,
@@ -219,14 +239,14 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/receipts/", h.HandleReceipt)
 }
 
-func NewServer(addr string, s store.Store) *http.Server {
+func NewServer(addr string, s store.Store, tokens ...string) *http.Server {
 	h := &Handlers{Store: s}
 	mux := http.NewServeMux()
 	h.Register(mux)
 
 	return &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      NewAuthMiddleware(tokens).Authenticate(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,

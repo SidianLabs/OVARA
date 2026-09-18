@@ -13,7 +13,7 @@ export interface InterceptRequest {
 
 export interface InterceptDecision {
   allowed: boolean;
-  decision: "allow" | "deny" | "pending";
+  decision: "allow" | "deny" | "escalate";
   reason?: string;
   receiptId?: string;
 }
@@ -33,6 +33,12 @@ export interface InterceptorConfig {
 export interface PageLike {
   on(event: string, handler: (...args: unknown[]) => void): void;
   evaluate(fn: (...args: unknown[]) => unknown, ...args: unknown[]): Promise<unknown>;
+  /** Playwright-style request routing (required for blocking). */
+  route?(url: string | RegExp, handler: (route: unknown, request: unknown) => Promise<void> | void): Promise<void> | void;
+  /** Puppeteer-style request interception toggle (required for blocking). */
+  setRequestInterception?(enabled: boolean): Promise<void> | void;
+  /** Current page URL (Puppeteer/Playwright both expose url()). */
+  url?(): string;
 }
 
 export interface BrowserLike {

@@ -8,6 +8,9 @@ import { policies, policyDistributions, organizations, gateways } from "../db/sc
 
 let hasDB = false;
 
+// The mocked API key belongs to this org; all org-scoped resources must use it.
+const AUTH_ORG = "00000000-0000-0000-0000-000000000000";
+
 async function checkDB(): Promise<boolean> {
   try {
     await db.execute("SELECT 1");
@@ -21,7 +24,7 @@ const buildApp = async () => {
   const app = Fastify();
   app.decorateRequest("auth", null);
   app.decorate("authenticate", async (request: any) => {
-    request.auth = { organizationId: "00000000-0000-0000-0000-000000000000", scopes: ["admin"], keyId: "key1" };
+    request.auth = { organizationId: AUTH_ORG, scopes: ["admin"], keyId: "key1" };
   });
   app.addHook("preValidation", async (request) => {
     await (app as any).authenticate(request);
@@ -43,12 +46,13 @@ describe("Policies API", () => {
     hasDB = await checkDB();
     if (hasDB) {
       app = await appPromise;
-      const orgRes = await app.inject({
-        method: "POST",
-        url: "/v1/organizations",
-        payload: { tenantId: "00000000-0000-0000-0000-000000000001", name: "policy-org", displayName: "Policy Org" },
-      });
-      orgId = JSON.parse(orgRes.payload).id;
+      await db.insert(organizations).values({
+        id: AUTH_ORG,
+        tenantId: "00000000-0000-0000-0000-000000000001",
+        name: "policy-org",
+        displayName: "Policy Org",
+      }).onConflictDoNothing();
+      orgId = AUTH_ORG;
       const gwRes = await app.inject({
         method: "POST",
         url: "/v1/gateways/enroll",
@@ -70,8 +74,8 @@ describe("Policies API", () => {
     if (app) await app.close();
   });
 
-  it("creates a policy", async () => {
-    if (!hasDB) return;
+  it("creates a policy", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({
       method: "POST",
@@ -91,8 +95,8 @@ describe("Policies API", () => {
     expect(body.rules).toHaveLength(2);
   });
 
-  it("publishes a policy", async () => {
-    if (!hasDB) return;
+  it("publishes a policy", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const create = await a.inject({
       method: "POST",
@@ -115,8 +119,8 @@ describe("Policies API", () => {
     expect(body.distributedTo).toBeGreaterThan(0);
   });
 
-  it("publishes to specific gateways", async () => {
-    if (!hasDB) return;
+  it("publishes to specific gateways", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const create = await a.inject({
       method: "POST",
@@ -137,8 +141,29 @@ describe("Policies API", () => {
     expect(JSON.parse(res.payload).distributedTo).toBe(1);
   });
 
-  it("lists policies for org", async () => {
-    if (!hasDB) return;
+  it("returns 404 when publishing to a nonexistent gateway", async (ctx) => {
+    if (!hasDB) return ctx.skip();
+    const a = await appPromise;
+    const create = await a.inject({
+      method: "POST",
+      url: "/v1/policies",
+      payload: {
+        organizationId: orgId,
+        name: "missing-gw-publish",
+        rules: [{ id: "r1", action: "shell.execute", target: "rm", effect: "deny", priority: 100 }],
+      },
+    });
+    const { id } = JSON.parse(create.payload);
+    const res = await a.inject({
+      method: "POST",
+      url: `/v1/policies/${id}/publish`,
+      payload: { gatewayIds: ["00000000-0000-0000-0000-0000000000ff"] },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("lists policies for org", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({ method: "GET", url: `/v1/policies?organizationId=${orgId}` });
     expect(res.statusCode).toBe(200);

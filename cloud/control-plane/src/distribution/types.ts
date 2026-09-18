@@ -28,6 +28,7 @@ export interface DistributionTarget {
 
 export interface DistributionRecord {
   id: string;
+  organizationId: string;
   policyVersion: number;
   gatewayId: string;
   status: DistributionResultStatus;
@@ -55,4 +56,12 @@ export interface DistributorConfig {
   maxRetries?: number;
   retryBaseDelayMs?: number;
   requestTimeoutMs?: number;
+  /**
+   * Upper bound on total time spent in the inline retry loop (sleep +
+   * push attempts) for a single gateway. Bounds worst-case handler
+   * latency since retries run in-band.
+   */
+  maxRetryWindowMs?: number;
+  /** Bearer token sent to gateways on policy push (Authorization header). */
+  apiKey?: string;
 }

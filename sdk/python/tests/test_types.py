@@ -5,8 +5,6 @@ from ovara_sdk.types import (
     AgentIdentity,
     CapabilityLease,
     DecisionResponse,
-    ExecutionRequest,
-    ExecutionResponse,
     GatewayStatus,
     PortableReceipt,
     ReceiptRecord,
@@ -24,7 +22,7 @@ class TestAgentIdentity:
 
     def test_optional_fields_default_none(self):
         identity = AgentIdentity(id="agent-001", issuer="ovara", subject_id="sub-001", owner="team-a")
-        assert identity.public_key is None
+        assert identity.verify_key is None
 
 
 class TestCapabilityLease:
@@ -51,44 +49,47 @@ class TestActionRequest:
         assert request.agent_identity is None
         assert request.capability_lease is None
         assert request.metadata is None
-        assert request.trace_id is None
+        assert request.delegation_chain is None
+        assert request.nonce is None
+        assert request.issued_at is None
 
 
 class TestDecisionResponse:
-    def test_decision_allow(self):
-        resp = DecisionResponse(request_id="req-001", decision="allow")
+    def test_from_gateway_allow(self):
+        resp = DecisionResponse.from_gateway({
+            "decision_id": "dec-001",
+            "decision": "allow",
+            "reason_codes": ["allowed"],
+            "trust_score": 0.95,
+            "requires_approval": False,
+        })
         assert resp.decision == "allow"
-        assert resp.reason is None
-        assert resp.trust_score is None
+        assert resp.decision_id == "dec-001"
+        assert resp.reason_codes == ["allowed"]
+        assert resp.trust_score == 0.95
 
-    def test_decision_deny(self):
-        resp = DecisionResponse(request_id="req-001", decision="deny", reason="policy deny")
-        assert resp.decision == "deny"
-        assert resp.reason == "policy deny"
-
-    def test_decision_pending(self):
-        resp = DecisionResponse(request_id="req-001", decision="pending", approval_id="apr-001")
-        assert resp.decision == "pending"
+    def test_from_gateway_escalate(self):
+        resp = DecisionResponse.from_gateway({
+            "decision_id": "dec-002",
+            "decision": "escalate",
+            "reason_codes": ["policy_escalate"],
+            "requires_approval": True,
+            "approval_id": "apr-001",
+        })
+        assert resp.decision == "escalate"
+        assert resp.requires_approval is True
         assert resp.approval_id == "apr-001"
 
-
-class TestExecutionRequest:
-    def test_all_optional(self):
-        req = ExecutionRequest(command="ls")
-        assert req.args is None
-        assert req.env is None
-        assert req.working_dir is None
-        assert req.timeout_ms is None
-
-
-class TestExecutionResponse:
-    def test_default_values(self):
-        resp = ExecutionResponse(execution_id="exe-001", status="succeeded")
-        assert resp.exit_code == 0
-        assert resp.stdout == ""
-        assert resp.stderr == ""
-        assert resp.duration_ms == 0
-        assert resp.receipt_id is None
+    def test_from_gateway_ignores_unknown_keys(self):
+        resp = DecisionResponse.from_gateway({
+            "decision_id": "dec-003",
+            "decision": "deny",
+            "reason_codes": ["policy_deny"],
+            "requires_approval": False,
+            "some_future_field": {"nested": True},
+        })
+        assert resp.decision == "deny"
+        assert not hasattr(resp, "some_future_field")
 
 
 class TestGatewayStatus:
@@ -100,6 +101,17 @@ class TestGatewayStatus:
         assert status.is_healthy is False
         assert status.policy_version == ""
         assert status.uptime_seconds == 0
+
+    def test_from_gateway_ignores_unknown_keys(self):
+        status = GatewayStatus.from_gateway({
+            "gateway_id": "gw-1",
+            "enrollment_state": "local",
+            "environment": "dev",
+            "enrollment_healthy": True,
+            "decision_cache_count": 42,
+        })
+        assert status.gateway_id == "gw-1"
+        assert status.enrollment_healthy is True
 
 
 class TestReceiptRecord:
@@ -115,21 +127,29 @@ class TestReceiptRecord:
         assert record.signature == ""
         assert record.issued_at == ""
 
+    def test_from_gateway_ignores_unknown_keys(self):
+        record = ReceiptRecord.from_gateway({
+            "receipt_id": "rcpt-1",
+            "decision": "allow",
+            "policy_version": "v1",
+            "future_field": 123,
+        })
+        assert record.receipt_id == "rcpt-1"
+        assert record.policy_version == "v1"
+
 
 class TestPortableReceipt:
     def test_required_fields(self):
         receipt = PortableReceipt(
             receipt_id="rcpt-001",
-            decision_id="dec-001",
-            issuing_gateway="gw-local",
-            issuing_org="org-demo",
-            action_type="shell",
-            resource="shell:ls",
+            session_id="sess-1",
+            timestamp="2025-09-14T12:34:56.123456789Z",
+            method="POST",
+            url="https://api.example.com/v1",
             decision="allow",
-            agent_identity="agent-001",
-            trust_score=0.95,
-            timestamp=1718000000,
-            signature="00" * 64,
+            status=200,
+            prev_hash="",
+            signature="sig_v1:" + "00" * 64,
         )
         assert receipt.receipt_id == "rcpt-001"
-        assert receipt.lease_digest is None
+        assert receipt.prev_hash == ""

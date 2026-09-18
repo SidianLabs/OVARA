@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ovara.runtime.gateway/internal/metrics"
+	"ovara.runtime.gateway/internal/persist"
 )
 
 type Service interface {
@@ -119,14 +120,13 @@ func (s *localService) Initialize(env string) error {
 	}
 
 	if s.filePath != "" {
-		if err := os.MkdirAll(s.dir(), 0755); err != nil {
-			return err
-		}
 		data, err := json.MarshalIndent(s.identity, "", "  ")
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(s.filePath, data, 0644)
+		// Atomic write (tmp + fsync + rename): a crash mid-write must not
+		// leave a corrupt identity file.
+		return persist.WriteFileAtomic(s.filePath, data, 0644)
 	}
 
 	return nil
@@ -147,7 +147,7 @@ func (s *localService) Heartbeat() error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(s.filePath, data, 0644); err != nil {
+		if err := persist.WriteFileAtomic(s.filePath, data, 0644); err != nil {
 			return err
 		}
 	}

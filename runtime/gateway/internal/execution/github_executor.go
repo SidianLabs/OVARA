@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -64,7 +65,7 @@ func (g *GitHubExecutor) Execute(ctx context.Context, e *Execution) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		e.MarkFailed("failed to read github response: "+err.Error(), 1)
 		return fmt.Errorf("reading github response: %w", err)
@@ -119,7 +120,7 @@ func ParseGitHubResource(resource string) (*GitHubParts, error) {
 }
 
 func (g *GitHubExecutor) createPushEvent(ctx context.Context, parts *GitHubParts) (*http.Response, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/dispatches", g.BaseURL, parts.Owner, parts.Repo)
+	url := fmt.Sprintf("%s/repos/%s/%s/dispatches", g.BaseURL, url.PathEscape(parts.Owner), url.PathEscape(parts.Repo))
 	payload := map[string]interface{}{
 		"event_type": "ovara_push",
 		"client_payload": map[string]string{
@@ -131,7 +132,7 @@ func (g *GitHubExecutor) createPushEvent(ctx context.Context, parts *GitHubParts
 }
 
 func (g *GitHubExecutor) createPullRequest(ctx context.Context, parts *GitHubParts) (*http.Response, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls", g.BaseURL, parts.Owner, parts.Repo)
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls", g.BaseURL, url.PathEscape(parts.Owner), url.PathEscape(parts.Repo))
 	title := parts.Title
 	if title == "" {
 		title = "Ovara-initiated pull request"
@@ -150,7 +151,7 @@ func (g *GitHubExecutor) mergePullRequest(ctx context.Context, parts *GitHubPart
 	if prNumber == "" {
 		return nil, fmt.Errorf("pr number required for merge action")
 	}
-	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%s/merge", g.BaseURL, parts.Owner, parts.Repo, prNumber)
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%s/merge", g.BaseURL, url.PathEscape(parts.Owner), url.PathEscape(parts.Repo), url.PathEscape(prNumber))
 	payload := map[string]interface{}{
 		"commit_title": fmt.Sprintf("Merge PR #%s via Ovara", prNumber),
 	}
@@ -162,7 +163,7 @@ func (g *GitHubExecutor) deleteBranch(ctx context.Context, parts *GitHubParts) (
 	if branch == "" {
 		return nil, fmt.Errorf("branch name required for delete_branch action")
 	}
-	url := fmt.Sprintf("%s/repos/%s/%s/git/refs/heads/%s", g.BaseURL, parts.Owner, parts.Repo, branch)
+	url := fmt.Sprintf("%s/repos/%s/%s/git/refs/heads/%s", g.BaseURL, url.PathEscape(parts.Owner), url.PathEscape(parts.Repo), url.PathEscape(branch))
 	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
 	if err != nil {
 		return nil, err

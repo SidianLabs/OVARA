@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"ovara.services.observability/internal/graph"
 	"ovara.services.observability/internal/models"
 	"ovara.services.observability/internal/store"
 )
@@ -43,7 +44,13 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/stats", h.HandleStats)
 }
 
+// maxBodyBytes caps request bodies decoded by this service.
+const maxBodyBytes = 10 << 20 // 10MB
+
 func (h *Handlers) HandleTraces(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	}
 	path := r.URL.Path
 
 	if path == "/v1/traces" && r.Method == http.MethodGet {
@@ -330,31 +337,11 @@ func (h *Handlers) getAgentGraph(w http.ResponseWriter, r *http.Request, agentID
 		return
 	}
 
-	builder := &struct {
-		MergeGraphs func([]models.TraceGraph) models.TraceGraph
-	}{
-		MergeGraphs: func(graphs []models.TraceGraph) models.TraceGraph {
-			seen := make(map[string]bool)
-			var nodes []models.TraceNode
-			var edges []models.TraceEdge
-			for _, g := range graphs {
-				for _, n := range g.Nodes {
-					if !seen[n.ID] {
-						seen[n.ID] = true
-						nodes = append(nodes, n)
-					}
-				}
-				edges = append(edges, g.Edges...)
-			}
-			return models.TraceGraph{Nodes: nodes, Edges: edges}
-		},
-	}
-
 	var graphs []models.TraceGraph
 	for _, r := range records {
 		graphs = append(graphs, r.Graph)
 	}
-	merged := builder.MergeGraphs(graphs)
+	merged := graph.NewBuilder().MergeGraphs(graphs)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agent_id": agentID,
@@ -362,14 +349,14 @@ func (h *Handlers) getAgentGraph(w http.ResponseWriter, r *http.Request, agentID
 	})
 }
 
-func NewServer(addr string, s store.Store) *http.Server {
+func NewServer(addr string, s store.Store, tokens ...string) *http.Server {
 	h := &Handlers{Store: s}
 	mux := http.NewServeMux()
 	h.Register(mux)
 
 	return &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      NewAuthMiddleware(tokens).Authenticate(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,

@@ -61,8 +61,31 @@ func TestValidator_ValidateAgentIdentity_MissingSubjectID(t *testing.T) {
 	}
 }
 
+// testIssuerKeys returns a trusted-issuer registry and the private key
+// that signs leases for "ovara" in tests.
+func testIssuerKeys(t *testing.T, issuer string) (map[string][]byte, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("key gen failed: %v", err)
+	}
+	return map[string][]byte{issuer: pub}, priv
+}
+
+// signTestLease signs the lease with priv using the payload format that
+// matches ovara.identity.CapabilityLease.digestPayload().
+func signTestLease(t *testing.T, lease *models.CapabilityLease, priv ed25519.PrivateKey) {
+	t.Helper()
+	payload := fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
+		lease.LeaseID, lease.Issuer, lease.Subject, lease.AllowedActions,
+		lease.ResourceScope, lease.Expiry.Unix(), lease.DelegationDepth, lease.IssuedAt.Unix(),
+	)
+	lease.Signature = ed25519.Sign(priv, []byte(payload))
+}
+
 func TestValidator_ValidateCapabilityLease_Valid(t *testing.T) {
-	v := NewValidator()
+	trusted, priv := testIssuerKeys(t, "ovara")
+	v := NewValidatorWithTrustedKeys(trusted)
 	lease := &models.CapabilityLease{
 		LeaseID:        "cap_123",
 		Issuer:         "ovara",
@@ -72,6 +95,7 @@ func TestValidator_ValidateCapabilityLease_Valid(t *testing.T) {
 		Expiry:         time.Now().Add(1 * time.Hour),
 		DelegationDepth: 1,
 	}
+	signTestLease(t, lease, priv)
 
 	result := v.ValidateCapabilityLease(lease)
 	if !result.Valid {
@@ -263,7 +287,17 @@ func TestValidator_ValidateAll_MissingBoth(t *testing.T) {
 }
 
 func TestValidator_ValidateAll_Valid(t *testing.T) {
-	v := NewValidator()
+	trusted, priv := testIssuerKeys(t, "ovara")
+	v := NewValidatorWithTrustedKeys(trusted)
+	lease := &models.CapabilityLease{
+		LeaseID:        "cap_123",
+		Issuer:         "ovara",
+		Subject:        "agent-001",
+		AllowedActions: []string{"shell"},
+		ResourceScope:   "shell:*",
+		Expiry:         time.Now().Add(1 * time.Hour),
+	}
+	signTestLease(t, lease, priv)
 	req := &models.ActionRequest{
 		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:echo",
@@ -272,14 +306,7 @@ func TestValidator_ValidateAll_Valid(t *testing.T) {
 			Issuer:    "ovara",
 			SubjectID: "agent-001",
 		},
-		CapabilityLease: &models.CapabilityLease{
-			LeaseID:        "cap_123",
-			Issuer:         "ovara",
-			Subject:        "agent-001",
-			AllowedActions: []string{"shell"},
-			ResourceScope:   "shell:*",
-			Expiry:         time.Now().Add(1 * time.Hour),
-		},
+		CapabilityLease: lease,
 	}
 
 	result := v.ValidateAll(req)
@@ -289,8 +316,8 @@ func TestValidator_ValidateAll_Valid(t *testing.T) {
 }
 
 // TestCapabilityLeaseSignatureVerification validates that leases signed
-// with ed25519 are correctly verified by the gateway validator. The payload
-// format matches ovara.identity.CapabilityLease.digestPayload().
+// with ed25519 by a trusted issuer are correctly verified by the gateway
+// validator. The payload format matches ovara.identity.CapabilityLease.digestPayload().
 func TestCapabilityLeaseSignatureVerification(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -322,7 +349,7 @@ func TestCapabilityLeaseSignatureVerification(t *testing.T) {
 		VerifyKey:       verifyKeyHex,
 	}
 
-	v := NewValidator()
+	v := NewValidatorWithTrustedKeys(map[string][]byte{"ovara": pub})
 	result := v.ValidateCapabilityLease(lease)
 	if !result.Valid {
 		t.Fatalf("expected valid, got: %v", result.Reasons)
@@ -330,7 +357,7 @@ func TestCapabilityLeaseSignatureVerification(t *testing.T) {
 }
 
 // TestCapabilityLeaseSignatureRejection validates that a tampered lease
-// (wrong subject) fails signature verification.
+// (wrong subject) fails signature verification against the trusted key.
 func TestCapabilityLeaseSignatureRejection(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -362,7 +389,7 @@ func TestCapabilityLeaseSignatureRejection(t *testing.T) {
 		VerifyKey:       verifyKeyHex,
 	}
 
-	v := NewValidator()
+	v := NewValidatorWithTrustedKeys(map[string][]byte{"ovara": pub})
 	result := v.ValidateCapabilityLease(lease)
 	if result.Valid {
 		t.Fatal("expected invalid for tampered lease")
@@ -379,27 +406,33 @@ func TestCapabilityLeaseSignatureRejection(t *testing.T) {
 	}
 }
 
-// TestCapabilityLeaseSignatureMissingKey validates that signature without
-// verify key is rejected.
-func TestCapabilityLeaseSignatureMissingKey(t *testing.T) {
+// TestCapabilityLeaseSignatureUntrustedIssuer validates that a lease signed
+// by an issuer with no registered trusted key is rejected, even when the
+// request self-asserts a matching verify_key.
+func TestCapabilityLeaseSignatureUntrustedIssuer(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("key gen failed: %v", err)
+	}
+
 	now := time.Now().UTC()
 	lease := &models.CapabilityLease{
 		LeaseID:         "lse_test",
-		Issuer:          "ovara",
+		Issuer:          "evil-issuer",
 		Subject:         "agent-001",
 		AllowedActions:  []string{"shell"},
 		ResourceScope:   "*",
 		Expiry:          now.Add(1 * time.Hour),
 		DelegationDepth: 1,
 		IssuedAt:        now,
-		Signature:       []byte{0x01, 0x02, 0x03},
-		// VerifyKey intentionally empty
+		VerifyKey:       hex.EncodeToString(pub), // self-asserted key
 	}
+	signTestLease(t, lease, priv)
 
 	v := NewValidator()
 	result := v.ValidateCapabilityLease(lease)
 	if result.Valid {
-		t.Fatal("expected invalid for signature without verify key")
+		t.Fatal("expected invalid for lease from untrusted issuer")
 	}
 	found := false
 	for _, r := range result.Reasons {
@@ -410,6 +443,66 @@ func TestCapabilityLeaseSignatureMissingKey(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected signature verification failure reason, got: %v", result.Reasons)
+	}
+}
+
+// TestCapabilityLeaseSignatureRequired validates that an unsigned lease is
+// rejected: a signature is mandatory.
+func TestCapabilityLeaseSignatureRequired(t *testing.T) {
+	now := time.Now().UTC()
+	lease := &models.CapabilityLease{
+		LeaseID:         "lse_test",
+		Issuer:          "ovara",
+		Subject:         "agent-001",
+		AllowedActions:  []string{"shell"},
+		ResourceScope:   "*",
+		Expiry:          now.Add(1 * time.Hour),
+		DelegationDepth: 1,
+		IssuedAt:        now,
+	}
+
+	v := NewValidator()
+	result := v.ValidateCapabilityLease(lease)
+	if result.Valid {
+		t.Fatal("expected invalid for unsigned lease")
+	}
+	found := false
+	for _, r := range result.Reasons {
+		if strings.Contains(r, "signature is required") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected signature required reason, got: %v", result.Reasons)
+	}
+}
+
+// TestCapabilityLeaseSignatureFailClosed validates that a validator with no
+// trusted keys rejects even a properly signed lease.
+func TestCapabilityLeaseSignatureFailClosed(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("key gen failed: %v", err)
+	}
+
+	now := time.Now().UTC()
+	lease := &models.CapabilityLease{
+		LeaseID:         "lse_test",
+		Issuer:          "ovara",
+		Subject:         "agent-001",
+		AllowedActions:  []string{"shell"},
+		ResourceScope:   "*",
+		Expiry:          now.Add(1 * time.Hour),
+		DelegationDepth: 1,
+		IssuedAt:        now,
+	}
+	signTestLease(t, lease, priv)
+
+	v := NewValidator()
+	result := v.ValidateCapabilityLease(lease)
+	if result.Valid {
+		t.Fatal("expected invalid: signed lease must fail closed without trusted keys")
 	}
 }
 

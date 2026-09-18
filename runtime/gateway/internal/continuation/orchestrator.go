@@ -28,6 +28,11 @@ type Orchestrator struct {
 
 	stuckSweepInterval     time.Duration
 	stuckRecoveryThreshold time.Duration
+
+	// execSem bounds concurrent executions globally across all drainQueue
+	// ticks; a per-tick semaphore would let the bound grow unboundedly over
+	// successive polls.
+	execSem chan struct{}
 }
 
 func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
@@ -37,6 +42,7 @@ func NewOrchestrator(store Store, execStore execution.Store, registry *execution
 		registry:     registry,
 		pollInterval: 2 * time.Second,
 		stopChan:    make(chan struct{}),
+		execSem:     make(chan struct{}, maxConcurrentExecutions),
 		logger:      log.Default(),
 	}
 }
@@ -59,6 +65,9 @@ func (o *Orchestrator) Start() {
 	if o.running {
 		return
 	}
+	// stopChan is closed by Stop; recreate it so Start-after-Stop works and
+	// a second Stop does not panic on a closed channel.
+	o.stopChan = make(chan struct{})
 	o.sweepStuckExecuting()
 	o.running = true
 	o.wg.Add(1)
@@ -139,6 +148,11 @@ func (o *Orchestrator) run() {
 	}
 }
 
+// maxConcurrentExecutions bounds how many continuation executions the
+// orchestrator runs in parallel; drainQueue would otherwise spawn an
+// unbounded goroutine per queued item.
+const maxConcurrentExecutions = 16
+
 func (o *Orchestrator) drainQueue() {
 	o.pausedMu.RLock()
 	if o.paused {
@@ -149,7 +163,11 @@ func (o *Orchestrator) drainQueue() {
 
 	candidates := o.store.ListByState(StateQueued)
 	for _, cnt := range candidates {
-		go o.executeOne(cnt)
+		o.execSem <- struct{}{}
+		go func(c *Continuation) {
+			defer func() { <-o.execSem }()
+			o.executeOne(c)
+		}(cnt)
 	}
 }
 
@@ -329,18 +347,29 @@ func (o *Orchestrator) ExecutingCount() int {
 	return len(o.store.ListExecutingIDs())
 }
 
-// OldestExecutingAt returns the CreatedAt timestamp of the oldest continuation
+// claimTime returns when the continuation was claimed for execution
+// (ExecutingAt), falling back to CreatedAt for records claimed before the
+// field existed.
+func claimTime(c *Continuation) time.Time {
+	if c.ExecutingAt != nil && !c.ExecutingAt.IsZero() {
+		return *c.ExecutingAt
+	}
+	return c.CreatedAt
+}
+
+// OldestExecutingAt returns the claim timestamp of the oldest continuation
 // currently in StateExecuting, or the zero time if none are executing. Used
 // by runtime status to surface how long the longest-running claim has been
 // in flight.
 func (o *Orchestrator) OldestExecutingAt() time.Time {
 	var oldest time.Time
 	for _, c := range o.store.ListByState(StateExecuting) {
-		if c.CreatedAt.IsZero() {
+		at := claimTime(c)
+		if at.IsZero() {
 			continue
 		}
-		if oldest.IsZero() || c.CreatedAt.Before(oldest) {
-			oldest = c.CreatedAt
+		if oldest.IsZero() || at.Before(oldest) {
+			oldest = at
 		}
 	}
 	return oldest
@@ -389,10 +418,14 @@ func (o *Orchestrator) sweepStuckExecutingThreshold() {
 		if !ok {
 			continue
 		}
-		if snap.CreatedAt.IsZero() {
+		// Age is measured from the claim time, not CreatedAt: a continuation
+		// that sat queued for a while before being claimed must not be
+		// "recovered" while it is legitimately executing.
+		at := claimTime(snap)
+		if at.IsZero() {
 			continue
 		}
-		age := now.Sub(snap.CreatedAt)
+		age := now.Sub(at)
 		if age < o.stuckRecoveryThreshold {
 			continue
 		}

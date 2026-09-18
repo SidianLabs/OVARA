@@ -313,7 +313,7 @@ func TestContinuationHandler_Execute_Truncation(t *testing.T) {
 	execStore := execution.NewInMemoryStore()
 	eventStore := eventsstore.NewInMemoryStore(1000)
 
-	cnt := continuation.NewContinuation("dec_1", "shell", "shell:printf 'X%.0s' {1..100}")
+	cnt := continuation.NewContinuation("dec_1", "shell", "shell:i=0; while [ $i -lt 300 ]; do printf 'xy'; i=$((i+1)); done")
 	cnt.MarkApproved("admin")
 	contStore.Create(cnt)
 

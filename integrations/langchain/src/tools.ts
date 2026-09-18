@@ -1,3 +1,5 @@
+import { randomUUID } from "crypto";
+
 interface ToolResult {
   name: string;
   description: string;
@@ -37,6 +39,9 @@ export const OvaraCheckTool: ToolResult = {
       action_type: input.action,
       resource: input.resource,
       environment: input.environment || "local",
+      // Gateway ActionRequest.Validate() requires nonce and issued_at.
+      nonce: randomUUID(),
+      issued_at: new Date().toISOString(),
     });
     return JSON.stringify(result);
   },
@@ -63,9 +68,10 @@ export const OvaraReceiptsTool: ToolResult = {
     },
   },
   async _call(input: Record<string, unknown>): Promise<string> {
-    const receipts = await callGateway(
-      `/v1/runtime/receipts?limit=${input.limit || 20}&offset=${input.offset || 0}`
-    );
-    return JSON.stringify(receipts);
+    // GET /v1/receipts returns {"receipts": [...], "count": n}.
+    const resp = (await callGateway(
+      `/v1/receipts?limit=${input.limit || 20}&offset=${input.offset || 0}`
+    )) as { receipts?: unknown[] };
+    return JSON.stringify(resp?.receipts ?? []);
   },
 };

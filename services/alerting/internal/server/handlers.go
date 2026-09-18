@@ -38,7 +38,13 @@ func extractID(path, prefix string) string {
 	return id
 }
 
+// maxBodyBytes caps request bodies decoded by this service.
+const maxBodyBytes = 10 << 20 // 10MB
+
 func (h *Handlers) HandleAlerts(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	}
 	path := r.URL.Path
 
 	if path == "/v1/alerts" {
@@ -84,6 +90,9 @@ func (h *Handlers) HandleAlerts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) HandleRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost || r.Method == http.MethodPut {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	}
 	path := r.URL.Path
 
 	if path == "/v1/alerts/rules" {
@@ -153,13 +162,22 @@ func (h *Handlers) ingest(w http.ResponseWriter, r *http.Request) {
 		ev.Severity = models.SeverityMedium
 	}
 
+	// Evaluate rules first so rule alerts still fire for events that are
+	// dedupe-skipped by ProcessEvent.
+	ruleAlerts := h.Engine.EvaluateRules(ev)
+
 	alert, err := h.Engine.ProcessEvent(ev)
 	if err != nil {
+		if len(ruleAlerts) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":       err.Error(),
+				"rule_alerts": ruleAlerts,
+			})
+			return
+		}
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
-
-	ruleAlerts := h.Engine.EvaluateRules(ev)
 
 	response := map[string]any{
 		"alert": alert,
@@ -399,14 +417,14 @@ func (h *Handlers) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/alerts/", h.HandleAlerts)
 }
 
-func NewServer(addr string, e *engine.Engine) *http.Server {
+func NewServer(addr string, e *engine.Engine, tokens ...string) *http.Server {
 	h := &Handlers{Engine: e}
 	mux := http.NewServeMux()
 	h.Register(mux)
 
 	return &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      NewAuthMiddleware(tokens).Authenticate(mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,

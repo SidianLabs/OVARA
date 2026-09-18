@@ -4,10 +4,20 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 )
+
+// canonicalJSON serializes v to a canonical JSON byte representation for
+// use in signed digests. Marshal errors are impossible for the concrete
+// struct types used here.
+func canonicalJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
 
 type LifecycleState string
 
@@ -55,9 +65,14 @@ func NewAgentIdentity(issuer, subjectID, owner string) (*AgentIdentity, ed25519.
 }
 
 func (a *AgentIdentity) Digest() string {
-	payload := fmt.Sprintf("%s|%s|%s|%s|%s",
-		a.ID, a.Issuer, a.SubjectID, a.Owner, a.Lifecycle)
-	h := sha256.Sum256([]byte(payload))
+	payload := canonicalJSON(struct {
+		ID        string         `json:"id"`
+		Issuer    string         `json:"issuer"`
+		SubjectID string         `json:"subject_id"`
+		Owner     string         `json:"owner"`
+		Lifecycle LifecycleState `json:"lifecycle"`
+	}{a.ID, a.Issuer, a.SubjectID, a.Owner, a.Lifecycle})
+	h := sha256.Sum256(payload)
 	return hex.EncodeToString(h[:])
 }
 
@@ -77,7 +92,7 @@ func (a *AgentIdentity) Revoke() {
 
 func (a *AgentIdentity) Verify(publicKey []byte) bool {
 	return len(a.PublicKey) > 0 && len(publicKey) > 0 &&
-		hex.EncodeToString(a.PublicKey) == hex.EncodeToString(publicKey)
+		subtle.ConstantTimeCompare(a.PublicKey, publicKey) == 1
 }
 
 func (a *AgentIdentity) Validate() []string {
