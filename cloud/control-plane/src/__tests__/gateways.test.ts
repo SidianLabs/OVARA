@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import Fastify from "fastify";
 import { gatewayRoutes } from "../routes/gateways";
 import { organizationRoutes } from "../routes/organizations";
+import { PolicyDistributor } from "../distribution/distributor";
 import { db } from "../db/connection";
-import { gateways, organizations } from "../db/schema";
+import { gateways, organizations, policies, policyDistributions } from "../db/schema";
 
 let hasDB = false;
 
@@ -56,6 +57,8 @@ describe("Gateways API", () => {
   afterAll(async () => {
     if (hasDB) {
       try {
+        await db.delete(policyDistributions);
+        await db.delete(policies);
         await db.delete(gateways);
         await db.delete(organizations);
       } catch {}
@@ -63,8 +66,8 @@ describe("Gateways API", () => {
     if (app) await app.close();
   });
 
-  it("enrolls a gateway", async () => {
-    if (!hasDB) return;
+  it("enrolls a gateway", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({
       method: "POST",
@@ -83,8 +86,8 @@ describe("Gateways API", () => {
     expect(body.enrollmentToken).toMatch(/^ovara_enr_/);
   });
 
-  it("confirms enrollment", async () => {
-    if (!hasDB) return;
+  it("confirms enrollment", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const enroll = await a.inject({
       method: "POST",
@@ -98,12 +101,50 @@ describe("Gateways API", () => {
     const { id } = JSON.parse(enroll.payload);
     const res = await a.inject({ method: "POST", url: `/v1/gateways/confirm/${id}` });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.payload).status).toBe("active");
+    expect(JSON.parse(res.payload).status).toBe("online");
     expect(JSON.parse(res.payload).enrollmentToken).toBeNull();
   });
 
-  it("lists gateways by organization", async () => {
-    if (!hasDB) return;
+  it("distributes a policy to a confirmed gateway end-to-end", async (ctx) => {
+    if (!hasDB) return ctx.skip();
+    const a = await appPromise;
+    const enroll = await a.inject({
+      method: "POST",
+      url: "/v1/gateways/enroll",
+      payload: {
+        organizationId: orgId,
+        name: "test-gw-dist",
+        publicKey: "MCowBQYDK2VwAyEAjkl012",
+        endpointUrl: "https://test-gw-dist.example.internal:9443",
+      },
+    });
+    const { id } = JSON.parse(enroll.payload);
+    const confirm = await a.inject({ method: "POST", url: `/v1/gateways/confirm/${id}` });
+    expect(JSON.parse(confirm.payload).status).toBe("online");
+
+    const [policy] = await db.insert(policies).values({
+      organizationId: orgId,
+      name: "e2e-policy",
+      rules: [],
+      status: "published",
+    }).returning();
+
+    const dist = new PolicyDistributor({ retryBaseDelayMs: 10, maxRetries: 1 });
+    vi.spyOn(dist as any, "pushPolicyToGateway").mockResolvedValue(undefined);
+    const result = await dist.distributeToGateway(id, {
+      id: policy.id,
+      organizationId: orgId,
+      name: policy.name,
+      version: policy.version,
+      rules: [],
+      status: "published",
+    });
+    expect(result.status).toBe("delivered");
+    vi.restoreAllMocks();
+  });
+
+  it("lists gateways by organization", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({
       method: "GET",
@@ -114,8 +155,29 @@ describe("Gateways API", () => {
     expect(Array.isArray(body)).toBe(true);
   });
 
-  it("records heartbeat", async () => {
-    if (!hasDB) return;
+  it("lists organizations created under the caller's tenant", async (ctx) => {
+    if (!hasDB) return ctx.skip();
+    const a = await appPromise;
+    const create = await a.inject({
+      method: "POST",
+      url: "/v1/organizations",
+      payload: { name: "sibling-org", displayName: "Sibling Org" },
+    });
+    expect(create.statusCode).toBe(201);
+    const created = JSON.parse(create.payload);
+
+    const res = await a.inject({ method: "GET", url: "/v1/organizations" });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.some((o: any) => o.id === created.id)).toBe(true);
+
+    const getOne = await a.inject({ method: "GET", url: `/v1/organizations/${created.id}` });
+    expect(getOne.statusCode).toBe(200);
+    expect(JSON.parse(getOne.payload).id).toBe(created.id);
+  });
+
+  it("records heartbeat", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const enroll = await a.inject({
       method: "POST",

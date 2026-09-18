@@ -33,11 +33,17 @@ export function organizationRoutes(app: FastifyInstance) {
     preHandler: [authenticate, requireScope("read")],
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const auth = await authenticate(request);
-    // Keys are scoped to a single organization; listing returns only the
-    // caller's own org.
-    const own = await db.select().from(organizations)
-      .where(eq(organizations.id, auth.organizationId));
-    return reply.send(own);
+    // Keys are scoped to an organization, but POST / creates sibling orgs
+    // under the caller's tenant — listing returns every org in that tenant.
+    const callerOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, auth.organizationId),
+    });
+    if (!callerOrg) {
+      return reply.status(404).send({ error: "Organization not found" });
+    }
+    const orgs = await db.select().from(organizations)
+      .where(eq(organizations.tenantId, callerOrg.tenantId));
+    return reply.send(orgs);
   });
 
   app.get("/:id", {
@@ -46,8 +52,11 @@ export function organizationRoutes(app: FastifyInstance) {
     const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const org = await db.query.organizations.findFirst({ where: eq(organizations.id, id) });
-    // Uniform 404 for missing or cross-org resources to avoid existence oracles.
-    if (!org || org.id !== auth.organizationId) {
+    const callerOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, auth.organizationId),
+    });
+    // Uniform 404 for missing or cross-tenant resources to avoid existence oracles.
+    if (!org || !callerOrg || org.tenantId !== callerOrg.tenantId) {
       return reply.status(404).send({ error: "Organization not found" });
     }
     return reply.send(org);
@@ -59,7 +68,10 @@ export function organizationRoutes(app: FastifyInstance) {
     const auth = await authenticate(request);
     const { id } = request.params as { id: string };
     const existing = await db.query.organizations.findFirst({ where: eq(organizations.id, id) });
-    if (!existing || existing.id !== auth.organizationId) {
+    const callerOrg = await db.query.organizations.findFirst({
+      where: eq(organizations.id, auth.organizationId),
+    });
+    if (!existing || !callerOrg || existing.tenantId !== callerOrg.tenantId) {
       return reply.status(404).send({ error: "Organization not found" });
     }
 

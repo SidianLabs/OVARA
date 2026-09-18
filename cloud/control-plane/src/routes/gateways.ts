@@ -45,7 +45,7 @@ export function gatewayRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Gateway not found" });
     }
     const [gw] = await db.update(gateways)
-      .set({ status: "active", enrollmentToken: null, enrollmentExpiresAt: null, updatedAt: new Date() })
+      .set({ status: "online", enrollmentToken: null, enrollmentExpiresAt: null, updatedAt: new Date() })
       .where(eq(gateways.id, id))
       .returning();
     if (!gw) return reply.status(404).send({ error: "Gateway not found" });

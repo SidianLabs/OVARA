@@ -74,8 +74,8 @@ describe("Policies API", () => {
     if (app) await app.close();
   });
 
-  it("creates a policy", async () => {
-    if (!hasDB) return;
+  it("creates a policy", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({
       method: "POST",
@@ -95,8 +95,8 @@ describe("Policies API", () => {
     expect(body.rules).toHaveLength(2);
   });
 
-  it("publishes a policy", async () => {
-    if (!hasDB) return;
+  it("publishes a policy", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const create = await a.inject({
       method: "POST",
@@ -119,8 +119,8 @@ describe("Policies API", () => {
     expect(body.distributedTo).toBeGreaterThan(0);
   });
 
-  it("publishes to specific gateways", async () => {
-    if (!hasDB) return;
+  it("publishes to specific gateways", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const create = await a.inject({
       method: "POST",
@@ -141,8 +141,29 @@ describe("Policies API", () => {
     expect(JSON.parse(res.payload).distributedTo).toBe(1);
   });
 
-  it("lists policies for org", async () => {
-    if (!hasDB) return;
+  it("returns 404 when publishing to a nonexistent gateway", async (ctx) => {
+    if (!hasDB) return ctx.skip();
+    const a = await appPromise;
+    const create = await a.inject({
+      method: "POST",
+      url: "/v1/policies",
+      payload: {
+        organizationId: orgId,
+        name: "missing-gw-publish",
+        rules: [{ id: "r1", action: "shell.execute", target: "rm", effect: "deny", priority: 100 }],
+      },
+    });
+    const { id } = JSON.parse(create.payload);
+    const res = await a.inject({
+      method: "POST",
+      url: `/v1/policies/${id}/publish`,
+      payload: { gatewayIds: ["00000000-0000-0000-0000-0000000000ff"] },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("lists policies for org", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({ method: "GET", url: `/v1/policies?organizationId=${orgId}` });
     expect(res.statusCode).toBe(200);

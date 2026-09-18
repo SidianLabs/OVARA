@@ -44,12 +44,15 @@ export function policyRoutes(app: FastifyInstance) {
 
     let targetGatewayIds: string[];
     if (body.gatewayIds?.length) {
-      // Explicit targets must belong to the authenticated org.
+      // Explicit targets must all exist and belong to the authenticated
+      // org. Uniform 404 for missing or cross-org gateways to avoid
+      // existence oracles.
       const targets = await db.select({ id: gateways.id, organizationId: gateways.organizationId })
         .from(gateways)
         .where(inArray(gateways.id, body.gatewayIds));
-      if (targets.some((g) => g.organizationId !== auth.organizationId)) {
-        return reply.status(403).send({ error: "Gateway does not belong to your organization" });
+      if (targets.length !== body.gatewayIds.length ||
+          targets.some((g) => g.organizationId !== auth.organizationId)) {
+        return reply.status(404).send({ error: "Gateway not found" });
       }
       targetGatewayIds = targets.map((g) => g.id);
     } else {
