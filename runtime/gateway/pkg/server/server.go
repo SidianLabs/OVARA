@@ -4,6 +4,7 @@
 package server
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -25,6 +27,7 @@ import (
 	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
+	"ovara.runtime.gateway/internal/gwidentity"
 	"ovara.runtime.gateway/internal/handlers"
 	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/integrity"
@@ -87,6 +90,18 @@ func Run(configPath string) error {
 		enrollmentSvc.GetIdentity().ID,
 		enrollmentSvc.GetIdentity().EnrollmentState,
 		enrollmentSvc.GetIdentity().Environment)
+
+	// P2.3.1 cryptographic gateway identity: bind the enrollment gw_id
+	// to a registered ed25519 key in the domain gateway registry and
+	// prove possession before serving. Configured-but-failed trust
+	// state fails startup (never silently untrusted); unconfigured →
+	// in-memory registry (runtime-only trust, same convention as
+	// identity_registry_file).
+	gwTrust, err := initGatewayTrust(cfg, enrollmentSvc)
+	if err != nil {
+		return fmt.Errorf("gateway trust: %w", err)
+	}
+	_ = gwTrust // retained for later phases (peer auth, receipt signing)
 
 	policyStore := policy.NewStore(cfg.PolicyVersion)
 	var watcher *policy.Watcher
@@ -577,6 +592,136 @@ func Run(configPath string) error {
 	case err := <-serveErr:
 		return fmt.Errorf("server error: %v", err)
 	}
+}
+
+// gatewayTrust bundles the P2.3.1 cryptographic gateway identity:
+// the domain key registry, this gateway's private key (never leaves
+// this struct except to sign PoP), and its authenticated record.
+type gatewayTrust struct {
+	registry *gwidentity.Registry
+	priv     ed25519.PrivateKey
+	record   *gwidentity.KeyRecord
+}
+
+// initGatewayTrust binds the enrollment gateway_id to a registered
+// ed25519 key and proves possession before the gateway serves.
+//
+// Flow: gw_id (enrollment, unchanged) → key file or ephemeral key →
+// domain registry (durable or in-memory) → TOFU pins → register /
+// adopt / rotate → usable-key check → PoP self-check. Every failure
+// is fatal in durable mode; there is no silent fallback and no silent
+// re-identity (a new gw_id is never generated here — enrollment owns
+// the ID).
+func initGatewayTrust(cfg *config.Config, svc enrollment.Service) (*gatewayTrust, error) {
+	durable := cfg.GatewayRegistryFile != ""
+	id := svc.GetIdentity()
+	if id == nil || id.ID == "" {
+		if durable {
+			return nil, fmt.Errorf("enrollment produced no gateway_id — cannot bind trust state")
+		}
+		log.Printf("gateway trust: no gateway_id — running without cryptographic identity (in-memory mode)")
+		return nil, nil
+	}
+
+	var priv ed25519.PrivateKey
+	var err error
+	if cfg.GatewayKeyFile != "" {
+		priv, err = gwidentity.LoadOrCreateKey(cfg.GatewayKeyFile)
+	} else {
+		priv, err = gwidentity.GenerateKey()
+	}
+	if err != nil {
+		return nil, err
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+
+	if (cfg.GatewayExpectedID == "") != (cfg.GatewayExpectedPubKey == "") {
+		return nil, fmt.Errorf("gateway_expected_id and gateway_expected_pubkey must be set together")
+	}
+	if cfg.GatewayExpectedID != "" {
+		if id.ID != cfg.GatewayExpectedID {
+			return nil, fmt.Errorf("TOFU pin mismatch: enrollment id %s != expected %s", id.ID, cfg.GatewayExpectedID)
+		}
+		if !strings.EqualFold(hex.EncodeToString(pub), cfg.GatewayExpectedPubKey) {
+			return nil, fmt.Errorf("TOFU pin mismatch: presented key does not match expected pubkey")
+		}
+	}
+
+	var reg *gwidentity.Registry
+	if durable {
+		reg, err = gwidentity.Open(cfg.GatewayRegistryFile)
+	} else {
+		reg = gwidentity.NewInMemory()
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Adopt / register / rotate. FindByPub is the restart path: our key
+	// is already bound to this gw_id → reuse that record. force_rekey
+	// with a NEW key rotates; with the same usable key it's a no-op.
+	grace := time.Duration(cfg.GatewayKeyGraceSeconds) * time.Second
+	if grace <= 0 {
+		grace = 60 * time.Second
+	}
+	if grace > 24*time.Hour {
+		return nil, fmt.Errorf("gateway_key_grace_seconds exceeds max 24h")
+	}
+	var rec *gwidentity.KeyRecord
+	switch {
+	case cfg.GatewayForceRekey && reg.FindByPub(id.ID, pub) == nil:
+		rec, err = reg.Rotate(id.ID, pub, grace)
+		if err != nil {
+			return nil, fmt.Errorf("gateway rekey refused: %w", err)
+		}
+	default:
+		// P2.3.2 admission: an existing same-key binding adopts (the
+		// binding IS the earlier admission); a NEW identity requires an
+		// authorized grant or TOFU pin when admission is required —
+		// otherwise first-binding compat (open/dev mode).
+		allowUngranted := !cfg.GatewayRequireAdmission || cfg.GatewayExpectedID != ""
+		rec, err = reg.Admit(id.ID, pub, allowUngranted)
+		if err != nil {
+			return nil, fmt.Errorf("gateway admission refused: %w", err)
+		}
+	}
+	if rec == nil || !gwidentity.Usable(rec) {
+		st := "unknown"
+		if rec != nil {
+			st = string(rec.State)
+		}
+		return nil, fmt.Errorf("key file matches a %s key for %s — refusing to resurrect a dead key; generate a fresh key file",
+			st, id.ID)
+	}
+
+	if !reg.HasUsableKey(id.ID) {
+		return nil, fmt.Errorf("no usable gateway key for %s — a gateway with no active key cannot serve authenticated trust", id.ID)
+	}
+
+	// Proof-of-possession self-check: the registered key must actually
+	// sign — catches key/registry desync and corrupt key material
+	// before any traffic is served.
+	challenge, err := gwidentity.Challenge()
+	if err != nil {
+		return nil, fmt.Errorf("gateway PoP challenge: %w", err)
+	}
+	sig := gwidentity.Prove(priv, rec.GatewayID, rec.KeyID, challenge)
+	peer, err := reg.AuthenticatePeer(rec.GatewayID, rec.KeyID, challenge, sig)
+	if err != nil {
+		return nil, fmt.Errorf("gateway PoP self-check failed: %w", err)
+	}
+
+	mode := "in-memory (runtime-only)"
+	if durable {
+		mode = cfg.GatewayRegistryFile
+	}
+	admission := "open-first-binding (compat — NOT domain admission)"
+	if cfg.GatewayRequireAdmission {
+		admission = "required"
+	}
+	log.Printf("gateway identity authenticated: gateway_id=%s key_id=%s state=%s registry=%s admission=%s",
+		peer.GatewayID, peer.KeyID, peer.State, mode, admission)
+	return &gatewayTrust{registry: reg, priv: priv, record: rec}, nil
 }
 
 func init() {
