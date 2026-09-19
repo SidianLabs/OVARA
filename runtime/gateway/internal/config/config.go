@@ -55,6 +55,35 @@ type Config struct {
 	ExecutionStderrLimitBytes    int      `json:"execution_stderr_limit_bytes"`
 	ExecutionWorkingDir          string   `json:"execution_working_dir"`
 	ExecutionAllowedEnvVars      []string `json:"execution_allowed_env_vars"`
+	// GatewayRegistryFile enables the durable domain gateway-key
+	// registry (P2.3.1): gw_id → registered ed25519 public keys +
+	// lifecycle. When empty the registry is in-memory (runtime-only
+	// trust — same convention as identity_registry_file). Configured
+	// but unopenable/corrupt fails startup: persistence failure never
+	// becomes successful trust.
+	GatewayRegistryFile          string   `json:"gateway_registry_file"`
+	// GatewayKeyFile is the gateway's ed25519 private key (0600).
+	// Empty → ephemeral key generated at boot (runtime-only).
+	GatewayKeyFile               string   `json:"gateway_key_file"`
+	// TOFU pins (both or neither): expected enrollment gw_id and its
+	// expected public key (hex). A mismatch fails startup — pinned
+	// pre-provisioning, not a warning.
+	GatewayExpectedID            string   `json:"gateway_expected_id"`
+	GatewayExpectedPubKey        string   `json:"gateway_expected_pubkey"`
+	// GatewayForceRekey makes startup rotate (not register): our key
+	// becomes ACTIVE, prior active keys enter bounded ROTATING grace.
+	// Idempotent — restart-safe when the key file is unchanged.
+	GatewayForceRekey            bool     `json:"gateway_force_rekey"`
+	// GatewayKeyGraceSeconds bounds rotation dual-validity (default
+	// 60s, max 24h — the P2.3 bounded-grace design).
+	GatewayKeyGraceSeconds       int      `json:"gateway_key_grace_seconds"`
+	// GatewayRequireAdmission (P2.3.2): when true a NEW gateway
+	// identity may only enter ACTIVE via an operator-authorized
+	// enrollment grant (gwctl grant) or a matching TOFU pin —
+	// self-generated identity alone is not admission. Unset keeps
+	// the P2.3.1 compat behavior (first-binding auto-admit, dev
+	// mode — explicitly NOT a domain admission guarantee).
+	GatewayRequireAdmission      bool     `json:"gateway_require_admission"`
 	CapabilitiesFile             string   `json:"capabilities_file"`
 	CapabilitiesMaxSize          int      `json:"capabilities_max_size"`
 	CapabilitiesHistoryFile      string   `json:"capabilities_history_file"`
