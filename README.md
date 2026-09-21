@@ -12,14 +12,15 @@ that evaluates machine-driven actions (shell, Git, GitHub, CI/CD) and applies
 cryptographically-verified capability leases, trust-aware policy, and signed
 receipts in microseconds.
 
-> **Security model, stated plainly:** in V1 the gateway is an *advisory*
-> decision point plus an executor. Client-side interceptors are cooperative —
-> an agent that bypasses them is not constrained. The non-advisory path is
-> actions the gateway executes itself. The target architecture — a
-> credential-starving executor proxy where every side effect physically
-> transits a notarizing chokepoint — is described in
-> [`docs/architecture/executor_proxy.md`](docs/architecture/executor_proxy.md);
-> the first slice has shipped in [`proxy/`](proxy/).
+> **Security model, stated plainly (2.0):** the gateway is an *enforceable*
+> boundary for the actions it executes — enrolled gateway identity, durable
+> revocation, claim-time authority recheck, and Ed25519-signed receipts. An
+> agent cannot redefine the boundary it acts under. Client-side interceptors
+> remain cooperative — an agent that bypasses them is unconstrained. The
+> physical boundary — a credential-starving executor proxy where every side
+> effect transits a notarizing chokepoint — is described in
+> [`docs/architecture/executor_proxy.md`](docs/architecture/executor_proxy.md)
+> and ships in [`proxy/`](proxy/).
 
 ```text
 ┌────────────┐   ┌─────────────────────┐   ┌────────────────────┐
@@ -28,7 +29,7 @@ receipts in microseconds.
 └────────────┘   │  • Capability lease │   └────────────────────┘
                  │  • Policy engine    │            │
                  │  • Trust scoring    │            ▼
-                 │  • Receipt (HMAC)   │   ┌────────────────────┐
+                 │  • Receipt (Ed25519)│   ┌────────────────────┐
                  └─────────────────────┘   │ Execution Receipt  │
                                            │ (signed, auditable)│
                                            └────────────────────┘
@@ -153,9 +154,27 @@ Ovara provides that missing layer.
 
 ### Cryptographic Receipts
 
-- **HMAC-SHA256** signing with deterministic action digests
-- Verifiable payload format (`sig_v1:<hex>`)
+- **Ed25519 gateway signatures** (`edsig_v1:<hex>`) over the full decision
+  record — verifiable offline with `gwctl verify-receipt` using registry
+  public material only (no private key or HMAC secret needed)
+- **HMAC-SHA256** signing with deterministic action digests (`sig_v1:<hex>`)
+- Historical receipts stay verifiable across gateway key rotation and
+  revocation — public-key records are retained for verification even when
+  the key is no longer live for authentication
 - File-backed archival with retention
+
+### Gateway Trust & Revocation (2.0)
+
+- **Gateway enrollment** — PoP-bound gateway keys admitted to a durable,
+  hash-chained registry before the gateway serves; unenrolled gateways
+  refuse to boot into the trusted path
+- **Durable revocation** — issuer, delegation-hop, and lease revocation
+  persisted in a journal with a monotonic trust epoch
+- **Claim-time authority recheck** — authority is revalidated at the claim
+  linearization point; pre-claim revocation denies with zero execution
+- **Identity/credential lifecycle** — registered credentials with rotation
+  grace, suspend/resume/retire; suspended or retired subjects' queued work
+  never executes
 
 ### Operational Tooling
 

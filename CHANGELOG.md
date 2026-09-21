@@ -5,6 +5,44 @@ All notable changes to Ovara are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-09-21
+
+The OVARA 2.0 security series: the gateway becomes an enforceable execution
+boundary — enrolled gateway identity, durable revocation, claim-time
+authority verification, and Ed25519-signed receipts.
+
+### Added
+
+- **Gateway trust & enrollment (P2.3.1/P2.3.2)**: Ed25519 gateway keys,
+  proof-of-possession admission, durable hash-chained registry, key
+  lifecycle (active/rotating/superseded/revoked/destroyed). Unenrolled
+  gateways refuse to serve.
+- **Durable replay (P2.1)**: request nonces and delegation presentation
+  keys consumed durably across restarts.
+- **Identity & credential lifecycle (P2.2)**: registered credentials,
+  rotation with grace window, revocation, suspend/resume/retire/migrate;
+  lifecycle routes are operator-only; queued work of suspended or retired
+  subjects never executes.
+- **Journal integrity (P2.3.3)**: hash-chained registry journal, corrupt
+  journals refuse startup, optional external anchor hooks.
+- **Revocation boundary (P2.3.4)**: issuer/delegation/lease revocation,
+  claim-time authority recheck over every captured hop, linearizable
+  claim/revoke races, fail-closed on unavailable revocation state.
+- **Receipt signing (P2.3.5)**: Ed25519 `edsig_v1` signatures over the full
+  authoritative decision record; offline `gwctl verify-receipt` using
+  registry public material only; historical receipts verify across key
+  rotation and revocation.
+- **Integration closure (P2.3.6)**: 56-case clean-room integration suite
+  proving the composed chain — identity → delegation → lease → policy →
+  approval → claim → execution → signed receipt — plus denial matrix,
+  crash/SIGKILL durability, and cross-domain isolation.
+
+### Security
+
+- Preserved non-claims: software gateway keys ≠ clone prevention; signed
+  receipts ≠ execution truth or global immutable history; trust_epoch ≠
+  consensus; revocation ≠ kill-on-revoke for running executions.
+
 ## [Unreleased]
 
 ### Security
