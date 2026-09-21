@@ -3,7 +3,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"strings"
 
 	"ovara.proxy/internal/creds"
 )
@@ -13,6 +15,17 @@ type Config struct {
 	GatewayURL   string `json:"gateway_url"`   // ovara gateway base URL
 	GatewayToken string `json:"gateway_token"` // bearer token if gateway auth_enabled
 	Environment  string `json:"environment"`   // dev/staging/production; default dev
+
+	// AgentToken authenticates proxy CLIENTS. When set, every request must
+	// present it via Proxy-Authorization (Basic password or Bearer) — the
+	// standard mechanism tools send automatically when the proxy URL
+	// carries credentials (http://agent:TOKEN@host:9443). A credentialed
+	// proxy with no client auth is an open credential dispenser.
+	AgentToken string `json:"agent_token"`
+	// UnsafeNoAgentAuth explicitly permits running an unauthenticated
+	// credentialed proxy. Without it, a non-loopback listen_addr requires
+	// agent_token.
+	UnsafeNoAgentAuth bool `json:"unsafe_no_agent_auth"`
 
 	CACertFile string `json:"ca_cert_file"` // persisted CA cert (distribute to agent trust store)
 	CAKeyFile  string `json:"ca_key_file"`
@@ -74,5 +87,33 @@ func Load(path string) (*Config, error) {
 	if c.EscalatePollSec <= 0 {
 		c.EscalatePollSec = 2
 	}
+	if err := c.validateClientAuth(); err != nil {
+		return nil, err
+	}
 	return &c, nil
+}
+
+// validateClientAuth fails closed: a credentialed proxy on a non-loopback
+// bind MUST authenticate its clients unless the operator explicitly opted
+// in to an open proxy.
+func (c *Config) validateClientAuth() error {
+	if c.AgentToken != "" || c.UnsafeNoAgentAuth {
+		return nil
+	}
+	host := c.ListenAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else {
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	}
+	// Empty host (":9443") or ANY spelling of the unspecified address —
+	// ::, ::0, 0::, 0:0:0:0:0:0:0:0, ::ffff:0.0.0.0 — is all-interfaces.
+	// A credentialed proxy there is an open credential dispenser.
+	if host == "" {
+		return fmt.Errorf("refusing to start: credentialed proxy listening on all interfaces with no agent_token — set agent_token, bind to a boundary/loopback address, or set unsafe_no_agent_auth=true")
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return fmt.Errorf("refusing to start: credentialed proxy listening on all interfaces (%s) with no agent_token — set agent_token, bind to a boundary/loopback address, or set unsafe_no_agent_auth=true", c.ListenAddr)
+	}
+	return nil // specific bind without token: the boundary NIC's trust domain
 }

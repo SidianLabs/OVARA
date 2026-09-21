@@ -11,8 +11,8 @@ import (
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
-	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
@@ -66,13 +66,13 @@ func TestRuntimeStatus_SLABreach_UnderThreshold_NoBreach(t *testing.T) {
 	h.SetApprovalService(approvalSvc)
 
 	a := &approval.ApprovalRequest{
-		ApprovalID:   "apr_fresh",
-		DecisionID:    "dec_1",
-		ActionType:   models.ActionTypeShell,
-		Resource:     "shell:ls",
-		Environment:  models.EnvironmentDev,
-		Status:       approval.StatusPending,
-		CreatedAt:    time.Now().UTC().Add(-30 * time.Minute),
+		ApprovalID:  "apr_fresh",
+		DecisionID:  "dec_1",
+		ActionType:  models.ActionTypeShell,
+		Resource:    "shell:ls",
+		Environment: models.EnvironmentDev,
+		Status:      approval.StatusPending,
+		CreatedAt:   time.Now().UTC().Add(-30 * time.Minute),
 	}
 	approvalStore.Create(a)
 
@@ -124,22 +124,22 @@ func TestRuntimeStatus_SLABreach_OverThreshold_BreachCounted(t *testing.T) {
 	h.SetApprovalService(approvalSvc)
 
 	a1 := &approval.ApprovalRequest{
-		ApprovalID:   "apr_old_1",
-		DecisionID:    "dec_old_1",
-		ActionType:   models.ActionTypeShell,
-		Resource:     "shell:ls",
-		Environment:  models.EnvironmentDev,
-		Status:       approval.StatusPending,
-		CreatedAt:    time.Now().UTC().Add(-45 * time.Minute),
+		ApprovalID:  "apr_old_1",
+		DecisionID:  "dec_old_1",
+		ActionType:  models.ActionTypeShell,
+		Resource:    "shell:ls",
+		Environment: models.EnvironmentDev,
+		Status:      approval.StatusPending,
+		CreatedAt:   time.Now().UTC().Add(-45 * time.Minute),
 	}
 	a2 := &approval.ApprovalRequest{
-		ApprovalID:   "apr_old_2",
-		DecisionID:    "dec_old_2",
-		ActionType:   models.ActionTypeShell,
-		Resource:     "shell:ls",
-		Environment:  models.EnvironmentDev,
-		Status:       approval.StatusPending,
-		CreatedAt:    time.Now().UTC().Add(-60 * time.Minute),
+		ApprovalID:  "apr_old_2",
+		DecisionID:  "dec_old_2",
+		ActionType:  models.ActionTypeShell,
+		Resource:    "shell:ls",
+		Environment: models.EnvironmentDev,
+		Status:      approval.StatusPending,
+		CreatedAt:   time.Now().UTC().Add(-60 * time.Minute),
 	}
 	approvalStore.Create(a1)
 	approvalStore.Create(a2)
@@ -268,13 +268,13 @@ func TestRuntimeHealthEndpoint_WithBreach_Unhealthy(t *testing.T) {
 	h.SetApprovalService(approvalSvc)
 
 	a := &approval.ApprovalRequest{
-		ApprovalID:   "apr_old",
-		DecisionID:    "dec_old",
-		ActionType:   models.ActionTypeShell,
-		Resource:     "shell:ls",
-		Environment:  models.EnvironmentDev,
-		Status:       approval.StatusPending,
-		CreatedAt:    time.Now().UTC().Add(-60 * time.Minute),
+		ApprovalID:  "apr_old",
+		DecisionID:  "dec_old",
+		ActionType:  models.ActionTypeShell,
+		Resource:    "shell:ls",
+		Environment: models.EnvironmentDev,
+		Status:      approval.StatusPending,
+		CreatedAt:   time.Now().UTC().Add(-60 * time.Minute),
 	}
 	approvalStore.Create(a)
 
@@ -350,22 +350,22 @@ func TestRuntimeStatus_SLABreach_SomeItemsNotBreaching(t *testing.T) {
 	h.SetApprovalService(approvalSvc)
 
 	a1 := &approval.ApprovalRequest{
-		ApprovalID:   "apr_fresh",
-		DecisionID:    "dec_fresh",
-		ActionType:   models.ActionTypeShell,
-		Resource:     "shell:ls",
-		Environment:  models.EnvironmentDev,
-		Status:       approval.StatusPending,
-		CreatedAt:    time.Now().UTC().Add(-10 * time.Minute),
+		ApprovalID:  "apr_fresh",
+		DecisionID:  "dec_fresh",
+		ActionType:  models.ActionTypeShell,
+		Resource:    "shell:ls",
+		Environment: models.EnvironmentDev,
+		Status:      approval.StatusPending,
+		CreatedAt:   time.Now().UTC().Add(-10 * time.Minute),
 	}
 	a2 := &approval.ApprovalRequest{
-		ApprovalID:   "apr_old",
-		DecisionID:    "dec_old",
-		ActionType:   models.ActionTypeShell,
-		Resource:     "shell:ls",
-		Environment:  models.EnvironmentDev,
-		Status:       approval.StatusPending,
-		CreatedAt:    time.Now().UTC().Add(-60 * time.Minute),
+		ApprovalID:  "apr_old",
+		DecisionID:  "dec_old",
+		ActionType:  models.ActionTypeShell,
+		Resource:    "shell:ls",
+		Environment: models.EnvironmentDev,
+		Status:      approval.StatusPending,
+		CreatedAt:   time.Now().UTC().Add(-60 * time.Minute),
 	}
 	approvalStore.Create(a1)
 	approvalStore.Create(a2)

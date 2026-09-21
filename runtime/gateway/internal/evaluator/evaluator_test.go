@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -11,6 +12,24 @@ import (
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/trust"
 )
+
+// storeFromConfig builds a policy store through the canonical strict
+// parser — the map is marshaled to the same JSON a policy file carries.
+func storeFromConfig(t *testing.T, cfg map[string]any) *policy.Store {
+	t.Helper()
+	if v, ok := cfg["policy_version"]; ok {
+		cfg = map[string]any{"version": v, "rules": cfg["rules"]}
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	st, err := policy.ParseStore(data, "")
+	if err != nil {
+		t.Fatalf("failed to load store: %v", err)
+	}
+	return st
+}
 
 func TestEvaluator_ValidateRequest(t *testing.T) {
 	store := policy.NewStore("test")
@@ -81,10 +100,7 @@ func TestEvaluator_AllowAction(t *testing.T) {
 			},
 		},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	ev := New(store)
 
 	req := &models.ActionRequest{
@@ -257,10 +273,7 @@ func TestEvaluator_ExplicitAllowPath(t *testing.T) {
 			},
 		},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	ev := New(store)
 
 	req := &models.ActionRequest{
@@ -305,10 +318,7 @@ func TestEvaluator_ExplicitDenyPath(t *testing.T) {
 			},
 		},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	ev := New(store)
 
 	req := &models.ActionRequest{
@@ -353,10 +363,7 @@ func TestEvaluator_ExplicitEscalatePath(t *testing.T) {
 			},
 		},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	ev := New(store)
 
 	req := &models.ActionRequest{
@@ -404,10 +411,7 @@ func TestEvaluator_TrustCanEscalateAllowedAction(t *testing.T) {
 			},
 		},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	shieldStore := trust.NewShieldStore()
 	ev := NewWithShield(store, shieldStore)
 
@@ -452,10 +456,7 @@ func TestEvaluator_DefaultEscalateForUnknownAction(t *testing.T) {
 		"policy_version": "test-default",
 		"rules":          []any{},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	ev := New(store)
 
 	req := &models.ActionRequest{
@@ -578,10 +579,7 @@ func TestEvaluator_PolicyExplicitAllowVoucher(t *testing.T) {
 			},
 		},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	ev := New(store)
 
 	req := &models.ActionRequest{
@@ -636,10 +634,7 @@ func TestEvaluator_EvaluationSummary(t *testing.T) {
 			},
 		},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	ev := New(store)
 
 	tests := []struct {
@@ -700,10 +695,7 @@ func TestEvaluator_ReplayProtection(t *testing.T) {
 			},
 		},
 	}
-	store, err := policy.LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("failed to load store: %v", err)
-	}
+	store := storeFromConfig(t, cfg)
 	ev := New(store)
 
 	newReq := func() *models.ActionRequest {

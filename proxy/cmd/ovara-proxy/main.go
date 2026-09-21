@@ -65,8 +65,9 @@ func main() {
 		srv.SetGitGate(*cfg.GitGate)
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
-	log.Printf("ovara executor proxy on %s (gateway=%s env=%s bindings=%d fail_open=%v)",
-		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen)
+	srv.SetClientAuth(cfg.AgentToken)
+	log.Printf("ovara executor proxy on %s (gateway=%s env=%s bindings=%d fail_open=%v client_auth=%v)",
+		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen, cfg.AgentToken != "")
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
 	if err := http.ListenAndServe(cfg.ListenAddr, srv); err != nil {

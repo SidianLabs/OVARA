@@ -16,10 +16,10 @@ const dryRunParam = "dry_run"
 
 type AdminHandler struct {
 	continuationStore continuation.Store
-	eventStore       events.Store
-	executionStore   execution.Store
-	sweeper          *continuation.Sweeper
-	gatewayID        string
+	eventStore        events.Store
+	executionStore    execution.Store
+	sweeper           *continuation.Sweeper
+	gatewayID         string
 }
 
 func NewAdminHandler() *AdminHandler {
@@ -128,13 +128,13 @@ func (h *AdminHandler) handleReconcileExecutions(w http.ResponseWriter, r *http.
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"action":    "reconcile_executions",
+		"action": "reconcile_executions",
 		"stats": map[string]int{
-			"total":      total,
-			"succeeded":  succeeded,
-			"failed":     failed,
-			"running":    running,
-			"timed_out":  timedOut,
+			"total":     total,
+			"succeeded": succeeded,
+			"failed":    failed,
+			"running":   running,
+			"timed_out": timedOut,
 		},
 		"status": "ok",
 	})
@@ -152,10 +152,10 @@ func (h *AdminHandler) handleCompact(w http.ResponseWriter, r *http.Request) {
 	if fbCont, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
 		if dryRun {
 			results["continuations"] = map[string]any{
-				"status":       "would_compact",
-				"dry_run":      true,
-				"file_path":    fbCont.FilePath(),
-				"message":      "file would be compacted on dry_run=false",
+				"status":    "would_compact",
+				"dry_run":   true,
+				"file_path": fbCont.FilePath(),
+				"message":   "file would be compacted on dry_run=false",
 			}
 		} else if err := fbCont.Compact(); err != nil {
 			results["continuations"] = map[string]any{"error": err.Error()}
@@ -169,10 +169,10 @@ func (h *AdminHandler) handleCompact(w http.ResponseWriter, r *http.Request) {
 	if fbEvents, ok := h.eventStore.(*events.FileBackedStore); ok {
 		if dryRun {
 			results["events"] = map[string]any{
-				"status":     "would_compact",
-				"dry_run":    true,
-				"file_path":  fbEvents.FilePath(),
-				"message":    "file would be compacted on dry_run=false",
+				"status":    "would_compact",
+				"dry_run":   true,
+				"file_path": fbEvents.FilePath(),
+				"message":   "file would be compacted on dry_run=false",
 			}
 		} else if err := fbEvents.Compact(); err != nil {
 			results["events"] = map[string]any{"error": err.Error()}
@@ -189,7 +189,7 @@ func (h *AdminHandler) handleCompact(w http.ResponseWriter, r *http.Request) {
 				"status":    "would_compact",
 				"dry_run":   true,
 				"file_path": fbExe.FilePath(),
-				"message":  "file would be compacted on dry_run=false",
+				"message":   "file would be compacted on dry_run=false",
 			}
 		} else if err := fbExe.Compact(); err != nil {
 			results["executions"] = map[string]any{"error": err.Error()}
@@ -244,11 +244,11 @@ func (h *AdminHandler) handleSweepContinuations(w http.ResponseWriter, r *http.R
 			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]any{
-				"action":           "sweep_continuations",
-				"dry_run":          true,
-				"candidates":       expiredCandidates,
-				"candidate_count":  len(expiredCandidates),
-				"message":          "no changes made - this was a dry run",
+				"action":          "sweep_continuations",
+				"dry_run":         true,
+				"candidates":      expiredCandidates,
+				"candidate_count": len(expiredCandidates),
+				"message":         "no changes made - this was a dry run",
 				"status":          "ok",
 			})
 			return
@@ -261,9 +261,9 @@ func (h *AdminHandler) handleSweepContinuations(w http.ResponseWriter, r *http.R
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"action":   "sweep_continuations",
-			"removed":  removed,
-			"status":   "ok",
+			"action":  "sweep_continuations",
+			"removed": removed,
+			"status":  "ok",
 		})
 
 		if h.eventStore != nil {
@@ -345,9 +345,9 @@ func (h *AdminHandler) handleSweepEvents(w http.ResponseWriter, r *http.Request)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"action":   "sweep_events",
-			"removed":  removed,
-			"status":   "ok",
+			"action":  "sweep_events",
+			"removed": removed,
+			"status":  "ok",
 		})
 
 		if h.eventStore != nil {

@@ -12,10 +12,10 @@ import (
 )
 
 type ExecutionHandler struct {
-	store      execution.Store
-	execStore  execution.Store
-	contStore  continuation.Store
-	executor   *execution.ShellExecutor
+	store     execution.Store
+	execStore execution.Store
+	contStore continuation.Store
+	executor  *execution.ShellExecutor
 }
 
 func NewExecutionHandler(store execution.Store) *ExecutionHandler {
@@ -111,11 +111,11 @@ func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		"executions": result.Items,
 		"count":      result.Count,
 		"summary": map[string]int{
-			"total":      total,
-			"succeeded":  succeeded,
-			"failed":     failed,
-			"running":    running,
-			"timed_out":   timedOut,
+			"total":     total,
+			"succeeded": succeeded,
+			"failed":    failed,
+			"running":   running,
+			"timed_out": timedOut,
 		},
 	}
 	if result.NextCursor != "" {
@@ -133,11 +133,11 @@ func (h *ExecutionHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	total, succeeded, failed, running, timedOut := h.store.Stats()
 
 	response := map[string]any{
-		"total":      total,
-		"succeeded":  succeeded,
-		"failed":     failed,
-		"running":    running,
-		"timed_out":   timedOut,
+		"total":     total,
+		"succeeded": succeeded,
+		"failed":    failed,
+		"running":   running,
+		"timed_out": timedOut,
 	}
 
 	if fb, ok := h.store.(*execution.FileBackedStore); ok {

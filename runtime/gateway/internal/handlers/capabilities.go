@@ -2,15 +2,19 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/auth"
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/events"
+	"ovara.runtime.gateway/internal/gwidentity"
 	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/models"
+	"ovara.runtime.gateway/internal/revocation"
 )
 
 // maxCapabilitiesBodyBytes caps request bodies on capabilities endpoints.
@@ -29,6 +33,17 @@ type CapabilitiesHandler struct {
 	// allowUnsignedLeases permits track to accept leases without signature
 	// verification when no validator is configured (dev mode opt-in).
 	allowUnsignedLeases bool
+	// revWriter is the durable revocation sink (P2.3.4) — the domain
+	// authority journal. A lease revoke writes the journal record FIRST
+	// (the authoritative kill every execution path consults); the
+	// tracked-lease flag remains the observability view.
+	revWriter RevocationWriter
+}
+
+// RevocationWriter is the durable revocation sink (P2.3.4) — the
+// domain authority journal (*gwidentity.Registry).
+type RevocationWriter interface {
+	Revoke(class, target, actor, reason string) (*gwidentity.RevokeRecord, error)
 }
 
 func NewCapabilitiesHandler(s capabilities.Store) *CapabilitiesHandler {
@@ -61,6 +76,13 @@ func (h *CapabilitiesHandler) SetLeaseValidator(v *identity.Validator) {
 // verify.
 func (h *CapabilitiesHandler) SetAllowUnsignedLeases(allow bool) {
 	h.allowUnsignedLeases = allow
+}
+
+// SetRevocationWriter installs the durable revocation sink (P2.3.4).
+// Once set, lease revocation is journal-authoritative: the tracked
+// flag is observability, and an untracked lease is still killable.
+func (h *CapabilitiesHandler) SetRevocationWriter(w RevocationWriter) {
+	h.revWriter = w
 }
 
 func (h *CapabilitiesHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -288,12 +310,26 @@ func (h *CapabilitiesHandler) handleRevokeBySubject(w http.ResponseWriter, r *ht
 		req.Reason = "operator_bulk_revoked"
 	}
 
+	actor := auth.PrincipalID(r)
+	if actor == "" {
+		actor = "operator"
+	}
+
 	active := h.store.ListActive()
 	var revokedIDs []string
 	var notFound int
 
 	for _, tracked := range active {
 		if tracked.Lease.Subject == req.Subject {
+			// P2.3.4: journal write is the authoritative kill — a
+			// failure aborts the bulk operation honestly rather than
+			// flipping observability flags the boundary ignores.
+			if h.revWriter != nil {
+				if _, err := h.revWriter.Revoke(string(revocation.ClassLease), tracked.Lease.LeaseID, actor, req.Reason); err != nil {
+					api.JSONInternalError(w, fmt.Sprintf("durable revocation failed after %d lease(s): %v", len(revokedIDs), err))
+					return
+				}
+			}
 			_, ok := h.store.Revoke(tracked.Lease.LeaseID, req.Reason)
 			if !ok {
 				notFound++
@@ -350,14 +386,37 @@ func (h *CapabilitiesHandler) handleRevoke(w http.ResponseWriter, r *http.Reques
 		req.Reason = "operator_revoked"
 	}
 
-	tracked, ok := h.store.Revoke(req.LeaseID, req.Reason)
-	if !ok {
+	actor := auth.PrincipalID(r)
+	if actor == "" {
+		actor = "operator"
+	}
+
+	// P2.3.4: the journal record is the authoritative kill — written
+	// BEFORE the tracked-lease flag so a revocation is never reported
+	// that the execution boundary cannot see. An untracked lease is
+	// still killable (a lease need not be tracked to be presented).
+	var epoch uint64
+	if h.revWriter != nil {
+		rv, err := h.revWriter.Revoke(string(revocation.ClassLease), req.LeaseID, actor, req.Reason)
+		if err != nil {
+			api.JSONInternalError(w, "durable revocation failed: "+err.Error())
+			return
+		}
+		epoch = rv.Seq
+	}
+
+	tracked, trackedOK := h.store.Revoke(req.LeaseID, req.Reason)
+	if !trackedOK && h.revWriter == nil {
 		api.JSONBadRequest(w, "capability not found: "+req.LeaseID)
 		return
 	}
 
+	subject, issuer := "", ""
+	if trackedOK {
+		subject, issuer = tracked.Lease.Subject, tracked.Lease.Issuer
+	}
 	if h.historyStore != nil {
-		h.historyStore.Append(capabilities.LeaseRevokedEntry(req.LeaseID, h.gatewayID, req.Reason, tracked.Lease.Subject, tracked.Lease.Issuer))
+		h.historyStore.Append(capabilities.LeaseRevokedEntry(req.LeaseID, h.gatewayID, req.Reason, subject, issuer))
 	}
 
 	if h.eventStore != nil {
@@ -368,19 +427,28 @@ func (h *CapabilitiesHandler) handleRevoke(w http.ResponseWriter, r *http.Reques
 		evt.Payload = map[string]any{
 			"lease_id": req.LeaseID,
 			"reason":   req.Reason,
-			"subject":  tracked.Lease.Subject,
-			"issuer":   tracked.Lease.Issuer,
+			"subject":  subject,
+			"issuer":   issuer,
+			"actor":    actor,
+			"epoch":    epoch,
 		}
 		h.eventStore.Append(evt)
 	}
 
+	resp := map[string]any{
+		"status":   "revoked",
+		"lease_id": req.LeaseID,
+		"actor":    actor,
+	}
+	if epoch > 0 {
+		resp["epoch"] = epoch
+	}
+	if trackedOK {
+		resp["revoked_at"] = tracked.RevokedAt
+		resp["revoked_reason"] = tracked.RevocationReason
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"status":         "revoked",
-		"lease_id":       req.LeaseID,
-		"revoked_at":     tracked.RevokedAt,
-		"revoked_reason": tracked.RevocationReason,
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *CapabilitiesHandler) CheckRevocation(leaseID string) bool {

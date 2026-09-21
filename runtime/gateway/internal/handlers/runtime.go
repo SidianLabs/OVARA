@@ -11,6 +11,7 @@ import (
 
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/approval"
+	"ovara.runtime.gateway/internal/auth"
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
@@ -33,6 +34,7 @@ type Handler struct {
 	config            *config.Config
 	receiptsStore     receipts.Store
 	receiptSigner     *receipt.Signer
+	receiptEdSigner   *receipt.EdSigner
 	decisionCache     *decisionCache
 	enrollmentSvc     enrollment.Service
 	approvalSvc       *approval.Service
@@ -100,6 +102,16 @@ func (h *Handler) SetReceiptSigner(signer *receipt.Signer) {
 	h.receiptSigner = signer
 }
 
+// SetReceiptEdSigner installs the P2.3.5 asymmetric receipt signer.
+// When set, every receipt additionally carries gateway_id,
+// gateway_key_id and gateway_sig — independently verifiable without
+// the HMAC secret. When unset (no gateway trust identity), receipts
+// keep the pre-P2.3.5 HMAC-only form — unsigned is honest, never a
+// partially authenticated receipt.
+func (h *Handler) SetReceiptEdSigner(s *receipt.EdSigner) {
+	h.receiptEdSigner = s
+}
+
 func (h *Handler) SetCapabilitiesStore(store capabilities.Store) {
 	h.capabilitiesStore = store
 }
@@ -136,6 +148,7 @@ type decisionCache struct {
 
 type decisionEntry struct {
 	DecisionID string
+	Request    *models.ActionRequest
 	Response   *models.DecisionResponse
 	Timestamp  time.Time
 }
@@ -149,11 +162,12 @@ func newDecisionCache() *decisionCache {
 	}
 }
 
-func (c *decisionCache) Put(id string, resp *models.DecisionResponse) {
+func (c *decisionCache) Put(id string, req *models.ActionRequest, resp *models.DecisionResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now().UTC()
 	if existing, ok := c.decisions[id]; ok {
+		existing.Request = req
 		existing.Response = resp
 		existing.Timestamp = now
 		return
@@ -163,6 +177,7 @@ func (c *decisionCache) Put(id string, resp *models.DecisionResponse) {
 	}
 	c.decisions[id] = &decisionEntry{
 		DecisionID: id,
+		Request:    req,
 		Response:   resp,
 		Timestamp:  now,
 	}
@@ -188,6 +203,18 @@ func (c *decisionCache) Get(id string) (*models.DecisionResponse, bool) {
 		return e.Response, true
 	}
 	return nil, false
+}
+
+// GetWithRequest returns the cached decision AND the original evaluated
+// request — the provenance record approval creation is bound to.
+func (c *decisionCache) GetWithRequest(id string) (*models.ActionRequest, *models.DecisionResponse, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.decisions[id]
+	if !ok || e.Request == nil || time.Since(e.Timestamp) > c.ttl {
+		return nil, nil, false
+	}
+	return e.Request, e.Response, true
 }
 
 func (c *decisionCache) StartCleanup(interval time.Duration) {
@@ -221,6 +248,15 @@ func (c *decisionCache) Stats() (int, int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.decisions), c.maxSize
+}
+
+// LookupDecision returns the server-recorded request+decision for a
+// decision_id — the provenance source for approval binding.
+func (h *Handler) LookupDecision(id string) (*models.ActionRequest, *models.DecisionResponse, bool) {
+	if h.decisionCache == nil {
+		return nil, nil, false
+	}
+	return h.decisionCache.GetWithRequest(id)
 }
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -271,6 +307,11 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if errMsg := h.bindIdentity(r, &req); errMsg != "" {
+		api.JSONBadRequest(w, errMsg)
+		return
+	}
+
 	ctx, span = observe.StartDecisionSpan(ctx, &req)
 
 	resp, err := h.evaluator.Evaluate(&req)
@@ -286,60 +327,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	observe.EndSpan(span, resp.Decision)
 
 	latencyMs := time.Since(start).Milliseconds()
-
-	if h.logger != nil {
-		_ = h.logger.Log(&req, resp, latencyMs)
-	}
-
-	if h.receiptsStore != nil && resp.ReceiptStub != nil {
-		receipt := h.buildReceipt(resp, &req)
-		_ = h.receiptsStore.Put(receipt)
-
-		if h.eventStore != nil {
-			var agentID string
-			if req.AgentIdentity != nil {
-				agentID = req.AgentIdentity.SubjectID
-			}
-			gwID := ""
-			if h.enrollmentSvc != nil && h.enrollmentSvc.GetIdentity() != nil {
-				gwID = h.enrollmentSvc.GetIdentity().ID
-			}
-
-			evt := events.NewEvent(events.EventTypeDecisionEvaluated).
-				WithGatewayID(gwID).
-				WithAgentID(agentID).
-				WithDecisionID(resp.DecisionID).
-				WithReceiptID(resp.ReceiptStub.ReceiptID).
-				WithPayload(map[string]any{
-					"action_type":       string(req.ActionType),
-					"resource":          req.Resource,
-					"decision":          string(resp.Decision),
-					"trust_score":       resp.TrustScore,
-					"trust_level":       resp.TrustLevel,
-					"requires_approval": resp.RequiresApproval,
-					"latency_ms":        latencyMs,
-				})
-			h.eventStore.Append(evt)
-
-			receiptEvt := events.NewEvent(events.EventTypeReceiptIssued).
-				WithGatewayID(gwID).
-				WithAgentID(agentID).
-				WithDecisionID(resp.DecisionID).
-				WithReceiptID(resp.ReceiptStub.ReceiptID).
-				WithPayload(map[string]any{
-					"action_type":    string(req.ActionType),
-					"resource":       req.Resource,
-					"decision":       string(resp.Decision),
-					"policy_version": resp.ReceiptStub.PolicyVersion,
-				})
-			h.eventStore.Append(receiptEvt)
-		}
-	}
-
-	if h.decisionCache != nil {
-		h.decisionCache.Put(resp.DecisionID, resp)
-	}
-
+	h.recordDecision(&req, resp, latencyMs)
 	metrics.RecordDecision(string(resp.Decision), string(req.ActionType), latencyMs)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -381,6 +369,10 @@ func (h *Handler) handleBatchCheck(w http.ResponseWriter, r *http.Request) {
 	decisions := make([]*models.DecisionResponse, 0, len(reqBody.Requests))
 	for i := range reqBody.Requests {
 		req := &reqBody.Requests[i]
+		if errMsg := h.bindIdentity(r, req); errMsg != "" {
+			api.JSONBadRequest(w, errMsg)
+			return
+		}
 		resp, err := h.evaluator.Evaluate(req)
 		if err != nil {
 			resp = &models.DecisionResponse{
@@ -388,6 +380,10 @@ func (h *Handler) handleBatchCheck(w http.ResponseWriter, r *http.Request) {
 				ReasonCodes: []models.ReasonCode{models.ReasonDeny},
 			}
 		}
+		// Evidence parity with /v1/runtime/check: every batch decision
+		// gets the same receipt, event, and provenance-cache treatment
+		// a single check produces — batch must not be a quieter path.
+		h.recordDecision(req, resp, 0)
 		decisions = append(decisions, resp)
 	}
 
@@ -407,6 +403,7 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 		PolicyVersion: resp.ReceiptStub.PolicyVersion,
 		TrustScore:    resp.ReceiptStub.TrustContextScore,
 		TrustLevel:    resp.TrustLevel,
+		TrustEpoch:    resp.ReceiptStub.TrustEpoch,
 		IssuedAt:      resp.ReceiptStub.IssuedAt,
 	}
 	if req.AgentIdentity != nil {
@@ -427,6 +424,12 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 	receipt.Signature = "sig_v1_local:" + resp.ReceiptStub.ReceiptID
 	if h.receiptSigner != nil {
 		receipt.Signature = h.receiptSigner.Sign(receipt)
+	}
+	// P2.3.5: additive Ed25519 gateway signature over the canonical
+	// receipt payload (trust_epoch included). The HMAC preimage is
+	// unchanged — the two signatures are independent mechanisms.
+	if h.receiptEdSigner != nil {
+		h.receiptEdSigner.SignReceipt(receipt)
 	}
 	return receipt
 }
@@ -1485,4 +1488,110 @@ func (h *Handler) handleRequiredActionFields(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// bindIdentity makes the authenticated principal the sole authoritative
+// request identity. Caller-supplied agent_identity is ADVISORY metadata:
+// a subject_id matching the authenticated principal is accepted, an
+// omitted identity is bound to the principal, and a conflicting
+// subject_id is rejected outright — callers may describe themselves,
+// never impersonate. Issuer/owner fields are ignored for authorization.
+// Open mode (no credential) leaves identity untouched: authentication
+// is the trust boundary, dev mode is out of scope by design.
+func (h *Handler) bindIdentity(r *http.Request, req *models.ActionRequest) string {
+	principalID := auth.PrincipalID(r)
+	if principalID == "" {
+		return ""
+	}
+	if req.AgentIdentity == nil {
+		req.AgentIdentity = &models.AgentIdentity{SubjectID: principalID}
+	}
+	if req.AgentIdentity.Issuer == "" && h.enrollmentSvc != nil &&
+		h.enrollmentSvc.GetIdentity() != nil {
+		req.AgentIdentity.Issuer = h.enrollmentSvc.GetIdentity().ID
+	}
+	if req.AgentIdentity.SubjectID == "" {
+		req.AgentIdentity.SubjectID = principalID
+		return ""
+	}
+	if req.AgentIdentity.SubjectID != "" && req.AgentIdentity.SubjectID != principalID {
+		if h.eventStore != nil {
+			evt := events.NewEvent(events.EventTypeSecurityViolation).
+				WithAgentID(principalID).
+				WithPayload(map[string]any{
+					"kind":             "identity_mismatch",
+					"claimed_subject":  req.AgentIdentity.SubjectID,
+					"actual_principal": principalID,
+				})
+			h.eventStore.Append(evt)
+		}
+		return "identity_mismatch: agent_identity.subject_id does not match the authenticated principal — identity is derived from your credential, not request metadata"
+	}
+	req.AgentIdentity.SubjectID = principalID
+	// Issuer is advisory, but downstream validation requires it non-empty.
+	// The honest issuer of a credential-derived identity is this gateway —
+	// stamp it when the caller didn't supply one.
+	if req.AgentIdentity.Issuer == "" && h.enrollmentSvc != nil &&
+		h.enrollmentSvc.GetIdentity() != nil {
+		req.AgentIdentity.Issuer = h.enrollmentSvc.GetIdentity().ID
+	}
+	return ""
+}
+
+// recordDecision is the single decision-evidence path shared by
+// /v1/runtime/check and /v1/runtime/batch-check: decision log, receipt,
+// events, and the provenance cache approvals later resolve against.
+func (h *Handler) recordDecision(req *models.ActionRequest, resp *models.DecisionResponse, latencyMs int64) {
+	if h.logger != nil {
+		_ = h.logger.Log(req, resp, latencyMs)
+	}
+
+	if h.receiptsStore != nil && resp.ReceiptStub != nil {
+		receipt := h.buildReceipt(resp, req)
+		_ = h.receiptsStore.Put(receipt)
+
+		if h.eventStore != nil {
+			var agentID string
+			if req.AgentIdentity != nil {
+				agentID = req.AgentIdentity.SubjectID
+			}
+			gwID := ""
+			if h.enrollmentSvc != nil && h.enrollmentSvc.GetIdentity() != nil {
+				gwID = h.enrollmentSvc.GetIdentity().ID
+			}
+
+			evt := events.NewEvent(events.EventTypeDecisionEvaluated).
+				WithGatewayID(gwID).
+				WithAgentID(agentID).
+				WithDecisionID(resp.DecisionID).
+				WithReceiptID(resp.ReceiptStub.ReceiptID).
+				WithPayload(map[string]any{
+					"action_type":       string(req.ActionType),
+					"resource":          req.Resource,
+					"decision":          string(resp.Decision),
+					"trust_score":       resp.TrustScore,
+					"trust_level":       resp.TrustLevel,
+					"requires_approval": resp.RequiresApproval,
+					"latency_ms":        latencyMs,
+				})
+			h.eventStore.Append(evt)
+
+			receiptEvt := events.NewEvent(events.EventTypeReceiptIssued).
+				WithGatewayID(gwID).
+				WithAgentID(agentID).
+				WithDecisionID(resp.DecisionID).
+				WithReceiptID(resp.ReceiptStub.ReceiptID).
+				WithPayload(map[string]any{
+					"action_type":    string(req.ActionType),
+					"resource":       req.Resource,
+					"decision":       string(resp.Decision),
+					"policy_version": resp.ReceiptStub.PolicyVersion,
+				})
+			h.eventStore.Append(receiptEvt)
+		}
+	}
+
+	if h.decisionCache != nil && resp.DecisionID != "" {
+		h.decisionCache.Put(resp.DecisionID, req, resp)
+	}
 }

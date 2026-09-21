@@ -9,22 +9,23 @@ import (
 
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
+	"ovara.runtime.gateway/internal/revocation"
 )
 
 type Orchestrator struct {
 	store        Store
-	execStore   execution.Store
-	registry    *execution.ExecutorRegistry
-	eventStore  events.Store
-	gatewayID   string
+	execStore    execution.Store
+	registry     *execution.ExecutorRegistry
+	eventStore   events.Store
+	gatewayID    string
 	pollInterval time.Duration
-	paused      bool
-	pausedMu    sync.RWMutex
-	stopChan    chan struct{}
-	running     bool
-	runMu       sync.Mutex
-	wg          sync.WaitGroup
-	logger      *log.Logger
+	paused       bool
+	pausedMu     sync.RWMutex
+	stopChan     chan struct{}
+	running      bool
+	runMu        sync.Mutex
+	wg           sync.WaitGroup
+	logger       *log.Logger
 
 	stuckSweepInterval     time.Duration
 	stuckRecoveryThreshold time.Duration
@@ -33,6 +34,27 @@ type Orchestrator struct {
 	// ticks; a per-tick semaphore would let the bound grow unboundedly over
 	// successive polls.
 	execSem chan struct{}
+
+	// identityChecker, when set, gates execution on the subject
+	// identity's status (P2.2): continuations of suspended/retired
+	// identities stay queued but never execute.
+	identityChecker func(agentID string) bool
+
+	// revocation is the P2.3.4 shared boundary — consulted INSIDE the
+	// claim window, after ClaimForExecution wins and before any
+	// execution record or side effect exists.
+	revocation revocation.Checker
+}
+
+// SetIdentityChecker installs the identity-status gate called in the
+// drain loop. Returns false → the continuation is skipped this tick.
+func (o *Orchestrator) SetIdentityChecker(fn func(agentID string) bool) {
+	o.identityChecker = fn
+}
+
+// SetRevocation installs the claim-time revocation boundary (P2.3.4).
+func (o *Orchestrator) SetRevocation(rc revocation.Checker) {
+	o.revocation = rc
 }
 
 func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
@@ -41,9 +63,9 @@ func NewOrchestrator(store Store, execStore execution.Store, registry *execution
 		execStore:    execStore,
 		registry:     registry,
 		pollInterval: 2 * time.Second,
-		stopChan:    make(chan struct{}),
-		execSem:     make(chan struct{}, maxConcurrentExecutions),
-		logger:      log.Default(),
+		stopChan:     make(chan struct{}),
+		execSem:      make(chan struct{}, maxConcurrentExecutions),
+		logger:       log.Default(),
 	}
 }
 
@@ -163,6 +185,12 @@ func (o *Orchestrator) drainQueue() {
 
 	candidates := o.store.ListByState(StateQueued)
 	for _, cnt := range candidates {
+		// P2.2 identity gate: a suspended/retired/migrated subject's
+		// queued work never executes. Check→claim is a bounded TOCTOU —
+		// revocation landing inside the window is documented.
+		if o.identityChecker != nil && cnt.AgentID != "" && !o.identityChecker(cnt.AgentID) {
+			continue
+		}
 		o.execSem <- struct{}{}
 		go func(c *Continuation) {
 			defer func() { <-o.execSem }()
@@ -184,6 +212,42 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 		return
 	}
 	cnt = c
+
+	// P2.3.4 claim-time revocation boundary: the linearization point is
+	// this check — a revocation committed before it wins (deny, no
+	// execution marker, no side effect); one committed after is not
+	// retroactive to a legitimately-started execution (RVI-14). A
+	// storage failure is UNKNOWN → requeue, never execute (RVI-09).
+	if o.revocation != nil {
+		deny, why, err := CheckClaimAuthority(o.revocation, cnt)
+		switch {
+		case err != nil:
+			now := time.Now().UTC()
+			cnt.LastSkippedAt = &now
+			cnt.MarkRequeue()
+			o.store.Update(cnt)
+			o.logf("SKIP revocation state unavailable continuation_id=%s err=%v", cnt.ContinuationID, err)
+			return
+		case deny:
+			cnt.MarkDenied("revocation", why)
+			o.store.Update(cnt)
+			o.logf("DENY claim-time revocation continuation_id=%s reason=%q", cnt.ContinuationID, why)
+			if o.eventStore != nil {
+				evt := events.NewEvent(events.EventTypeContinuationDenied).
+					WithGatewayID(o.gatewayID).
+					WithApprovalID(cnt.ApprovalID).
+					WithDecisionID(cnt.DecisionID).
+					WithAgentID(cnt.AgentID).
+					WithContinuationID(cnt.ContinuationID).
+					WithPayload(map[string]any{
+						"continuation_id": cnt.ContinuationID,
+						"reason":          why,
+					})
+				o.eventStore.Append(evt)
+			}
+			return
+		}
+	}
 
 	if o.registry != nil {
 		if _, ok := o.registry.Get(cnt.ActionType); !ok {
@@ -281,12 +345,12 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 			WithAgentID(cnt.AgentID).
 			WithContinuationID(cnt.ContinuationID).
 			WithPayload(map[string]any{
-				"execution_id":  exe.ExecutionID,
+				"execution_id":    exe.ExecutionID,
 				"continuation_id": cnt.ContinuationID,
-				"exit_code":    exe.ExitCode,
-				"error":        exe.Error,
-				"state":        string(exe.State),
-				"retry_count":  cnt.RetryCount,
+				"exit_code":       exe.ExitCode,
+				"error":           exe.Error,
+				"state":           string(exe.State),
+				"retry_count":     cnt.RetryCount,
 			})
 		o.eventStore.Append(evt)
 	}

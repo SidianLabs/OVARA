@@ -276,7 +276,7 @@ func BenchmarkDecisionCache_Put(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cache.Put("dec_bench", resp)
+		cache.Put("dec_bench", nil, resp)
 	}
 }
 
@@ -287,7 +287,7 @@ func BenchmarkDecisionCache_Get(b *testing.B) {
 		DecisionID: "dec_bench",
 		Decision:   models.DecisionAllow,
 	}
-	cache.Put("dec_bench", resp)
+	cache.Put("dec_bench", nil, resp)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

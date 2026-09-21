@@ -42,6 +42,7 @@ func TestRuntimeIntegration(t *testing.T) {
 	approvalStore := approval.NewInMemoryStore()
 	approvalService := approval.NewService(approvalStore)
 	approvalHandler := NewApprovalHandler(approvalService)
+	approvalHandler.SetDecisionLookup(h.LookupDecision)
 
 	receiptHandler := NewReceiptHandler(receiptsStore)
 
@@ -664,7 +665,7 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 
 	t.Run("trace_with_real_decision_id", func(t *testing.T) {
 		decisionID := "dec_trace_test_001"
-		h.decisionCache.Put(decisionID, &models.DecisionResponse{
+		h.decisionCache.Put(decisionID, nil, &models.DecisionResponse{
 			DecisionID: decisionID,
 			Decision:   models.DecisionAllow,
 		})
@@ -770,7 +771,7 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 		cnt.CapabilityRef = "cap_trace_010"
 		contStore.Create(cnt)
 
-		h.decisionCache.Put(decisionID, &models.DecisionResponse{DecisionID: decisionID, Decision: models.DecisionAllow})
+		h.decisionCache.Put(decisionID, nil, &models.DecisionResponse{DecisionID: decisionID, Decision: models.DecisionAllow})
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?decision_id="+decisionID, nil)
 		w := httptest.NewRecorder()
@@ -861,7 +862,7 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 		}
 		approvalStore.Create(apr)
 
-		h.decisionCache.Put("dec_trace_apr", &models.DecisionResponse{DecisionID: "dec_trace_apr", Decision: models.DecisionEscalate})
+		h.decisionCache.Put("dec_trace_apr", nil, &models.DecisionResponse{DecisionID: "dec_trace_apr", Decision: models.DecisionEscalate})
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?approval_id=apr_trace_001", nil)
 		w := httptest.NewRecorder()

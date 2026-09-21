@@ -78,7 +78,7 @@ func TestPolicyHandler_Simulate_DecisionChanges(t *testing.T) {
 
 	simReq := map[string]interface{}{
 		"request": map[string]interface{}{
-			"action_type":  "shell",
+			"action_type": "shell",
 			"resource":    "shell:echo hello",
 			"environment": "local",
 		},

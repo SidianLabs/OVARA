@@ -6,7 +6,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,6 +42,7 @@ type Server struct {
 	escalatePoll    time.Duration
 	gitGate         bool
 	sensitiveHosts  []string
+	agentToken      string // if set, proxy clients must authenticate
 }
 
 func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts.Chain, failOpen bool) *Server {
@@ -97,6 +100,33 @@ func (s *Server) SetPublicEgressOnly(on bool) { s.publicEgress = on }
 // SetConnectPort443Only toggles the CONNECT :443 restriction. Defaults ON;
 // disable only in tests against non-443 upstreams.
 func (s *Server) SetConnectPort443Only(on bool) { s.connectPort443 = on }
+
+// SetClientAuth requires every proxy client to present token via
+// Proxy-Authorization (Basic password or Bearer — what tools send when the
+// proxy URL carries credentials). Without it the proxy is an open
+// credential dispenser for anyone who can reach the listener.
+func (s *Server) SetClientAuth(token string) { s.agentToken = token }
+
+// authorized checks the client credential when agentToken is set.
+// Compare in constant time: the token authenticates credential injection.
+func (s *Server) authorized(r *http.Request) bool {
+	if s.agentToken == "" {
+		return true
+	}
+	tok := ""
+	if h := r.Header.Get("Proxy-Authorization"); h != "" {
+		if f, ok := strings.CutPrefix(h, "Bearer "); ok {
+			tok = f
+		} else if f, ok := strings.CutPrefix(h, "Basic "); ok {
+			if b, err := base64.StdEncoding.DecodeString(f); err == nil {
+				if _, p, ok := strings.Cut(string(b), ":"); ok {
+					tok = p
+				}
+			}
+		}
+	}
+	return subtle.ConstantTimeCompare([]byte(tok), []byte(s.agentToken)) == 1
+}
 
 func matchHostGlob(globs []string, host string) bool {
 	for _, g := range globs {
@@ -216,6 +246,7 @@ func redactURL(u *url.URL) string {
 	c.RawQuery = ""
 	c.RawFragment = ""
 	c.Fragment = ""
+	c.User = nil // userinfo can carry credentials — never into receipts/policy
 	return c.String()
 }
 
@@ -238,6 +269,14 @@ func stripHopHeaders(h http.Header) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Client authentication FIRST — before CONNECT/receipt/policy anything.
+	// An unauthenticated request must not even reach the policy engine.
+	if !s.authorized(r) {
+		s.recordDenied(r.Method+" UNAUTH", r.Host)
+		w.Header().Set("Proxy-Authenticate", `Basic realm="ovara"`)
+		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
+		return
+	}
 	if r.Method == http.MethodConnect {
 		s.handleConnect(w, r)
 		return
@@ -523,8 +562,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	io.Copy(w, body)
 	// resp.Trailer values populate after body read; forward them properly.
+	// Scrub here too — a reflector can echo injected credentials in
+	// trailers just as well as in headers or the body.
 	for k, vv := range resp.Trailer {
-		w.Header()[http.TrailerPrefix+k] = vv
+		for _, v := range vv {
+			for _, secret := range injected {
+				v = strings.ReplaceAll(v, string(secret), "[REDACTED]")
+			}
+			w.Header()[http.TrailerPrefix+k] = append(w.Header()[http.TrailerPrefix+k], v)
+		}
 	}
 }
 

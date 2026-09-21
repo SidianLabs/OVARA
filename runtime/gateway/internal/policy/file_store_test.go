@@ -160,3 +160,37 @@ func TestWatcher_EventsOnFileChange(t *testing.T) {
 		t.Fatal("timeout waiting for fsnotify event")
 	}
 }
+
+// Red-team V2/V3: a scoped rule must never silently widen to a global
+// allow via JSON edge cases the standard decoder erases.
+func TestParseStore_Strictness(t *testing.T) {
+	scoped := `{"action_type":"http.request","environment":"*","resource":"*https://api.github.com/*","allow":true}`
+
+	cases := []struct {
+		name    string
+		doc     string
+		wantErr bool
+	}{
+		{"resource null widens", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","resource":null,"allow":true}` + `]}`, true},
+		{"duplicate resource last-empty", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","resource":"*https://api.github.com/*","resource":"","allow":true}` + `]}`, true},
+		{"duplicate resource last-star", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","resource":"*https://api.github.com/*","resource":"*","allow":true}` + `]}`, true},
+		{"unknown field", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","resources":"*","allow":true}` + `]}`, true},
+		{"legit scoped rule parses", `{"version":"v1","rules":[` + scoped + `]}`, false},
+		{"explicit star resource parses", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","resource":"*","allow":true}` + `]}`, false},
+		{"resource omitted parses", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","allow":true}` + `]}`, false},
+		{"nested conditions object ok", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","resource":"*","allow":true,"conditions":{"max_severity":"high"}}` + `]}`, false},
+	}
+	for _, c := range cases {
+		_, err := ParseStore([]byte(c.doc), "")
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err=%v, wantErr=%v", c.name, err, c.wantErr)
+		}
+	}
+}

@@ -36,5 +36,8 @@
   "execution_allowed_env_vars": [],
   "capabilities_file": "var/data/capabilities.json",
   "capabilities_max_size": 10000,
-  "capabilities_history_file": "var/data/capabilities_history.jsonl"
+  "capabilities_history_file": "var/data/capabilities_history.jsonl",
+  "listen_addr": "127.0.0.1",
+  "auth_enabled": true,
+  "operator_tokens": []
 }

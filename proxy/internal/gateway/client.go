@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -17,7 +19,21 @@ type Client struct {
 	baseURL string
 	token   string
 	env     string
-	hc      *http.Client
+	subject    string
+	resolveOnce sync.Once
+	hc         *http.Client
+}
+
+// subjectID mirrors the gateway's credential-derived principal
+// (ag_<sha256(token)[:16]>) — the gateway binds agent_identity.subject_id
+// to the authenticated principal and rejects anything else. With no token
+// (auth-disabled dev mode) the identity stays a descriptive constant.
+func subjectID(token string) string {
+	if token == "" {
+		return "egress-agent"
+	}
+	sum := sha256.Sum256([]byte(token))
+	return "ag_" + hex.EncodeToString(sum[:])[:16]
 }
 
 func New(baseURL, token, env string) *Client {
@@ -25,8 +41,43 @@ func New(baseURL, token, env string) *Client {
 		baseURL: baseURL,
 		token:   token,
 		env:     env,
+		subject: subjectID(token),
 		hc:      &http.Client{Timeout: 5 * time.Second},
 	}
+}
+
+// resolveSubject asks the gateway who this credential is (P2.2): a
+// rotated credential still binds to its stable identity, so the local
+// hash derivation can be stale. Falls back to the RC1 derivation —
+// bindIdentity on the gateway rejects a wrong guess either way.
+func (c *Client) resolveSubject() {
+	if c.token == "" {
+		return // auth-disabled dev mode keeps the descriptive constant
+	}
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/whoami", nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var body struct {
+		PrincipalID string `json:"principal_id"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&body) == nil && body.PrincipalID != "" {
+		c.subject = body.PrincipalID
+	}
+}
+
+func (c *Client) resolvedSubject() string {
+	c.resolveOnce.Do(c.resolveSubject)
+	return c.subject
 }
 
 type Decision struct {
@@ -53,7 +104,7 @@ func (c *Client) Check(ctx context.Context, method, url string) (*Decision, erro
 		"environment": c.env,
 		"agent_identity": map[string]string{
 			"issuer":     "ovara-proxy",
-			"subject_id": "egress-agent",
+			"subject_id": c.resolvedSubject(),
 		},
 		"nonce":     nonce(),
 		"issued_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -89,7 +140,7 @@ func (c *Client) CreateApproval(ctx context.Context, d *Decision, method, url st
 		"action_type": "http.request",
 		"resource":    fmt.Sprintf("%s %s", method, url),
 		"environment": c.env,
-		"agent_id":    "egress-agent",
+		"agent_id":    c.resolvedSubject(),
 		"trust_score": d.TrustScore,
 		"trust_level": d.TrustLevel,
 	})

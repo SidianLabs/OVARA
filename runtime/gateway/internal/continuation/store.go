@@ -12,49 +12,57 @@ import (
 type State string
 
 const (
-	StateEscalated  State = "escalated"
-	StateApproved   State = "approved"
-	StateQueued     State = "queued"
-	StateExecuting  State = "executing" // claimed and actively running; never a resting state
-	StateDenied     State = "denied"
-	StateResumed    State = "resumed"
-	StateExpired    State = "expired"
-	StateExecuted   State = "executed"
-	StateCancelled  State = "cancelled"
+	StateEscalated State = "escalated"
+	StateApproved  State = "approved"
+	StateQueued    State = "queued"
+	StateExecuting State = "executing" // claimed and actively running; never a resting state
+	StateDenied    State = "denied"
+	StateResumed   State = "resumed"
+	StateExpired   State = "expired"
+	StateExecuted  State = "executed"
+	StateCancelled State = "cancelled"
 )
 
 const DefaultExpirationMinutes = 60
 
 type Continuation struct {
-	ContinuationID string    `json:"continuation_id"`
-	DecisionID    string    `json:"decision_id"`
-	ApprovalID    string    `json:"approval_id,omitempty"`
-	AgentID       string    `json:"agent_id,omitempty"`
-	ActionType    string    `json:"action_type"`
-	Resource      string    `json:"resource"`
-	Environment   string    `json:"environment,omitempty"`
-	State         State     `json:"state"`
-	CreatedAt     time.Time `json:"created_at"`
-	ApprovedAt    *time.Time `json:"approved_at,omitempty"`
-	QueuedAt      *time.Time `json:"queued_at,omitempty"`
-	ResumedAt     *time.Time `json:"resumed_at,omitempty"`
-	ExecutingAt   *time.Time `json:"executing_at,omitempty"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	ExpiredAt     *time.Time `json:"expired_at,omitempty"`
-	CancelledAt   *time.Time `json:"cancelled_at,omitempty"`
-	ResolvedBy    string    `json:"resolved_by,omitempty"`
-	DenyReason    string    `json:"deny_reason,omitempty"`
-	TrustScore    float64   `json:"trust_score,omitempty"`
-	TrustLevel    string    `json:"trust_level,omitempty"`
-	AnomalyCodes  []string  `json:"anomaly_codes,omitempty"`
-	ShieldActive  bool      `json:"shield_active,omitempty"`
-	Restricted    bool      `json:"restricted,omitempty"`
-	PolicyVersion string    `json:"policy_version,omitempty"`
-	CapabilityRef string    `json:"capability_ref,omitempty"`
+	ContinuationID string     `json:"continuation_id"`
+	DecisionID     string     `json:"decision_id"`
+	ApprovalID     string     `json:"approval_id,omitempty"`
+	AgentID        string     `json:"agent_id,omitempty"`
+	ActionType     string     `json:"action_type"`
+	Resource       string     `json:"resource"`
+	Environment    string     `json:"environment,omitempty"`
+	State          State      `json:"state"`
+	CreatedAt      time.Time  `json:"created_at"`
+	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
+	QueuedAt       *time.Time `json:"queued_at,omitempty"`
+	ResumedAt      *time.Time `json:"resumed_at,omitempty"`
+	ExecutingAt    *time.Time `json:"executing_at,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	ExpiredAt      *time.Time `json:"expired_at,omitempty"`
+	CancelledAt    *time.Time `json:"cancelled_at,omitempty"`
+	ResolvedBy     string     `json:"resolved_by,omitempty"`
+	DenyReason     string     `json:"deny_reason,omitempty"`
+	TrustScore     float64    `json:"trust_score,omitempty"`
+	TrustLevel     string     `json:"trust_level,omitempty"`
+	AnomalyCodes   []string   `json:"anomaly_codes,omitempty"`
+	ShieldActive   bool       `json:"shield_active,omitempty"`
+	Restricted     bool       `json:"restricted,omitempty"`
+	PolicyVersion  string     `json:"policy_version,omitempty"`
+	CapabilityRef  string     `json:"capability_ref,omitempty"`
+	// P2.3.4 — the authority identifiers this continuation was
+	// authorized under, captured at approval-creation from the
+	// evaluated request. Claim-time revalidation checks them against
+	// CURRENT revocation state: a continuation created before a
+	// revocation must not execute after it.
+	LeaseID       string         `json:"lease_id,omitempty"`       // presented capability lease id
+	DelegationKeys []string       `json:"delegation_keys,omitempty"` // every hop presentation key
+	Issuers       []string       `json:"issuers,omitempty"`        // every hop issuer of the chain
 	Metadata      map[string]any `json:"metadata,omitempty"`
-	RetryCount    int       `json:"retry_count,omitempty"`
-	MaxRetries    int       `json:"max_retries,omitempty"`
-	LastSkippedAt *time.Time `json:"last_skipped_at,omitempty"`
+	RetryCount    int            `json:"retry_count,omitempty"`
+	MaxRetries    int            `json:"max_retries,omitempty"`
+	LastSkippedAt *time.Time     `json:"last_skipped_at,omitempty"`
 	// LastExecutionSucceeded records the outcome of the most recent execution.
 	// Retry is restricted to failed executions so a successfully executed
 	// (approved, possibly dangerous) command cannot be re-run without a fresh
@@ -124,6 +132,21 @@ func (c *Continuation) WithPolicyVersion(pv string) *Continuation {
 
 func (c *Continuation) WithCapabilityRef(ref string) *Continuation {
 	c.CapabilityRef = ref
+	return c
+}
+
+// WithAuthorityIDs records the revocation identifiers of the authority
+// this continuation was authorized under (P2.3.4) — the presented
+// lease id, EVERY hop presentation key of the delegation chain (the
+// same set eval checks — a mid-hop kill must reach claim-time), and
+// every hop issuer. Claim-time revalidation checks all of them.
+func (c *Continuation) WithAuthorityIDs(leaseID string, delegationKeys, issuers []string) *Continuation {
+	c.LeaseID = leaseID
+	c.DelegationKeys = delegationKeys
+	if leaseID != "" && c.CapabilityRef == "" {
+		c.CapabilityRef = leaseID // the tracked-lease lookup path already reads CapabilityRef
+	}
+	c.Issuers = issuers
 	return c
 }
 
@@ -271,11 +294,11 @@ func (c *Continuation) CanRetry() bool {
 }
 
 type RetryInfo struct {
-	CanRetry         bool   `json:"can_retry"`
+	CanRetry          bool   `json:"can_retry"`
 	RetryLimitReached bool   `json:"retry_limit_reached"`
 	RetriesRemaining  int    `json:"retries_remaining"`
-	Status           string `json:"status"`
-	Reason           string `json:"reason,omitempty"`
+	Status            string `json:"status"`
+	Reason            string `json:"reason,omitempty"`
 }
 
 func (c *Continuation) RetryInfo() RetryInfo {
@@ -428,7 +451,7 @@ type Store interface {
 }
 
 type InMemoryStore struct {
-	mu           sync.RWMutex
+	mu            sync.RWMutex
 	continuations map[string]*Continuation
 }
 

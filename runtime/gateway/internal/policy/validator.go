@@ -1,7 +1,6 @@
 package policy
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -19,14 +18,14 @@ func NewValidator() *Validator {
 }
 
 func (v *Validator) ValidatePolicyData(data []byte) (*ValidationResult, error) {
-	var fp filePolicy
-	if err := json.Unmarshal(data, &fp); err != nil {
+	fp, err := parseFilePolicyStrict(data)
+	if err != nil {
 		return &ValidationResult{
 			Valid:  false,
-			Errors: []string{fmt.Sprintf("invalid JSON: %v", err)},
+			Errors: []string{err.Error()},
 		}, nil
 	}
-	return v.ValidateFilePolicy(&fp)
+	return v.ValidateFilePolicy(fp)
 }
 
 func (v *Validator) ValidateFilePolicy(fp *filePolicy) (*ValidationResult, error) {

@@ -34,17 +34,31 @@ class CapabilityLease:
 
 @dataclass
 class DelegationAuthority:
-    """Mirrors models.Authority in the gateway (snake_case on the wire:
-    subject_id, delegated_at)."""
+    """Mirrors models.Authority in the gateway (snake_case on the wire).
+
+    Each hop is a signed grant: issuer (a trust-root issuer id, or the
+    previous hop's subject for chained hops) delegates to subject_id.
+    Signature is ed25519 over the canonical hop payload, base64 on the
+    wire (Go []byte marshals to base64 in JSON)."""
 
     issuer: str
     subject_id: str
     delegated_at: Optional[str] = None  # RFC3339
+    actions: Optional[list[str]] = None       # "" / ["*"] = inherit parent
+    resource_scope: Optional[str] = None      # "" / "*" = inherit parent
+    audience: Optional[str] = None
+    expires_at: Optional[str] = None          # RFC3339
+    nonce: Optional[str] = None
+    signature: Optional[str] = None           # base64 ed25519
 
 
 @dataclass
 class DelegationChain:
-    """Mirrors models.DelegationChain in the gateway."""
+    """Mirrors models.DelegationChain in the gateway.
+
+    Replay protection lives on the terminal hop's signed nonce — there is
+    no chain-level nonce (an unsigned field could be mutated to defeat
+    replay checks; see P1.1 F-1)."""
 
     authorities: list[DelegationAuthority] = field(default_factory=list)
     chain_hash: Optional[str] = None

@@ -706,41 +706,7 @@ func (h *PolicyHandler) handleRestore(w http.ResponseWriter, r *http.Request) {
 }
 
 func parsePolicyJSON(data []byte) (*policy.Store, error) {
-	var fp filePolicyLite
-	if err := json.Unmarshal(data, &fp); err != nil {
-		return nil, err
-	}
-
-	version := fp.Version
-	if version == "" {
-		version = "candidate"
-	}
-
-	store := policy.NewStore(version)
-	store.ClearRules()
-	for _, r := range fp.Rules {
-		store.AddRule(policy.Rule{
-			ActionType:  r.ActionType,
-			Environment: r.Environment,
-			Allow:       r.Allow,
-			Deny:        r.Deny,
-			Escalate:    r.Escalate,
-		})
-	}
-	return store, nil
-}
-
-type filePolicyLite struct {
-	Version string     `json:"version"`
-	Rules   []fileRule `json:"rules"`
-}
-
-type fileRule struct {
-	ActionType  string `json:"action_type"`
-	Environment string `json:"environment"`
-	Allow       bool   `json:"allow"`
-	Deny        bool   `json:"deny"`
-	Escalate    bool   `json:"escalate"`
+	return policy.ParseStore(data, "candidate")
 }
 
 func readFile(path string) ([]byte, error) {

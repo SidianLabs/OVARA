@@ -4,9 +4,11 @@
 package server
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"ovara.runtime.gateway/internal/anchor"
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/auth"
 	"ovara.runtime.gateway/internal/capabilities"
@@ -30,12 +33,15 @@ import (
 	"ovara.runtime.gateway/internal/gwidentity"
 	"ovara.runtime.gateway/internal/handlers"
 	"ovara.runtime.gateway/internal/identity"
+	"ovara.runtime.gateway/internal/idregistry"
 	"ovara.runtime.gateway/internal/integrity"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipt"
 	"ovara.runtime.gateway/internal/receipts"
+	"ovara.runtime.gateway/internal/replay"
+	"ovara.runtime.gateway/internal/revocation"
 	"ovara.runtime.gateway/internal/sandbox"
 	"ovara.runtime.gateway/internal/trust"
 
@@ -55,6 +61,9 @@ func Run(configPath string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)
+	}
+	if err := cfg.ValidateStartup(); err != nil {
+		return err
 	}
 
 	env := os.Getenv("OVARA_ENVIRONMENT")
@@ -101,7 +110,18 @@ func Run(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("gateway trust: %w", err)
 	}
-	_ = gwTrust // retained for later phases (peer auth, receipt signing)
+
+	// P2.3.4: the domain gateway registry IS the revocation authority —
+	// one journal = one trust domain, so issuer/delegation/lease kills
+	// share the hash-chain, the epoch (journal seq), and the anchor's
+	// rollback protection. Durable when gateway_registry_file is set;
+	// runtime-only (in-memory) otherwise, matching every other store.
+	var revChecker revocation.Checker
+	var revRegistry *gwidentity.Registry
+	if gwTrust != nil && gwTrust.registry != nil {
+		revChecker = gwTrust.registry
+		revRegistry = gwTrust.registry
+	}
 
 	policyStore := policy.NewStore(cfg.PolicyVersion)
 	var watcher *policy.Watcher
@@ -126,7 +146,10 @@ func Run(configPath string) error {
 		initialSource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
 		store, err := initialSource.Load()
 		if err != nil {
-			log.Printf("warning: failed to load policy from file: %v", err)
+			// Fail closed: a policy that can't be parsed must never
+			// silently become the built-in default — the operator would
+			// enforce a different policy than the one they deployed.
+			return fmt.Errorf("failed to load policy file %s: %v", cfg.PolicyFile, err)
 		} else {
 			policyStore = store
 
@@ -212,6 +235,21 @@ func Run(configPath string) error {
 	shieldStore := trust.NewShieldStore()
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
 
+	// Durable replay protection (P2.1): a configured journal that cannot
+	// be opened fails startup — silently falling back to process-local
+	// replay would downgrade the security guarantee without the operator
+	// knowing.
+	if cfg.ReplayFile != "" {
+		replayStore, err := replay.OpenFile(cfg.ReplayFile, cfg.ReplayMaxBytes)
+		if err != nil {
+			return fmt.Errorf("replay store %s: %w", cfg.ReplayFile, err)
+		}
+		eval.SetReplayStore(replayStore)
+		log.Printf("replay protection durable at %s", cfg.ReplayFile)
+	} else {
+		log.Printf("replay protection in-memory (process-local; set replay_file for durability)")
+	}
+
 	var leaseValidator *identity.Validator
 	if len(cfg.TrustedIssuers) > 0 {
 		trustedKeys := make(map[string][]byte, len(cfg.TrustedIssuers))
@@ -223,10 +261,22 @@ func Run(configPath string) error {
 			trustedKeys[issuer] = key
 		}
 		leaseValidator = identity.NewValidatorWithTrustedKeys(trustedKeys)
+		// Bind lease and delegation audience to THIS gateway identity —
+		// a credential minted for another gateway can't be replayed here.
+		if enrollmentSvc.GetIdentity() != nil {
+			leaseValidator.SetExpectedAudience(enrollmentSvc.GetIdentity().ID)
+		}
 		eval.SetValidator(leaseValidator)
 		log.Printf("trusted issuers configured (%d issuer key(s) for lease signature verification)", len(trustedKeys))
 	} else {
 		log.Printf("WARNING: trusted_issuers not configured; signed capability leases cannot be verified and will FAIL validation. Set trusted_issuers in config.json.")
+	}
+	// P2.3.4 shared revocation boundary — evaluation time: issuer,
+	// delegation, lease checks on verified material + min_epoch + the
+	// receipt's trust_epoch. Propagates into whichever validator is set.
+	if revChecker != nil {
+		eval.SetRevocation(revChecker)
+		log.Printf("revocation boundary active (domain journal, epoch-monotonic)")
 	}
 
 	var approvalStore approval.Store
@@ -318,6 +368,9 @@ func Run(configPath string) error {
 	if capabilitiesHistoryStore != nil {
 		capabilitiesHandler.SetHistoryStore(capabilitiesHistoryStore)
 	}
+	if revRegistry != nil {
+		capabilitiesHandler.SetRevocationWriter(revRegistry)
+	}
 	eval.SetRevocationChecker(capabilitiesHandler)
 
 	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
@@ -344,10 +397,28 @@ func Run(configPath string) error {
 	}
 	h.SetReceiptSigner(receipt.NewSigner([]byte(signingKey)))
 	log.Printf("receipt signer configured (sig_v1, hmac-sha256)")
+	// P2.3.5 asymmetric receipt signatures: the gateway's registered
+	// Ed25519 key signs every receipt. gwTrust.record is the admitted,
+	// durably-registered (gateway_id, key_id) — key registration
+	// precedes any receipt signing by construction. Without gateway
+	// trust (open/dev mode) receipts keep the HMAC-only form.
+	if gwTrust != nil {
+		h.SetReceiptEdSigner(receipt.NewEdSigner(gwTrust.priv,
+			gwTrust.record.GatewayID, gwTrust.record.KeyID))
+		receiptHandler.SetKeyResolver(receipt.RegistryResolver{Reg: gwTrust.registry})
+		log.Printf("receipt ed-signer configured (edsig_v1, gateway_key_id=%s)", gwTrust.record.KeyID)
+	}
 
 	approvalHandler.SetEventStore(eventStore)
 	approvalHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	approvalHandler.SetContinuationStore(continuationStore)
+	if revChecker != nil {
+		approvalHandler.SetRevocation(revChecker)
+	}
+	// Approval provenance: /v1/approval/create resolves decision_id against
+	// the decision cache — approvals exist only for gateway-produced
+	// escalated decisions, bound to the exact recorded request.
+	approvalHandler.SetDecisionLookup(h.LookupDecision)
 
 	trustHandler.SetEventStore(eventStore)
 	trustHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
@@ -361,6 +432,12 @@ func Run(configPath string) error {
 	policyHandler.RegisterRoutes(mux)
 	capabilitiesHandler.RegisterRoutes(mux)
 	approvalHandler.RegisterRoutes(mux)
+	if revRegistry != nil {
+		revocationsHandler := handlers.NewRevocationsHandler(revRegistry)
+		revocationsHandler.SetEventStore(eventStore)
+		revocationsHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+		revocationsHandler.RegisterRoutes(mux)
+	}
 	receiptHandler.RegisterRoutes(mux)
 	trustHandler.RegisterRoutes(mux)
 	eventHandler.RegisterRoutes(mux)
@@ -398,37 +475,45 @@ func Run(configPath string) error {
 	h.SetIntegrityChecker(checker)
 	log.Printf("integrity checker configured")
 
-	shellExec := execution.NewShellExecutorWithLimits(
-		60,
-		cfg.ExecutionStdoutLimitBytes,
-		cfg.ExecutionStderrLimitBytes,
-	)
-	if cfg.ExecutionWorkingDir != "" {
-		shellExec.WorkingDir = cfg.ExecutionWorkingDir
-	}
-	if len(cfg.ExecutionAllowedEnvVars) > 0 {
-		shellExec.AllowedEnvVars = cfg.ExecutionAllowedEnvVars
-	}
-	log.Printf("shell executor configured (stdout_limit=%d, stderr_limit=%d, workdir=%q, allowed_env=%v)",
-		cfg.ExecutionStdoutLimitBytes, cfg.ExecutionStderrLimitBytes, cfg.ExecutionWorkingDir, cfg.ExecutionAllowedEnvVars)
-
 	execHandler := handlers.NewExecutionHandler(execStore)
-	execHandler.SetExecutor(shellExec)
 	execHandler.SetContinuationStore(continuationStore)
 
 	execRegistry := execution.NewExecutorRegistry()
-	execRegistry.Register("shell", shellExec)
 
-	directExec := execution.NewDirectExecutor(60)
-	execRegistry.Register("exec", directExec)
-	log.Printf("direct executor configured (exec: action type)")
+	// Host executors run commands on the gateway host itself. They are
+	// registered ONLY when explicitly enabled — the externally exposed API
+	// must never reach arbitrary host execution by default.
+	if cfg.EnableHostExecutors {
+		shellExec := execution.NewShellExecutorWithLimits(
+			60,
+			cfg.ExecutionStdoutLimitBytes,
+			cfg.ExecutionStderrLimitBytes,
+		)
+		if cfg.ExecutionWorkingDir != "" {
+			shellExec.WorkingDir = cfg.ExecutionWorkingDir
+		}
+		if len(cfg.ExecutionAllowedEnvVars) > 0 {
+			shellExec.AllowedEnvVars = cfg.ExecutionAllowedEnvVars
+		}
+		log.Printf("shell executor configured (stdout_limit=%d, stderr_limit=%d, workdir=%q, allowed_env=%v)",
+			cfg.ExecutionStdoutLimitBytes, cfg.ExecutionStderrLimitBytes, cfg.ExecutionWorkingDir, cfg.ExecutionAllowedEnvVars)
 
-	gitExec := execution.NewGitExecutor(60)
-	execRegistry.Register("git.push", gitExec)
-	execRegistry.Register("git.pull", gitExec)
-	execRegistry.Register("git.fetch", gitExec)
-	execRegistry.Register("git.checkout", gitExec)
-	log.Printf("git executor configured (git.push, git.pull, git.fetch, git.checkout)")
+		execHandler.SetExecutor(shellExec)
+		execRegistry.Register("shell", shellExec)
+
+		directExec := execution.NewDirectExecutor(60)
+		execRegistry.Register("exec", directExec)
+
+		gitExec := execution.NewGitExecutor(60)
+		execRegistry.Register("git.push", gitExec)
+		execRegistry.Register("git.pull", gitExec)
+		execRegistry.Register("git.fetch", gitExec)
+		execRegistry.Register("git.checkout", gitExec)
+		continuationHandler.SetExecutor(shellExec)
+		log.Printf("host executors ENABLED (shell, exec, git.*) — enable_host_executors=true")
+	} else {
+		log.Printf("host executors DISABLED: shell/exec/git.* actions will never execute on the gateway host (set enable_host_executors=true to opt in)")
+	}
 
 	sandboxEnabled := os.Getenv("OVARA_SANDBOX_ENABLED")
 	if sandboxEnabled == "true" {
@@ -467,13 +552,16 @@ func Run(configPath string) error {
 
 	continuationHandler.SetExecutionStore(execStore)
 	continuationHandler.SetExecutorRegistry(execRegistry)
-	continuationHandler.SetExecutor(shellExec)
 	continuationHandler.SetEventStore(eventStore)
 	continuationHandler.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 
 	orchestrator := continuation.NewOrchestrator(continuationStore, execStore, execRegistry)
 	orchestrator.SetEventStore(eventStore)
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	if revChecker != nil {
+		orchestrator.SetRevocation(revChecker)
+		continuationHandler.SetRevocation(revChecker)
+	}
 	orchestrator.SetStuckExecutingSweep(cfg.StuckExecutingSweepIntervalSec, cfg.StuckExecutingRecoveryThresholdMin)
 	orchestrator.Start()
 	continuationHandler.SetOrchestrator(orchestrator)
@@ -514,10 +602,46 @@ func Run(configPath string) error {
 	execHandler.RegisterRoutes(mux)
 	adminHandler.RegisterRoutes(mux)
 
-	authMw := auth.NewMiddleware(cfg.OperatorTokens, cfg.AuthEnabled)
+	authMw := auth.NewMiddlewareWithAgents(cfg.OperatorTokens, cfg.AgentTokens, cfg.AuthEnabled)
+
+	// P2.2 stable identity + credential lifecycle. Config tokens seed
+	// the registry: each gets identity id = its RC1 principal string, so
+	// existing delegations/approvals/receipts keep their meaning.
+	// Configured-but-unopenable registry fails startup (never silently
+	// in-memory); unconfigured → in-memory (runtime revocation works,
+	// dies at restart — RC1 parity).
+	var idReg *idregistry.Registry
+	if cfg.IdentityRegistryFile != "" {
+		idReg, err = idregistry.Open(cfg.IdentityRegistryFile)
+		if err != nil {
+			return fmt.Errorf("identity registry %s: %w", cfg.IdentityRegistryFile, err)
+		}
+		log.Printf("identity registry durable at %s", cfg.IdentityRegistryFile)
+	} else {
+		idReg = idregistry.NewInMemory()
+		log.Printf("identity registry in-memory (revocation is runtime-only; set identity_registry_file for durability)")
+	}
+	if err := idReg.SeedConfig(cfg.OperatorTokens, "operator"); err != nil {
+		return fmt.Errorf("identity registry seed (operator): %w", err)
+	}
+	if err := idReg.SeedConfig(cfg.AgentTokens, "agent"); err != nil {
+		return fmt.Errorf("identity registry seed (agent): %w", err)
+	}
+	authMw.SetRegistry(idReg)
+	identityHandler := handlers.NewIdentityHandler(idReg)
+	identityHandler.RegisterRoutes(mux)
+	// Suspended/retired identities' queued continuations never execute —
+	// gated on both the orchestrator claim path and the synchronous
+	// /continuations/{id}/execute endpoint.
+	identityActive := func(agentID string) bool {
+		st, ok := idReg.StatusOf(agentID)
+		return ok && st == idregistry.StatusActive
+	}
+	orchestrator.SetIdentityChecker(identityActive)
+	continuationHandler.SetIdentityChecker(identityActive)
 	switch {
 	case cfg.AuthEnabled && len(cfg.OperatorTokens) > 0:
-		log.Printf("AUTH: auth_enabled=true with %d operator token(s) configured", len(cfg.OperatorTokens))
+		log.Printf("AUTH: auth_enabled=true with %d operator token(s) + %d agent token(s) configured", len(cfg.OperatorTokens), len(cfg.AgentTokens))
 	case cfg.AuthEnabled && len(cfg.OperatorTokens) == 0:
 		log.Printf("AUTH WARNING: auth_enabled=true but operator_tokens is empty — gateway will DENY ALL requests until operator_tokens is configured (fail-closed).")
 	default:
@@ -657,6 +781,17 @@ func initGatewayTrust(cfg *config.Config, svc enrollment.Service) (*gatewayTrust
 		return nil, err
 	}
 
+	// P2.3.3 anchor reconciliation: the local journal's chain tip is
+	// compared against the oracle's monotonic record BEFORE admission.
+	// The frozen table: L<A refuse, L==A+same tip accept, L==A+diff tip
+	// refuse (equivocation), L>A refuse in strict (never auto-push —
+	// a forged tail must not crown itself), empty journal refuses in
+	// strict. Push failures inside mutate leave a durable unanchored
+	// tail that this same path surfaces on the next boot.
+	if err := reconcileAnchor(cfg, reg, priv, id.ID); err != nil {
+		return nil, err
+	}
+
 	// Adopt / register / rotate. FindByPub is the restart path: our key
 	// is already bound to this gw_id → reuse that record. force_rekey
 	// with a NEW key rotates; with the same usable key it's a no-op.
@@ -722,6 +857,141 @@ func initGatewayTrust(cfg *config.Config, svc enrollment.Service) (*gatewayTrust
 	log.Printf("gateway identity authenticated: gateway_id=%s key_id=%s state=%s registry=%s admission=%s",
 		peer.GatewayID, peer.KeyID, peer.State, mode, admission)
 	return &gatewayTrust{registry: reg, priv: priv, record: rec}, nil
+}
+
+// reconcileAnchor enforces the frozen P2.3.3 reconciliation table
+// before the gateway admits or serves. Returns nil when the gateway
+// may proceed; any error is a refusal.
+//
+//	anchor_mode=off        → no-op (P2.3.2 behavior unchanged)
+//	anchor_mode=strict     → every anomaly is fatal
+//	anchor_mode=degraded   → rollback/equivocation fatal; unavailable
+//	                         oracle and unanchored tail warn+proceed.
+//	                         anchor_catchup=auto controls availability
+//	                         tolerance only — it NEVER pushes a local-
+//	                         ahead tail (operator catch-up is the only
+//	                         authority-escalation path, both modes)
+//
+// The same routine also installs the mutation-time anchor hook:
+// every committed journal record pushes a signed checkpoint through
+// the registry's serialized mutation path.
+func reconcileAnchor(cfg *config.Config, reg *gwidentity.Registry, priv ed25519.PrivateKey, gatewayID string) error {
+	mode := cfg.GatewayAnchorMode
+	if mode == "" || mode == "off" {
+		return nil
+	}
+	if mode != "strict" && mode != "degraded" {
+		return fmt.Errorf("gateway_anchor_mode %q unknown — want off|strict|degraded", mode)
+	}
+	strict := mode == "strict"
+	if cfg.GatewayRegistryFile == "" {
+		return fmt.Errorf("gateway_anchor_mode=%s requires gateway_registry_file — an in-memory journal has no history to anchor", mode)
+	}
+	if cfg.GatewayAnchorURL == "" || cfg.GatewayAnchorPin == "" {
+		return fmt.Errorf("gateway_anchor_mode=%s requires gateway_anchor_url and gateway_anchor_pin", mode)
+	}
+	if strict && cfg.GatewayAnchorCatchup == "auto" {
+		log.Printf("anchor: gateway_anchor_catchup=auto ignored in strict mode (strict never auto-pushes)")
+	}
+	if !strict && cfg.GatewayAnchorCatchup != "" && cfg.GatewayAnchorCatchup != "manual" && cfg.GatewayAnchorCatchup != "auto" {
+		return fmt.Errorf("gateway_anchor_catchup %q unknown — want manual|auto", cfg.GatewayAnchorCatchup)
+	}
+
+	// The checkpoint signer: the dedicated anchor key (falls back to
+	// the identity key). key_id is a provenance label derived from the
+	// pubkey — no registry lookup (mutate pushes while holding the
+	// registry lock; a lookup would self-deadlock). The same key is the
+	// TLS client identity for Tier-2 mutual pinning.
+	anchorPriv := priv
+	if cfg.GatewayAnchorKeyFile != "" {
+		var kerr error
+		anchorPriv, kerr = gwidentity.LoadOrCreateKey(cfg.GatewayAnchorKeyFile)
+		if kerr != nil {
+			return kerr
+		}
+	}
+	client, err := anchor.NewClient(cfg.GatewayAnchorURL, cfg.GatewayAnchorPin, "", anchorPriv)
+	if err != nil {
+		return fmt.Errorf("anchor client: %w", err)
+	}
+	anchorKeyID := "ext_" + hex.EncodeToString(anchorPriv.Public().(ed25519.PublicKey))[:16]
+	signer := func(seq uint64, tip [32]byte) (*anchor.Checkpoint, error) {
+		cp := anchor.Checkpoint{Version: anchor.CheckpointVersion, DomainID: reg.DomainID(),
+			Seq: seq, TipHash: hex.EncodeToString(tip[:]), KeyID: anchorKeyID}
+		s, err := anchor.Sign(anchorPriv, cp)
+		if err != nil {
+			return nil, err
+		}
+		return &s, nil
+	}
+
+	// Degraded semantics extend to the mutation path: a push failure
+	// leaves the same unanchored tail either way — degraded logs and
+	// continues (the tail surfaces at the next reconcile), strict
+	// returns the error to the caller. Unavailable-oracle tolerance is
+	// the point of degraded; the durable local record is never lost.
+	var pusher anchor.Pusher = client
+	if !strict {
+		pusher = &warnPusher{inner: client}
+	}
+
+	res, acp, err := reg.ReconcileAnchor(context.Background(), client)
+	switch {
+	case err != nil:
+		if errors.Is(err, anchor.ErrDomainUnregistered) {
+			return fmt.Errorf("anchor domain %s not registered — run gwctl anchor-init first", reg.DomainID())
+		}
+		if strict {
+			return fmt.Errorf("anchor reconcile failed (strict): %w", err)
+		}
+		log.Printf("anchor: oracle unreachable, continuing degraded: %v", err)
+	case res == gwidentity.ReconcileOK:
+		// local tip == oracle tip — authoritative agreement
+	case res == gwidentity.ReconcileLocalBehind:
+		return fmt.Errorf("local journal behind oracle (local seq < anchored seq %d) — history rolled back; refusing", acp.Seq)
+	case res == gwidentity.ReconcileEquivocation:
+		return fmt.Errorf("local journal equivocates at seq %d (tip hash differs from oracle) — refusing", acp.Seq)
+	case res == gwidentity.ReconcileEmpty:
+		if strict {
+			return fmt.Errorf("anchor configured but journal is empty — run gwctl anchor-init first")
+		}
+	case res == gwidentity.ReconcileLocalAhead:
+		_, seq, _ := reg.ChainTip()
+		if strict {
+			return fmt.Errorf("unanchored tail: local seq %d > oracle seq %d — refusing (run gwctl anchor-catchup)", seq, acp.Seq)
+		}
+		// F-C1 remediation: degraded mode NEVER auto-pushes a local-ahead
+		// tail — a self-consistent forged tail is indistinguishable from a
+		// crash window, so pushing it would convert an unverified journal
+		// into authoritative oracle state. Unavailability tolerance is the
+		// only thing degraded buys; authority escalation always requires
+		// the operator's explicit out-of-band confirmation.
+		if cfg.GatewayAnchorCatchup == "auto" {
+			log.Printf("anchor: gateway_anchor_catchup=auto no longer auto-pushes (P2.3.3 remediation) — operator catch-up required")
+		}
+		log.Printf("anchor: unanchored tail (local seq %d > oracle %d) — degraded mode continuing WITHOUT anchoring; run gwctl anchor-catchup", seq, acp.Seq)
+	}
+	return reg.SetAnchor(pusher, signer)
+}
+
+// warnPusher degrades oracle UNAVAILABILITY to warnings — the local
+// mutation is already durable (fsync before push), so an offline oracle
+// leaves the same unanchored tail either way. F-D1 remediation: only
+// availability errors are swallowed; integrity signals (equivocation,
+// bad key, malformed response) propagate and fail the mutation — a fork
+// is never masked as "oracle offline".
+type warnPusher struct{ inner anchor.Pusher }
+
+func (w *warnPusher) Commit(ctx context.Context, domain string, cp *anchor.Checkpoint) error {
+	if err := w.inner.Commit(ctx, domain, cp); err != nil {
+		if errors.Is(err, anchor.ErrUnavailable) {
+			log.Printf("anchor: checkpoint push failed (degraded — unanchored tail, reconcile at next boot): %v", err)
+			return nil
+		}
+		log.Printf("anchor: INTEGRITY failure on checkpoint push — refusing to mask it: %v", err)
+		return err
+	}
+	return nil
 }
 
 func init() {
