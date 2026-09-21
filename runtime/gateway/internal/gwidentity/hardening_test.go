@@ -44,6 +44,7 @@ func TestH1_ExistingPermMatrix(t *testing.T) {
 	} {
 		p := filepath.Join(t.TempDir(), "reg.jsonl")
 		os.WriteFile(p, []byte{}, tc.mode)
+		os.Chmod(p, tc.mode) // WriteFile honors umask — force exact mode
 		r, err := Open(p)
 		if tc.ok != (err == nil) {
 			t.Fatalf("mode %o: want accept=%v, err=%v", tc.mode, tc.ok, err)
