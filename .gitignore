@@ -23,3 +23,6 @@ tools/cli/ovara.tools.cli
 trust/trust-cli
 sdk/python/**/__pycache__/
 __pycache__/
+
+.devin/
+.commandcode/
