@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/execution"
-	"ovara.runtime.gateway/internal/approval"
 )
 
 func TestContinuationHandler_HandleList_LargeDataset_5000Items(t *testing.T) {

@@ -16,23 +16,34 @@ const (
 )
 
 type ApprovalRequest struct {
-	ApprovalID    string    `json:"approval_id"`
-	DecisionID    string    `json:"decision_id"`
-	ActionType    models.ActionType `json:"action_type"`
-	Resource      string    `json:"resource"`
-	Environment   models.Environment `json:"environment"`
-	Status        Status    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
-	ResumedAt     *time.Time `json:"resumed_at,omitempty"`
-	ResolvedBy    string    `json:"resolved_by,omitempty"`
-	AgentID       string    `json:"agent_id,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
-	TrustScore    float64   `json:"trust_score,omitempty"`
-	TrustLevel    models.TrustLevel `json:"trust_level,omitempty"`
-	AnomalyCodes  []string  `json:"anomaly_codes,omitempty"`
-	ShieldActive  bool      `json:"shield_active,omitempty"`
-	Restricted    bool      `json:"restricted,omitempty"`
+	ApprovalID   string             `json:"approval_id"`
+	DecisionID   string             `json:"decision_id"`
+	ActionType   models.ActionType  `json:"action_type"`
+	Resource     string             `json:"resource"`
+	Environment  models.Environment `json:"environment"`
+	Status       Status             `json:"status"`
+	CreatedAt    time.Time          `json:"created_at"`
+	ResolvedAt   *time.Time         `json:"resolved_at,omitempty"`
+	ResumedAt    *time.Time         `json:"resumed_at,omitempty"`
+	ResolvedBy   string             `json:"resolved_by,omitempty"`
+	AgentID      string             `json:"agent_id,omitempty"`
+	Reason       string             `json:"reason,omitempty"`
+	TrustScore   float64            `json:"trust_score,omitempty"`
+	TrustLevel   models.TrustLevel  `json:"trust_level,omitempty"`
+	AnomalyCodes []string           `json:"anomaly_codes,omitempty"`
+	ShieldActive bool               `json:"shield_active,omitempty"`
+	Restricted   bool               `json:"restricted,omitempty"`
+	// RequestHash binds this approval to the exact evaluated request
+	// (sha256 over action/resource/agent/lease). Empty for legacy records.
+	RequestHash   string `json:"request_hash,omitempty"`
+	PolicyVersion string `json:"policy_version,omitempty"`
+	// P2.3.4 — the revocation identifiers of the authority this approval
+	// was created under, captured from the evaluated request. Claim-time
+	// revalidation of the continuation checks them against CURRENT
+	// revocation state; the approval record itself stays historical.
+	LeaseID       string   `json:"lease_id,omitempty"`
+	DelegationKeys []string `json:"delegation_keys,omitempty"`
+	Issuers       []string `json:"issuers,omitempty"`
 }
 
 func (a *ApprovalRequest) MarshalJSON() ([]byte, error) {
@@ -41,8 +52,8 @@ func (a *ApprovalRequest) MarshalJSON() ([]byte, error) {
 		*Alias
 		Status string `json:"status"`
 	}{
-		Alias:   (*Alias)(a),
-		Status:  string(a.Status),
+		Alias:  (*Alias)(a),
+		Status: string(a.Status),
 	})
 }
 
@@ -83,32 +94,44 @@ func (a *ApprovalRequest) IsResolved() bool {
 }
 
 type CreateRequest struct {
-	DecisionID   string            `json:"decision_id"`
-	ActionType   models.ActionType `json:"action_type"`
-	Resource     string            `json:"resource"`
-	Environment  models.Environment `json:"environment"`
-	AgentID      string            `json:"agent_id,omitempty"`
-	TrustScore   float64           `json:"trust_score,omitempty"`
-	TrustLevel   models.TrustLevel `json:"trust_level,omitempty"`
-	AnomalyCodes []string          `json:"anomaly_codes,omitempty"`
-	ShieldActive bool              `json:"shield_active,omitempty"`
-	Restricted   bool              `json:"restricted,omitempty"`
+	DecisionID    string             `json:"decision_id"`
+	ActionType    models.ActionType  `json:"action_type"`
+	Resource      string             `json:"resource"`
+	Environment   models.Environment `json:"environment"`
+	AgentID       string             `json:"agent_id,omitempty"`
+	TrustScore    float64            `json:"trust_score,omitempty"`
+	TrustLevel    models.TrustLevel  `json:"trust_level,omitempty"`
+	AnomalyCodes  []string           `json:"anomaly_codes,omitempty"`
+	ShieldActive  bool               `json:"shield_active,omitempty"`
+	Restricted    bool               `json:"restricted,omitempty"`
+	RequestHash   string             `json:"request_hash,omitempty"`
+	PolicyVersion string             `json:"policy_version,omitempty"`
+	// P2.3.4 authority identifiers — server-populated from the recorded
+	// decision request, never caller-authoritative.
+	LeaseID       string   `json:"lease_id,omitempty"`
+	DelegationKeys []string `json:"delegation_keys,omitempty"`
+	Issuers       []string `json:"issuers,omitempty"`
 }
 
 func (c *CreateRequest) ToApproval(approvalID string) *ApprovalRequest {
 	return &ApprovalRequest{
-		ApprovalID:   approvalID,
-		DecisionID:   c.DecisionID,
-		ActionType:   c.ActionType,
-		Resource:     c.Resource,
-		Environment:  c.Environment,
-		Status:       StatusPending,
-		CreatedAt:    time.Now().UTC(),
-		AgentID:      c.AgentID,
-		TrustScore:   c.TrustScore,
-		TrustLevel:   c.TrustLevel,
-		AnomalyCodes: c.AnomalyCodes,
-		ShieldActive: c.ShieldActive,
-		Restricted:   c.Restricted,
+		ApprovalID:    approvalID,
+		DecisionID:    c.DecisionID,
+		ActionType:    c.ActionType,
+		Resource:      c.Resource,
+		Environment:   c.Environment,
+		Status:        StatusPending,
+		CreatedAt:     time.Now().UTC(),
+		AgentID:       c.AgentID,
+		TrustScore:    c.TrustScore,
+		TrustLevel:    c.TrustLevel,
+		AnomalyCodes:  c.AnomalyCodes,
+		ShieldActive:  c.ShieldActive,
+		Restricted:    c.Restricted,
+		RequestHash:   c.RequestHash,
+		PolicyVersion: c.PolicyVersion,
+		LeaseID:       c.LeaseID,
+		DelegationKeys: c.DelegationKeys,
+		Issuers:       c.Issuers,
 	}
 }

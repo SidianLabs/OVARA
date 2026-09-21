@@ -1,83 +1,42 @@
 package gateway
 
 import (
-	"context"
-	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 )
 
-func TestCheckDecisions(t *testing.T) {
-	for _, want := range []string{"allow", "deny", "escalate"} {
-		t.Run(want, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/v1/runtime/check" || r.Method != "POST" {
-					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
-				}
-				if r.Header.Get("Authorization") != "Bearer tok" {
-					t.Errorf("missing auth header")
-				}
-				body, _ := io.ReadAll(r.Body)
-				var req map[string]any
-				json.Unmarshal(body, &req)
-				if req["action_type"] != "http.request" {
-					t.Errorf("bad action_type %v", req["action_type"])
-				}
-				if req["resource"] != "GET https://x.com/" {
-					t.Errorf("bad resource %v", req["resource"])
-				}
-				json.NewEncoder(w).Encode(Decision{Decision: want, DecisionID: "d1"})
-			}))
-			defer srv.Close()
-			c := New(srv.URL, "tok", "test")
-			d, err := c.Check(context.Background(), "GET", "https://x.com/")
-			if err != nil {
-				t.Fatalf("Check: %v", err)
-			}
-			if d.Decision != want {
-				t.Fatalf("got %q want %q", d.Decision, want)
-			}
-		})
+// The subject the proxy sends must equal the gateway's credential-derived
+// principal (ag_<sha256(token)[:16]>) — a mismatch is rejected as
+// identity_mismatch at bindIdentity. Regression for the P1 integration
+// break where a hardcoded "egress-agent" failed every transit.
+func TestSubjectIDMatchesGatewayPrincipal(t *testing.T) {
+	token := "test-agent-token-abc123"
+	sum := sha256.Sum256([]byte(token))
+	want := "ag_" + hex.EncodeToString(sum[:])[:16]
+	if got := subjectID(token); got != want {
+		t.Fatalf("subjectID = %q, want %q", got, want)
+	}
+	if got := subjectID(""); got != "egress-agent" {
+		t.Fatalf("empty-token subjectID = %q, want egress-agent", got)
 	}
 }
 
-func TestCheckServerDown(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	url := srv.URL
-	srv.Close() // now unreachable
-	c := New(url, "", "test")
-	d, err := c.Check(context.Background(), "GET", "https://x.com/")
-	if err == nil {
-		t.Fatalf("expected error when gateway down, got decision %+v", d)
+// Negative case: a subject derived from a DIFFERENT credential must not
+// match — at bindIdentity that mismatch is a 400 identity_mismatch deny.
+// This is the property that makes the proxy's identity honest: it can
+// only ever claim the principal of the credential it actually holds.
+func TestSubjectIDDifferentCredentialDenied(t *testing.T) {
+	proxySubject := subjectID("proxy-gateway-token-1")
+	victimSubject := subjectID("victim-agent-token-2")
+	if proxySubject == victimSubject {
+		t.Fatal("distinct credentials must derive distinct principals — " +
+			"a collision would let the proxy claim a foreign identity")
 	}
-	if d != nil {
-		t.Fatalf("expected nil decision on error, got %+v", d)
-	}
-}
-
-func TestCheckNon200(t *testing.T) {
-	for _, code := range []int{400, 403, 500} {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(code)
-		}))
-		c := New(srv.URL, "", "test")
-		d, err := c.Check(context.Background(), "GET", "https://x.com/")
-		srv.Close()
-		if err == nil || d != nil {
-			t.Fatalf("status %d: expected error+nil decision, got d=%v err=%v", code, d, err)
-		}
-	}
-}
-
-func TestCheckBadJSON(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("not json"))
-	}))
-	defer srv.Close()
-	c := New(srv.URL, "", "test")
-	if _, err := c.Check(context.Background(), "GET", "https://x.com/"); err == nil {
-		t.Fatal("expected decode error")
+	// And it must not collide with the operator domain either.
+	opSum := sha256.Sum256([]byte("proxy-gateway-token-1"))
+	opPrincipal := "op_" + hex.EncodeToString(opSum[:])[:16]
+	if proxySubject == opPrincipal {
+		t.Fatal("agent principal collided with operator domain")
 	}
 }

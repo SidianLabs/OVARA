@@ -59,9 +59,20 @@ while [[ $# -gt 0 ]]; do
     --resolver)   RESOLVER="$2"; shift 2;;
     --image)      DOCKER_IMAGE="$2"; shift 2;;
     --subnet-idx) SUBNET_IDX="$2"; shift 2;;
+    --agent-token) AGENT_TOKEN="$2"; shift 2;;
     *) echo "unknown flag: $1" >&2; exit 2;;
   esac
 done
+
+# Proxy client credential: the proxy authenticates clients when agent_token
+# is configured in proxy.json. Pick it up automatically so the recipe prints
+# a working proxy URL; --agent-token / OVARA_AGENT_TOKEN override.
+: "${AGENT_TOKEN:=${OVARA_AGENT_TOKEN:-}}"
+if [[ -z "${AGENT_TOKEN}" && -f proxy.json ]]; then
+  AGENT_TOKEN=$(sed -n 's/.*"agent_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' proxy.json | head -1)
+fi
+PROXY_USERINFO=""
+[[ -n "${AGENT_TOKEN}" ]] && PROXY_USERINFO="agent:${AGENT_TOKEN}@"
 
 # Per-netns veth names + subnet: a second boundary must not collide with the
 # first (hardcoded names used to leave new netns with no interface at all).
@@ -277,8 +288,8 @@ Docker boundary recipe. Two pieces; neither is optional.
     --read-only \\
     --dns ${RESOLVER} \\
     --dns-search . \\
-    -e HTTPS_PROXY=http://${PROXY_IP}:${PROXY_PORT} \\
-    -e HTTP_PROXY=http://${PROXY_IP}:${PROXY_PORT} \\
+    -e HTTPS_PROXY=http://${PROXY_USERINFO}${PROXY_IP}:${PROXY_PORT} \\
+    -e HTTP_PROXY=http://${PROXY_USERINFO}${PROXY_IP}:${PROXY_PORT} \\
     -e NO_PROXY=localhost,127.0.0.1 \\
     ${DOCKER_IMAGE}
 
@@ -297,6 +308,10 @@ Why each flag exists:
   HTTPS_PROXY env        only works for cooperative clients. The *real*
                          guarantee is the internal network — env vars are a
                          convenience for tools that respect them.
+  userinfo in the URL    is the proxy client credential (agent_token in
+                         proxy.json). Without it the proxy returns 407.
+                         The env var stays inside the agent env; the token
+                         only buys proxy transit, never gateway privileges.
 
 Honest gaps:
   * DOCKER-USER rules (applied above) restrict bridge-subnet egress to

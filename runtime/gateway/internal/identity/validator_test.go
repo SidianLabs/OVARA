@@ -76,23 +76,32 @@ func testIssuerKeys(t *testing.T, issuer string) (map[string][]byte, ed25519.Pri
 // matches ovara.identity.CapabilityLease.digestPayload().
 func signTestLease(t *testing.T, lease *models.CapabilityLease, priv ed25519.PrivateKey) {
 	t.Helper()
-	payload := fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
-		lease.LeaseID, lease.Issuer, lease.Subject, lease.AllowedActions,
-		lease.ResourceScope, lease.Expiry.Unix(), lease.DelegationDepth, lease.IssuedAt.Unix(),
-	)
-	lease.Signature = ed25519.Sign(priv, []byte(payload))
+	lease.Signature = ed25519.Sign(priv, leasePayload(lease))
+}
+
+// signHops signs every delegation hop with the matching issuer key.
+func signHops(chain *models.DelegationChain, keys map[string]ed25519.PrivateKey) {
+	prevSig := ""
+	for i := range chain.Authorities {
+		priv, ok := keys[chain.Authorities[i].Issuer]
+		if !ok {
+			panic("no test key for issuer " + chain.Authorities[i].Issuer)
+		}
+		chain.Authorities[i].Signature = ed25519.Sign(priv, hopPayload(chain.Authorities, i, prevSig))
+		prevSig = hex.EncodeToString(chain.Authorities[i].Signature)
+	}
 }
 
 func TestValidator_ValidateCapabilityLease_Valid(t *testing.T) {
 	trusted, priv := testIssuerKeys(t, "ovara")
 	v := NewValidatorWithTrustedKeys(trusted)
 	lease := &models.CapabilityLease{
-		LeaseID:        "cap_123",
-		Issuer:         "ovara",
-		Subject:        "agent-001",
-		AllowedActions: []string{"shell", "git.push"},
+		LeaseID:         "cap_123",
+		Issuer:          "ovara",
+		Subject:         "agent-001",
+		AllowedActions:  []string{"shell", "git.push"},
 		ResourceScope:   "repo:acme/api",
-		Expiry:         time.Now().Add(1 * time.Hour),
+		Expiry:          time.Now().Add(1 * time.Hour),
 		DelegationDepth: 1,
 	}
 	signTestLease(t, lease, priv)
@@ -115,12 +124,12 @@ func TestValidator_ValidateCapabilityLease_Missing(t *testing.T) {
 func TestValidator_ValidateCapabilityLease_Expired(t *testing.T) {
 	v := NewValidator()
 	lease := &models.CapabilityLease{
-		LeaseID:        "cap_123",
-		Issuer:         "ovara",
-		Subject:        "agent-001",
-		AllowedActions: []string{"shell"},
+		LeaseID:         "cap_123",
+		Issuer:          "ovara",
+		Subject:         "agent-001",
+		AllowedActions:  []string{"shell"},
 		ResourceScope:   "*",
-		Expiry:         time.Now().Add(-1 * time.Hour),
+		Expiry:          time.Now().Add(-1 * time.Hour),
 		DelegationDepth: 1,
 	}
 
@@ -133,12 +142,12 @@ func TestValidator_ValidateCapabilityLease_Expired(t *testing.T) {
 func TestValidator_ValidateCapabilityLease_EmptyActions(t *testing.T) {
 	v := NewValidator()
 	lease := &models.CapabilityLease{
-		LeaseID:        "cap_123",
-		Issuer:         "ovara",
-		Subject:        "agent-001",
-		AllowedActions: []string{},
+		LeaseID:         "cap_123",
+		Issuer:          "ovara",
+		Subject:         "agent-001",
+		AllowedActions:  []string{},
 		ResourceScope:   "*",
-		Expiry:         time.Now().Add(1 * time.Hour),
+		Expiry:          time.Now().Add(1 * time.Hour),
 		DelegationDepth: 1,
 	}
 
@@ -151,12 +160,12 @@ func TestValidator_ValidateCapabilityLease_EmptyActions(t *testing.T) {
 func TestValidator_ValidateCapabilityLease_NegativeDelegationDepth(t *testing.T) {
 	v := NewValidator()
 	lease := &models.CapabilityLease{
-		LeaseID:        "cap_123",
-		Issuer:         "ovara",
-		Subject:        "agent-001",
-		AllowedActions: []string{"shell"},
+		LeaseID:         "cap_123",
+		Issuer:          "ovara",
+		Subject:         "agent-001",
+		AllowedActions:  []string{"shell"},
 		ResourceScope:   "*",
-		Expiry:         time.Now().Add(1 * time.Hour),
+		Expiry:          time.Now().Add(1 * time.Hour),
 		DelegationDepth: -1,
 	}
 
@@ -171,7 +180,7 @@ func TestValidator_ValidateCapabilityLeaseScope_Allowed(t *testing.T) {
 	lease := &models.CapabilityLease{
 		LeaseID:        "cap_123",
 		AllowedActions: []string{"shell", "git.push"},
-		ResourceScope:   "repo:acme/api",
+		ResourceScope:  "repo:acme/api",
 		Expiry:         time.Now().Add(1 * time.Hour),
 	}
 
@@ -186,7 +195,7 @@ func TestValidator_ValidateCapabilityLeaseScope_ActionNotAllowed(t *testing.T) {
 	lease := &models.CapabilityLease{
 		LeaseID:        "cap_123",
 		AllowedActions: []string{"shell"},
-		ResourceScope:   "repo:acme/api",
+		ResourceScope:  "repo:acme/api",
 		Expiry:         time.Now().Add(1 * time.Hour),
 	}
 
@@ -201,7 +210,7 @@ func TestValidator_ValidateCapabilityLeaseScope_ResourceMismatch(t *testing.T) {
 	lease := &models.CapabilityLease{
 		LeaseID:        "cap_123",
 		AllowedActions: []string{"shell"},
-		ResourceScope:   "repo:acme/api",
+		ResourceScope:  "repo:acme/api",
 		Expiry:         time.Now().Add(1 * time.Hour),
 	}
 
@@ -216,7 +225,7 @@ func TestValidator_ValidateCapabilityLeaseScope_WildcardScope(t *testing.T) {
 	lease := &models.CapabilityLease{
 		LeaseID:        "cap_123",
 		AllowedActions: []string{"shell"},
-		ResourceScope:   "*",
+		ResourceScope:  "*",
 		Expiry:         time.Now().Add(1 * time.Hour),
 	}
 
@@ -229,22 +238,24 @@ func TestValidator_ValidateCapabilityLeaseScope_WildcardScope(t *testing.T) {
 func TestValidator_ValidateDelegationChain_Empty(t *testing.T) {
 	v := NewValidator()
 
-	result := v.ValidateDelegationChain(&models.DelegationChain{})
+	result := v.ValidateDelegationChain(&models.DelegationChain{}, "", nil)
 	if result.Valid {
 		t.Error("expected invalid for empty delegation chain")
 	}
 }
 
 func TestValidator_ValidateDelegationChain_Valid(t *testing.T) {
-	v := NewValidator()
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	v := NewValidatorWithTrustedKeys(map[string][]byte{"root": pub})
 	chain := &models.DelegationChain{
 		Authorities: []models.Authority{
-			{Issuer: "root", SubjectID: "agent-001"},
+			{Issuer: "root", SubjectID: "agent-001", Nonce: "n1"},
 		},
 		Depth: 1,
 	}
+	signHops(chain, map[string]ed25519.PrivateKey{"root": priv})
 
-	result := v.ValidateDelegationChain(chain)
+	result := v.ValidateDelegationChain(chain, "agent-001", nil)
 	if !result.Valid {
 		t.Errorf("expected valid, got %v: %v", result.Valid, result.Reasons)
 	}
@@ -253,7 +264,7 @@ func TestValidator_ValidateDelegationChain_Valid(t *testing.T) {
 func TestValidator_ValidateDelegationChain_Nil(t *testing.T) {
 	v := NewValidator()
 
-	result := v.ValidateDelegationChain(nil)
+	result := v.ValidateDelegationChain(nil, "", nil)
 	if !result.Valid {
 		t.Error("expected valid for nil delegation chain")
 	}
@@ -294,7 +305,7 @@ func TestValidator_ValidateAll_Valid(t *testing.T) {
 		Issuer:         "ovara",
 		Subject:        "agent-001",
 		AllowedActions: []string{"shell"},
-		ResourceScope:   "shell:*",
+		ResourceScope:  "shell:*",
 		Expiry:         time.Now().Add(1 * time.Hour),
 	}
 	signTestLease(t, lease, priv)
@@ -328,14 +339,6 @@ func TestCapabilityLeaseSignatureVerification(t *testing.T) {
 	now := time.Now().UTC()
 	expiry := now.Add(1 * time.Hour)
 
-	// This payload format matches ovara.identity module:
-	// LeaseID|Issuer|Subject|AllowedActions|ResourceScope|ExpiryUnix|DelegationDepth|IssuedAtUnix
-	payload := fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
-		"lse_test", "ovara", "agent-001", []string{"shell", "exec"},
-		"*", expiry.Unix(), 1, now.Unix(),
-	)
-	sig := ed25519.Sign(priv, []byte(payload))
-
 	lease := &models.CapabilityLease{
 		LeaseID:         "lse_test",
 		Issuer:          "ovara",
@@ -345,9 +348,9 @@ func TestCapabilityLeaseSignatureVerification(t *testing.T) {
 		Expiry:          expiry,
 		DelegationDepth: 1,
 		IssuedAt:        now,
-		Signature:       sig,
 		VerifyKey:       verifyKeyHex,
 	}
+	lease.Signature = ed25519.Sign(priv, leasePayload(lease))
 
 	v := NewValidatorWithTrustedKeys(map[string][]byte{"ovara": pub})
 	result := v.ValidateCapabilityLease(lease)
@@ -509,20 +512,25 @@ func TestCapabilityLeaseSignatureFailClosed(t *testing.T) {
 // TestDelegationChainHashVerification validates chain hash integrity.
 func TestDelegationChainHashVerification(t *testing.T) {
 	// Compute hash using same algorithm as ovara.identity
-	payload := "2|root|agent-root|1000|delegator|agent-leaf|2000|"
+	payload := "2|root|delegator|1000|delegator|agent-leaf|2000|"
 	hash := hex.EncodeToString(testSHA256Hash([]byte(payload)))
 
 	chain := &models.DelegationChain{
 		Authorities: []models.Authority{
-			{Issuer: "root", SubjectID: "agent-root", DelegatedAt: time.Unix(1000, 0)},
-			{Issuer: "delegator", SubjectID: "agent-leaf", DelegatedAt: time.Unix(2000, 0)},
+			{Issuer: "root", SubjectID: "delegator", DelegatedAt: time.Unix(1000, 0)},
+			{Issuer: "delegator", SubjectID: "agent-leaf", DelegatedAt: time.Unix(2000, 0), Nonce: "n-hash"},
 		},
 		ChainHash: hash,
 		Depth:     2,
 	}
 
-	v := NewValidator()
-	result := v.ValidateDelegationChain(chain)
+	// Both hops must be signed by trusted issuer keys; the intermediate
+	// subject ("delegator") is itself a trusted issuer so it may chain.
+	pubR, privR, _ := ed25519.GenerateKey(nil)
+	pubD, privD, _ := ed25519.GenerateKey(nil)
+	v := NewValidatorWithTrustedKeys(map[string][]byte{"root": pubR, "delegator": pubD})
+	signHops(chain, map[string]ed25519.PrivateKey{"root": privR, "delegator": privD})
+	result := v.ValidateDelegationChain(chain, "agent-leaf", nil)
 	if !result.Valid {
 		t.Errorf("expected valid chain hash, got: %v", result.Reasons)
 	}
@@ -532,14 +540,16 @@ func TestDelegationChainHashVerification(t *testing.T) {
 func TestDelegationChainHashRejection(t *testing.T) {
 	chain := &models.DelegationChain{
 		Authorities: []models.Authority{
-			{Issuer: "root", SubjectID: "agent-root", DelegatedAt: time.Unix(1000, 0)},
+			{Issuer: "root", SubjectID: "agent-root", DelegatedAt: time.Unix(1000, 0), Nonce: "n-tamper"},
 		},
 		ChainHash: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
 		Depth:     1,
 	}
 
-	v := NewValidator()
-	result := v.ValidateDelegationChain(chain)
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	v := NewValidatorWithTrustedKeys(map[string][]byte{"root": pub})
+	signHops(chain, map[string]ed25519.PrivateKey{"root": priv})
+	result := v.ValidateDelegationChain(chain, "agent-root", nil)
 	if result.Valid {
 		t.Fatal("expected invalid for tampered chain hash")
 	}

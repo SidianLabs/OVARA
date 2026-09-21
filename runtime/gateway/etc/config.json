@@ -3,5 +3,9 @@
   "policy_version": "v1-local",
   "log_level": "info",
   "fail_closed": false,
-  "decision_log_file": "var/log/decisions.jsonl"
+  "decision_log_file": "var/log/decisions.jsonl",
+  "listen_addr": "127.0.0.1",
+  "auth_enabled": true,
+  "operator_tokens": [],
+  "agent_tokens": []
 }

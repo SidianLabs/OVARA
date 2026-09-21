@@ -46,11 +46,11 @@ func NewHTTPFederatedTrustClient(serverURL string) *HTTPFederatedTrustClient {
 func (c *HTTPFederatedTrustClient) VerifyFederatedIdentity(ctx context.Context, fid *FederatedIdentity, publicKey ed25519.PublicKey) *FederatedVerifyResult {
 	reqBody := map[string]interface{}{
 		"identity_digest": fid.IdentityDigest,
-		"domain":         fid.Domain,
-		"signature":      hex.EncodeToString(fid.Signature),
-		"public_key":     hex.EncodeToString(publicKey),
-		"issued_at":      fid.IssuedAt.Format(time.RFC3339),
-		"expires_at":     fid.ExpiresAt.Format(time.RFC3339),
+		"domain":          fid.Domain,
+		"signature":       hex.EncodeToString(fid.Signature),
+		"public_key":      hex.EncodeToString(publicKey),
+		"issued_at":       fid.IssuedAt.Format(time.RFC3339),
+		"expires_at":      fid.ExpiresAt.Format(time.RFC3339),
 	}
 	b, err := json.Marshal(reqBody)
 	if err != nil {

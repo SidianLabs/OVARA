@@ -81,7 +81,7 @@ func cmdInit(args []string) error {
 		return err
 	}
 	fmt.Printf("initialized ovara deployment in %s\n\n", dir)
-	fmt.Printf("operator token (shown once, also in config.json / proxy.json):\n  %s\n\n", token)
+	fmt.Printf("operator token (gateway-root — keep it scarce; also in config.json):\n  %s\n\n", token)
 	fmt.Println("next steps:")
 	fmt.Println("  1. export secrets for the credential bindings, e.g.:")
 	fmt.Println("       export GITHUB_TOKEN=... OPENAI_API_KEY=... ANTHROPIC_API_KEY=... SLACK_TOKEN=...")
@@ -108,7 +108,16 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	token := randHex(32)
+	// Two separate principals: the operator token is gateway-root
+	// (approval resolution, policy, admin); the agent token is the proxy's
+	// gateway_token and can only submit decisions + create/poll approvals.
+	// The proxy can never approve its own escalations with it.
+	operatorToken := randHex(32)
+	agentToken := randHex(32)
+	// Third principal: the credential the agent presents TO THE PROXY
+	// (Proxy-Authorization). It buys proxy transit only — never gateway
+	// access. Without it the credentialed proxy is an open dispenser.
+	proxyToken := randHex(32)
 
 	gwConfig := map[string]any{
 		"server_port":         gatewayPort,
@@ -123,7 +132,8 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		"decision_log_file":   "var/log/decisions.jsonl",
 		"receipt_signing_key": randHex(32),
 		"auth_enabled":        true,
-		"operator_tokens":     []string{token},
+		"operator_tokens":     []string{operatorToken},
+		"agent_tokens":        []string{agentToken},
 		"trusted_issuers":     map[string]string{"ovara-init": hex.EncodeToString(issuerPub)},
 	}
 
@@ -140,7 +150,8 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	proxyCfg := &config.Config{
 		ListenAddr:     ":9443",
 		GatewayURL:     "http://localhost:" + gatewayPort,
-		GatewayToken:   token,
+		GatewayToken:   agentToken,
+		AgentToken:     proxyToken,
 		Environment:    "dev",
 		CACertFile:     "var/ca.pem",
 		CAKeyFile:      "var/ca.key",
@@ -209,7 +220,7 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 			return "", err
 		}
 	}
-	return token, nil
+	return operatorToken, nil
 }
 
 // --- shared startup --------------------------------------------------------
@@ -237,6 +248,7 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 		srv.SetGitGate(*cfg.GitGate)
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
+	srv.SetClientAuth(cfg.AgentToken)
 	return srv, rootCA, nil
 }
 
@@ -317,7 +329,11 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 		return err
 	}
 
-	args := []string{f.Name(), mode, "--proxy-port", strings.TrimPrefix(cfg.ListenAddr, ":")}
+	_, proxyPort, err := net.SplitHostPort(cfg.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("proxy listen_addr %q: %w", cfg.ListenAddr, err)
+	}
+	args := []string{f.Name(), mode, "--proxy-port", proxyPort}
 	if name != "" {
 		if mode == "netns" {
 			args = append(args, "--name", name)
@@ -329,7 +345,18 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 	if os.Geteuid() == 0 {
 		cmd = exec.Command("bash", args...)
 	} else {
-		cmd = exec.Command("sudo", append([]string{"bash"}, args...)...)
+		// sudo strips the environment — pass the token via sudo's VAR=val
+		// command form (transiently in argv; the token only buys proxy
+		// transit, not a privilege). `sudo -E` is the alternative but is
+		// denied on strict sudoers policies.
+		sudoArgs := []string{"bash"}
+		if cfg.AgentToken != "" {
+			sudoArgs = append([]string{"OVARA_AGENT_TOKEN=" + cfg.AgentToken}, sudoArgs...)
+		}
+		cmd = exec.Command("sudo", append(sudoArgs, args...)...)
+	}
+	if os.Geteuid() == 0 && cfg.AgentToken != "" {
+		cmd.Env = append(os.Environ(), "OVARA_AGENT_TOKEN="+cfg.AgentToken)
 	}
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	log.Printf("setting up %s egress boundary (requires root)...", mode)
@@ -341,8 +368,12 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 		ns = "agent0"
 	}
 	if mode == "netns" {
+		userinfo := ""
+		if cfg.AgentToken != "" {
+			userinfo = "agent:" + cfg.AgentToken + "@"
+		}
 		log.Printf("boundary up — run your agent inside it:")
-		log.Printf("  sudo ip netns exec %s env HTTPS_PROXY=http://10.200.0.1%s SSL_CERT_FILE=%s/var/ca.pem <agent>", ns, cfg.ListenAddr, mustGetwd())
+		log.Printf("  sudo ip netns exec %s env HTTPS_PROXY=http://%s10.200.0.1:%s SSL_CERT_FILE=%s/var/ca.pem <agent>", ns, userinfo, proxyPort, mustGetwd())
 	} else {
 		log.Printf("boundary network ready — launch the agent per the docker recipe above")
 	}
@@ -415,6 +446,11 @@ func cmdDemo() error {
 	}
 	go http.Serve(proxyLn, srv)
 	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
+	if cfg.AgentToken != "" {
+		// Client auth: the demo agent authenticates exactly like a real
+		// one — credentials in the proxy URL.
+		proxyURL.User = url.UserPassword("agent", cfg.AgentToken)
+	}
 
 	// Client trusts the generated CA (needed for CONNECT+MITM hosts) and
 	// egresses only via the proxy.

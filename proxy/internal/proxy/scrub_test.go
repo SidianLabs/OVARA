@@ -2,8 +2,12 @@ package proxy
 
 import (
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"ovara.proxy/internal/creds"
 )
 
 // slowReader feeds the body one byte at a time to force the worst-case
@@ -39,5 +43,37 @@ func TestScrubReader_NoSecret(t *testing.T) {
 	out, err := io.ReadAll(r)
 	if err != nil || string(out) != "plain body" {
 		t.Fatalf("out=%q err=%v", out, err)
+	}
+}
+
+// Reflector via trailers: an upstream that echoes the injected secret in
+// a response TRAILER must not hand it to the agent — trailers get the
+// same scrub as headers and body (RC1 review finding).
+func TestTrailerSecretScrubbed(t *testing.T) {
+	secret := "Bearer trailer-secret-xyz"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Trailer", "X-Echo")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+		w.Header().Set("X-Echo", r.Header.Get("Authorization"))
+	}))
+	defer upstream.Close()
+
+	f := newFixture(t, "allow", []creds.Binding{
+		{Host: mustHost(t, upstream.URL), Headers: map[string]string{"Authorization": secret}},
+	})
+	req, _ := http.NewRequest("GET", upstream.URL+"/x", nil)
+	rec := httptest.NewRecorder()
+	f.srv.ServeHTTP(rec, req)
+
+	trailer := rec.Result().Trailer.Get("X-Echo")
+	if trailer == secret {
+		t.Fatalf("injected secret leaked via trailer: %q", trailer)
+	}
+	if trailer != "[REDACTED]" && secret != "" {
+		// empty trailer is also acceptable (no echo), but raw secret is not
+		if trailer != "" {
+			t.Fatalf("trailer not scrubbed: %q", trailer)
+		}
 	}
 }

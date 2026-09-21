@@ -67,8 +67,15 @@ def _serialize_delegation_chain(chain: DelegationChain) -> dict:
     authorities = []
     for a in chain.authorities:
         entry: dict = {"issuer": a.issuer, "subject_id": a.subject_id}
-        if a.delegated_at is not None:
-            entry["delegated_at"] = a.delegated_at
+        for attr, tag in (
+            ("delegated_at", "delegated_at"), ("actions", "actions"),
+            ("resource_scope", "resource_scope"), ("audience", "audience"),
+            ("expires_at", "expires_at"), ("nonce", "nonce"),
+            ("signature", "signature"),
+        ):
+            v = getattr(a, attr)
+            if v is not None:
+                entry[tag] = v
         authorities.append(entry)
     return {
         "authorities": authorities,

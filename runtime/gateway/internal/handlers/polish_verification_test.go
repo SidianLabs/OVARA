@@ -366,7 +366,7 @@ func TestApprovalHandler_ListApprovals_SortOldest(t *testing.T) {
 
 	a1, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_new",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:ls",
 		Environment: models.EnvironmentLocal,
 	})
@@ -375,7 +375,7 @@ func TestApprovalHandler_ListApprovals_SortOldest(t *testing.T) {
 
 	a2, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_old",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:pwd",
 		Environment: models.EnvironmentLocal,
 	})
@@ -384,7 +384,7 @@ func TestApprovalHandler_ListApprovals_SortOldest(t *testing.T) {
 
 	a3, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_middle",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:whoami",
 		Environment: models.EnvironmentLocal,
 	})
@@ -425,7 +425,7 @@ func TestApprovalHandler_ListApprovals_SortNewest(t *testing.T) {
 
 	a1, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_new",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:ls",
 		Environment: models.EnvironmentLocal,
 	})
@@ -434,7 +434,7 @@ func TestApprovalHandler_ListApprovals_SortNewest(t *testing.T) {
 
 	a2, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_old",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:pwd",
 		Environment: models.EnvironmentLocal,
 	})
@@ -466,7 +466,7 @@ func TestApprovalHandler_ListApprovals_SortWithFilter(t *testing.T) {
 
 	a1, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_shell",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:ls",
 		Environment: models.EnvironmentLocal,
 	})
@@ -475,7 +475,7 @@ func TestApprovalHandler_ListApprovals_SortWithFilter(t *testing.T) {
 
 	a2, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_exec",
-		ActionType: models.ActionTypeExec,
+		ActionType:  models.ActionTypeExec,
 		Resource:    "exec:ls",
 		Environment: models.EnvironmentLocal,
 	})
@@ -629,7 +629,7 @@ func TestApprovalHandler_ListApprovals_CreatedBefore(t *testing.T) {
 
 	a1, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_old",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:ls",
 		Environment: models.EnvironmentLocal,
 	})
@@ -638,7 +638,7 @@ func TestApprovalHandler_ListApprovals_CreatedBefore(t *testing.T) {
 
 	a2, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_new",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:pwd",
 		Environment: models.EnvironmentLocal,
 	})
@@ -675,7 +675,7 @@ func TestApprovalHandler_ListApprovals_CreatedAfter(t *testing.T) {
 
 	a1, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_old",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:ls",
 		Environment: models.EnvironmentLocal,
 	})
@@ -684,7 +684,7 @@ func TestApprovalHandler_ListApprovals_CreatedAfter(t *testing.T) {
 
 	a2, _ := svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_new",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:pwd",
 		Environment: models.EnvironmentLocal,
 	})
@@ -718,14 +718,14 @@ func TestApprovalHandler_ListApprovals_CreatedBeforeInvalid(t *testing.T) {
 
 	svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_1",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:ls",
 		Environment: models.EnvironmentLocal,
 	})
 
 	svc.CreateApproval(&approval.CreateRequest{
 		DecisionID:  "dec_2",
-		ActionType: models.ActionTypeShell,
+		ActionType:  models.ActionTypeShell,
 		Resource:    "shell:pwd",
 		Environment: models.EnvironmentLocal,
 	})
@@ -973,7 +973,7 @@ func TestApprovalHandler_ListApprovals_LimitWithSortOldest(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		a, _ := svc.CreateApproval(&approval.CreateRequest{
 			DecisionID:  "dec_" + string(rune('a'+i)),
-			ActionType: models.ActionTypeShell,
+			ActionType:  models.ActionTypeShell,
 			Resource:    "shell:ls",
 			Environment: models.EnvironmentLocal,
 		})
@@ -1011,7 +1011,7 @@ func TestApprovalHandler_ListApprovals_LimitWithSortNewest(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		a, _ := svc.CreateApproval(&approval.CreateRequest{
 			DecisionID:  "dec_" + string(rune('a'+i)),
-			ActionType: models.ActionTypeShell,
+			ActionType:  models.ActionTypeShell,
 			Resource:    "shell:ls",
 			Environment: models.EnvironmentLocal,
 		})

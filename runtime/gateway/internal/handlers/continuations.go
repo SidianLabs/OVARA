@@ -13,6 +13,7 @@ import (
 	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
+	"ovara.runtime.gateway/internal/revocation"
 )
 
 type ContinuationHandler struct {
@@ -22,6 +23,8 @@ type ContinuationHandler struct {
 	eventStore       events.Store
 	gatewayID        string
 	orchestrator     *continuation.Orchestrator
+	identityChecker  func(agentID string) bool
+	revocation       revocation.Checker
 	bulkMaxBatchCap  int
 	bulkDefaultBatch int
 }
@@ -32,6 +35,20 @@ func NewContinuationHandler(store continuation.Store) *ContinuationHandler {
 
 func (h *ContinuationHandler) SetExecutionStore(store execution.Store) {
 	h.execStore = store
+}
+
+// SetIdentityChecker installs the same identity-status gate the
+// orchestrator uses, so the synchronous execute endpoint cannot bypass
+// suspension/retirement of the continuation's subject identity.
+func (h *ContinuationHandler) SetIdentityChecker(fn func(agentID string) bool) {
+	h.identityChecker = fn
+}
+
+// SetRevocation installs the claim-time revocation boundary (P2.3.4) —
+// the synchronous execute path enforces the same post-claim check the
+// orchestrator drain loop does.
+func (h *ContinuationHandler) SetRevocation(rc revocation.Checker) {
+	h.revocation = rc
 }
 
 func (h *ContinuationHandler) SetExecutorRegistry(reg *execution.ExecutorRegistry) {
@@ -124,7 +141,7 @@ func (h *ContinuationHandler) handleList(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]any{
 		"continuations": result.Items,
-		"count":          result.Count,
+		"count":         result.Count,
 		"executable":    executableCount,
 		"retryable":     retryableCount,
 	}
@@ -157,7 +174,7 @@ func (h *ContinuationHandler) handleGet(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"continuation": cnt,
-		"retry":       retryInfo,
+		"retry":        retryInfo,
 	})
 }
 
@@ -183,11 +200,11 @@ func (h *ContinuationHandler) handleStats(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]any{
-		"total":        total,
-		"by_state":     counts,
-		"executable":   executable,
-		"expired":      expired,
-		"queued":       counts[string(continuation.StateQueued)],
+		"total":      total,
+		"by_state":   counts,
+		"executable": executable,
+		"expired":    expired,
+		"queued":     counts[string(continuation.StateQueued)],
 	}
 	if h.orchestrator != nil {
 		resp["queue_paused"] = h.orchestrator.IsPaused()
@@ -219,8 +236,8 @@ func (h *ContinuationHandler) handleSweep(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"expired":    expired,
-		"scanned":    len(candidates),
+		"expired": expired,
+		"scanned": len(candidates),
 	})
 }
 
@@ -261,7 +278,7 @@ func (h *ContinuationHandler) handleEnqueue(w http.ResponseWriter, r *http.Reque
 			WithContinuationID(cnt.ContinuationID).
 			WithPayload(map[string]any{
 				"continuation_id": cnt.ContinuationID,
-				"state":          string(cnt.State),
+				"state":           string(cnt.State),
 			})
 		h.eventStore.Append(evt)
 	}
@@ -270,8 +287,8 @@ func (h *ContinuationHandler) handleEnqueue(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]any{
 		"continuation_id": cnt.ContinuationID,
-		"state":          string(cnt.State),
-		"message":        "continuation queued for execution",
+		"state":           string(cnt.State),
+		"message":         "continuation queued for execution",
 	})
 }
 
@@ -310,7 +327,7 @@ func (h *ContinuationHandler) handleCancel(w http.ResponseWriter, r *http.Reques
 			WithContinuationID(cnt.ContinuationID).
 			WithPayload(map[string]any{
 				"continuation_id": cnt.ContinuationID,
-				"state":          string(cnt.State),
+				"state":           string(cnt.State),
 			})
 		h.eventStore.Append(evt)
 	}
@@ -318,8 +335,8 @@ func (h *ContinuationHandler) handleCancel(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"continuation_id": cnt.ContinuationID,
-		"state":          string(cnt.State),
-		"cancelled_at":   cnt.CancelledAt,
+		"state":           string(cnt.State),
+		"cancelled_at":    cnt.CancelledAt,
 	})
 }
 
@@ -370,8 +387,8 @@ func (h *ContinuationHandler) handleRetry(w http.ResponseWriter, r *http.Request
 			WithContinuationID(cnt.ContinuationID).
 			WithPayload(map[string]any{
 				"continuation_id": cnt.ContinuationID,
-				"state":          string(cnt.State),
-				"retry_count":    cnt.RetryCount,
+				"state":           string(cnt.State),
+				"retry_count":     cnt.RetryCount,
 			})
 		h.eventStore.Append(evt)
 	}
@@ -380,10 +397,10 @@ func (h *ContinuationHandler) handleRetry(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]any{
 		"continuation_id": cnt.ContinuationID,
-		"state":          string(cnt.State),
-		"retry_count":    cnt.RetryCount,
-		"max_retries":   cnt.MaxRetries,
-		"message":       "continuation marked for retry",
+		"state":           string(cnt.State),
+		"retry_count":     cnt.RetryCount,
+		"max_retries":     cnt.MaxRetries,
+		"message":         "continuation marked for retry",
 	})
 }
 
@@ -428,7 +445,7 @@ func (h *ContinuationHandler) handleQueue(w http.ResponseWriter, r *http.Request
 			"state":           string(c.State),
 			"created_at":      c.CreatedAt,
 			"approved_at":     c.ApprovedAt,
-			"queued_at":      c.QueuedAt,
+			"queued_at":       c.QueuedAt,
 		}
 		enriched = append(enriched, m)
 	}
@@ -442,10 +459,10 @@ func (h *ContinuationHandler) handleQueue(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"queue":           enriched,
-		"count":           len(enriched),
-		"queue_paused":    paused,
-		"running_count":   running,
+		"queue":         enriched,
+		"count":         len(enriched),
+		"queue_paused":  paused,
+		"running_count": running,
 	})
 }
 
@@ -524,6 +541,35 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// P2.2 identity gate: the synchronous execute path must enforce the
+	// same suspension/retirement semantics as the orchestrator's claim
+	// filter — a suspended subject's work requeues, never executes.
+	if h.identityChecker != nil && cnt.AgentID != "" && !h.identityChecker(cnt.AgentID) {
+		cnt.MarkRequeue()
+		h.store.Update(cnt)
+		api.JSONConflict(w, "continuation subject identity is not active")
+		return
+	}
+
+	// P2.3.4 claim-time revocation boundary — identical semantics to
+	// the orchestrator: revoked authority → terminal deny; storage
+	// failure → requeue (never execute on UNKNOWN).
+	if h.revocation != nil {
+		deny, why, err := continuation.CheckClaimAuthority(h.revocation, cnt)
+		switch {
+		case err != nil:
+			cnt.MarkRequeue()
+			h.store.Update(cnt)
+			api.JSONConflict(w, "revocation state unavailable — cannot execute")
+			return
+		case deny:
+			cnt.MarkDenied("revocation", why)
+			h.store.Update(cnt)
+			api.JSONConflict(w, "continuation denied: "+why)
+			return
+		}
+	}
+
 	if h.registry != nil {
 		if _, ok := h.registry.Get(cnt.ActionType); !ok {
 			cnt.MarkRequeue()
@@ -598,10 +644,10 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 			WithPayload(map[string]any{
 				"execution_id":    exe.ExecutionID,
 				"continuation_id": cnt.ContinuationID,
-				"exit_code":      exe.ExitCode,
-				"error":          exe.Error,
-				"state":          string(exe.State),
-				"retry_count":    cnt.RetryCount,
+				"exit_code":       exe.ExitCode,
+				"error":           exe.Error,
+				"state":           string(exe.State),
+				"retry_count":     cnt.RetryCount,
 			})
 		h.eventStore.Append(evt)
 	}
@@ -609,23 +655,23 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 	h.store.Update(cnt)
 
 	resp := map[string]any{
-		"execution_id":  exe.ExecutionID,
+		"execution_id":    exe.ExecutionID,
 		"continuation_id": cnt.ContinuationID,
-		"state":         string(exe.State),
-		"exit_code":     exe.ExitCode,
-		"stdout":        execution.Redact(exe.Stdout),
-		"stderr":        execution.Redact(exe.Stderr),
-		"error":         execution.Redact(exe.Error),
-		"started_at":    exe.StartedAt,
-		"finished_at":   exe.FinishedAt,
-		"approved_at":   cnt.ApprovedAt,
-		"resolved_by":   cnt.ResolvedBy,
-		"trust_score":   cnt.TrustScore,
-		"trust_level":   cnt.TrustLevel,
-		"action_type":   cnt.ActionType,
-		"resource":      cnt.Resource,
-		"retry_count":   cnt.RetryCount,
-		"max_retries":   cnt.MaxRetries,
+		"state":           string(exe.State),
+		"exit_code":       exe.ExitCode,
+		"stdout":          execution.Redact(exe.Stdout),
+		"stderr":          execution.Redact(exe.Stderr),
+		"error":           execution.Redact(exe.Error),
+		"started_at":      exe.StartedAt,
+		"finished_at":     exe.FinishedAt,
+		"approved_at":     cnt.ApprovedAt,
+		"resolved_by":     cnt.ResolvedBy,
+		"trust_score":     cnt.TrustScore,
+		"trust_level":     cnt.TrustLevel,
+		"action_type":     cnt.ActionType,
+		"resource":        cnt.Resource,
+		"retry_count":     cnt.RetryCount,
+		"max_retries":     cnt.MaxRetries,
 	}
 	if exe.StdoutTruncated {
 		resp["stdout_truncated"] = true
@@ -649,11 +695,11 @@ type recoverExecutingResult struct {
 }
 
 type recoverExecutingResponse struct {
-	Scanned    int                       `json:"scanned"`
-	Recovered  int                       `json:"recovered"`
-	Skipped    int                       `json:"skipped"`
-	DryRun     bool                      `json:"dry_run"`
-	Items      []recoverExecutingResult  `json:"items,omitempty"`
+	Scanned   int                      `json:"scanned"`
+	Recovered int                      `json:"recovered"`
+	Skipped   int                      `json:"skipped"`
+	DryRun    bool                     `json:"dry_run"`
+	Items     []recoverExecutingResult `json:"items,omitempty"`
 }
 
 func (h *ContinuationHandler) handleRecoverExecuting(w http.ResponseWriter, r *http.Request) {
@@ -740,10 +786,10 @@ func (h *ContinuationHandler) handleRecoverExecuting(w http.ResponseWriter, r *h
 				WithAgentID(rec.AgentID).
 				WithContinuationID(rec.ContinuationID).
 				WithPayload(map[string]any{
-					"continuation_id":  rec.ContinuationID,
+					"continuation_id": rec.ContinuationID,
 					"state":           string(rec.State),
 					"trigger":         "operator_recover_executing",
-					"older_than_mins":  olderThanMins,
+					"older_than_mins": olderThanMins,
 				})
 			h.eventStore.Append(evt)
 		}
@@ -753,11 +799,11 @@ func (h *ContinuationHandler) handleRecoverExecuting(w http.ResponseWriter, r *h
 		evt := events.NewEvent("continuation.recovered_executing").
 			WithGatewayID(h.gatewayID).
 			WithPayload(map[string]any{
-				"action":     "recover_executing",
-				"dry_run":    false,
-				"scanned":    scanned,
-				"recovered":  recovered,
-				"skipped":    skipped,
+				"action":    "recover_executing",
+				"dry_run":   false,
+				"scanned":   scanned,
+				"recovered": recovered,
+				"skipped":   skipped,
 				"continuation_ids": func() []string {
 					ids := make([]string, 0, len(items))
 					for _, it := range items {
@@ -817,8 +863,8 @@ func (h *ContinuationHandler) handleRecoverExecutingItem(w http.ResponseWriter, 
 			WithContinuationID(cnt.ContinuationID).
 			WithPayload(map[string]any{
 				"continuation_id": cnt.ContinuationID,
-				"state":          string(cnt.State),
-				"trigger":        "operator_recover_executing_item",
+				"state":           string(cnt.State),
+				"trigger":         "operator_recover_executing_item",
 			})
 		h.eventStore.Append(evt)
 	}
@@ -826,8 +872,8 @@ func (h *ContinuationHandler) handleRecoverExecutingItem(w http.ResponseWriter, 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"continuation_id": cnt.ContinuationID,
-		"state":          string(cnt.State),
-		"message":        "continuation recovered from executing for retry",
+		"state":           string(cnt.State),
+		"message":         "continuation recovered from executing for retry",
 	})
 }
 
@@ -852,12 +898,12 @@ type bulkSkip struct {
 }
 
 type bulkRetryResponse struct {
-	Matched  int              `json:"matched"`
-	Acted    int              `json:"acted"`
-	Skipped  int              `json:"skipped"`
-	DryRun   bool             `json:"dry_run"`
-	Items    []bulkRetryResult `json:"acted_items,omitempty"`
-	SkippedItems []bulkSkip   `json:"skipped_items,omitempty"`
+	Matched      int               `json:"matched"`
+	Acted        int               `json:"acted"`
+	Skipped      int               `json:"skipped"`
+	DryRun       bool              `json:"dry_run"`
+	Items        []bulkRetryResult `json:"acted_items,omitempty"`
+	SkippedItems []bulkSkip        `json:"skipped_items,omitempty"`
 }
 
 type bulkCancelResult struct {
@@ -868,12 +914,12 @@ type bulkCancelResult struct {
 }
 
 type bulkCancelResponse struct {
-	Matched     int                 `json:"matched"`
-	Acted       int                 `json:"acted"`
-	Skipped     int                 `json:"skipped"`
-	DryRun      bool                `json:"dry_run"`
-	Items       []bulkCancelResult  `json:"acted_items,omitempty"`
-	SkippedItems []bulkSkip        `json:"skipped_items,omitempty"`
+	Matched      int                `json:"matched"`
+	Acted        int                `json:"acted"`
+	Skipped      int                `json:"skipped"`
+	DryRun       bool               `json:"dry_run"`
+	Items        []bulkCancelResult `json:"acted_items,omitempty"`
+	SkippedItems []bulkSkip         `json:"skipped_items,omitempty"`
 }
 
 func (h *ContinuationHandler) handleBulkRetry(w http.ResponseWriter, r *http.Request) {
@@ -911,10 +957,10 @@ func (h *ContinuationHandler) handleBulkRetry(w http.ResponseWriter, r *http.Req
 	if matched == 0 {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(bulkRetryResponse{
-			Matched:  0,
-			Acted:    0,
-			Skipped:  0,
-			DryRun:   dryRun,
+			Matched: 0,
+			Acted:   0,
+			Skipped: 0,
+			DryRun:  dryRun,
 		})
 		return
 	}
@@ -923,11 +969,11 @@ func (h *ContinuationHandler) handleBulkRetry(w http.ResponseWriter, r *http.Req
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
-			"error":          "batch size exceeds cap",
-			"matched":        matched,
-			"batch_limit":    batchLimit,
-			"max_batch_cap":  maxBatch,
-			"message":        "re-run with confirm=true to proceed anyway",
+			"error":         "batch size exceeds cap",
+			"matched":       matched,
+			"batch_limit":   batchLimit,
+			"max_batch_cap": maxBatch,
+			"message":       "re-run with confirm=true to proceed anyway",
 		})
 		return
 	}
@@ -987,9 +1033,9 @@ func (h *ContinuationHandler) handleBulkRetry(w http.ResponseWriter, r *http.Req
 				WithContinuationID(cnt.ContinuationID).
 				WithPayload(map[string]any{
 					"continuation_id": cnt.ContinuationID,
-					"state":          string(cnt.State),
-					"retry_count":    cnt.RetryCount,
-					"max_retries":    cnt.MaxRetries,
+					"state":           string(cnt.State),
+					"retry_count":     cnt.RetryCount,
+					"max_retries":     cnt.MaxRetries,
 				})
 			h.eventStore.Append(evt)
 		}
@@ -999,11 +1045,11 @@ func (h *ContinuationHandler) handleBulkRetry(w http.ResponseWriter, r *http.Req
 		evt := events.NewEvent(events.EventTypeBatchRetryExecuted).
 			WithGatewayID(h.gatewayID).
 			WithPayload(map[string]any{
-				"action":         "bulk_retry",
-				"dry_run":        false,
-				"total_matched":  matched,
-				"total_acted":    len(acted),
-				"total_skipped":  len(skippedItems),
+				"action":        "bulk_retry",
+				"dry_run":       false,
+				"total_matched": matched,
+				"total_acted":   len(acted),
+				"total_skipped": len(skippedItems),
 				"continuation_ids": func() []string {
 					ids := make([]string, len(acted))
 					for i, a := range acted {
@@ -1060,10 +1106,10 @@ func (h *ContinuationHandler) handleBulkCancel(w http.ResponseWriter, r *http.Re
 	if matched == 0 {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(bulkCancelResponse{
-			Matched:  0,
-			Acted:    0,
-			Skipped:  0,
-			DryRun:   dryRun,
+			Matched: 0,
+			Acted:   0,
+			Skipped: 0,
+			DryRun:  dryRun,
 		})
 		return
 	}
@@ -1072,11 +1118,11 @@ func (h *ContinuationHandler) handleBulkCancel(w http.ResponseWriter, r *http.Re
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
-			"error":          "batch size exceeds cap",
-			"matched":        matched,
-			"batch_limit":    batchLimit,
-			"max_batch_cap":  maxBatch,
-			"message":        "re-run with confirm=true to proceed anyway",
+			"error":         "batch size exceeds cap",
+			"matched":       matched,
+			"batch_limit":   batchLimit,
+			"max_batch_cap": maxBatch,
+			"message":       "re-run with confirm=true to proceed anyway",
 		})
 		return
 	}
@@ -1145,11 +1191,11 @@ func (h *ContinuationHandler) handleBulkCancel(w http.ResponseWriter, r *http.Re
 		evt := events.NewEvent(events.EventTypeBatchCancelExecuted).
 			WithGatewayID(h.gatewayID).
 			WithPayload(map[string]any{
-				"action":           "bulk_cancel",
-				"dry_run":          false,
-				"total_matched":    matched,
-				"total_acted":      len(acted),
-				"total_skipped":    len(skippedItems),
+				"action":        "bulk_cancel",
+				"dry_run":       false,
+				"total_matched": matched,
+				"total_acted":   len(acted),
+				"total_skipped": len(skippedItems),
 				"continuation_ids": func() []string {
 					ids := make([]string, len(acted))
 					for i, a := range acted {

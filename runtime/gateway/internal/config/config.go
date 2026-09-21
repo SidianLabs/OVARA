@@ -3,7 +3,10 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -55,6 +58,19 @@ type Config struct {
 	ExecutionStderrLimitBytes    int      `json:"execution_stderr_limit_bytes"`
 	ExecutionWorkingDir          string   `json:"execution_working_dir"`
 	ExecutionAllowedEnvVars      []string `json:"execution_allowed_env_vars"`
+	// ReplayFile enables durable replay protection (P2.1): request and
+	// delegation consume records persist to an append-only journal so a
+	// consumed capability stays consumed across restart/crash. When
+	// empty, replay state is process-local in-memory (RC1 semantics).
+	// Multiple gateway processes on one host may share this file — the
+	// journal coordinates them via flock (one trusted state domain).
+	ReplayFile                   string   `json:"replay_file"`
+	ReplayMaxBytes               int64    `json:"replay_max_bytes"`
+	// IdentityRegistryFile enables durable stable-identity + credential
+	// lifecycle state (P2.2). When empty the registry is in-memory:
+	// runtime revocation works but dies at restart (RC1 parity — RC1
+	// had no revocation at all). Single gateway = single trust domain.
+	IdentityRegistryFile         string   `json:"identity_registry_file"`
 	// GatewayRegistryFile enables the durable domain gateway-key
 	// registry (P2.3.1): gw_id → registered ed25519 public keys +
 	// lifecycle. When empty the registry is in-memory (runtime-only
@@ -84,11 +100,51 @@ type Config struct {
 	// the P2.3.1 compat behavior (first-binding auto-admit, dev
 	// mode — explicitly NOT a domain admission guarantee).
 	GatewayRequireAdmission      bool     `json:"gateway_require_admission"`
+	// GatewayAnchorMode (P2.3.3): "off" (default) | "strict" |
+	// "degraded". Strict: every refusal case is fatal — oracle
+	// unreachable, unregistered domain, rollback, equivocation,
+	// unanchored tail. Degraded: rollback/equivocation still refuse;
+	// unavailable oracle and unanchored tail only log (documented
+	// weaker — use only while standing up Tier-1).
+	GatewayAnchorMode            string   `json:"gateway_anchor_mode"`
+	// GatewayAnchorURL — unix:///socket (Tier 1) or https://addr
+	// (Tier 2, mTLS). Required when anchoring is on.
+	GatewayAnchorURL             string   `json:"gateway_anchor_url"`
+	// GatewayAnchorPin — expected oracle identity: "uid:<n>" for
+	// unix, "key:<hex-ed25519-pub>" for https. Provisioned at domain
+	// setup; rotation is an operator act. Mismatch fails closed.
+	GatewayAnchorPin             string   `json:"gateway_anchor_pin"`
+	// GatewayAnchorCatchup — "manual" (default) | "auto". Auto pushes
+	// an unanchored tail on boot; honored ONLY in degraded mode
+	// (strict never auto-pushes — a forged tail must never crown
+	// itself). Documented-weaker opt-in.
+	GatewayAnchorCatchup         string   `json:"gateway_anchor_catchup"`
+	// GatewayAnchorKeyFile — the checkpoint signing key (Ed25519,
+	// 0600), the domain's registered signing principal. Dedicated by
+	// design: decoupled from gateway identity keys so identity
+	// rotation never churns anchor lineage (anchor-key rotation uses
+	// gwctl anchor-addkey). Empty falls back to gateway_key_file.
+	GatewayAnchorKeyFile         string   `json:"gateway_anchor_key_file"`
 	CapabilitiesFile             string   `json:"capabilities_file"`
 	CapabilitiesMaxSize          int      `json:"capabilities_max_size"`
 	CapabilitiesHistoryFile      string   `json:"capabilities_history_file"`
 	OperatorTokens               []string `json:"operator_tokens"`
+	// AgentTokens are lower-privilege credentials (e.g. the executor
+	// proxy's gateway_token). They may call decision/approval-read APIs
+	// but NEVER operator routes: approve/deny/resume, continuations,
+	// policy mutation, shield, capability revocation, admin, audit/execution
+	// export. A general operator token is gateway-root — keep it scarce.
+	AgentTokens                  []string `json:"agent_tokens"`
 	AuthEnabled                  bool     `json:"auth_enabled"`
+	// UnsafeNoAuth explicitly opts in to running WITHOUT authentication.
+	// Without it, auth_enabled=false is only permitted on a loopback bind;
+	// a non-loopback listener with no auth is an unauthenticated privileged
+	// API and the gateway refuses to start.
+	UnsafeNoAuth                 bool     `json:"unsafe_no_auth"`
+	// EnableHostExecutors registers executors that run commands on the
+	// gateway host itself (shell, exec, git.*). Default false — the
+	// externally exposed API can never reach arbitrary host execution.
+	EnableHostExecutors          bool     `json:"enable_host_executors"`
 	BulkMaxBatchCap              int      `json:"bulk_max_batch_cap"`
 	BulkDefaultBatch             int      `json:"bulk_default_batch"`
 
@@ -215,7 +271,9 @@ func newGatewayID() string {
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Default(), nil
+		// FAIL CLOSED: a missing/unreadable config must never silently
+		// become the open default (0.0.0.0 + no auth + privileged APIs).
+		return nil, fmt.Errorf("failed to read config %q: %w", path, err)
 	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -225,4 +283,36 @@ func Load(path string) (*Config, error) {
 		cfg.GatewayID = newGatewayID()
 	}
 	return &cfg, nil
+}
+
+// ValidateStartup rejects insecure deployment combinations. Called by the
+// server before binding.
+func (c *Config) ValidateStartup() error {
+	if c.AuthEnabled {
+		return nil
+	}
+	if c.UnsafeNoAuth {
+		return nil // explicit opt-in — operator owns the risk
+	}
+	addr := c.ListenAddr
+	if addr == "" {
+		return fmt.Errorf("refusing to start: auth_enabled=false on the default bind (all interfaces) — set listen_addr=127.0.0.1, enable auth, or set unsafe_no_auth=true to explicitly opt in")
+	}
+	host := addr
+	if ip := net.ParseIP(addr); ip == nil {
+		// Not a bare IP literal — try host:port or [v6] forms.
+		if i := strings.LastIndex(addr, ":"); i >= 0 && !strings.HasPrefix(addr, "[") {
+			if _, err := strconv.Atoi(addr[i+1:]); err == nil {
+				host = addr[:i]
+			}
+		}
+		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil // loopback-only unauthenticated is a legitimate dev mode
+	}
+	return fmt.Errorf("refusing to start: auth_enabled=false on non-loopback bind %q — set unsafe_no_auth=true to explicitly opt in", addr)
 }

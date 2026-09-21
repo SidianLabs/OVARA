@@ -26,6 +26,7 @@
 package gwidentity
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -38,6 +39,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"ovara.runtime.gateway/internal/anchor"
 )
 
 type KeyState string
@@ -65,6 +68,8 @@ type KeyRecord struct {
 	RotatingUntil time.Time `json:"rotating_until,omitempty"`
 	RetiredAt     time.Time `json:"retired_at,omitempty"`
 	Generation    uint64    `json:"generation"`
+	Seq           uint64    `json:"seq,omitempty"`   // P2.3.3 journal position
+	Chain         string    `json:"chain,omitempty"` // P2.3.3 running hash
 }
 
 // PeerIdentity is what a successful PoP proves — public material only.
@@ -100,6 +105,26 @@ type GrantRecord struct {
 	CreatedAt  time.Time `json:"created_at"`
 	ExpiresAt  time.Time `json:"expires_at,omitempty"`
 	ConsumedAt time.Time `json:"consumed_at,omitempty"`
+	Seq        uint64    `json:"seq,omitempty"`   // P2.3.3 journal position
+	Chain      string    `json:"chain,omitempty"` // P2.3.3 running hash
+}
+
+// RevokeRecord is a "revoke" journal line (P2.3.4) — a durable,
+// operator-written revocation event in the domain authority journal.
+// Class is one of revocation.Class{Issuer,Delegation,Lease}; Target
+// is the canonical identifier for that class (issuer id, presentation
+// key sha256(lp(issuer)‖lp(nonce)), or lease id). Revocation is
+// append-only and permanent: there is no un-revoke record — undoing
+// a kill requires new authority, not resurrection of the old.
+type RevokeRecord struct {
+	Kind      string    `json:"kind"`   // "revoke"
+	Class     string    `json:"class"`  // issuer | delegation | lease
+	Target    string    `json:"target"` // canonical id for the class
+	Actor     string    `json:"actor"`  // operator identity that authorized it
+	Reason    string    `json:"reason,omitempty"`
+	RevokedAt time.Time `json:"revoked_at"`
+	Seq       uint64    `json:"seq,omitempty"`   // journal position = revocation epoch
+	Chain     string    `json:"chain,omitempty"` // running hash
 }
 
 var (
@@ -117,17 +142,29 @@ var (
 // domain. All mutations: mutex → flock → absorb tail → validate →
 // append → fsync → update index.
 type Registry struct {
-	mu         sync.Mutex
-	f          *os.File // nil = in-memory mode (runtime-only, documented)
-	off        int64
-	keys       map[string]map[string]*KeyRecord   // gateway_id → key_id → record
-	grants     map[string]*GrantRecord            // grant_id → record
-	grantsByGW map[string]map[string]*GrantRecord // gateway_id → grant_id → record
+	mu          sync.Mutex
+	f           *os.File // nil = in-memory mode (runtime-only, documented)
+	off         int64
+	keys        map[string]map[string]*KeyRecord   // gateway_id → key_id → record
+	grants      map[string]*GrantRecord            // grant_id → record
+	grantsByGW  map[string]map[string]*GrantRecord // gateway_id → grant_id → record
+	revoked     map[string]map[string]bool         // class → target → revoked (P2.3.4)
+	revokedList []*RevokeRecord                    // folded revoke records, journal order
+
+	// P2.3.3 chain state — folded from the journal, committed only
+	// after fsync (see sealRecord/mutate).
+	seq       uint64
+	chain     [32]byte
+	firstLine []byte // journal line 1 — domain_id preimage
+	migrated  int    // "migrate" markers seen (anchor-init evidence)
+	anchor    anchor.Pusher
+	signer    CheckpointSigner
 }
 
 func NewInMemory() *Registry {
 	return &Registry{keys: map[string]map[string]*KeyRecord{},
-		grants: map[string]*GrantRecord{}, grantsByGW: map[string]map[string]*GrantRecord{}}
+		grants: map[string]*GrantRecord{}, grantsByGW: map[string]map[string]*GrantRecord{},
+		revoked: map[string]map[string]bool{}}
 }
 
 // Open loads or creates the registry file. Corrupt non-tail records
@@ -170,7 +207,8 @@ func open(path string, create bool) (*Registry, error) {
 		return nil, fmt.Errorf("gateway registry: %s has unsafe permissions %o — must be owner-only (0600)", path, st.Mode().Perm())
 	}
 	r := &Registry{f: f, keys: map[string]map[string]*KeyRecord{},
-		grants: map[string]*GrantRecord{}, grantsByGW: map[string]map[string]*GrantRecord{}}
+		grants: map[string]*GrantRecord{}, grantsByGW: map[string]map[string]*GrantRecord{},
+		revoked: map[string]map[string]bool{}}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("gateway registry: lock: %w", err)
@@ -219,9 +257,7 @@ func (r *Registry) absorb() error {
 			pos = nl + 1
 			continue
 		}
-		var probe struct {
-			Kind string `json:"kind"`
-		}
+		var probe seqChainProbe
 		if err := json.Unmarshal(line, &probe); err != nil {
 			if nl == int64(len(buf)) {
 				if err := r.f.Truncate(r.off + pos); err != nil {
@@ -231,6 +267,9 @@ func (r *Registry) absorb() error {
 				return nil
 			}
 			return fmt.Errorf("gateway registry: corrupt record at offset %d: %w", r.off+pos, err)
+		}
+		if err := r.chainFoldLine(line, &probe); err != nil {
+			return fmt.Errorf("gateway registry: %v (offset %d)", err, r.off+pos)
 		}
 		switch probe.Kind {
 		case "grant":
@@ -256,6 +295,15 @@ func (r *Registry) absorb() error {
 			}
 			cp := rec
 			m[rec.KeyID] = &cp
+		case "migrate":
+			r.migrated++
+		case "revoke":
+			var rv RevokeRecord
+			if err := json.Unmarshal(line, &rv); err != nil ||
+				rv.Class == "" || rv.Target == "" {
+				return fmt.Errorf("gateway registry: corrupt revoke record at offset %d", r.off+pos)
+			}
+			r.indexRevoke(&rv)
 		default:
 			return fmt.Errorf("gateway registry: unknown record kind %q at offset %d", probe.Kind, r.off+pos)
 		}
@@ -310,8 +358,17 @@ func (r *Registry) mutate(fn func() ([]any, error)) error {
 	if err != nil {
 		return err
 	}
+	// Stage chain values locally — commit to r.seq/r.chain/firstLine
+	// only after the records are durable, so a failed write never
+	// advances in-memory chain state.
+	seq, chain := r.seq, r.chain
+	var newFirst []byte
 	if r.f != nil {
 		for _, rec := range out {
+			seq++
+			if chain, err = sealRecord(rec, seq, chain); err != nil {
+				return err
+			}
 			data, err := json.Marshal(rec)
 			if err != nil {
 				return fmt.Errorf("gateway registry: marshal: %w", err)
@@ -319,6 +376,9 @@ func (r *Registry) mutate(fn func() ([]any, error)) error {
 			data = append(data, '\n')
 			if _, err := r.f.Write(data); err != nil {
 				return fmt.Errorf("gateway registry: append: %w", err)
+			}
+			if seq == 1 {
+				newFirst = append([]byte(nil), data[:len(data)-1]...)
 			}
 			r.off += int64(len(data))
 		}
@@ -340,10 +400,120 @@ func (r *Registry) mutate(fn func() ([]any, error)) error {
 			if err := r.indexGrant(v); err != nil {
 				return err
 			}
+		case *MarkerRecord:
+			r.migrated++
+		case *RevokeRecord:
+			r.indexRevoke(v)
+		}
+	}
+	if r.f != nil {
+		r.seq, r.chain = seq, chain
+		if newFirst != nil {
+			r.firstLine = newFirst
+		}
+	}
+	// Anchor the new tip. Ordering is the frozen invariant: local
+	// mutation → fsync → checkpoint → oracle commit → caller sees
+	// result. A push failure leaves the local state durable but
+	// UNANCHORED (returned error, unanchored tail) — never silently
+	// discarded, never silently pushed later; boot reconcile plus
+	// operator catch-up is the recovery path.
+	if r.anchor != nil && len(out) > 0 {
+		cp, err := r.signer(seq, chain)
+		if err != nil {
+			return fmt.Errorf("gateway registry: anchor sign: %w", err)
+		}
+		if err := r.anchor.Commit(context.Background(), r.DomainID(), cp); err != nil {
+			return fmt.Errorf("gateway registry: anchor commit (local state durable, unanchored): %w", err)
 		}
 	}
 	return nil
 }
+
+// CheckpointSigner produces a signed checkpoint for (seq, tip) —
+// the signer resolves its own key_id lazily (admission-time pushes
+// run before the caller sees the new record).
+type CheckpointSigner func(seq uint64, tip [32]byte) (*anchor.Checkpoint, error)
+
+// SetAnchor hooks the monotonic oracle into the mutation path. Must
+// be called before concurrent use. In-memory registries cannot anchor
+// — a runtime-only authority store has no history to protect.
+func (r *Registry) SetAnchor(p anchor.Pusher, s CheckpointSigner) error {
+	if r.f == nil {
+		return fmt.Errorf("gateway registry: in-memory registry cannot be anchored")
+	}
+	if p == nil || s == nil {
+		return fmt.Errorf("gateway registry: anchor pusher and signer are both required")
+	}
+	r.anchor, r.signer = p, s
+	return nil
+}
+
+// ReconcileResult is the verdict of local-vs-oracle comparison.
+type ReconcileResult int
+
+const (
+	ReconcileOK           ReconcileResult = iota // L==A, tip matches
+	ReconcileLocalBehind                         // L<A — local journal rolled back
+	ReconcileEquivocation                        // L==A, tip differs — corruption or fork
+	ReconcileLocalAhead                          // L>A — unanchored tail (crash window or forged tail — indistinguishable)
+	ReconcileEmpty                               // local journal empty — nothing to reconcile
+)
+
+// ReconcileAnchor runs the frozen reconciliation: local chain tip vs
+// the oracle's stored checkpoint. Transport/pin/signature failures of
+// the oracle call return as err (fail-closed inputs); the verdict
+// describes state comparison only. L>A is NEVER auto-resolved —
+// pushing a local-ahead journal could crown a forged tail.
+func (r *Registry) ReconcileAnchor(ctx context.Context, q anchor.Querier) (ReconcileResult, *anchor.Checkpoint, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.f != nil {
+		if err := syscall.Flock(int(r.f.Fd()), syscall.LOCK_EX); err != nil {
+			return 0, nil, fmt.Errorf("gateway registry: lock: %w", err)
+		}
+		defer syscall.Flock(int(r.f.Fd()), syscall.LOCK_UN)
+		if err := r.absorb(); err != nil {
+			return 0, nil, err
+		}
+	}
+	dom, seq, tip := r.ChainTip()
+	if dom == "" {
+		return ReconcileEmpty, nil, nil
+	}
+	a, err := q.Latest(ctx, dom)
+	if err != nil {
+		return 0, nil, err
+	}
+	tipHex := hex.EncodeToString(tip[:])
+	switch {
+	case seq < a.Seq:
+		return ReconcileLocalBehind, a, nil
+	case seq == a.Seq && tipHex == a.TipHash:
+		return ReconcileOK, a, nil
+	case seq == a.Seq:
+		return ReconcileEquivocation, a, nil
+	default:
+		return ReconcileLocalAhead, a, nil
+	}
+}
+
+// AppendMarker writes the "migrate" evidence record — the anchor-init
+// ceremony's journal-side artifact. Goes through mutate, so the marker
+// is chained like any other record and covered by the genesis
+// checkpoint that follows it. A random note makes each ceremony's
+// evidence distinct (two inits of the same base history differ).
+func (r *Registry) AppendMarker() error {
+	var nonce [8]byte
+	rand.Read(nonce[:])
+	return r.mutate(func() ([]any, error) {
+		return []any{&MarkerRecord{Kind: "migrate", Note: hex.EncodeToString(nonce[:])}}, nil
+	})
+}
+
+// Migrated reports how many migrate markers the journal holds —
+// anchor-init refuses when >0 (already anchored → fail closed).
+func (r *Registry) Migrated() int { return r.migrated }
 
 func newKeyID() string {
 	var b [12]byte

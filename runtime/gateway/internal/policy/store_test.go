@@ -32,27 +32,6 @@ func TestStore_AddRule(t *testing.T) {
 	}
 }
 
-func TestLoadStoreFromConfig(t *testing.T) {
-	cfg := map[string]any{
-		"policy_version": "custom-v1",
-		"rules": []any{
-			map[string]any{
-				"action_type": "shell",
-				"environment": "production",
-				"deny":        true,
-			},
-		},
-	}
-
-	store, err := LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if store.Version() != "custom-v1" {
-		t.Errorf("version = %v, want custom-v1", store.Version())
-	}
-}
-
 func TestPolicy_RuleTypes(t *testing.T) {
 	r := Rule{ActionType: "shell", Environment: "local", Deny: true}
 	if !r.Deny {

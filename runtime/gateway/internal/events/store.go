@@ -46,6 +46,10 @@ const (
 	EventTypeBatchRetrySkipped        = "batch.retry.skipped"
 	EventTypeBatchCancelExecuted      = "batch.cancel.executed"
 	EventTypeBatchCancelSkipped       = "batch.cancel.skipped"
+	// Emitted whenever an untrusted caller attempts something the
+	// authorization model forbids (fabricated decisions, field tampering,
+	// privilege escalation). Reason strings never contain secrets.
+	EventTypeSecurityViolation        = "security.violation"
 )
 
 type Event struct {
