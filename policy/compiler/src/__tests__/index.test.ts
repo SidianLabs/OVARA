@@ -36,6 +36,7 @@ describe("compilePolicy", () => {
     const dupDoc: PolicyDocument = {
       name: "dup",
       version: 1,
+      defaultEffect: "deny",
       rules: [
         { id: "r1", action: "a", target: "x", effect: "allow", priority: 0 },
         { id: "r1", action: "a", target: "y", effect: "deny", priority: 10 },
@@ -50,6 +51,7 @@ describe("compilePolicy", () => {
     const result = compilePolicy({
       name: "empty",
       version: 1,
+      defaultEffect: "deny",
       rules: [],
     });
     expect(result.valid).toBe(false);
@@ -59,6 +61,7 @@ describe("compilePolicy", () => {
     const result = compilePolicy({
       name: "",
       version: 1,
+      defaultEffect: "deny",
       rules: [{ id: "", action: "", target: "", effect: "allow" as const, priority: 0 }],
     });
     expect(result.valid).toBe(false);
@@ -98,6 +101,7 @@ describe("simulateDecision", () => {
     const wildcardDoc: PolicyDocument = {
       name: "wildcard",
       version: 1,
+      defaultEffect: "deny",
       rules: [{ id: "r1", action: "*", target: "*", effect: "deny", priority: 0 }],
     };
     const result = simulateDecision(wildcardDoc, "anything.here", "any-resource");
@@ -115,11 +119,11 @@ describe("simulateDecision", () => {
 describe("diffPolicies", () => {
   it("detects added rules", () => {
     const oldDoc: PolicyDocument = {
-      name: "p", version: 1,
+      name: "p", version: 1, defaultEffect: "deny",
       rules: [{ id: "r1", action: "a", target: "x", effect: "allow", priority: 0 }],
     };
     const newDoc: PolicyDocument = {
-      name: "p", version: 2,
+      name: "p", version: 2, defaultEffect: "deny",
       rules: [
         { id: "r1", action: "a", target: "x", effect: "allow", priority: 0 },
         { id: "r2", action: "b", target: "y", effect: "deny", priority: 10 },
@@ -133,14 +137,14 @@ describe("diffPolicies", () => {
 
   it("detects removed rules", () => {
     const oldDoc: PolicyDocument = {
-      name: "p", version: 1,
+      name: "p", version: 1, defaultEffect: "deny",
       rules: [
         { id: "r1", action: "a", target: "x", effect: "allow", priority: 0 },
         { id: "r2", action: "b", target: "y", effect: "deny", priority: 10 },
       ],
     };
     const newDoc: PolicyDocument = {
-      name: "p", version: 2,
+      name: "p", version: 2, defaultEffect: "deny",
       rules: [{ id: "r1", action: "a", target: "x", effect: "allow", priority: 0 }],
     };
 
@@ -151,11 +155,11 @@ describe("diffPolicies", () => {
 
   it("detects modified rules", () => {
     const oldDoc: PolicyDocument = {
-      name: "p", version: 1,
+      name: "p", version: 1, defaultEffect: "deny",
       rules: [{ id: "r1", action: "a", target: "x", effect: "allow", priority: 0 }],
     };
     const newDoc: PolicyDocument = {
-      name: "p", version: 2,
+      name: "p", version: 2, defaultEffect: "deny",
       rules: [{ id: "r1", action: "a", target: "x", effect: "deny", priority: 100 }],
     };
 
