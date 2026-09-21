@@ -15,11 +15,13 @@ direct IPv4, direct IP literal, IPv6, UDP/443, SSH/22, alt ports.
 ## I2 — Credential custody
 > The agent cannot obtain a brokered credential.
 
-Test vectors: reflector echo (httpbin /headers — **currently open, fix
-required**), redirect leakage, error-page leakage, /proc inspection,
-env inspection, receipt inspection, log inspection.
-**Status: PARTIAL** — custody-by-construction verified; response-side
-echo unprotected.
+Test vectors: reflector echo (httpbin /headers — **closed**: the response
+scrubber replaces injected secret values with `[REDACTED]` — verified
+live in the RC1 clean-room), redirect leakage, error-page leakage,
+/proc inspection, env inspection, receipt inspection, log inspection.
+**Status: TESTED** — custody-by-construction + response scrubbing
+verified live (RC1 e2e harness, `injected credential echoed by
+upstream → [REDACTED]`).
 
 ## I3 — Complete evidence
 > Every request that transits the enforcement point produces an evidence
