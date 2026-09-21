@@ -12,10 +12,10 @@ import (
 )
 
 type FileBackedStore struct {
-	*InMemoryStore
 	path          string
 	file          *os.File
 	mu            sync.RWMutex
+	continuations map[string]*Continuation
 	maxSize       int
 	loadedCount   int
 	retentionDays int
@@ -39,11 +39,11 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 	}
 
 	store := &FileBackedStore{
-		InMemoryStore: NewInMemoryStore(),
 		path:          path,
 		maxSize:       maxSize,
 		retentionDays: retentionDays,
 		maxRecords:    maxRecords,
+		continuations: make(map[string]*Continuation),
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -133,6 +133,30 @@ func (s *FileBackedStore) Create(c *Continuation) error {
 	return nil
 }
 
+// persistLocked appends the continuation record and fsyncs. Callers must
+// hold s.mu. Write errors are logged but do not roll back the in-memory
+// transition already applied under the lock.
+func (s *FileBackedStore) persistLocked(c *Continuation) {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return
+	}
+	if _, err := s.file.Write(append(data, '\n')); err != nil {
+		return
+	}
+	_ = s.file.Sync()
+}
+
+func (s *FileBackedStore) Get(id string) (*Continuation, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	return c.snapshot(), true
+}
+
 func (s *FileBackedStore) Update(c *Continuation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,6 +181,213 @@ func (s *FileBackedStore) Update(c *Continuation) error {
 	return nil
 }
 
+func (s *FileBackedStore) ListByState(state State) []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if c.State == state {
+			result = append(result, c.snapshot())
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListByDecision(decisionID string) []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if c.DecisionID == decisionID {
+			result = append(result, c.snapshot())
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListByAgent(agentID string) []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if c.AgentID == agentID {
+			result = append(result, c.snapshot())
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListByApprovalID(approvalID string) []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if c.ApprovalID == approvalID {
+			result = append(result, c.snapshot())
+		}
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListAll() []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		result = append(result, c.snapshot())
+	}
+	return result
+}
+
+func (s *FileBackedStore) ListNonTerminal() []*Continuation {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*Continuation
+	for _, c := range s.continuations {
+		if !c.IsTerminal() {
+			result = append(result, c.snapshot())
+		}
+	}
+	return result
+}
+
+// ClaimForExecution atomically transitions an executable continuation into
+// StateExecuting. Accepts Approved, Queued, or Resumed, and refuses expired
+// continuations. The claim transition (including the claim timestamp) is
+// persisted so a crash cannot resurrect the continuation into a duplicate
+// execution. Returns a snapshot.
+func (s *FileBackedStore) ClaimForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if isClaimable(c) {
+		markExecuting(c)
+		s.persistLocked(c)
+		return c.snapshot(), true
+	}
+	return nil, false
+}
+
+// ClaimForRetry atomically transitions a Resumed continuation into
+// StateExecuting. Returns a snapshot.
+func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State == StateResumed && !c.IsExpired() {
+		markExecuting(c)
+		s.persistLocked(c)
+		return c.snapshot(), true
+	}
+	return nil, false
+}
+
+// RecoverFromExecuting atomically transitions an Executing continuation back
+// to StateExecuted so it becomes retryable. Used for operator-driven recovery
+// of stuck executions. Persists the transition inline (cannot call Update:
+// it re-locks s.mu).
+func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State != StateExecuting {
+		return nil, false
+	}
+	c.State = StateExecuted
+	if data, err := json.Marshal(c); err == nil {
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
+	}
+	return c.snapshot(), true
+}
+
+// ListExecutingIDs returns the IDs of all continuations currently in
+// StateExecuting. Used by operator recovery flows to enumerate stuck work
+// without exposing the full continuations payload.
+func (s *FileBackedStore) ListExecutingIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]string, 0)
+	for id, c := range s.continuations {
+		if c.State == StateExecuting {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// RetryForExecution atomically transitions an executed/resumed continuation
+// into a retry (StateResumed, RetryCount incremented) when retries remain.
+// The whole check-and-mutate happens under the store lock so concurrent
+// retry callers (e.g. single retry vs bulk retry) cannot double-apply.
+func (s *FileBackedStore) RetryForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.retryEligible() {
+		return nil, false
+	}
+	c.State = StateResumed
+	c.RetryCount++
+	now := time.Now().UTC()
+	c.ResumedAt = &now
+
+	// Persist the retry transition inline (cannot call Update: it re-locks s.mu).
+	// A best-effort write keeps the incremented RetryCount durable across restarts;
+	// the in-memory transition has already been applied under the lock.
+	if data, err := json.Marshal(c); err == nil {
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
+	}
+	return c.snapshot(), true
+}
+
+// CancelForOperation atomically cancels a cancellable continuation under the
+// store lock and returns a snapshot. The cancel transition is persisted inline
+// so it survives restarts.
+func (s *FileBackedStore) CancelForOperation(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.CanCancel() {
+		return nil, false
+	}
+	c.MarkCancelled()
+	if data, err := json.Marshal(c); err == nil {
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
+	}
+	return c.snapshot(), true
+}
+
+func (s *FileBackedStore) CountByState() map[State]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	counts := make(map[State]int)
+	for _, c := range s.continuations {
+		counts[c.State]++
+	}
+	return counts
+}
+
 func (s *FileBackedStore) LoadedCount() int {
 	return s.loadedCount
 }
@@ -170,16 +401,6 @@ func (s *FileBackedStore) Close() error {
 		return s.file.Close()
 	}
 	return nil
-}
-
-func (s *FileBackedStore) CountByState() map[State]int {
-	s.InMemoryStore.mu.RLock()
-	defer s.InMemoryStore.mu.RUnlock()
-	counts := make(map[State]int)
-	for _, c := range s.continuations {
-		counts[c.State]++
-	}
-	return counts
 }
 
 func (s *FileBackedStore) RetentionDays() int {
@@ -242,7 +463,11 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 	cleanup := map[string]any{"_cleanup": true, "continuation_ids": toRemove}
 	data, err := json.Marshal(cleanup)
 	if err == nil {
-		s.file.Write(append(data, '\n'))
+		// Tombstone must be durable: without Sync a crash can lose it and
+		// the swept records resurrect on reload.
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
 	}
 
 	for _, id := range toRemove {
@@ -256,66 +481,58 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 func (s *FileBackedStore) Compact() error {
 	s.mu.Lock()
 	stale := s.staleIDs
-	s.mu.Unlock()
-
-	if len(stale) == 0 {
-		return nil
-	}
-
 	staleSet := make(map[string]bool, len(stale))
 	for _, id := range stale {
 		staleSet[id] = true
+	}
+	keptConts := make([]*Continuation, 0, len(s.continuations)-len(stale))
+	for _, cnt := range s.continuations {
+		if staleSet[cnt.ContinuationID] {
+			continue
+		}
+		keptConts = append(keptConts, cnt)
 	}
 
 	tmpPath := s.path + ".compact.tmp"
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to open compact tmp file: %w", err)
 	}
 
-	var keptConts []*Continuation
-
-	s.mu.RLock()
-	for _, cnt := range s.continuations {
-		if staleSet[cnt.ContinuationID] {
-			continue
-		}
+	for _, cnt := range keptConts {
 		data, err := json.Marshal(cnt)
 		if err != nil {
 			tmpFile.Close()
 			os.Remove(tmpPath)
-			s.mu.RUnlock()
+			s.mu.Unlock()
 			return fmt.Errorf("failed to marshal continuation during compact: %w", err)
 		}
 		if _, err := tmpFile.Write(append(data, '\n')); err != nil {
 			tmpFile.Close()
 			os.Remove(tmpPath)
-			s.mu.RUnlock()
+			s.mu.Unlock()
 			return fmt.Errorf("failed to write continuation during compact: %w", err)
 		}
-		keptConts = append(keptConts, cnt)
 	}
-	s.mu.RUnlock()
 
 	if err := tmpFile.Sync(); err != nil {
 		tmpFile.Close()
 		os.Remove(tmpPath)
+		s.mu.Unlock()
 		return fmt.Errorf("failed to sync compact file: %w", err)
 	}
 	if err := tmpFile.Close(); err != nil {
 		os.Remove(tmpPath)
+		s.mu.Unlock()
 		return fmt.Errorf("failed to close compact file: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, s.path); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("failed to rename compact file: %w", err)
 	}
 
-	s.mu.Lock()
-	for _, id := range stale {
-		delete(s.continuations, id)
-	}
-	s.staleIDs = nil
 	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		s.mu.Unlock()
@@ -323,10 +540,96 @@ func (s *FileBackedStore) Compact() error {
 	}
 	oldFile := s.file
 	s.file = newFile
+	s.continuations = make(map[string]*Continuation)
+	for _, cnt := range keptConts {
+		s.continuations[cnt.ContinuationID] = cnt
+	}
+	s.staleIDs = nil
 	s.mu.Unlock()
 
 	oldFile.Close()
 	return nil
+}
+
+// ExpireIfDue atomically expires a continuation that is due under the store
+// lock, rechecking live state so a concurrent claim is not flipped to
+// expired mid-run. The transition is persisted.
+func (s *FileBackedStore) ExpireIfDue(id string, now time.Time) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.ShouldExpire(now) {
+		return nil, false
+	}
+	c.MarkExpired()
+	s.persistLocked(c)
+	return c.snapshot(), true
+}
+
+// EnqueueForExecution atomically queues an approved continuation under the
+// store lock. The transition is persisted.
+func (s *FileBackedStore) EnqueueForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.CanEnqueue() {
+		return nil, false
+	}
+	c.MarkQueued()
+	s.persistLocked(c)
+	return c.snapshot(), true
+}
+
+// ApplyApprovalDecision applies an approval resolution to all continuations
+// bound to approvalID under a single store lock. Terminal and in-flight
+// (executing) continuations are untouched. Transitions are persisted.
+func (s *FileBackedStore) ApplyApprovalDecision(approvalID string, approved bool, resolvedBy, reason string) []*Continuation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var transitioned []*Continuation
+	for _, c := range s.continuations {
+		if c.ApprovalID != approvalID || c.IsTerminal() {
+			continue
+		}
+		if c.State == StateExecuting {
+			continue
+		}
+		before := c.State
+		if approved {
+			c.MarkApproved(resolvedBy)
+			c.MarkQueued()
+		} else {
+			c.MarkDenied(resolvedBy, reason)
+		}
+		if c.State != before {
+			s.persistLocked(c)
+			transitioned = append(transitioned, c.snapshot())
+		}
+	}
+	return transitioned
+}
+
+// ResumeForApproval marks all resumable continuations bound to approvalID
+// resumed under the store lock. Transitions are persisted.
+func (s *FileBackedStore) ResumeForApproval(approvalID string) []*Continuation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var transitioned []*Continuation
+	for _, c := range s.continuations {
+		if c.ApprovalID != approvalID || !c.CanResume() {
+			continue
+		}
+		c.MarkResumed()
+		s.persistLocked(c)
+		transitioned = append(transitioned, c.snapshot())
+	}
+	return transitioned
 }
 
 func (s *FileBackedStore) FileSizeBytes() (int64, error) {

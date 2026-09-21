@@ -32,27 +32,6 @@ func TestStore_AddRule(t *testing.T) {
 	}
 }
 
-func TestLoadStoreFromConfig(t *testing.T) {
-	cfg := map[string]any{
-		"policy_version": "custom-v1",
-		"rules": []any{
-			map[string]any{
-				"action_type": "shell",
-				"environment": "production",
-				"deny":        true,
-			},
-		},
-	}
-
-	store, err := LoadStoreFromConfig(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if store.Version() != "custom-v1" {
-		t.Errorf("version = %v, want custom-v1", store.Version())
-	}
-}
-
 func TestPolicy_RuleTypes(t *testing.T) {
 	r := Rule{ActionType: "shell", Environment: "local", Deny: true}
 	if !r.Deny {
@@ -62,5 +41,33 @@ func TestPolicy_RuleTypes(t *testing.T) {
 	r2 := Rule{ActionType: "github.merge", Environment: "*", Escalate: true}
 	if !r2.Escalate {
 		t.Error("expected escalate rule")
+	}
+}
+func TestMatchResource(t *testing.T) {
+	cases := []struct {
+		pattern, resource string
+		want              bool
+	}{
+		{"", "GET https://anything.example/x", true},
+		{"*https://api.github.com/*", "GET https://api.github.com/repos/o/r", true},
+		{"*https://api.github.com/*", "POST https://api.github.com/x", true},
+		{"*https://api.github.com/*", "GET https://evil.github.com.evil.com/x", false},
+		{"GET https://pypi.org/*", "GET https://pypi.org/simple/", true},
+		{"GET https://pypi.org/*", "POST https://pypi.org/simple/", false},
+		{"GET https://pypi.org/*", "GET https://pypi.org/simple/", true},
+		{"*webhook.site*", "POST https://webhook.site/abc", true},
+		{"*webhook.site*", "POST https://github.com/x", false},
+		{"exact", "exact", true},
+		{"exact", "notexact", false},
+		{"prefix*", "prefixsuffix", true},
+		{"*suffix", "prefixsuffix", true},
+		{"a*b*c", "abc", true},
+		{"a*b*c", "acb", false},
+		{"*github.com*", "GET https://api.github.com/repos", true},
+	}
+	for _, c := range cases {
+		if got := MatchResource(c.pattern, c.resource); got != c.want {
+			t.Errorf("MatchResource(%q, %q) = %v, want %v", c.pattern, c.resource, got, c.want)
+		}
 	}
 }

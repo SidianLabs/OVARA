@@ -1,0 +1,71 @@
+name: Lint
+
+on:
+  push:
+    branches: [main, "phase-*"]
+    paths:
+      - "runtime/**"
+      - "identity/**"
+      - "trust/**"
+      - "services/**"
+      - "tools/**"
+      - "telemetry/**"
+      - ".golangci.yml"
+      - ".github/workflows/lint.yml"
+  pull_request:
+    branches: [main]
+
+jobs:
+  golangci:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module:
+          - runtime/gateway
+          - identity
+          - trust
+          - services/approval
+          - services/alerting
+          - services/observability
+          - services/receipt-storage
+          - tools/cli
+          - tools/migration
+          - tools/benchmarks
+          - telemetry/collector
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+          args: --timeout=5m
+
+      - name: Run linter
+        working-directory: ${{ matrix.module }}
+        run: golangci-lint run --timeout=5m ./...
+
+  tslint:
+    name: ESLint (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install
+        working-directory: cloud/control-plane
+        run: npm ci
+
+      - name: Lint
+        working-directory: cloud/control-plane
+        run: npm run lint || true

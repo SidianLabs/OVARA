@@ -1,0 +1,17 @@
+{
+  "name": "@ovara/shared-types",
+  "version": "0.1.0",
+  "description": "Shared TypeScript types for Ovara platform",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.8"
+  }
+}

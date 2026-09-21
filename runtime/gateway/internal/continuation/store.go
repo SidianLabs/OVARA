@@ -2,6 +2,7 @@ package continuation
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -11,51 +12,80 @@ import (
 type State string
 
 const (
-	StateEscalated   State = "escalated"
-	StateApproved    State = "approved"
-	StateReady       State = "ready"
-	StateDenied      State = "denied"
-	StateResumed     State = "resumed"
-	StateExpired     State = "expired"
-	StateExecuted    State = "executed"
+	StateEscalated State = "escalated"
+	StateApproved  State = "approved"
+	StateQueued    State = "queued"
+	StateExecuting State = "executing" // claimed and actively running; never a resting state
+	StateDenied    State = "denied"
+	StateResumed   State = "resumed"
+	StateExpired   State = "expired"
+	StateExecuted  State = "executed"
+	StateCancelled State = "cancelled"
 )
 
 const DefaultExpirationMinutes = 60
 
 type Continuation struct {
-	ContinuationID string    `json:"continuation_id"`
-	DecisionID    string    `json:"decision_id"`
-	ApprovalID    string    `json:"approval_id,omitempty"`
-	AgentID       string    `json:"agent_id,omitempty"`
-	ActionType    string    `json:"action_type"`
-	Resource      string    `json:"resource"`
-	Environment   string    `json:"environment,omitempty"`
-	State         State     `json:"state"`
-	CreatedAt     time.Time `json:"created_at"`
-	ApprovedAt    *time.Time `json:"approved_at,omitempty"`
-	ResumedAt     *time.Time `json:"resumed_at,omitempty"`
-	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
-	ExpiredAt     *time.Time `json:"expired_at,omitempty"`
-	ResolvedBy    string    `json:"resolved_by,omitempty"`
-	DenyReason    string    `json:"deny_reason,omitempty"`
-	TrustScore    float64   `json:"trust_score,omitempty"`
-	TrustLevel    string    `json:"trust_level,omitempty"`
-	AnomalyCodes  []string  `json:"anomaly_codes,omitempty"`
-	ShieldActive  bool      `json:"shield_active,omitempty"`
-	Restricted    bool      `json:"restricted,omitempty"`
-	PolicyVersion string    `json:"policy_version,omitempty"`
-	CapabilityRef string    `json:"capability_ref,omitempty"`
+	ContinuationID string     `json:"continuation_id"`
+	DecisionID     string     `json:"decision_id"`
+	ApprovalID     string     `json:"approval_id,omitempty"`
+	AgentID        string     `json:"agent_id,omitempty"`
+	ActionType     string     `json:"action_type"`
+	Resource       string     `json:"resource"`
+	Environment    string     `json:"environment,omitempty"`
+	State          State      `json:"state"`
+	CreatedAt      time.Time  `json:"created_at"`
+	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
+	QueuedAt       *time.Time `json:"queued_at,omitempty"`
+	ResumedAt      *time.Time `json:"resumed_at,omitempty"`
+	ExecutingAt    *time.Time `json:"executing_at,omitempty"`
+	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
+	ExpiredAt      *time.Time `json:"expired_at,omitempty"`
+	CancelledAt    *time.Time `json:"cancelled_at,omitempty"`
+	ResolvedBy     string     `json:"resolved_by,omitempty"`
+	DenyReason     string     `json:"deny_reason,omitempty"`
+	TrustScore     float64    `json:"trust_score,omitempty"`
+	TrustLevel     string     `json:"trust_level,omitempty"`
+	AnomalyCodes   []string   `json:"anomaly_codes,omitempty"`
+	ShieldActive   bool       `json:"shield_active,omitempty"`
+	Restricted     bool       `json:"restricted,omitempty"`
+	PolicyVersion  string     `json:"policy_version,omitempty"`
+	CapabilityRef  string     `json:"capability_ref,omitempty"`
+	// P2.3.4 — the authority identifiers this continuation was
+	// authorized under, captured at approval-creation from the
+	// evaluated request. Claim-time revalidation checks them against
+	// CURRENT revocation state: a continuation created before a
+	// revocation must not execute after it.
+	LeaseID       string         `json:"lease_id,omitempty"`       // presented capability lease id
+	DelegationKeys []string       `json:"delegation_keys,omitempty"` // every hop presentation key
+	Issuers       []string       `json:"issuers,omitempty"`        // every hop issuer of the chain
 	Metadata      map[string]any `json:"metadata,omitempty"`
-	RetryCount    int       `json:"retry_count,omitempty"`
-	MaxRetries    int       `json:"max_retries,omitempty"`
+	RetryCount    int            `json:"retry_count,omitempty"`
+	MaxRetries    int            `json:"max_retries,omitempty"`
+	LastSkippedAt *time.Time     `json:"last_skipped_at,omitempty"`
+	// LastExecutionSucceeded records the outcome of the most recent execution.
+	// Retry is restricted to failed executions so a successfully executed
+	// (approved, possibly dangerous) command cannot be re-run without a fresh
+	// approval.
+	LastExecutionSucceeded bool `json:"last_execution_succeeded,omitempty"`
+}
+
+// snapshot returns a shallow copy of the continuation. Store methods return a
+// snapshot (taken while holding the store lock) so callers can read fields
+// without racing concurrent mutations on the live stored object. Shared
+// reference fields (AnomalyCodes, Metadata, time pointers) are intentionally
+// shared — callers must treat the snapshot as read-only.
+func (c *Continuation) snapshot() *Continuation {
+	cp := *c
+	return &cp
 }
 
 func (c *Continuation) CanResume() bool {
-	return c.State == StateApproved || c.State == StateReady
+	return c.State == StateApproved
 }
 
 func (c *Continuation) IsTerminal() bool {
-	return c.State == StateDenied || c.State == StateExpired || c.State == StateResumed
+	return c.State == StateDenied || c.State == StateExpired || c.State == StateExecuted || c.State == StateCancelled
 }
 
 func NewContinuation(decisionID, actionType, resource string) *Continuation {
@@ -105,6 +135,21 @@ func (c *Continuation) WithCapabilityRef(ref string) *Continuation {
 	return c
 }
 
+// WithAuthorityIDs records the revocation identifiers of the authority
+// this continuation was authorized under (P2.3.4) — the presented
+// lease id, EVERY hop presentation key of the delegation chain (the
+// same set eval checks — a mid-hop kill must reach claim-time), and
+// every hop issuer. Claim-time revalidation checks all of them.
+func (c *Continuation) WithAuthorityIDs(leaseID string, delegationKeys, issuers []string) *Continuation {
+	c.LeaseID = leaseID
+	c.DelegationKeys = delegationKeys
+	if leaseID != "" && c.CapabilityRef == "" {
+		c.CapabilityRef = leaseID // the tracked-lease lookup path already reads CapabilityRef
+	}
+	c.Issuers = issuers
+	return c
+}
+
 func (c *Continuation) WithApprovalID(approvalID string) *Continuation {
 	c.ApprovalID = approvalID
 	return c
@@ -127,45 +172,183 @@ func (c *Continuation) WithMetadata(key string, value any) *Continuation {
 }
 
 func (c *Continuation) MarkApproved(resolvedBy string) {
+	if c.IsTerminal() {
+		return
+	}
 	c.State = StateApproved
 	c.ResolvedBy = resolvedBy
 	now := time.Now().UTC()
 	c.ApprovedAt = &now
 }
 
-func (c *Continuation) MarkReady() {
+// MarkQueued transitions an approved continuation into the queued state
+// so the orchestrator can pick it up for execution.
+func (c *Continuation) MarkQueued() {
 	if c.State == StateApproved {
-		c.State = StateReady
+		c.State = StateQueued
+		now := time.Now().UTC()
+		c.QueuedAt = &now
 	}
 }
 
 func (c *Continuation) MarkDenied(resolvedBy, reason string) {
+	if c.IsTerminal() {
+		return
+	}
 	c.State = StateDenied
 	c.ResolvedBy = resolvedBy
 	c.DenyReason = reason
 }
 
 func (c *Continuation) MarkResumed() {
+	if c.IsTerminal() {
+		return
+	}
 	c.State = StateResumed
 	now := time.Now().UTC()
 	c.ResumedAt = &now
 }
 
-func (c *Continuation) MarkExecuted() {
-	if c.State != StateResumed && c.State != StateReady {
-		return
+func (c *Continuation) Retry() bool {
+	if !c.retryEligible() {
+		return false
 	}
-	c.State = StateExecuted
+	c.State = StateResumed
+	c.RetryCount++
+	now := time.Now().UTC()
+	c.ResumedAt = &now
+	return true
 }
 
-func (c *Continuation) CanRetry() bool {
-	if c.State != StateExecuted && c.State != StateResumed {
+// retryEligible reports whether the continuation may be retried. Retry is
+// restricted to failed executions (or an already-resumed retry awaiting
+// re-execution): a continuation whose last execution succeeded must not be
+// re-run without a fresh approval.
+func (c *Continuation) retryEligible() bool {
+	switch c.State {
+	case StateResumed:
+		// already marked for retry and awaiting re-execution
+	case StateExecuted:
+		if c.LastExecutionSucceeded {
+			return false
+		}
+	default:
 		return false
 	}
 	if c.MaxRetries <= 0 {
 		return false
 	}
 	return c.RetryCount < c.MaxRetries
+}
+
+func (c *Continuation) MarkExecuted() {
+	if c.State != StateResumed && c.State != StateExecuting {
+		return
+	}
+	c.State = StateExecuted
+	c.LastExecutionSucceeded = true
+}
+
+// MarkExecutionFailed transitions a claimed continuation back to StateExecuted
+// so it can be retried. Called after a failed or timed-out execution.
+func (c *Continuation) MarkExecutionFailed() {
+	if c.State != StateExecuting {
+		return
+	}
+	c.State = StateExecuted
+	c.LastExecutionSucceeded = false
+}
+
+// MarkRequeue returns a claimed (StateExecuting) continuation back to
+// StateQueued so it can be picked up by the orchestrator again. Used by
+// paths that successfully claimed a continuation but cannot execute it
+// (e.g. unknown action type in the executor registry). Only requeues from
+// transient claim states — never from terminal, approved, or escalated
+// states.
+func (c *Continuation) MarkRequeue() {
+	if c.State == StateExecuting {
+		c.State = StateQueued
+		now := time.Now().UTC()
+		c.QueuedAt = &now
+	}
+}
+
+func (c *Continuation) MarkCancelled() {
+	if c.State == StateQueued || c.State == StateResumed {
+		c.State = StateCancelled
+		now := time.Now().UTC()
+		c.CancelledAt = &now
+	}
+}
+
+func (c *Continuation) CanEnqueue() bool {
+	return c.State == StateApproved
+}
+
+func (c *Continuation) CanCancel() bool {
+	return c.State == StateQueued || c.State == StateResumed
+}
+
+func (c *Continuation) CanRetry() bool {
+	return c.retryEligible()
+}
+
+type RetryInfo struct {
+	CanRetry          bool   `json:"can_retry"`
+	RetryLimitReached bool   `json:"retry_limit_reached"`
+	RetriesRemaining  int    `json:"retries_remaining"`
+	Status            string `json:"status"`
+	Reason            string `json:"reason,omitempty"`
+}
+
+func (c *Continuation) RetryInfo() RetryInfo {
+	info := RetryInfo{
+		CanRetry:          c.CanRetry(),
+		RetryLimitReached: false,
+		RetriesRemaining:  0,
+	}
+
+	if c.MaxRetries > 0 {
+		info.RetriesRemaining = c.MaxRetries - c.RetryCount
+		if info.RetriesRemaining < 0 {
+			info.RetriesRemaining = 0
+		}
+	}
+
+	switch {
+	case c.State == StateDenied || c.State == StateExpired || c.State == StateCancelled:
+		info.Status = "terminal"
+		info.Reason = "continuation is in terminal state: " + string(c.State)
+	case c.State == StateExecuting:
+		info.Status = "in_progress"
+		info.Reason = "continuation is currently executing; retry only available after completion or failure"
+	case c.State == StateExecuted || c.State == StateResumed:
+		if c.State == StateExecuted && c.LastExecutionSucceeded {
+			info.Status = "not_retryable"
+			info.Reason = "last execution succeeded; re-running requires a fresh approval"
+		} else if c.MaxRetries <= 0 {
+			info.Status = "disabled"
+			info.Reason = "max_retries is 0, retry disabled"
+		} else if c.RetryCount >= c.MaxRetries {
+			info.Status = "exhausted"
+			info.Reason = "retry limit reached (retry_count=" + strconv.Itoa(c.RetryCount) + ", max_retries=" + strconv.Itoa(c.MaxRetries) + ")"
+			info.RetryLimitReached = true
+		} else {
+			info.Status = "retryable"
+			info.Reason = "execution completed, retry available"
+		}
+	case c.State == StateApproved || c.State == StateQueued:
+		info.Status = "not_needed"
+		info.Reason = "continuation has not been executed yet"
+	case c.State == StateEscalated:
+		info.Status = "pending_approval"
+		info.Reason = "continuation awaiting approval"
+	default:
+		info.Status = "unknown"
+		info.Reason = "state: " + string(c.State)
+	}
+
+	return info
 }
 
 func (c *Continuation) MarkExpired() {
@@ -176,8 +359,10 @@ func (c *Continuation) MarkExpired() {
 	}
 }
 
-func (c *Continuation) IsReady() bool {
-	return c.State == StateReady
+// IsQueued returns true when the continuation has been queued for execution
+// and is awaiting pickup by the orchestrator.
+func (c *Continuation) IsQueued() bool {
+	return c.State == StateQueued
 }
 
 func (c *Continuation) IsExpired() bool {
@@ -198,10 +383,11 @@ func (c *Continuation) ShouldExpire(now time.Time) bool {
 }
 
 func (c *Continuation) IsExecutable() bool {
-	if c.State != StateApproved && c.State != StateReady {
+	if c.State != StateApproved && c.State != StateQueued {
 		return false
 	}
-	if c.State == StateExecuted {
+	// StateExecuting means already claimed by another path — not available
+	if c.State == StateExecuted || c.State == StateCancelled || c.State == StateExecuting {
 		return false
 	}
 	if c.ExpiresAt != nil && time.Now().UTC().After(*c.ExpiresAt) {
@@ -211,10 +397,11 @@ func (c *Continuation) IsExecutable() bool {
 }
 
 func (c *Continuation) CanExecute() bool {
-	if c.State != StateReady && c.State != StateResumed {
+	// StateExecuting means already claimed; never allow a second claim
+	if c.State == StateExecuting {
 		return false
 	}
-	if c.ActionType != "shell" {
+	if c.State != StateQueued && c.State != StateResumed && c.State != StateApproved {
 		return false
 	}
 	return true
@@ -237,10 +424,34 @@ type Store interface {
 	ListByApprovalID(approvalID string) []*Continuation
 	ListAll() []*Continuation
 	ListNonTerminal() []*Continuation
+	ClaimForExecution(id string) (*Continuation, bool)
+	ClaimForRetry(id string) (*Continuation, bool)
+	RetryForExecution(id string) (*Continuation, bool)
+	CancelForOperation(id string) (*Continuation, bool)
+	RecoverFromExecuting(id string) (*Continuation, bool)
+	ListExecutingIDs() []string
+	// ExpireIfDue atomically checks ShouldExpire and marks the continuation
+	// expired under the store lock, rechecking the live state so a concurrent
+	// claim cannot be flipped to expired mid-run. Returns the expired
+	// snapshot, or (nil, false) when the continuation is absent or not due.
+	ExpireIfDue(id string, now time.Time) (*Continuation, bool)
+	// EnqueueForExecution atomically checks CanEnqueue and queues the
+	// continuation under the store lock. Returns (nil, false) when the
+	// continuation is absent or not in the approved state.
+	EnqueueForExecution(id string) (*Continuation, bool)
+	// ApplyApprovalDecision applies the approval resolution to every
+	// continuation bound to approvalID under the store lock: approved=true
+	// marks approved+queued, approved=false marks denied. Continuations
+	// already in a terminal state are left untouched. Returns snapshots of
+	// the continuations that actually transitioned.
+	ApplyApprovalDecision(approvalID string, approved bool, resolvedBy, reason string) []*Continuation
+	// ResumeForApproval marks every resumable continuation bound to
+	// approvalID resumed under the store lock and returns their snapshots.
+	ResumeForApproval(approvalID string) []*Continuation
 }
 
 type InMemoryStore struct {
-	mu           sync.RWMutex
+	mu            sync.RWMutex
 	continuations map[string]*Continuation
 }
 
@@ -264,7 +475,10 @@ func (s *InMemoryStore) Get(id string) (*Continuation, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c, ok := s.continuations[id]
-	return c, ok
+	if !ok {
+		return nil, false
+	}
+	return c.snapshot(), true
 }
 
 func (s *InMemoryStore) Update(c *Continuation) error {
@@ -283,7 +497,7 @@ func (s *InMemoryStore) ListByState(state State) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.State == state {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -295,7 +509,7 @@ func (s *InMemoryStore) ListByDecision(decisionID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.DecisionID == decisionID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -307,7 +521,7 @@ func (s *InMemoryStore) ListByAgent(agentID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.AgentID == agentID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -319,7 +533,7 @@ func (s *InMemoryStore) ListByApprovalID(approvalID string) []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if c.ApprovalID == approvalID {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
@@ -330,7 +544,7 @@ func (s *InMemoryStore) ListAll() []*Continuation {
 	defer s.mu.RUnlock()
 	var result []*Continuation
 	for _, c := range s.continuations {
-		result = append(result, c)
+		result = append(result, c.snapshot())
 	}
 	return result
 }
@@ -341,8 +555,204 @@ func (s *InMemoryStore) ListNonTerminal() []*Continuation {
 	var result []*Continuation
 	for _, c := range s.continuations {
 		if !c.IsTerminal() {
-			result = append(result, c)
+			result = append(result, c.snapshot())
 		}
 	}
 	return result
+}
+
+// markExecuting transitions a continuation into StateExecuting and records
+// the claim time so stuck-execution recovery measures claim age, not the
+// age of the original escalation. Callers must hold the store lock.
+func markExecuting(c *Continuation) {
+	c.State = StateExecuting
+	now := time.Now().UTC()
+	c.ExecutingAt = &now
+}
+
+// isClaimable reports whether a continuation may be claimed for execution:
+// approved/queued/resumed and not past its expiry.
+func isClaimable(c *Continuation) bool {
+	if c.State != StateApproved && c.State != StateQueued && c.State != StateResumed {
+		return false
+	}
+	if c.ExpiresAt != nil && time.Now().UTC().After(*c.ExpiresAt) {
+		return false
+	}
+	return true
+}
+
+func (s *InMemoryStore) ClaimForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if isClaimable(c) {
+		markExecuting(c)
+		return c.snapshot(), true
+	}
+	return nil, false
+}
+
+func (s *InMemoryStore) ClaimForRetry(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State == StateResumed && !c.IsExpired() {
+		markExecuting(c)
+		return c.snapshot(), true
+	}
+	return nil, false
+}
+func (s *InMemoryStore) RetryForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.retryEligible() {
+		return nil, false
+	}
+	c.State = StateResumed
+	c.RetryCount++
+	now := time.Now().UTC()
+	c.ResumedAt = &now
+	return c.snapshot(), true
+}
+
+// CancelForOperation atomically cancels a cancellable continuation under the
+// store lock and returns a snapshot. Centralizing the CanCancel check and the
+// MarkCancelled mutation here prevents concurrent cancel callers (single vs
+// bulk) from racing on the shared continuation object.
+func (s *InMemoryStore) CancelForOperation(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.CanCancel() {
+		return nil, false
+	}
+	c.MarkCancelled()
+	return c.snapshot(), true
+}
+
+// RecoverFromExecuting atomically transitions a continuation in StateExecuting
+// back to StateExecuted so it becomes retryable. Used for operator-driven
+// recovery of stuck executions. Returns a snapshot or (nil, false) if the
+// continuation is missing or not in StateExecuting.
+func (s *InMemoryStore) RecoverFromExecuting(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if c.State != StateExecuting {
+		return nil, false
+	}
+	c.State = StateExecuted
+	return c.snapshot(), true
+}
+
+// ListExecutingIDs returns the IDs of all continuations currently in
+// StateExecuting. Used by operator recovery flows to enumerate stuck work
+// without exposing the full continuations payload.
+func (s *InMemoryStore) ListExecutingIDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]string, 0, len(s.continuations))
+	for id, c := range s.continuations {
+		if c.State == StateExecuting {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// ExpireIfDue atomically expires a continuation that is due under the store
+// lock. Rechecking the live object here (rather than expiring a snapshot
+// taken by ListNonTerminal) prevents the sweeper from flipping a
+// continuation that a concurrent claim just moved into StateExecuting.
+func (s *InMemoryStore) ExpireIfDue(id string, now time.Time) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.ShouldExpire(now) {
+		return nil, false
+	}
+	c.MarkExpired()
+	return c.snapshot(), true
+}
+
+// EnqueueForExecution atomically queues an approved continuation under the
+// store lock, closing the check-then-act gap in the enqueue handler.
+func (s *InMemoryStore) EnqueueForExecution(id string) (*Continuation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.continuations[id]
+	if !ok {
+		return nil, false
+	}
+	if !c.CanEnqueue() {
+		return nil, false
+	}
+	c.MarkQueued()
+	return c.snapshot(), true
+}
+
+// ApplyApprovalDecision applies an approval resolution to all continuations
+// bound to approvalID under a single store lock.
+func (s *InMemoryStore) ApplyApprovalDecision(approvalID string, approved bool, resolvedBy, reason string) []*Continuation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var transitioned []*Continuation
+	for _, c := range s.continuations {
+		if c.ApprovalID != approvalID || c.IsTerminal() {
+			continue
+		}
+		// Never retarget a continuation already claimed for execution —
+		// a late deny must not flip an in-flight run to denied, and a
+		// re-approve must not bounce it back to queued.
+		if c.State == StateExecuting {
+			continue
+		}
+		before := c.State
+		if approved {
+			c.MarkApproved(resolvedBy)
+			c.MarkQueued()
+		} else {
+			c.MarkDenied(resolvedBy, reason)
+		}
+		if c.State != before {
+			transitioned = append(transitioned, c.snapshot())
+		}
+	}
+	return transitioned
+}
+
+// ResumeForApproval marks all resumable continuations bound to approvalID
+// resumed under the store lock.
+func (s *InMemoryStore) ResumeForApproval(approvalID string) []*Continuation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var transitioned []*Continuation
+	for _, c := range s.continuations {
+		if c.ApprovalID != approvalID || !c.CanResume() {
+			continue
+		}
+		c.MarkResumed()
+		transitioned = append(transitioned, c.snapshot())
+	}
+	return transitioned
 }

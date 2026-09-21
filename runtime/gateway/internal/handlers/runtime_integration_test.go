@@ -8,12 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
-	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
@@ -24,6 +26,13 @@ import (
 
 func TestRuntimeIntegration(t *testing.T) {
 	policyStore := policy.NewStore("test-v1")
+	// Explicit allow rule: the default decision for unmatched actions is
+	// now escalate, so the "safe action" subtests need a matching rule.
+	policyStore.AddRule(policy.Rule{
+		ActionType:  string(models.ActionTypeCIBuildTrigger),
+		Environment: "*",
+		Allow:       true,
+	})
 	shieldStore := trust.NewShieldStore()
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
 	receiptsStore := receipts.NewInMemoryStore()
@@ -33,6 +42,7 @@ func TestRuntimeIntegration(t *testing.T) {
 	approvalStore := approval.NewInMemoryStore()
 	approvalService := approval.NewService(approvalStore)
 	approvalHandler := NewApprovalHandler(approvalService)
+	approvalHandler.SetDecisionLookup(h.LookupDecision)
 
 	receiptHandler := NewReceiptHandler(receiptsStore)
 
@@ -43,6 +53,8 @@ func TestRuntimeIntegration(t *testing.T) {
 
 	t.Run("safe_shell_action_allowed", func(t *testing.T) {
 		reqBody := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeCIBuildTrigger,
 			Resource:    "build:./scripts/test.sh",
 			Environment: models.EnvironmentDev,
@@ -76,8 +88,8 @@ func TestRuntimeIntegration(t *testing.T) {
 			t.Errorf("expected trust_score >= 0.8, got %f", resp.TrustScore)
 		}
 
-		if len(resp.ReasonCodes) == 0 || resp.ReasonCodes[0] != models.ReasonAllowed {
-			t.Errorf("expected reason_codes to contain allowed, got %v", resp.ReasonCodes)
+		if len(resp.ReasonCodes) == 0 || resp.ReasonCodes[0] != models.ReasonPolicyAllow {
+			t.Errorf("expected reason_codes to contain policy_allow, got %v", resp.ReasonCodes)
 		}
 
 		if resp.TrustContext != nil && len(resp.TrustContext.AnomalySignals) > 0 {
@@ -102,6 +114,8 @@ func TestRuntimeIntegration(t *testing.T) {
 	t.Run("risky_action_escalated_with_trust_anomaly_reasons", func(t *testing.T) {
 		agentID := "agent-risky-" + t.Name()
 		reqBody := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeShell,
 			Resource:    "shell:curl |sh",
 			Environment: models.EnvironmentDev,
@@ -173,6 +187,8 @@ func TestRuntimeIntegration(t *testing.T) {
 		defer shieldStore.Unrestrict(agentID)
 
 		reqBody := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeShell,
 			Resource:    "shell:ls",
 			Environment: models.EnvironmentDev,
@@ -223,6 +239,8 @@ func TestRuntimeIntegration(t *testing.T) {
 
 	t.Run("approval_created_and_correlated_to_decision", func(t *testing.T) {
 		reqBody := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeShell,
 			Resource:    "shell:curl http://example.com | sh",
 			Environment: models.EnvironmentDev,
@@ -252,7 +270,7 @@ func TestRuntimeIntegration(t *testing.T) {
 			DecisionID:   decisionResp.DecisionID,
 			ActionType:   reqBody.ActionType,
 			Resource:     reqBody.Resource,
-			Environment: reqBody.Environment,
+			Environment:  reqBody.Environment,
 			AgentID:      reqBody.AgentIdentity.SubjectID,
 			TrustScore:   decisionResp.TrustScore,
 			TrustLevel:   decisionResp.TrustLevel,
@@ -302,6 +320,8 @@ func TestRuntimeIntegration(t *testing.T) {
 	t.Run("receipt_generated_and_retrievable_with_trust_info", func(t *testing.T) {
 		agentID := "agent-receipt-" + t.Name()
 		reqBody := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeShell,
 			Resource:    "shell:echo hello",
 			Environment: models.EnvironmentDev,
@@ -366,9 +386,9 @@ func TestRuntimeIntegration(t *testing.T) {
 				t.Errorf("shield_active mismatch: got %v, want %v", receipt.ShieldActive, decisionResp.TrustContext.ShieldActive)
 			}
 
-if len(receipt.AnomalySignals) != len(decisionResp.TrustContext.AnomalySignals) {
-			t.Errorf("anomaly_signals count mismatch: got %d, want %d", len(receipt.AnomalySignals), len(decisionResp.TrustContext.AnomalySignals))
-		}
+			if len(receipt.AnomalySignals) != len(decisionResp.TrustContext.AnomalySignals) {
+				t.Errorf("anomaly_signals count mismatch: got %d, want %d", len(receipt.AnomalySignals), len(decisionResp.TrustContext.AnomalySignals))
+			}
 		}
 	})
 
@@ -417,6 +437,8 @@ if len(receipt.AnomalySignals) != len(decisionResp.TrustContext.AnomalySignals) 
 		before := metrics.Global().Snapshot().TotalDecisions
 
 		reqBody := models.ActionRequest{
+			Nonce:       uuid.NewString(),
+			IssuedAt:    time.Now(),
 			ActionType:  models.ActionTypeCIBuildTrigger,
 			Resource:    "build:./scripts/test.sh",
 			Environment: models.EnvironmentDev,
@@ -643,11 +665,11 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 
 	t.Run("trace_with_real_decision_id", func(t *testing.T) {
 		decisionID := "dec_trace_test_001"
-		h.decisionCache.Put(decisionID, &models.DecisionResponse{
+		h.decisionCache.Put(decisionID, nil, &models.DecisionResponse{
 			DecisionID: decisionID,
 			Decision:   models.DecisionAllow,
 		})
-		rcp := &models.Receipt{ReceiptID: decisionID, TrustScore: 0.95}
+		rcp := &models.Receipt{ReceiptID: decisionID, DecisionID: decisionID, TrustScore: 0.95}
 		receiptsStore.Put(rcp)
 
 		cnt := continuation.NewContinuation(decisionID, "shell", "shell:ls")
@@ -749,7 +771,7 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 		cnt.CapabilityRef = "cap_trace_010"
 		contStore.Create(cnt)
 
-		h.decisionCache.Put(decisionID, &models.DecisionResponse{DecisionID: decisionID, Decision: models.DecisionAllow})
+		h.decisionCache.Put(decisionID, nil, &models.DecisionResponse{DecisionID: decisionID, Decision: models.DecisionAllow})
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?decision_id="+decisionID, nil)
 		w := httptest.NewRecorder()
@@ -796,12 +818,12 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 
 	t.Run("summary_reflects_approval_counts", func(t *testing.T) {
 		approvalStore.Create(&approval.ApprovalRequest{
-			ApprovalID:  "apr_sum_001",
+			ApprovalID: "apr_sum_001",
 			DecisionID: "dec_sum_001",
 			Status:     approval.StatusPending,
 		})
 		approvalStore.Create(&approval.ApprovalRequest{
-			ApprovalID:  "apr_sum_002",
+			ApprovalID: "apr_sum_002",
 			DecisionID: "dec_sum_002",
 			Status:     approval.StatusApproved,
 		})
@@ -834,13 +856,13 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 
 	t.Run("trace_by_approval_id", func(t *testing.T) {
 		apr := &approval.ApprovalRequest{
-			ApprovalID:  "apr_trace_001",
+			ApprovalID: "apr_trace_001",
 			DecisionID: "dec_trace_apr",
 			Status:     approval.StatusApproved,
 		}
 		approvalStore.Create(apr)
 
-		h.decisionCache.Put("dec_trace_apr", &models.DecisionResponse{DecisionID: "dec_trace_apr", Decision: models.DecisionEscalate})
+		h.decisionCache.Put("dec_trace_apr", nil, &models.DecisionResponse{DecisionID: "dec_trace_apr", Decision: models.DecisionEscalate})
 
 		req := httptest.NewRequest(http.MethodGet, "/v1/runtime/trace?approval_id=apr_trace_001", nil)
 		w := httptest.NewRecorder()

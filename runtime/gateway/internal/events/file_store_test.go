@@ -1,8 +1,10 @@
 package events
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -107,4 +109,82 @@ func TestFileBackedStore_FilePath(t *testing.T) {
 	if store.FilePath() != path {
 		t.Errorf("filepath = %s, want %s", store.FilePath(), path)
 	}
+}
+
+func TestFileBackedStore_ConcurrentAppendAndList(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "events.jsonl")
+
+	store, err := NewFileBackedStore(path, 1000)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				e := NewEvent(EventTypeDecisionEvaluated).WithDecisionID(fmt.Sprintf("dec_%d_%d", i, j))
+				store.Append(e)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	count := store.Count()
+	if count != 1000 {
+		t.Errorf("count = %d, want 1000", count)
+	}
+
+	list := store.List(0)
+	if len(list) != 1000 {
+		t.Errorf("list length = %d, want 1000", len(list))
+	}
+}
+
+func TestFileBackedStore_ConcurrentAppendAndGet(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "events.jsonl")
+
+	store, err := NewFileBackedStore(path, 5000)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	var appended []*Event
+	for i := 0; i < 100; i++ {
+		e := NewEvent(EventTypeApprovalCreated).WithApprovalID(fmt.Sprintf("apr_%d", i))
+		store.Append(e)
+		appended = append(appended, e)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			e := NewEvent(EventTypeApprovalCreated).WithApprovalID(fmt.Sprintf("new_%d", i))
+			store.Append(e)
+		}
+	}()
+
+	for _, e := range appended {
+		wg.Add(1)
+		go func(evt *Event) {
+			defer wg.Done()
+			got, ok := store.Get(evt.EventID)
+			if !ok {
+				t.Errorf("Get(%s) not found", evt.EventID)
+				return
+			}
+			if got.EventID != evt.EventID {
+				t.Errorf("Get(%s) event_id mismatch", evt.EventID)
+			}
+		}(e)
+	}
+	wg.Wait()
 }

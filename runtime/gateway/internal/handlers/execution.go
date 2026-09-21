@@ -3,23 +3,31 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
+	"sort"
+	"time"
 
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/execution"
 )
 
 type ExecutionHandler struct {
-	store    execution.Store
-	executor *execution.ShellExecutor
+	store     execution.Store
+	execStore execution.Store
+	contStore continuation.Store
+	executor  *execution.ShellExecutor
 }
 
 func NewExecutionHandler(store execution.Store) *ExecutionHandler {
-	return &ExecutionHandler{store: store}
+	return &ExecutionHandler{store: store, execStore: store}
 }
 
 func (h *ExecutionHandler) SetExecutor(exec *execution.ShellExecutor) {
 	h.executor = exec
+}
+
+func (h *ExecutionHandler) SetContinuationStore(store continuation.Store) {
+	h.contStore = store
 }
 
 func (h *ExecutionHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -34,38 +42,86 @@ func (h *ExecutionHandler) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limitStr := r.URL.Query().Get("limit")
-	limit := 100
-	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
-			if limit > 1000 {
-				limit = 1000
-			}
-		}
-	}
+	limit := parseLimit(r, defaultListLimit, maxListLimit)
 
 	stateFilter := r.URL.Query().Get("state")
 	continuationFilter := r.URL.Query().Get("continuation_id")
+	decisionFilter := r.URL.Query().Get("decision_id")
+	actionTypeFilter := r.URL.Query().Get("action_type")
+	sortOrder := r.URL.Query().Get("sort")
+	rawAfter := r.URL.Query().Get("after")
 
 	var execs []*execution.Execution
 	if continuationFilter != "" {
 		execs = h.store.ListByContinuation(continuationFilter)
 	} else if stateFilter != "" {
 		execs = h.store.ListByState(execution.State(stateFilter))
+	} else if decisionFilter != "" {
+		execs = h.store.ListByDecision(decisionFilter)
 	} else {
 		execs = h.store.ListAll()
 	}
 
-	if limit > 0 && len(execs) > limit {
-		execs = execs[len(execs)-limit:]
+	if actionTypeFilter != "" {
+		filtered := make([]*execution.Execution, 0, len(execs))
+		for _, e := range execs {
+			if e.ActionType == actionTypeFilter {
+				filtered = append(filtered, e)
+			}
+		}
+		execs = filtered
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"executions": execs,
-		"count":      len(execs),
+	ascending := sortAscending(sortOrder)
+	sort.Slice(execs, func(i, j int) bool {
+		a, b := execs[i], execs[j]
+		if a.StartedAt.Equal(b.StartedAt) {
+			if ascending {
+				return a.ExecutionID < b.ExecutionID
+			}
+			return a.ExecutionID > b.ExecutionID
+		}
+		if ascending {
+			return a.StartedAt.Before(b.StartedAt)
+		}
+		return b.StartedAt.Before(a.StartedAt)
 	})
+
+	result := buildListedItems(execs, limit, rawAfter, SortSpec[execution.Execution]{
+		Ascending:    ascending,
+		GetTimestamp: func(e execution.Execution) time.Time { return e.StartedAt },
+		GetID:        func(e execution.Execution) string { return e.ExecutionID },
+	})
+
+	if result.Items == nil {
+		result.Items = []*execution.Execution{}
+	}
+
+	var executableCount int
+	for _, e := range result.Items {
+		if e.State == execution.StateRunning {
+			executableCount++
+		}
+	}
+
+	total, succeeded, failed, running, timedOut := h.store.Stats()
+
+	w.Header().Set("Content-Type", "application/json")
+	resp := map[string]any{
+		"executions": result.Items,
+		"count":      result.Count,
+		"summary": map[string]int{
+			"total":     total,
+			"succeeded": succeeded,
+			"failed":    failed,
+			"running":   running,
+			"timed_out": timedOut,
+		},
+	}
+	if result.NextCursor != "" {
+		resp["next_cursor"] = result.NextCursor
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *ExecutionHandler) handleStats(w http.ResponseWriter, r *http.Request) {
@@ -77,11 +133,11 @@ func (h *ExecutionHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 	total, succeeded, failed, running, timedOut := h.store.Stats()
 
 	response := map[string]any{
-		"total":      total,
-		"succeeded":  succeeded,
-		"failed":     failed,
-		"running":    running,
-		"timed_out":   timedOut,
+		"total":     total,
+		"succeeded": succeeded,
+		"failed":    failed,
+		"running":   running,
+		"timed_out": timedOut,
 	}
 
 	if fb, ok := h.store.(*execution.FileBackedStore); ok {
@@ -131,6 +187,19 @@ func (h *ExecutionHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	failureInfo := exe.FailureInfo()
+
+	response := map[string]any{
+		"execution": exe,
+		"failure":   failureInfo,
+	}
+
+	if h.contStore != nil && exe.ContinuationID != "" {
+		if cont, found := h.contStore.Get(exe.ContinuationID); found {
+			response["retry"] = cont.RetryInfo()
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(exe)
+	json.NewEncoder(w).Encode(response)
 }

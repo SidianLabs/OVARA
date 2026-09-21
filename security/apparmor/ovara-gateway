@@ -1,0 +1,90 @@
+# AppArmor profile for the OVARA runtime gateway — STARTING TEMPLATE.
+#
+# This is a deliberately minimal, workable profile. It is NOT a finished
+# production policy: every deployment must tune paths (config, data, log and
+# binary locations) and test under its own init system before enforcing.
+# Start in complain mode (`aa-complain ovara-gateway`), observe the audit log,
+# then switch to enforce.
+#
+# Install:  apparmor_parser -r /etc/apparmor.d/ovara-gateway
+# Status:   aa-status | grep ovara
+
+#include <tunables/global>
+
+profile ovara-gateway /usr/local/bin/ovara-gateway {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+
+  # The gateway binary and anything it must execute (e.g. git, shells used by
+  # the executor path). Remove `ix` entries that are not used in your
+  # deployment.
+  /usr/local/bin/ovara-gateway ixr,
+  /usr/bin/ovara-gateway ixr,
+  /usr/bin/git ixr,
+  /bin/sh ixr,
+  /usr/bin/sh ixr,
+
+  # Shared libraries required by the Go runtime / subprocesses.
+  /usr/lib/** rm,
+  /usr/lib64/** rm,
+  /lib/** rm,
+  /lib64/** rm,
+
+  # Devices required by the Go runtime (must NOT be denied).
+  /dev/null rw,
+  /dev/zero rw,
+  /dev/full rw,
+  /dev/random r,
+  /dev/urandom r,
+
+  # Configuration: read-only. Adjust to your actual config path.
+  /etc/ovara/** r,
+  /etc/ovara/config.json r,
+
+  # Runtime state: read-write. Adjust to your data directory.
+  /var/data/ovara/** rw,
+  /var/lib/ovara/** rw,
+  /var/log/ovara/** rw,
+
+  # Temp files.
+  /tmp/ovara-exec/** rwk,
+  /tmp/** rw,
+
+  # System files needed for networking/time.
+  /etc/hostname r,
+  /etc/hosts r,
+  /etc/resolv.conf r,
+  /etc/nsswitch.conf r,
+  /etc/passwd r,
+  /etc/group r,
+  /etc/localtime r,
+  /etc/timezone r,
+  /etc/ssl/certs/** r,
+  /etc/ssl/openssl.cnf r,
+
+  # Process info.
+  /proc/self/** r,
+  /proc/sys/kernel/hostname r,
+
+  # Explicitly deny the most sensitive paths (defense-in-depth on top of the
+  # default-deny remainder).
+  deny /etc/shadow r,
+  deny /root/** rwx,
+  deny /proc/kcore r,
+  deny /boot/** rwx,
+  deny /dev/mem rwx,
+  deny /dev/kmem rwx,
+
+  # Networking: TCP only, no raw/netlink.
+  network inet stream,
+  network inet6 stream,
+
+  # Unix sockets are needed for syslog and (optionally) the docker sandbox
+  # socket. Restrict the docker socket line if the sandbox is disabled.
+  unix (send, receive),
+
+  # NOTE: privileged capabilities (sys_admin etc.), mount, and ptrace are
+  # denied implicitly by omission — there is no `capability` grant and no
+  # mount/ptrace rules above. Add `capability net_bind_service,` only if the
+  # gateway binds ports < 1024.
+}

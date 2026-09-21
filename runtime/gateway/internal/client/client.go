@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	"ovara.runtime.gateway/internal/models"
 )
 
@@ -53,6 +55,8 @@ func (c *GatewayClient) Check(actionType models.ActionType, resource string, env
 		ActionType:  actionType,
 		Resource:    resource,
 		Environment: environment,
+		Nonce:       uuid.NewString(),
+		IssuedAt:    time.Now().UTC(),
 	}
 
 	for _, opt := range opts {

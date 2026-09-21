@@ -59,9 +59,7 @@ func (e *Evaluator) Evaluate(req *models.ActionRequest) *TrustResult {
 				})
 			}
 		}
-	}
 
-	if e.shieldStore != nil && agentID != "" {
 		lastDecision := e.shieldStore.GetLastDecision(agentID)
 		if lastDecision != "" && time.Since(e.shieldStore.GetLastDecisionTime(agentID)) < 30*time.Second {
 			if lastDecision == string(models.DecisionEscalate) || lastDecision == string(models.DecisionDeny) {

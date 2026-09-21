@@ -41,3 +41,11 @@ Recommendation:
 - start with SDK + gateway model
 - add sidecar for enterprise deployments
 
+## Implementation Reference
+
+For **V1 supported action types, resource formats, and default policy behavior**, see [runtime_support_matrix](runtime_support_matrix.md).
+
+For **request-to-execution lifecycle details**, see [runtime_lifecycle](runtime_lifecycle.md).
+
+For **troubleshooting common issues**, see [Runtime Troubleshooting Guide](../../runtime/gateway/TROUBLESHOOTING.md).
+

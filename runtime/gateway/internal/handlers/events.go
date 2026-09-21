@@ -162,14 +162,14 @@ func (h *EventHandler) handleExport(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"exported_at":     time.Now().UTC(),
-		"event_count":     len(allEvents),
-		"event_types":     eventTypes,
-		"gateway_id":      gatewayID,
+		"exported_at":      time.Now().UTC(),
+		"event_count":      len(allEvents),
+		"event_types":      eventTypes,
+		"gateway_id":       gatewayID,
 		"time_range_since": since,
 		"time_range_until": until,
 		"filter_type":      eventType,
-		"events":          allEvents,
+		"events":           allEvents,
 	})
 }
 

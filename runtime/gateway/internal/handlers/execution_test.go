@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"ovara.runtime.gateway/internal/continuation"
 	eventsstore "ovara.runtime.gateway/internal/events"
@@ -114,6 +115,102 @@ func TestExecutionHandler_ListExecutions_FilterByContinuation(t *testing.T) {
 	}
 }
 
+func TestExecutionHandler_ListExecutions_FilterByDecision(t *testing.T) {
+	store := execution.NewInMemoryStore()
+	e1 := execution.NewExecution("cnt_1", "dec_abc", "apr_1", "agt_1", "shell", "shell:echo a", 60)
+	e2 := execution.NewExecution("cnt_2", "dec_abc", "apr_2", "agt_2", "exec", "exec:ls", 60)
+	e3 := execution.NewExecution("cnt_3", "dec_xyz", "apr_3", "agt_3", "shell", "shell:echo c", 60)
+	store.Create(e1)
+	store.Create(e2)
+	store.Create(e3)
+
+	h := NewExecutionHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/executions?decision_id=dec_abc", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+	if result["count"].(float64) != 2 {
+		t.Errorf("count = %v, want 2", result["count"])
+	}
+}
+
+func TestExecutionHandler_ListExecutions_FilterByActionType(t *testing.T) {
+	store := execution.NewInMemoryStore()
+	e1 := execution.NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo a", 60)
+	e2 := execution.NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "exec", "exec:ls", 60)
+	e3 := execution.NewExecution("cnt_3", "dec_3", "apr_3", "agt_3", "shell", "shell:echo c", 60)
+	store.Create(e1)
+	store.Create(e2)
+	store.Create(e3)
+
+	h := NewExecutionHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/executions?action_type=exec", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+	if result["count"].(float64) != 1 {
+		t.Errorf("count = %v, want 1", result["count"])
+	}
+}
+
+func TestExecutionHandler_ListExecutions_FilterByStateAndActionType(t *testing.T) {
+	store := execution.NewInMemoryStore()
+	e1 := execution.NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo a", 60)
+	e1.MarkSucceeded(0, "out", "")
+	e2 := execution.NewExecution("cnt_2", "dec_2", "apr_2", "agt_2", "exec", "exec:ls", 60)
+	e2.MarkSucceeded(0, "out", "")
+	e3 := execution.NewExecution("cnt_3", "dec_3", "apr_3", "agt_3", "shell", "shell:echo c", 60)
+	e3.MarkFailed("err", 1)
+	store.Create(e1)
+	store.Create(e2)
+	store.Create(e3)
+
+	h := NewExecutionHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/executions?state=succeeded&action_type=shell", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+	if result["count"].(float64) != 1 {
+		t.Errorf("count = %v, want 1", result["count"])
+	}
+}
+
+func TestExecutionHandler_ListExecutions_EmptyResult(t *testing.T) {
+	store := execution.NewInMemoryStore()
+	h := NewExecutionHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/executions?state=pending", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+	if result["count"].(float64) != 0 {
+		t.Errorf("count = %v, want 0", result["count"])
+	}
+	execs := result["executions"].([]any)
+	if len(execs) != 0 {
+		t.Errorf("executions length = %d, want 0", len(execs))
+	}
+}
+
 func TestExecutionHandler_GetExecution(t *testing.T) {
 	store := execution.NewInMemoryStore()
 	e := execution.NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:echo hi", 60)
@@ -132,10 +229,14 @@ func TestExecutionHandler_GetExecution(t *testing.T) {
 		t.Errorf("status = %d, want 200", rec.Code)
 	}
 
-	var result execution.Execution
-	json.NewDecoder(rec.Body).Decode(&result)
-	if result.State != execution.StateSucceeded {
-		t.Errorf("state = %s, want succeeded", result.State)
+	var resp map[string]any
+	json.NewDecoder(rec.Body).Decode(&resp)
+	exec, ok := resp["execution"].(map[string]any)
+	if !ok {
+		t.Fatal("execution not in response")
+	}
+	if exec["state"] != string(execution.StateSucceeded) {
+		t.Errorf("state = %v, want succeeded", exec["state"])
 	}
 }
 
@@ -212,7 +313,7 @@ func TestContinuationHandler_Execute_Truncation(t *testing.T) {
 	execStore := execution.NewInMemoryStore()
 	eventStore := eventsstore.NewInMemoryStore(1000)
 
-	cnt := continuation.NewContinuation("dec_1", "shell", "shell:printf 'X%.0s' {1..100}")
+	cnt := continuation.NewContinuation("dec_1", "shell", "shell:i=0; while [ $i -lt 300 ]; do printf 'xy'; i=$((i+1)); done")
 	cnt.MarkApproved("admin")
 	contStore.Create(cnt)
 
@@ -280,8 +381,8 @@ func TestContinuationHandler_Execute_TimedOut(t *testing.T) {
 	}
 
 	updatedCnt, _ := contStore.Get(cnt.ContinuationID)
-	if updatedCnt.State != continuation.StateReady {
-		t.Errorf("continuation state after timeout = %s, want ready", updatedCnt.State)
+	if updatedCnt.State != continuation.StateExecuted {
+		t.Errorf("continuation state after timeout = %s, want executed (timed out → executed for retry)", updatedCnt.State)
 	}
 
 	execs := execStore.ListAll()
@@ -338,8 +439,8 @@ func TestContinuationHandler_Execute_Failed(t *testing.T) {
 	}
 
 	updatedCnt, _ := contStore.Get(cnt.ContinuationID)
-	if updatedCnt.State != continuation.StateReady {
-		t.Errorf("continuation state after failure = %s, want ready (for retry)", updatedCnt.State)
+	if updatedCnt.State != continuation.StateExecuted {
+		t.Errorf("continuation state after failure = %s, want executed (failed → executed for retry)", updatedCnt.State)
 	}
 
 	execs := execStore.ListAll()
@@ -375,7 +476,9 @@ func TestContinuationHandler_Execute_DuplicateBlocked(t *testing.T) {
 
 	cnt := continuation.NewContinuation("dec_1", "shell", "shell:echo hello")
 	cnt.MarkApproved("admin")
-	cnt.MarkReady()
+	cnt.MarkQueued()
+	cnt.State = continuation.StateResumed
+	cnt.MarkExecuted()
 	contStore.Create(cnt)
 
 	exec1 := execution.NewExecution(cnt.ContinuationID, cnt.DecisionID, cnt.ApprovalID, cnt.AgentID, "shell", "shell:echo hello", 60)
@@ -398,8 +501,8 @@ func TestContinuationHandler_Execute_DuplicateBlocked(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 for duplicate execution", rec.Code)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 for duplicate execution", rec.Code)
 	}
 
 	if mockExec.called > 0 {
@@ -455,8 +558,8 @@ func TestContinuationHandler_Execute_AlreadyExecutedBlocked(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 for already-executed continuation", rec.Code)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 for already-executed continuation", rec.Code)
 	}
 }
 
@@ -490,6 +593,86 @@ func TestContinuationHandler_Execute_ApprovedAutoReady(t *testing.T) {
 	execs := execStore.ListAll()
 	if len(execs) != 1 {
 		t.Errorf("executions count = %d, want 1", len(execs))
+	}
+}
+
+func TestContinuationHandler_Execute_ExecActionType_Success(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	cnt := continuation.NewContinuation("dec_exec_1", "exec", "exec:ls")
+	cnt.MarkApproved("admin")
+	contStore.Create(cnt)
+
+	mockExec := &mockExecutor{resultState: execution.StateSucceeded, resultExit: 0, resultOutput: "file1\nfile2"}
+	reg := execution.NewExecutorRegistry()
+	reg.Register("exec", mockExec)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetExecutorRegistry(reg)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/"+cnt.ContinuationID+"/execute", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+
+	updatedCnt, _ := contStore.Get(cnt.ContinuationID)
+	if updatedCnt.State != continuation.StateExecuted {
+		t.Errorf("continuation state = %s, want executed", updatedCnt.State)
+	}
+
+	execs := execStore.ListAll()
+	if len(execs) != 1 {
+		t.Fatalf("executions count = %d, want 1", len(execs))
+	}
+	if execs[0].State != execution.StateSucceeded {
+		t.Errorf("execution state = %s, want succeeded", execs[0].State)
+	}
+	if execs[0].ActionType != "exec" {
+		t.Errorf("execution action_type = %s, want exec", execs[0].ActionType)
+	}
+	if execs[0].Stdout != "file1\nfile2" {
+		t.Errorf("execution stdout = %q, want %q", execs[0].Stdout, "file1\nfile2")
+	}
+}
+
+func TestContinuationHandler_Execute_ExecActionType_NoExecutor(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	cnt := continuation.NewContinuation("dec_exec_2", "exec", "exec:ls")
+	cnt.MarkApproved("admin")
+	contStore.Create(cnt)
+
+	reg := execution.NewExecutorRegistry()
+	reg.Register("shell", &mockExecutor{})
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetExecutorRegistry(reg)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/"+cnt.ContinuationID+"/execute", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (no executor for exec)", rec.Code)
 	}
 }
 
@@ -677,8 +860,16 @@ func TestExecution_RetryAfterNonZeroExit(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 
 	updatedCnt, _ := contStore.Get(cnt.ContinuationID)
-	if updatedCnt.State != continuation.StateReady {
-		t.Errorf("continuation state after non-zero exit = %s, want ready", updatedCnt.State)
+	if updatedCnt.State != continuation.StateExecuted {
+		t.Errorf("continuation state after non-zero exit = %s, want executed", updatedCnt.State)
+	}
+
+	retryReq := httptest.NewRequest(http.MethodPost, "/v1/continuations/"+cnt.ContinuationID+"/retry", nil)
+	retryRec := httptest.NewRecorder()
+	mux.ServeHTTP(retryRec, retryReq)
+
+	if retryRec.Code != http.StatusAccepted {
+		t.Errorf("retry after non-zero exit: status = %d, want 202", retryRec.Code)
 	}
 
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/continuations/"+cnt.ContinuationID+"/execute", nil)
@@ -686,7 +877,7 @@ func TestExecution_RetryAfterNonZeroExit(t *testing.T) {
 	mux.ServeHTTP(rec2, req2)
 
 	if rec2.Code != http.StatusOK {
-		t.Errorf("retry after non-zero exit: status = %d, want 200", rec2.Code)
+		t.Errorf("retry execute after non-zero exit: status = %d, want 200", rec2.Code)
 	}
 
 	execs := execStore.ListByContinuation(cnt.ContinuationID)
@@ -865,13 +1056,13 @@ func TestContinuation_CanExecute_Semantics(t *testing.T) {
 		action   string
 		expected bool
 	}{
-		{"ready_shell", continuation.StateReady, "shell", true},
-		{"approved_shell", continuation.StateApproved, "shell", false},
+		{"ready_shell", continuation.StateQueued, "shell", true},
+		{"approved_shell", continuation.StateApproved, "shell", true},
 		{"executed_shell", continuation.StateExecuted, "shell", false},
 		{"resumed_shell", continuation.StateResumed, "shell", true},
 		{"denied_shell", continuation.StateDenied, "shell", false},
 		{"expired_shell", continuation.StateExpired, "shell", false},
-		{"ready_non_shell", continuation.StateReady, "git.push", false},
+		{"queued_non_shell", continuation.StateQueued, "git.push", true},
 		{"escalated_shell", continuation.StateEscalated, "shell", false},
 	}
 
@@ -978,5 +1169,382 @@ func TestContinuation_IsExecutable_ExcludesExpired(t *testing.T) {
 
 	if c.IsExecutable() {
 		t.Error("IsExecutable() for expired = true, want false")
+	}
+}
+func TestContinuationHandler_RecoverExecuting_Empty(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/recover-executing", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result["scanned"].(float64) != 0 {
+		t.Errorf("scanned = %v, want 0", result["scanned"])
+	}
+	if result["recovered"].(float64) != 0 {
+		t.Errorf("recovered = %v, want 0", result["recovered"])
+	}
+}
+
+func TestContinuationHandler_RecoverExecuting_RecoversStuck(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	// Create stuck continuations
+	c1 := continuation.NewContinuation("dec_1", "shell", "shell:ls")
+	c1.State = continuation.StateExecuting
+	c1.MaxRetries = 3
+	contStore.Create(c1)
+
+	c2 := continuation.NewContinuation("dec_2", "shell", "shell:pwd")
+	c2.State = continuation.StateExecuting
+	c2.MaxRetries = 3
+	contStore.Create(c2)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/recover-executing", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result["scanned"].(float64) != 2 {
+		t.Errorf("scanned = %v, want 2", result["scanned"])
+	}
+	if result["recovered"].(float64) != 2 {
+		t.Errorf("recovered = %v, want 2", result["recovered"])
+	}
+
+	// Verify state in store
+	updated1, _ := contStore.Get(c1.ContinuationID)
+	if updated1.State != continuation.StateExecuted {
+		t.Errorf("c1 state after recovery = %v, want executed", updated1.State)
+	}
+	if !updated1.CanRetry() {
+		t.Error("c1 should be retryable after recovery")
+	}
+
+	// Verify event was emitted
+	if eventStore.Count() == 0 {
+		t.Error("expected at least one event to be emitted")
+	}
+}
+
+func TestContinuationHandler_RecoverExecuting_DryRun(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	c1 := continuation.NewContinuation("dec_1", "shell", "shell:ls")
+	c1.State = continuation.StateExecuting
+	c1.MaxRetries = 3
+	contStore.Create(c1)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/recover-executing?dry_run=true", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result["dry_run"] != true {
+		t.Error("dry_run should be true in response")
+	}
+	if result["scanned"].(float64) != 1 {
+		t.Errorf("scanned = %v, want 1", result["scanned"])
+	}
+	if result["recovered"].(float64) != 0 {
+		t.Errorf("recovered = %v, want 0 in dry run", result["recovered"])
+	}
+
+	// Verify state was NOT changed
+	updated1, _ := contStore.Get(c1.ContinuationID)
+	if updated1.State != continuation.StateExecuting {
+		t.Errorf("c1 state = %v, want executing (dry run should not mutate)", updated1.State)
+	}
+}
+
+func TestContinuationHandler_RecoverExecuting_SkipsNonExecuting(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	// Stuck continuation
+	c1 := continuation.NewContinuation("dec_1", "shell", "shell:ls")
+	c1.State = continuation.StateExecuting
+	contStore.Create(c1)
+
+	// Non-executing continuation (should be skipped, not in scanned list)
+	c2 := continuation.NewContinuation("dec_2", "shell", "shell:pwd")
+	c2.MarkApproved("admin")
+	contStore.Create(c2)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/recover-executing", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	var result map[string]any
+	json.NewDecoder(rec.Body).Decode(&result)
+
+	if result["scanned"].(float64) != 1 {
+		t.Errorf("scanned = %v, want 1 (only executing continuations are scanned)", result["scanned"])
+	}
+	if result["recovered"].(float64) != 1 {
+		t.Errorf("recovered = %v, want 1", result["recovered"])
+	}
+}
+
+func TestContinuationHandler_RecoverExecuting_OlderThanMinutes_FiltersYoung(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	c1 := continuation.NewContinuation("dec_1", "shell", "shell:ls")
+	c1.State = continuation.StateExecuting
+	c1.MaxRetries = 3
+	contStore.Create(c1)
+
+	c2 := continuation.NewContinuation("dec_2", "shell", "shell:pwd")
+	c2.State = continuation.StateExecuting
+	c2.MaxRetries = 3
+	contStore.Create(c2)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/recover-executing?older_than_minutes=10", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result["scanned"].(float64) != 2 {
+		t.Errorf("scanned = %v, want 2 (all items scanned)", result["scanned"])
+	}
+	if result["recovered"].(float64) != 0 {
+		t.Errorf("recovered = %v, want 0 (items are too young)", result["recovered"])
+	}
+	if result["skipped"].(float64) != 2 {
+		t.Errorf("skipped = %v, want 2 (both filtered by age)", result["skipped"])
+	}
+}
+
+func TestContinuationHandler_RecoverExecuting_OlderThanMinutes_RecoversOld(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	c1 := continuation.NewContinuation("dec_1", "shell", "shell:ls")
+	c1.State = continuation.StateExecuting
+	c1.MaxRetries = 3
+	c1.CreatedAt = time.Now().UTC().Add(-20 * time.Minute)
+	contStore.Create(c1)
+
+	c2 := continuation.NewContinuation("dec_2", "shell", "shell:pwd")
+	c2.State = continuation.StateExecuting
+	c2.MaxRetries = 3
+	c2.CreatedAt = time.Now().UTC().Add(-5 * time.Minute)
+	contStore.Create(c2)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/recover-executing?older_than_minutes=10", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result["scanned"].(float64) != 2 {
+		t.Errorf("scanned = %v, want 2", result["scanned"])
+	}
+	if result["recovered"].(float64) != 1 {
+		t.Errorf("recovered = %v, want 1 (only c1 is older than 10 min)", result["recovered"])
+	}
+	if result["skipped"].(float64) != 1 {
+		t.Errorf("skipped = %v, want 1 (c2 is too young)", result["skipped"])
+	}
+
+	updated1, _ := contStore.Get(c1.ContinuationID)
+	if updated1.State != continuation.StateExecuted {
+		t.Errorf("c1 state after recovery = %v, want executed", updated1.State)
+	}
+	updated2, _ := contStore.Get(c2.ContinuationID)
+	if updated2.State != continuation.StateExecuting {
+		t.Errorf("c2 state should still be executing, got %v", updated2.State)
+	}
+}
+
+func TestContinuationHandler_RecoverExecutingItem_Success(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	c1 := continuation.NewContinuation("dec_1", "shell", "shell:ls")
+	c1.State = continuation.StateExecuting
+	c1.MaxRetries = 3
+	contStore.Create(c1)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/"+c1.ContinuationID+"/recover-executing", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if result["continuation_id"] != c1.ContinuationID {
+		t.Errorf("continuation_id = %v, want %v", result["continuation_id"], c1.ContinuationID)
+	}
+	if result["state"] != "executed" {
+		t.Errorf("state = %v, want executed", result["state"])
+	}
+
+	updated, _ := contStore.Get(c1.ContinuationID)
+	if updated.State != continuation.StateExecuted {
+		t.Errorf("store state = %v, want executed", updated.State)
+	}
+	if !updated.CanRetry() {
+		t.Error("continuation should be retryable after recovery")
+	}
+}
+
+func TestContinuationHandler_RecoverExecutingItem_NotFound(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/cnt_notfound/recover-executing", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestContinuationHandler_RecoverExecutingItem_WrongState(t *testing.T) {
+	contStore := continuation.NewInMemoryStore()
+	execStore := execution.NewInMemoryStore()
+	eventStore := eventsstore.NewInMemoryStore(1000)
+
+	c1 := continuation.NewContinuation("dec_1", "shell", "shell:ls")
+	c1.MarkApproved("admin")
+	contStore.Create(c1)
+
+	h := NewContinuationHandler(contStore)
+	h.SetExecutionStore(execStore)
+	h.SetEventStore(eventStore)
+	h.SetGatewayID("gw_test")
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/continuations/"+c1.ContinuationID+"/recover-executing", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", rec.Code)
+	}
+
+	updated, _ := contStore.Get(c1.ContinuationID)
+	if updated.State != continuation.StateApproved {
+		t.Errorf("state should be unchanged, got %v", updated.State)
 	}
 }

@@ -3,9 +3,11 @@ package approval
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
-	"path/filepath"
 	"sync"
+
+	"ovara.runtime.gateway/internal/persist"
 )
 
 type FileBackedStore struct {
@@ -42,18 +44,27 @@ func (s *FileBackedStore) load() error {
 	return nil
 }
 
+// persist writes the whole store via tmp-file + fsync + rename so a crash
+// mid-write cannot leave a truncated/corrupt approvals file. Callers must
+// hold s.mu.
 func (s *FileBackedStore) persist(items []*ApprovalRequest) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
 	data, err := json.MarshalIndent(items, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal approvals: %w", err)
 	}
-	if err := os.WriteFile(s.path, data, 0644); err != nil {
+	if err := persist.WriteFileAtomic(s.path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write approvals file: %w", err)
 	}
 	return nil
+}
+
+// persistAll snapshots the map and persists it. Callers must hold s.mu.
+func (s *FileBackedStore) persistAll() error {
+	var all []*ApprovalRequest
+	for _, r := range s.items {
+		all = append(all, r)
+	}
+	return s.persist(all)
 }
 
 func (s *FileBackedStore) Create(req *ApprovalRequest) error {
@@ -66,11 +77,7 @@ func (s *FileBackedStore) Create(req *ApprovalRequest) error {
 		return fmt.Errorf("approval already exists: %s", req.ApprovalID)
 	}
 	s.items[req.ApprovalID] = req
-	var all []*ApprovalRequest
-	for _, r := range s.items {
-		all = append(all, r)
-	}
-	return s.persist(all)
+	return s.persistAll()
 }
 
 func (s *FileBackedStore) Get(id string) (*ApprovalRequest, error) {
@@ -80,7 +87,7 @@ func (s *FileBackedStore) Get(id string) (*ApprovalRequest, error) {
 	if !ok {
 		return nil, fmt.Errorf("approval not found: %s", id)
 	}
-	return req, nil
+	return snapshotOf(req), nil
 }
 
 func (s *FileBackedStore) Update(req *ApprovalRequest) error {
@@ -90,11 +97,66 @@ func (s *FileBackedStore) Update(req *ApprovalRequest) error {
 		return fmt.Errorf("approval not found: %s", req.ApprovalID)
 	}
 	s.items[req.ApprovalID] = req
-	var all []*ApprovalRequest
-	for _, r := range s.items {
-		all = append(all, r)
+	return s.persistAll()
+}
+
+func (s *FileBackedStore) Resolve(id string, decision Status, resolvedBy, reason string) (*ApprovalRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.items[id]
+	if !ok {
+		return nil, fmt.Errorf("approval not found: %s", id)
 	}
-	return s.persist(all)
+	if !req.IsPending() {
+		return nil, fmt.Errorf("approval is not pending: %s", req.Status)
+	}
+	switch decision {
+	case StatusApproved:
+		req.Approve(resolvedBy)
+	case StatusDenied:
+		req.Deny(resolvedBy, reason)
+	default:
+		return nil, fmt.Errorf("invalid decision: %s", decision)
+	}
+	if err := s.persistAll(); err != nil {
+		return nil, err
+	}
+	return snapshotOf(req), nil
+}
+
+func (s *FileBackedStore) ConsumeResume(id string) (*ApprovalRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.items[id]
+	if !ok {
+		return nil, fmt.Errorf("approval not found: %s", id)
+	}
+	if !req.CanResume() {
+		if req.Status != StatusApproved {
+			return nil, fmt.Errorf("approval not approved: %s", req.Status)
+		}
+		return nil, fmt.Errorf("approval already resumed")
+	}
+	req.MarkResumed()
+	if err := s.persistAll(); err != nil {
+		// The in-memory resume was already applied; returning the error here
+		// would tell the caller the consume failed and invite a retry that
+		// then sees "already resumed". Match the continuation store's
+		// persistLocked approach: log the write failure and still report
+		// success so in-memory and reported state stay consistent.
+		log.Printf("approval store: failed to persist resume of %s: %v", id, err)
+	}
+	return snapshotOf(req), nil
+}
+
+func (s *FileBackedStore) ListAll() []*ApprovalRequest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*ApprovalRequest, 0, len(s.items))
+	for _, req := range s.items {
+		result = append(result, snapshotOf(req))
+	}
+	return result
 }
 
 func (s *FileBackedStore) ListByStatus(status Status) []*ApprovalRequest {
@@ -103,7 +165,7 @@ func (s *FileBackedStore) ListByStatus(status Status) []*ApprovalRequest {
 	var result []*ApprovalRequest
 	for _, req := range s.items {
 		if req.Status == status {
-			result = append(result, req)
+			result = append(result, snapshotOf(req))
 		}
 	}
 	return result
@@ -115,7 +177,7 @@ func (s *FileBackedStore) ListByDecision(decisionID string) []*ApprovalRequest {
 	var result []*ApprovalRequest
 	for _, req := range s.items {
 		if req.DecisionID == decisionID {
-			result = append(result, req)
+			result = append(result, snapshotOf(req))
 		}
 	}
 	return result
@@ -128,11 +190,7 @@ func (s *FileBackedStore) Delete(id string) error {
 		return fmt.Errorf("approval not found: %s", id)
 	}
 	delete(s.items, id)
-	var all []*ApprovalRequest
-	for _, r := range s.items {
-		all = append(all, r)
-	}
-	return s.persist(all)
+	return s.persistAll()
 }
 
 func (s *FileBackedStore) Stats() (pending, total int) {

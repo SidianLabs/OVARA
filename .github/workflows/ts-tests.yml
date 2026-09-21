@@ -1,0 +1,69 @@
+name: TypeScript Tests
+
+on:
+  push:
+    branches: [main, "phase-*"]
+    paths:
+      - "cloud/**"
+      - "enterprise/**"
+      - "sdk/**"
+      - "integrations/**"
+      - "policy/**"
+      - "apps/**"
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module:
+          - cloud/control-plane
+          - enterprise/sso
+          - enterprise/compliance
+          - sdk/typescript
+          - integrations/mcp
+          - integrations/langchain
+          - policy/compiler
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ${{ matrix.module }}/package-lock.json
+
+      - name: Install
+        working-directory: ${{ matrix.module }}
+        run: npm ci
+
+      - name: TypeCheck
+        working-directory: ${{ matrix.module }}
+        run: npx tsc --noEmit
+
+      - name: Test
+        working-directory: ${{ matrix.module }}
+        run: npx vitest run
+
+  build-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/admin-dashboard/package-lock.json
+
+      - name: Install
+        working-directory: apps/admin-dashboard
+        run: npm ci
+
+      - name: TypeCheck
+        working-directory: apps/admin-dashboard
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: apps/admin-dashboard
+        run: npx next build

@@ -1,0 +1,15 @@
+{
+  "name": "@ovara/integrations-openai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": { "@ovara/sdk": "*", "openai": "^4.70.0" },
+  "devDependencies": { "typescript": "^5.6.0", "@types/node": "^22.0.0", "vitest": "^2.0.0" }
+}

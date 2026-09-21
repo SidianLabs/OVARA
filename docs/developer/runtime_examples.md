@@ -931,7 +931,7 @@ Policies are JSON documents with a version and a list of rules:
 }
 ```
 
-Each rule matches an `action_type` (e.g., `shell`, `git.pull`, `github.merge`, or `*`) and an `environment` (e.g., `local`, `dev`, `production`, or `*`). Rule outcomes are evaluated in order: deny first, then allow, then escalate. Default is allow if no rule matches.
+Each rule matches an `action_type` (e.g., `shell`, `git.pull`, `github.merge`, or `*`) and an `environment` (e.g., `local`, `dev`, `production`, or `*`). Rule outcomes are evaluated by precedence: deny first, then allow, then escalate. Default is escalate if no rule matches.
 
 ### Viewing Current Rules
 
@@ -981,9 +981,8 @@ Validation checks:
 - `action_type` and `environment` are required on every rule
 - A rule must have at least one of `allow`, `deny`, or `escalate` set to `true`
 - `allow` and `deny` cannot both be `true` on the same rule
-- Duplicate rules for the same action_type:environment pair are flagged
-- Mixed wildcard (`*`) and specific values for environment or action_type generate order-dependency warnings
-- Empty ruleset generates a warning (all actions will be allowed by default)
+- Mixed wildcard (`*`) and specific values for environment or action_type generate precedence warnings
+- Empty ruleset generates a warning (every action escalates by default)
 
 Validation errors block the candidate from being loaded. Warnings are informational.
 
@@ -1333,13 +1332,13 @@ If a promotion causes issues:
 
 ### Policy Design Notes
 
-- Rules are matched by `action_type:environment` key. The first matching rule wins.
-- `deny` blocks the action immediately (no other rules are evaluated).
+- Rules are matched by `action_type`/`environment`, with precedence deny → allow → escalate, not by rule order.
+- `deny` blocks the action immediately (a matching deny wins over allow/escalate).
 - `escalate` triggers the approval workflow.
-- `allow` permits the action (continues to next rule if no explicit allow).
+- `allow` permits the action (unless a matching deny or escalate exists).
 - `*` wildcard matches any action_type or environment.
-- Default allow: if no rule matches, the action is allowed.
-- Rule order in the JSON does not affect matching — all rules for the matching action_type are evaluated together.
+- Default escalate: if no rule matches, the action is escalated for human approval.
+- Rule order in the JSON does not affect matching — precedence does.
 - The policy file on disk is the source of truth for the live policy. Hot reload (`PolicyRefreshInterval > 0`) watches the file and reloads automatically.
 
 ## Capability Lease Management
@@ -1613,3 +1612,286 @@ curl "http://localhost:8080/v1/executions?state=succeeded"
 # By state with limit
 curl "http://localhost:8080/v1/executions?state=failed&limit=50"
 ```
+
+## Execution Queue
+
+After an approval, work can be explicitly queued and executed asynchronously rather than immediately.
+
+### Continuation States
+
+Continuations progress through these states:
+
+| State | Meaning |
+|-------|---------|
+| `escalated` | Awaiting human approval |
+| `approved` | Approved but not yet queued |
+| `queued` | Queued for async execution |
+| `ready` | Ready to execute (runner picks up) |
+| `resumed` | Retrying after failure |
+| `executed` | Successfully executed |
+| `cancelled` | Cancelled before execution |
+| `denied` | Denied by approver |
+| `expired` | Timed out before execution |
+
+### Enqueue an Approved Continuation
+
+```bash
+# Enqueue an approved continuation for async execution
+curl -X POST "http://localhost:8080/v1/continuations/cnt_abc123/enqueue"
+```
+
+Response:
+```json
+{"continuation_id":"cnt_abc123","state":"queued","message":"continuation queued for execution"}
+```
+
+### List the Queue
+
+```bash
+curl "http://localhost:8080/v1/continuations/queue"
+```
+
+Response:
+```json
+{
+  "queue": [...],
+  "count": 2,
+  "queue_paused": false,
+  "running_count": 1
+}
+```
+
+### Cancel a Queued Continuation
+
+```bash
+curl -X POST "http://localhost:8080/v1/continuations/cnt_abc123/cancel"
+```
+
+Response:
+```json
+{"continuation_id":"cnt_abc123","state":"cancelled","cancelled_at":"2026-05-26T14:00:00Z"}
+```
+
+### Pause and Resume the Queue
+
+```bash
+# Pause queue processing (queued items stay queued)
+curl -X POST "http://localhost:8080/v1/continuations/queue/pause"
+# {"queue_paused":true,"message":"execution queue paused"}
+
+# Resume queue processing
+curl -X POST "http://localhost:8080/v1/continuations/queue/resume"
+# {"queue_paused":false,"message":"execution queue resumed"}
+```
+
+### Continuation Stats with Queue State
+
+```bash
+curl "http://localhost:8080/v1/continuations/stats"
+```
+
+Response:
+```json
+{
+  "total": 15,
+  "by_state": {"escalated":1,"approved":3,"queued":2,"executed":8,"denied":1},
+  "executable": 5,
+  "expired": 0,
+  "queued": 2,
+  "queue_paused": false,
+  "running": 1
+}
+```
+
+### Execution States
+
+| State | Meaning |
+|-------|---------|
+| `pending` | Created but not yet started |
+| `running` | Currently executing |
+| `succeeded` | Completed with exit code 0 |
+| `failed` | Completed with non-zero exit code |
+| `timed_out` | Exceeded timeout |
+
+### Immediate Execution (Sync)
+
+For synchronous execution (blocks until complete), use the execute endpoint:
+
+```bash
+curl -X POST "http://localhost:8080/v1/continuations/cnt_abc123/execute"
+```
+
+This transitions the continuation to `ready` and executes immediately.
+
+## Execution Action Types
+
+The gateway supports multiple execution surfaces via an executor registry. Each action type maps to a registered executor.
+
+### Shell Execution (`shell`)
+
+The default executor. Runs commands through `/bin/sh -c`, so shell metacharacters are interpreted:
+
+```bash
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"shell","resource":"shell:echo hello && ls -la","environment":"local"}'
+```
+
+Resource format: `shell:<command string>`
+
+### Direct Execution (`exec`)
+
+A structured subprocess executor that runs binary commands directly without shell interpretation. No metacharacter expansion, piping, or glob expansion:
+
+```bash
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"exec","resource":"exec:git status","environment":"local"}'
+```
+
+Resource format: `exec:<binary> <args...>`
+
+**Key difference from shell:**
+
+| Aspect | `shell:` | `exec:` |
+|--------|----------|---------|
+| Shell interpretation | Yes (`sh -c`) | No — direct subprocess |
+| Metacharacters | Expanded (`&&`, `\|`, `*`) | Literal arguments |
+| Use case | Ad-hoc scripts | Structured tool invocation |
+| Security posture | Higher risk | Lower risk |
+
+**Example: shell vs exec for the same command:**
+
+```
+shell:git status      → sh -c "git status"         (shell expands globs)
+exec:git status       → exec.Command("git", "status") (literal args)
+```
+
+**Example: dangerous pattern is neutralized in exec:**
+
+```
+shell:curl |sh       → shell interpretation pipes output to shell — HIGH RISK
+exec:curl |sh         → runs "curl" with literal arg "|sh" — harmless
+```
+
+### Executor Registry
+
+The gateway maintains an executor registry that maps action types to executor implementations:
+
+| Action Type | Executor | Behavior |
+|-------------|----------|----------|
+| `shell` | `ShellExecutor` | Shell subprocess via `sh -c` |
+| `exec` | `DirectExecutor` | Direct subprocess, no shell |
+| `git.push` | `GitExecutor` | `git push [origin <branch>]` in specified repo directory |
+| `git.pull` | `GitExecutor` | `git pull [<branch>]` in specified repo directory |
+
+Unknown action types return `400 Bad Request` with `no executor registered for action type: <type>`.
+
+### Git Execution (`git`)
+
+Structured git operations via direct subprocess. No shell interpretation.
+
+**Resource format:** `git:<repo-path>[:<branch>]`
+
+- `<repo-path>`: Absolute or relative path to the git repository working directory
+- `<branch>`: Optional branch name; defaults to repository default branch
+
+```bash
+# Check a git.pull action
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"git.pull","resource":"git:/Users/test/myrepo","environment":"local"}'
+
+# Push with branch
+curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Content-Type: application/json" \
+  -d '{"action_type":"git.push","resource":"git:/Users/test/myrepo:feature-branch","environment":"local"}'
+```
+
+**Safety:**
+
+| Scenario | Behavior |
+|----------|----------|
+| `git.push` to protected branch | Controlled by `git.force_push` policy rule (escalates) |
+| `git.pull` to uninitialized repo | Fails with descriptive error |
+| Repo path does not exist | Fails with `fatal: cannot stat...` in stderr |
+| Git binary not in PATH | Fails with `git: git binary not found in PATH` |
+| Unknown action type (`git.merge`) | Fails with `unsupported git action type: git.merge` |
+
+**Example: successful git.pull:**
+
+```
+git:pull → git pull (in repo directory)
+stdout: "Already up to date.\n"
+exit_code: 0
+```
+
+**Example: failed git.push (unsupported action):**
+
+```
+git.push with action_type=git.force_push → error="unsupported git action type: git.force_push"
+```
+
+## Execution Records
+
+Each execution produces a record capturing the full outcome:
+
+```json
+{
+  "execution_id": "exe_abc123",
+  "continuation_id": "cnt_xyz",
+  "action_type": "exec",
+  "resource": "exec:git status",
+  "state": "succeeded",
+  "exit_code": 0,
+  "stdout": "On branch main\n...",
+  "stderr": "",
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "started_at": "2026-05-27T12:00:00Z",
+  "finished_at": "2026-05-27T12:00:01Z",
+  "timeout_seconds": 60
+}
+```
+
+**Execution states:**
+
+| State | Meaning |
+|-------|---------|
+| `pending` | Created, not yet started |
+| `running` | Currently executing |
+| `succeeded` | Completed with exit code 0 |
+| `failed` | Completed with non-zero exit code or parse/permission error |
+| `timed_out` | Exceeded timeout |
+
+**Error field**: When state is `failed` or `timed_out`, the `error` field contains a human-readable message:
+- Parse error: `"invalid exec resource: exec resource must start with 'exec:' prefix (got: \"shell:echo\")"`
+- Binary not found: `"exec: binary not found: nonexistent"`
+- Timeout: `"exec timed out after 5s"` or `"shell command timed out after 5s"`
+
+**Orchestrator logs** (stderr/stdout):
+```
+EXEC pickup action_type=exec continuation_id=cnt_abc123 resource="exec:git status"
+EXEC completed=success action_type=exec continuation_id=cnt_abc123 execution_id=exe_def456 exit_code=0
+```
+or on failure:
+```
+EXEC completed=failed action_type=exec continuation_id=cnt_abc123 execution_id=exe_def456 exit_code=1 error="exec: binary not found: nonexistent"
+```
+
+When an action type has no registered executor, the orchestrator logs:
+```
+SKIP no executor registered for action_type=git.push continuation_id=cnt_abc123
+```
+
+## Failure Mode Summary
+
+| Scenario | HTTP Status | Error Message | Log Output |
+|----------|-------------|---------------|------------|
+| No executor for action type | 400 | `no executor registered for action type: X` | `SKIP no executor...` |
+| Malformed exec resource | 200 (in execution) | `invalid exec resource: ...` | via execution record |
+| Binary not found | 200 (in execution) | `exec: binary not found: X` | via execution record |
+| Command timeout | 200 (in execution) | `exec timed out after Xs` | via execution record |
+| Non-zero exit | 200 (in execution) | (stderr content) | via execution record |
+| Parse failure (shell) | 200 (in execution) | `invalid shell resource: ...` | via execution record |
+| Continuation not executable | 400 | `continuation not in executable state: current state=X` | — |

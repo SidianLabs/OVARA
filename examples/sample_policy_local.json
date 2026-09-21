@@ -26,28 +26,34 @@
       "description": "Read-only git pull is safe across all environments"
     },
     {
-      "action_type": "git.force_push",
+      "action_type": "git.fetch",
       "environment": "*",
-      "deny": true,
-      "description": "Force push is always denied — destroys history"
+      "allow": true,
+      "description": "Read-only git fetch is safe across all environments"
     },
     {
-      "action_type": "github.merge",
-      "environment": "production",
+      "action_type": "git.checkout",
+      "environment": "*",
       "escalate": true,
-      "description": "Production merges require manual approval"
+      "description": "Git checkout modifies working tree — requires approval to prevent accidental overwrites"
     },
     {
-      "action_type": "ci.deploy",
-      "environment": "production",
+      "action_type": "git.push",
+      "environment": "*",
       "escalate": true,
-      "description": "Production deployments require manual approval"
+      "description": "Git push requires approval in all environments — modifies remote state"
+    },
+    {
+      "action_type": "exec",
+      "environment": "*",
+      "escalate": true,
+      "description": "Direct subprocess execution always requires approval"
     },
     {
       "action_type": "*",
       "environment": "production",
       "escalate": true,
-      "description": "Catch-all: anything production requires approval"
+      "description": "Catch-all: anything in production requires approval"
     }
   ]
 }

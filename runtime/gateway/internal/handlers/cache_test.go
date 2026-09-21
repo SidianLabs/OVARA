@@ -10,8 +10,8 @@ import (
 func TestDecisionCache_TTLExpiration(t *testing.T) {
 	cache := newDecisionCacheWithTTL(100, 50*time.Millisecond)
 
-	cache.Put("dec_ttl1", &models.DecisionResponse{DecisionID: "dec_ttl1"})
-	cache.Put("dec_ttl2", &models.DecisionResponse{DecisionID: "dec_ttl2"})
+	cache.Put("dec_ttl1", nil, &models.DecisionResponse{DecisionID: "dec_ttl1"})
+	cache.Put("dec_ttl2", nil, &models.DecisionResponse{DecisionID: "dec_ttl2"})
 
 	resp, ok := cache.Get("dec_ttl1")
 	if !ok {
@@ -38,7 +38,7 @@ func TestDecisionCache_MaxSizeEviction(t *testing.T) {
 	cache := newDecisionCacheWithSize(3)
 
 	for i := 0; i < 5; i++ {
-		cache.Put("dec_max"+string(rune('0'+i)), &models.DecisionResponse{DecisionID: "dec_max" + string(rune('0'+i))})
+		cache.Put("dec_max"+string(rune('0'+i)), nil, &models.DecisionResponse{DecisionID: "dec_max" + string(rune('0'+i))})
 	}
 
 	count, _ := cache.Stats()
@@ -50,11 +50,11 @@ func TestDecisionCache_MaxSizeEviction(t *testing.T) {
 func TestDecisionCache_Cleanup(t *testing.T) {
 	cache := newDecisionCacheWithTTL(100, 30*time.Millisecond)
 
-	cache.Put("dec_cleanup1", &models.DecisionResponse{DecisionID: "dec_cleanup1"})
+	cache.Put("dec_cleanup1", nil, &models.DecisionResponse{DecisionID: "dec_cleanup1"})
 
 	time.Sleep(50 * time.Millisecond)
 
-	cache.Put("dec_cleanup2", &models.DecisionResponse{DecisionID: "dec_cleanup2"})
+	cache.Put("dec_cleanup2", nil, &models.DecisionResponse{DecisionID: "dec_cleanup2"})
 
 	count, _ := cache.Stats()
 	if count != 2 {
@@ -72,8 +72,8 @@ func TestDecisionCache_Cleanup(t *testing.T) {
 func TestDecisionCache_UpdateExisting(t *testing.T) {
 	cache := newDecisionCache()
 
-	cache.Put("dec_update", &models.DecisionResponse{DecisionID: "dec_update", Decision: "allow"})
-	cache.Put("dec_update", &models.DecisionResponse{DecisionID: "dec_update", Decision: "escalate"})
+	cache.Put("dec_update", nil, &models.DecisionResponse{DecisionID: "dec_update", Decision: "allow"})
+	cache.Put("dec_update", nil, &models.DecisionResponse{DecisionID: "dec_update", Decision: "escalate"})
 
 	count, _ := cache.Stats()
 	if count != 1 {
@@ -92,8 +92,8 @@ func TestDecisionCache_UpdateExisting(t *testing.T) {
 func TestDecisionCache_Stats(t *testing.T) {
 	cache := newDecisionCacheWithSize(10)
 
-	cache.Put("dec_stats1", &models.DecisionResponse{DecisionID: "dec_stats1"})
-	cache.Put("dec_stats2", &models.DecisionResponse{DecisionID: "dec_stats2"})
+	cache.Put("dec_stats1", nil, &models.DecisionResponse{DecisionID: "dec_stats1"})
+	cache.Put("dec_stats2", nil, &models.DecisionResponse{DecisionID: "dec_stats2"})
 
 	count, max := cache.Stats()
 	if count != 2 {
@@ -107,7 +107,7 @@ func TestDecisionCache_Stats(t *testing.T) {
 func TestDecisionCache_StartCleanup(t *testing.T) {
 	cache := newDecisionCacheWithTTL(100, 30*time.Millisecond)
 
-	cache.Put("dec_background1", &models.DecisionResponse{DecisionID: "dec_background1"})
+	cache.Put("dec_background1", nil, &models.DecisionResponse{DecisionID: "dec_background1"})
 
 	cache.StartCleanup(20 * time.Millisecond)
 

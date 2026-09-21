@@ -73,11 +73,41 @@ func TestInterceptor_normaliseAction_WithBranch(t *testing.T) {
 	}
 }
 
+func TestInterceptor_normaliseAction_Checkout(t *testing.T) {
+	i := New("http://localhost:8080", "test-agent")
+
+	req, err := i.normaliseAction("checkout", []string{"feature"}, WithRepo("git:/home/user/repo"), WithCheckout("feature"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.ActionType != models.ActionTypeGitCheckout {
+		t.Errorf("action_type = %v, want git.checkout", req.ActionType)
+	}
+	if req.Resource != "git:/home/user/repo:feature" {
+		t.Errorf("resource = %v, want git:/home/user/repo:feature", req.Resource)
+	}
+}
+
+func TestInterceptor_normaliseAction_CheckoutMain(t *testing.T) {
+	i := New("http://localhost:8080", "test-agent")
+
+	req, err := i.normaliseAction("checkout", []string{"main"}, WithCheckout("main"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.ActionType != models.ActionTypeGitCheckout {
+		t.Errorf("action_type = %v, want git.checkout", req.ActionType)
+	}
+	if req.Resource != "git:local:main" {
+		t.Errorf("resource = %v, want git:local:main", req.Resource)
+	}
+}
+
 func TestInterceptor_Execute_Allow(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := models.DecisionResponse{
-			DecisionID: "dec_git_allow",
-			Decision:   models.DecisionAllow,
+			DecisionID:  "dec_git_allow",
+			Decision:    models.DecisionAllow,
 			ReasonCodes: []models.ReasonCode{models.ReasonAllowed},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -96,8 +126,8 @@ func TestInterceptor_Execute_Allow(t *testing.T) {
 func TestInterceptor_Execute_Deny(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := models.DecisionResponse{
-			DecisionID: "dec_git_deny",
-			Decision:   models.DecisionDeny,
+			DecisionID:  "dec_git_deny",
+			Decision:    models.DecisionDeny,
 			ReasonCodes: []models.ReasonCode{models.ReasonActionNotAllowed},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -160,6 +190,12 @@ func TestResolveGitActionType(t *testing.T) {
 		{"push", []string{"--force", "origin"}, models.ActionTypeGitForcePush},
 		{"push", []string{"-f", "origin"}, models.ActionTypeGitForcePush},
 		{"pull", []string{}, models.ActionTypeGitPull},
+		{"fetch", []string{}, models.ActionTypeGitFetch},
+		{"fetch", []string{"origin"}, models.ActionTypeGitFetch},
+		{"fetch", []string{"origin", "main"}, models.ActionTypeGitFetch},
+		{"checkout", []string{"feature"}, models.ActionTypeGitCheckout},
+		{"checkout", []string{"main"}, models.ActionTypeGitCheckout},
+		{"checkout", []string{"-b", "new-branch"}, models.ActionTypeGitCheckout},
 		{"clone", []string{}, models.ActionType("git.clone")},
 	}
 
@@ -171,12 +207,31 @@ func TestResolveGitActionType(t *testing.T) {
 	}
 }
 
-func TestContains(t *testing.T) {
-	if !contains([]string{"--force", "origin"}, "--force") {
-		t.Error("expected --force to be found")
+func TestIsForcePush(t *testing.T) {
+	forced := [][]string{
+		{"--force", "origin"},
+		{"-f", "origin"},
+		{"--force-with-lease", "origin"},
+		{"--force-if-includes", "origin"},
+		{"--force=lease", "origin"},
+		{"-uf", "origin"},
+		{"-fu", "origin"},
 	}
-	if contains([]string{"origin", "main"}, "--force") {
-		t.Error("expected --force not to be found")
+	for _, args := range forced {
+		if !isForcePush(args) {
+			t.Errorf("isForcePush(%v) = false, want true", args)
+		}
+	}
+	notForced := [][]string{
+		{"origin", "main"},
+		{"-u", "origin"},
+		{"--follow-tags", "origin"},
+		{"-v", "--tags"},
+	}
+	for _, args := range notForced {
+		if isForcePush(args) {
+			t.Errorf("isForcePush(%v) = true, want false", args)
+		}
 	}
 }
 

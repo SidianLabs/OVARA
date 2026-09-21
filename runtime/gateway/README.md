@@ -4,10 +4,16 @@ Local runtime authorization layer for Ovara. Intercepts and evaluates autonomous
 
 ## Action Types Supported
 
-- `shell` — shell command execution
-- `git.push`, `git.pull`, `git.force_push` — Git mutation actions
-- `github.push`, `github.pr`, `github.merge`, `github.delete_branch` — GitHub actions
-- `ci.deploy`, `ci.build_trigger`, `ci.approval` — CI/CD deployment actions
+- `shell` — shell command execution via system shell
+- `exec` — direct subprocess execution (no shell wrapper)
+- `git.push` — git push to remote repository
+- `git.pull` — git pull from remote repository
+- `git.fetch` — git fetch from remote repository
+- `git.checkout` — git checkout a branch in a local repository
+
+For full support matrix (resource formats, default behavior, failure modes), see [SUPPORT_MATRIX.md](SUPPORT_MATRIX.md).
+
+For troubleshooting common issues, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Quick Start
 
@@ -27,8 +33,8 @@ OVARA_CONFIG=./etc/config.json ./ovara-gateway
 
 ```
 Agent/SDK → POST /v1/runtime/check → Evaluator → Policy Store → Decision Response
-                                    → Decision Logger
-                                    → Receipt Stub Generator
+                                     → Decision Logger
+                                     → Receipt Stub Generator
 
 Interceptor → GatewayClient → POST /v1/runtime/check
 Interceptor → executes command only on allow decision
@@ -44,8 +50,8 @@ Evaluates an action before execution.
 
 ```json
 {
-  "action_type": "github.push",
-  "resource": "repo:acme/api:branch/main",
+  "action_type": "shell",
+  "resource": "shell:git push origin main",
   "agent_identity": {
     "issuer": "ovara",
     "subject_id": "agt_001"
@@ -54,7 +60,7 @@ Evaluates an action before execution.
     "lease_id": "cap_abc",
     "issuer": "ovara",
     "subject": "agt_001",
-    "allowed_actions": ["github.push"],
+    "allowed_actions": ["shell", "exec", "git.push"],
     "resource_scope": "repo:acme/api",
     "expiry": "2026-05-25T00:00:00Z",
     "delegation_depth": 1
@@ -75,8 +81,8 @@ Evaluates an action before execution.
   "receipt_stub": {
     "receipt_id": "rcpt_xyz",
     "action_digest": "sha256:abc123",
-    "action_type": "github.push",
-    "resource": "repo:acme/api:branch/main",
+    "action_type": "shell",
+    "resource": "shell:git push origin main",
     "policy_version": "v1-local",
     "issued_at": "2026-05-24T12:00:00Z"
   }
@@ -98,21 +104,41 @@ Returns gateway readiness status.
 Wrap shell command execution through the gateway:
 
 ```go
-import "ovara.runtime.gateway/interceptors/shell"
+import (
+    "ovara.runtime.gateway/interceptors/shell"
+    "ovara.runtime.gateway/internal/models"
+)
 
 func main() {
     i := shell.New("http://localhost:8080", "agent-001")
     result := i.Execute(ctx, "echo hello")
-    if result.Decision == shell.DecisionAllow {
+    if result.Decision == models.DecisionAllow {
         fmt.Println(string(result.Output))
     }
 }
 ```
 
-Available interceptors under `interceptors/`:
+### Git Interceptor
 
-- `shell` — shell command execution with gateway check before running
-- `git` — git operations (push, pull, force-push) with gateway check
+Wrap git operations through the gateway:
+
+```go
+import (
+    "ovara.runtime.gateway/interceptors/git"
+    "ovara.runtime.gateway/internal/models"
+)
+
+func main() {
+    i := git.New("http://localhost:8080", "agent-001")
+    // Execute takes the git subcommand and its args; force flags (-f,
+    // --force, --force-with-lease, -uf, ...) are classified as git.force_push.
+    result := i.Execute(ctx, "push", []string{"origin", "main"},
+        git.WithRepo("git:acme/api"))
+    if result.Decision == models.DecisionAllow {
+        // push ran to completion; check result.ExitCode / result.Error
+    }
+}
+```
 
 ## Configuration
 
@@ -122,6 +148,8 @@ Create `etc/config.json`:
 {
   "server_port": "8080",
   "policy_version": "v1-local",
+  "policy_file": "./examples/sample_policy.json",
+  "policy_refresh_interval": 10,
   "log_level": "info",
   "fail_closed": false,
   "decision_log_file": "var/log/decisions.jsonl"
@@ -165,16 +193,30 @@ Approval states:
 
 ## Policy Behavior
 
-Default rules:
+Default rules (from `sample_policy_local.json`):
 
-- shell commands escalate in all environments
-- GitHub merge, delete_branch escalate in all environments
-- CI deploy actions escalate in all environments
-- production environment actions escalate by default
+- `shell` in `local` environment → allow (harmless read-only commands)
+- `shell` in `production` environment → deny (too risky)
+- `shell` in `dev` environment → escalate (risky but recoverable)
+- `git.pull` in any environment → allow (read-only, always safe)
+- `git.push` in any environment → escalate (modifies remote state, requires approval)
+- `exec` in any environment → escalate (direct subprocess, requires approval)
+- catch-all in `production` → escalate (requires explicit approval)
 
 ## Logging
 
-Decisions are written to the configured `decision_log_file` as JSON lines. Each entry includes the timestamp, full request, and full response.
+Runtime operations are logged to stderr and stdout in a structured key=value format:
+
+- `EXEC pickup` — orchestrator picks up a continuation for execution
+- `EXEC completed` — execution finished (success, timeout, or failure)
+- `SKIP no executor` — continuation has no registered executor for its action type
+- `APPROVAL created/approved/denied/resumed` — approval workflow events
+- `QUEUE enqueue/cancel/pause/resume` — queue operations
+- `RECOVER stuck-executing` — startup sweep of orphaned executing continuations after gateway restart
+- `RECOVER executing` — operator-triggered recovery of stuck executions
+- `SWEEP` — background cleanup operations
+
+Decision logs are written to the configured `decision_log_file` as JSON lines. Each entry includes the timestamp, full request, and full response.
 
 ## Phase 1 Scope
 

@@ -2,43 +2,50 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
-	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/approval"
+	"ovara.runtime.gateway/internal/auth"
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
-	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
+	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/integrity"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
+	"ovara.runtime.gateway/internal/observe"
+	"ovara.runtime.gateway/internal/receipt"
 	"ovara.runtime.gateway/internal/receipts"
 )
 
 type Handler struct {
-	evaluator          *evaluator.Evaluator
-	logger             *logging.DecisionLogger
-	config             *config.Config
-	receiptsStore      receipts.Store
-	decisionCache      *decisionCache
-	enrollmentSvc      enrollment.Service
-	approvalSvc        *approval.Service
-	eventStore         events.Store
-	continuationStore  continuation.Store
-	executionStore     execution.Store
-	integrityChecker   *integrity.Checker
-	shieldStats        func() (restricted, total int)
-	maintenanceMode    bool
-	capabilitiesStore  capabilities.Store
+	evaluator         *evaluator.Evaluator
+	logger            *logging.DecisionLogger
+	config            *config.Config
+	receiptsStore     receipts.Store
+	receiptSigner     *receipt.Signer
+	receiptEdSigner   *receipt.EdSigner
+	decisionCache     *decisionCache
+	enrollmentSvc     enrollment.Service
+	approvalSvc       *approval.Service
+	eventStore        events.Store
+	continuationStore continuation.Store
+	executionStore    execution.Store
+	orchestrator      *continuation.Orchestrator
+	integrityChecker  *integrity.Checker
+	shieldStats       func() (restricted, total int)
+	maintenanceMode   bool
+	capabilitiesStore capabilities.Store
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -79,12 +86,30 @@ func (h *Handler) SetExecutionStore(store execution.Store) {
 	h.executionStore = store
 }
 
+func (h *Handler) SetOrchestrator(orch *continuation.Orchestrator) {
+	h.orchestrator = orch
+}
+
 func (h *Handler) SetIntegrityChecker(checker *integrity.Checker) {
 	h.integrityChecker = checker
 }
 
 func (h *Handler) SetMaintenanceMode(enabled bool) {
 	h.maintenanceMode = enabled
+}
+
+func (h *Handler) SetReceiptSigner(signer *receipt.Signer) {
+	h.receiptSigner = signer
+}
+
+// SetReceiptEdSigner installs the P2.3.5 asymmetric receipt signer.
+// When set, every receipt additionally carries gateway_id,
+// gateway_key_id and gateway_sig — independently verifiable without
+// the HMAC secret. When unset (no gateway trust identity), receipts
+// keep the pre-P2.3.5 HMAC-only form — unsigned is honest, never a
+// partially authenticated receipt.
+func (h *Handler) SetReceiptEdSigner(s *receipt.EdSigner) {
+	h.receiptEdSigner = s
 }
 
 func (h *Handler) SetCapabilitiesStore(store capabilities.Store) {
@@ -107,10 +132,14 @@ type approvalRequest struct {
 const (
 	defaultMaxCacheSize = 10000
 	defaultCacheTTL     = 10 * time.Minute
+	// maxRuntimeBodyBytes caps request bodies on the runtime check endpoints.
+	maxRuntimeBodyBytes = 10 << 20 // 10 MiB
+	// maxBatchCheckRequests caps the number of requests per batch-check call.
+	maxBatchCheckRequests = 500
 )
 
 type decisionCache struct {
-	mu       sync.RWMutex
+	mu        sync.RWMutex
 	decisions map[string]*decisionEntry
 	maxSize   int
 	ttl       time.Duration
@@ -119,6 +148,7 @@ type decisionCache struct {
 
 type decisionEntry struct {
 	DecisionID string
+	Request    *models.ActionRequest
 	Response   *models.DecisionResponse
 	Timestamp  time.Time
 }
@@ -132,11 +162,12 @@ func newDecisionCache() *decisionCache {
 	}
 }
 
-func (c *decisionCache) Put(id string, resp *models.DecisionResponse) {
+func (c *decisionCache) Put(id string, req *models.ActionRequest, resp *models.DecisionResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now().UTC()
 	if existing, ok := c.decisions[id]; ok {
+		existing.Request = req
 		existing.Response = resp
 		existing.Timestamp = now
 		return
@@ -146,6 +177,7 @@ func (c *decisionCache) Put(id string, resp *models.DecisionResponse) {
 	}
 	c.decisions[id] = &decisionEntry{
 		DecisionID: id,
+		Request:    req,
 		Response:   resp,
 		Timestamp:  now,
 	}
@@ -171,6 +203,18 @@ func (c *decisionCache) Get(id string) (*models.DecisionResponse, bool) {
 		return e.Response, true
 	}
 	return nil, false
+}
+
+// GetWithRequest returns the cached decision AND the original evaluated
+// request — the provenance record approval creation is bound to.
+func (c *decisionCache) GetWithRequest(id string) (*models.ActionRequest, *models.DecisionResponse, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.decisions[id]
+	if !ok || e.Request == nil || time.Since(e.Timestamp) > c.ttl {
+		return nil, nil, false
+	}
+	return e.Request, e.Response, true
 }
 
 func (c *decisionCache) StartCleanup(interval time.Duration) {
@@ -206,8 +250,18 @@ func (c *decisionCache) Stats() (int, int) {
 	return len(c.decisions), c.maxSize
 }
 
+// LookupDecision returns the server-recorded request+decision for a
+// decision_id — the provenance source for approval binding.
+func (h *Handler) LookupDecision(id string) (*models.ActionRequest, *models.DecisionResponse, bool) {
+	if h.decisionCache == nil {
+		return nil, nil, false
+	}
+	return h.decisionCache.GetWithRequest(id)
+}
+
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runtime/check", h.handleCheck)
+	mux.HandleFunc("POST /v1/runtime/batch-check", h.handleBatchCheck)
 	mux.HandleFunc("GET /v1/runtime/decision/{id}", h.handleGetDecision)
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
 	mux.HandleFunc("GET /v1/runtime/status", h.handleGetStatus)
@@ -216,6 +270,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/runtime/snapshot", h.handleSnapshot)
 	mux.HandleFunc("GET /v1/runtime/trace", h.handleTrace)
 	mux.HandleFunc("GET /v1/runtime/summary", h.handleSummary)
+	mux.HandleFunc("GET /v1/runtime/health", h.handleGetHealth)
+	mux.HandleFunc("GET /v1/runtime/required_action_fields", h.handleRequiredActionFields)
 	mux.HandleFunc("GET /v1/audit/export", h.handleAuditExport)
 	mux.HandleFunc("GET /health", h.handleHealth)
 	mux.HandleFunc("GET /ready", h.handleReady)
@@ -224,8 +280,19 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	body, err := io.ReadAll(r.Body)
+	ctx, span := observe.StartDecisionSpan(r.Context(), nil)
+	defer func() {
+		if span != nil {
+			observe.AddSpanAttribute(span, "http.method", r.Method)
+			observe.AddSpanAttribute(span, "http.path", r.URL.Path)
+		}
+	}()
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRuntimeBodyBytes))
 	if err != nil {
+		if span != nil {
+			observe.AddSpanEvent(span, "request.read_failed", map[string]string{"error": err.Error()})
+		}
 		api.JSONBadRequest(w, "failed to read request body")
 		return
 	}
@@ -233,90 +300,111 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	var req models.ActionRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		api.JSONBadRequest(w, "invalid request: "+err.Error())
+		if span != nil {
+			observe.AddSpanEvent(span, "request.parse_failed", map[string]string{"error": err.Error()})
+		}
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
+	if errMsg := h.bindIdentity(r, &req); errMsg != "" {
+		api.JSONBadRequest(w, errMsg)
+		return
+	}
+
+	ctx, span = observe.StartDecisionSpan(ctx, &req)
+
 	resp, err := h.evaluator.Evaluate(&req)
 	if err != nil {
+		if span != nil {
+			observe.AddSpanEvent(span, "evaluation.failed", map[string]string{"error": err.Error()})
+			observe.EndSpan(span, models.DecisionDeny)
+		}
 		api.JSONInternalError(w, "evaluation failed: "+err.Error())
 		return
 	}
 
+	observe.EndSpan(span, resp.Decision)
+
 	latencyMs := time.Since(start).Milliseconds()
-
-	if h.logger != nil {
-		_ = h.logger.Log(&req, resp, latencyMs)
-	}
-
-	if h.receiptsStore != nil && resp.ReceiptStub != nil {
-		receipt := h.buildReceipt(resp, &req)
-		_ = h.receiptsStore.Put(receipt)
-
-		if h.eventStore != nil {
-			var agentID string
-			if req.AgentIdentity != nil {
-				agentID = req.AgentIdentity.SubjectID
-			}
-			gwID := ""
-			if h.enrollmentSvc != nil && h.enrollmentSvc.GetIdentity() != nil {
-				gwID = h.enrollmentSvc.GetIdentity().ID
-			}
-
-			evt := events.NewEvent(events.EventTypeDecisionEvaluated).
-				WithGatewayID(gwID).
-				WithAgentID(agentID).
-				WithDecisionID(resp.DecisionID).
-				WithReceiptID(resp.ReceiptStub.ReceiptID).
-				WithPayload(map[string]any{
-					"action_type":  string(req.ActionType),
-					"resource":      req.Resource,
-					"decision":      string(resp.Decision),
-					"trust_score":   resp.TrustScore,
-					"trust_level":   resp.TrustLevel,
-					"requires_approval": resp.RequiresApproval,
-					"latency_ms":    latencyMs,
-				})
-			h.eventStore.Append(evt)
-
-			receiptEvt := events.NewEvent(events.EventTypeReceiptIssued).
-				WithGatewayID(gwID).
-				WithAgentID(agentID).
-				WithDecisionID(resp.DecisionID).
-				WithReceiptID(resp.ReceiptStub.ReceiptID).
-				WithPayload(map[string]any{
-					"action_type":   string(req.ActionType),
-					"resource":       req.Resource,
-					"decision":       string(resp.Decision),
-					"policy_version": resp.ReceiptStub.PolicyVersion,
-				})
-			h.eventStore.Append(receiptEvt)
-		}
-	}
-
-	if h.decisionCache != nil {
-		h.decisionCache.Put(resp.DecisionID, resp)
-	}
-
+	h.recordDecision(&req, resp, latencyMs)
 	metrics.RecordDecision(string(resp.Decision), string(req.ActionType), latencyMs)
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Trace-ID", span.TraceID)
+	w.Header().Set("X-Span-ID", span.SpanID)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (h *Handler) handleBatchCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRuntimeBodyBytes))
+	if err != nil {
+		api.JSONBadRequest(w, "failed to read request body")
+		return
+	}
+	defer r.Body.Close()
+
+	var reqBody struct {
+		Requests []models.ActionRequest `json:"requests"`
+	}
+	if err := json.Unmarshal(body, &reqBody); err != nil {
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
+		return
+	}
+
+	if reqBody.Requests == nil {
+		reqBody.Requests = []models.ActionRequest{}
+	}
+	if len(reqBody.Requests) > maxBatchCheckRequests {
+		api.JSONBadRequest(w, fmt.Sprintf("requests exceeds maximum batch size of %d", maxBatchCheckRequests))
+		return
+	}
+
+	decisions := make([]*models.DecisionResponse, 0, len(reqBody.Requests))
+	for i := range reqBody.Requests {
+		req := &reqBody.Requests[i]
+		if errMsg := h.bindIdentity(r, req); errMsg != "" {
+			api.JSONBadRequest(w, errMsg)
+			return
+		}
+		resp, err := h.evaluator.Evaluate(req)
+		if err != nil {
+			resp = &models.DecisionResponse{
+				Decision:    models.DecisionDeny,
+				ReasonCodes: []models.ReasonCode{models.ReasonDeny},
+			}
+		}
+		// Evidence parity with /v1/runtime/check: every batch decision
+		// gets the same receipt, event, and provenance-cache treatment
+		// a single check produces — batch must not be a quieter path.
+		h.recordDecision(req, resp, 0)
+		decisions = append(decisions, resp)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]any{"decisions": decisions})
+}
+
 func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.ActionRequest) *models.Receipt {
 	receipt := &models.Receipt{
-		ReceiptID:    resp.ReceiptStub.ReceiptID,
-		DecisionID:   resp.DecisionID,
-		ActionDigest: resp.ReceiptStub.ActionDigest,
-		ActionType:   resp.ReceiptStub.ActionType,
-		Resource:     resp.ReceiptStub.Resource,
-		Decision:     string(resp.Decision),
+		ReceiptID:     resp.ReceiptStub.ReceiptID,
+		DecisionID:    resp.DecisionID,
+		ActionDigest:  resp.ReceiptStub.ActionDigest,
+		ActionType:    resp.ReceiptStub.ActionType,
+		Resource:      resp.ReceiptStub.Resource,
+		Decision:      string(resp.Decision),
 		PolicyVersion: resp.ReceiptStub.PolicyVersion,
-		TrustScore:   resp.ReceiptStub.TrustContextScore,
-		TrustLevel:   resp.TrustLevel,
-		IssuedAt:     resp.ReceiptStub.IssuedAt,
+		TrustScore:    resp.ReceiptStub.TrustContextScore,
+		TrustLevel:    resp.TrustLevel,
+		TrustEpoch:    resp.ReceiptStub.TrustEpoch,
+		IssuedAt:      resp.ReceiptStub.IssuedAt,
 	}
 	if req.AgentIdentity != nil {
 		receipt.AgentID = req.AgentIdentity.SubjectID
@@ -334,6 +422,15 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 		receipt.AnomalySignals = resp.TrustContext.AnomalySignals
 	}
 	receipt.Signature = "sig_v1_local:" + resp.ReceiptStub.ReceiptID
+	if h.receiptSigner != nil {
+		receipt.Signature = h.receiptSigner.Sign(receipt)
+	}
+	// P2.3.5: additive Ed25519 gateway signature over the canonical
+	// receipt payload (trust_epoch included). The HMAC preimage is
+	// unchanged — the two signatures are independent mechanisms.
+	if h.receiptEdSigner != nil {
+		h.receiptEdSigner.SignReceipt(receipt)
+	}
 	return receipt
 }
 
@@ -427,15 +524,15 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := map[string]any{
-		"gateway_version":       h.config.GatewayVersion,
-		"policy_version":        policyVersion,
-		"policy_source":         policySource,
-		"policy_refresh_secs":   h.config.PolicyRefreshInterval,
-		"storage_mode":          storageMode,
-		"decision_cache_count":  cacheCount,
-		"decision_cache_max":    cacheMax,
-		"receipt_count":         receiptCount,
-		"enrollment_file":       h.config.EnrollmentFile,
+		"gateway_version":      h.config.GatewayVersion,
+		"policy_version":       policyVersion,
+		"policy_source":        policySource,
+		"policy_refresh_secs":  h.config.PolicyRefreshInterval,
+		"storage_mode":         storageMode,
+		"decision_cache_count": cacheCount,
+		"decision_cache_max":   cacheMax,
+		"receipt_count":        receiptCount,
+		"enrollment_file":      h.config.EnrollmentFile,
 	}
 
 	if h.config.PolicyRefreshInterval > 0 {
@@ -446,6 +543,10 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	if h.enrollmentSvc != nil {
 		identity := h.enrollmentSvc.GetIdentity()
+		if identity == nil {
+			api.JSONError(w, http.StatusServiceUnavailable, "enrollment identity not initialized")
+			return
+		}
 		enrollStatus := h.enrollmentSvc.GetStatus()
 		status["gateway_id"] = identity.ID
 		status["gateway_name"] = identity.Name
@@ -468,7 +569,23 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	if h.approvalSvc != nil {
 		pending := h.approvalSvc.ListPending()
-		status["pending_approval_count"] = len(pending)
+		approved := h.approvalSvc.ListByStatus(approval.StatusApproved)
+		denied := h.approvalSvc.ListByStatus(approval.StatusDenied)
+		approvalStats := map[string]any{
+			"pending":  len(pending),
+			"approved": len(approved),
+			"denied":   len(denied),
+		}
+		if len(pending) > 0 {
+			var oldest time.Time
+			for _, a := range pending {
+				if oldest.IsZero() || a.CreatedAt.Before(oldest) {
+					oldest = a.CreatedAt
+				}
+			}
+			approvalStats["oldest_pending_at"] = oldest
+		}
+		status["approvals"] = approvalStats
 	}
 
 	if h.shieldStats != nil {
@@ -508,8 +625,46 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.continuationStore != nil {
+		all := h.continuationStore.ListAll()
+		stateCounts := make(map[string]int)
+		var executableCount, retryableCount, executingCount int
+		var oldestExecutable, oldestRetryable, oldestExecuting time.Time
+		for _, c := range all {
+			stateCounts[string(c.State)]++
+			if c.IsExecutable() {
+				executableCount++
+				if oldestExecutable.IsZero() || c.CreatedAt.Before(oldestExecutable) {
+					oldestExecutable = c.CreatedAt
+				}
+			}
+			if c.CanRetry() {
+				retryableCount++
+				if oldestRetryable.IsZero() || c.CreatedAt.Before(oldestRetryable) {
+					oldestRetryable = c.CreatedAt
+				}
+			}
+			if c.State == continuation.StateExecuting {
+				executingCount++
+				if oldestExecuting.IsZero() || c.CreatedAt.Before(oldestExecuting) {
+					oldestExecuting = c.CreatedAt
+				}
+			}
+		}
 		contStats := map[string]any{
-			"count": len(h.continuationStore.ListAll()),
+			"count":      len(all),
+			"by_state":   stateCounts,
+			"executable": executableCount,
+			"retryable":  retryableCount,
+			"executing":  executingCount,
+		}
+		if executableCount > 0 {
+			contStats["oldest_executable_at"] = oldestExecutable
+		}
+		if retryableCount > 0 {
+			contStats["oldest_retryable_at"] = oldestRetryable
+		}
+		if executingCount > 0 {
+			contStats["oldest_executing_at"] = oldestExecuting
 		}
 		if fb, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
 			contStats["storage_mode"] = "file_backed"
@@ -526,10 +681,120 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		status["continuations"] = contStats
 	}
 
+	if h.orchestrator != nil {
+		status["queue_paused"] = h.orchestrator.IsPaused()
+		queued, running := h.orchestrator.QueueStats()
+		status["queue_stats"] = map[string]int{
+			"queued":  queued,
+			"running": running,
+		}
+		executing := h.orchestrator.ExecutingCount()
+		status["executing"] = executing
+		if executing > 0 {
+			if oldest := h.orchestrator.OldestExecutingAt(); !oldest.IsZero() {
+				status["oldest_executing_at"] = oldest
+			}
+		}
+	}
+
 	status["maintenance_mode"] = h.maintenanceMode
+
+	h.addSLABreaches(status)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
+}
+
+func (h *Handler) handleGetHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	status := map[string]any{}
+
+	h.addSLABreaches(status)
+
+	status["maintenance_mode"] = h.maintenanceMode
+
+	if h.orchestrator != nil {
+		status["queue_paused"] = h.orchestrator.IsPaused()
+	}
+
+	health := map[string]any{
+		"healthy": true,
+		"sla":     status["sla"],
+	}
+	if status["maintenance_mode"] == true {
+		health["healthy"] = false
+		health["reason"] = "maintenance_mode"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(health)
+}
+
+func (h *Handler) addSLABreaches(status map[string]any) {
+	if h.config == nil {
+		return
+	}
+
+	var approvalBreachCount int
+	var retryableBreachCount int
+	var executingBreachCount int
+
+	approvalThreshold := h.config.SLAApprovalMaxAgeMin
+	if approvalThreshold <= 0 {
+		approvalThreshold = h.config.SLAPendingApprovalMaxAgeMin
+	}
+	if approvalThreshold <= 0 {
+		approvalThreshold = 30
+	}
+	approvalDuration := time.Duration(approvalThreshold) * time.Minute
+
+	retryableThreshold := h.config.SLARetryableMaxAgeMin
+	if retryableThreshold <= 0 {
+		retryableThreshold = 60
+	}
+	retryableDuration := time.Duration(retryableThreshold) * time.Minute
+
+	executingThreshold := h.config.SLAExecutingMaxAgeMin
+	if executingThreshold <= 0 {
+		executingThreshold = 5
+	}
+	executingDuration := time.Duration(executingThreshold) * time.Minute
+
+	now := time.Now().UTC()
+
+	if h.approvalSvc != nil {
+		pending := h.approvalSvc.ListPending()
+		for _, a := range pending {
+			if now.Sub(a.CreatedAt) > approvalDuration {
+				approvalBreachCount++
+			}
+		}
+	}
+
+	if h.continuationStore != nil {
+		all := h.continuationStore.ListAll()
+		for _, c := range all {
+			if c.CanRetry() && now.Sub(c.CreatedAt) > retryableDuration {
+				retryableBreachCount++
+			}
+			if c.State == continuation.StateExecuting && now.Sub(c.CreatedAt) > executingDuration {
+				executingBreachCount++
+			}
+		}
+	}
+
+	status["sla"] = map[string]any{
+		"approvals_breaching":     approvalBreachCount,
+		"retryable_breaching":     retryableBreachCount,
+		"executing_breaching":     executingBreachCount,
+		"approval_threshold_min":  approvalThreshold,
+		"retryable_threshold_min": retryableThreshold,
+		"executing_threshold_min": executingThreshold,
+	}
 }
 
 func (h *Handler) handleIntegrity(w http.ResponseWriter, r *http.Request) {
@@ -563,11 +828,11 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		eventCount := h.eventStore.Count()
 		if fb, ok := h.eventStore.(*events.FileBackedStore); ok {
 			eventStats = map[string]any{
-				"count":            fb.CurrentCount(),
-				"storage_mode":     "file_backed",
-				"retention_days":   fb.RetentionDays(),
-				"max_records":      fb.MaxRecords(),
-				"file_path":       fb.FilePath(),
+				"count":          fb.CurrentCount(),
+				"storage_mode":   "file_backed",
+				"retention_days": fb.RetentionDays(),
+				"max_records":    fb.MaxRecords(),
+				"file_path":      fb.FilePath(),
 			}
 			if size, err := fb.FileSizeBytes(); err == nil {
 				eventStats["file_size_bytes"] = size
@@ -585,12 +850,12 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		if fb, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
 			contStats = map[string]any{
-				"count":            len(allConts),
-				"storage_mode":     "file_backed",
-				"retention_days":   fb.RetentionDays(),
-				"max_records":      fb.MaxRecords(),
-				"file_path":       fb.FilePath(),
-				"by_state":        stateCounts,
+				"count":          len(allConts),
+				"storage_mode":   "file_backed",
+				"retention_days": fb.RetentionDays(),
+				"max_records":    fb.MaxRecords(),
+				"file_path":      fb.FilePath(),
+				"by_state":       stateCounts,
 			}
 			if size, err := fb.FileSizeBytes(); err == nil {
 				contStats["file_size_bytes"] = size
@@ -603,11 +868,11 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if h.executionStore != nil {
 		total, succeeded, failed, running, timedOut := h.executionStore.Stats()
 		execStats = map[string]any{
-			"total":      total,
-			"succeeded":  succeeded,
-			"failed":     failed,
-			"running":    running,
-			"timed_out":  timedOut,
+			"total":     total,
+			"succeeded": succeeded,
+			"failed":    failed,
+			"running":   running,
+			"timed_out": timedOut,
 		}
 		if fb, ok := h.executionStore.(*execution.FileBackedStore); ok {
 			execStats["storage_mode"] = "file_backed"
@@ -623,9 +888,14 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	gatewayName := ""
 	enrollmentState := "local"
 	if h.enrollmentSvc != nil {
-		gatewayID = h.enrollmentSvc.GetIdentity().ID
-		gatewayName = h.enrollmentSvc.GetIdentity().Name
-		enrollmentState = string(h.enrollmentSvc.GetIdentity().EnrollmentState)
+		identity := h.enrollmentSvc.GetIdentity()
+		if identity == nil {
+			api.JSONError(w, http.StatusServiceUnavailable, "enrollment identity not initialized")
+			return
+		}
+		gatewayID = identity.ID
+		gatewayName = identity.Name
+		enrollmentState = string(identity.EnrollmentState)
 	}
 
 	cacheCount, cacheMax := h.decisionCache.Stats()
@@ -652,22 +922,22 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"snapshot_at":           time.Now().UTC(),
+		"snapshot_at":          time.Now().UTC(),
 		"gateway_id":           gatewayID,
 		"gateway_name":         gatewayName,
 		"enrollment_state":     enrollmentState,
-		"policy_version":      h.evaluator.PolicyVersion(),
+		"policy_version":       h.evaluator.PolicyVersion(),
 		"decision_cache_count": cacheCount,
 		"decision_cache_max":   cacheMax,
-		"total_decisions":     snap.TotalDecisions,
-		"retention_config":    retentionConfig,
-		"events":              eventStats,
-		"continuations":       contStats,
-		"executions":          execStats,
+		"total_decisions":      snap.TotalDecisions,
+		"retention_config":     retentionConfig,
+		"events":               eventStats,
+		"continuations":        contStats,
+		"executions":           execStats,
 		"metrics": map[string]any{
 			"decision_counts": snap.DecisionCounts,
-			"action_counts":  snap.ActionCounts,
-			"avg_latency_ms": snap.AvgLatencyMs,
+			"action_counts":   snap.ActionCounts,
+			"avg_latency_ms":  snap.AvgLatencyMs,
 		},
 	})
 }
@@ -691,17 +961,17 @@ func (h *Handler) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]any{
-		"decision_counts":   snap.DecisionCounts,
-		"action_counts":      snap.ActionCounts,
-		"total_decisions":    snap.TotalDecisions,
-		"avg_latency_ms":     snap.AvgLatencyMs,
-		"last_latency_ms":    snap.LastLatencyMs,
-		"last_decision_at":   snap.LastDecisionAt,
-		"approval_counts":    snap.ApprovalCounts,
-		"heartbeat_count":    snap.HeartbeatCount,
-		"last_heartbeat_at":  snap.LastHeartbeatAt,
-		"policy_version":      policyVersion,
-		"policy_source":       policySource,
+		"decision_counts":      snap.DecisionCounts,
+		"action_counts":        snap.ActionCounts,
+		"total_decisions":      snap.TotalDecisions,
+		"avg_latency_ms":       snap.AvgLatencyMs,
+		"last_latency_ms":      snap.LastLatencyMs,
+		"last_decision_at":     snap.LastDecisionAt,
+		"approval_counts":      snap.ApprovalCounts,
+		"heartbeat_count":      snap.HeartbeatCount,
+		"last_heartbeat_at":    snap.LastHeartbeatAt,
+		"policy_version":       policyVersion,
+		"policy_source":        policySource,
 		"policy_reload_status": snap.PolicyReloadStatus,
 		"policy_reload_last":   snap.PolicyReloadLastAt,
 		"policy_reload_err":    snap.PolicyReloadErrMsg,
@@ -807,11 +1077,11 @@ func (h *Handler) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		"exported_at":        time.Now().UTC(),
 		"gateway_id":         gatewayID,
 		"time_range_since":   since,
-		"time_range_until":  until,
-		"event_count":       len(exportedEvents),
-		"execution_count":   len(exportedExecs),
+		"time_range_until":   until,
+		"event_count":        len(exportedEvents),
+		"execution_count":    len(exportedExecs),
 		"continuation_count": len(exportedConts),
-		"event_types":         eventTypeCounts,
+		"event_types":        eventTypeCounts,
 		"execution_stats": map[string]int{
 			"total": execTotal, "succeeded": execSucceeded,
 			"failed": execFailed, "running": execRunning, "timed_out": execTimedOut,
@@ -829,13 +1099,13 @@ func (h *Handler) StartCacheCleanup(interval time.Duration) {
 }
 
 type TraceResponse struct {
-	Decision     *models.DecisionResponse `json:"decision,omitempty"`
-	Receipt      *models.Receipt          `json:"receipt,omitempty"`
+	Decision      *models.DecisionResponse     `json:"decision,omitempty"`
+	Receipt       *models.Receipt              `json:"receipt,omitempty"`
 	Continuations []*continuation.Continuation `json:"continuations,omitempty"`
-	Approvals    []*approval.ApprovalRequest  `json:"approvals,omitempty"`
-	Executions   []*execution.Execution        `json:"executions,omitempty"`
-	Events       []*events.Event               `json:"events,omitempty"`
-	Capabilities  []*capabilities.TrackedLease  `json:"capabilities,omitempty"`
+	Approvals     []*approval.ApprovalRequest  `json:"approvals,omitempty"`
+	Executions    []*execution.Execution       `json:"executions,omitempty"`
+	Events        []*events.Event              `json:"events,omitempty"`
+	Capabilities  []*capabilities.TrackedLease `json:"capabilities,omitempty"`
 }
 
 func (h *Handler) handleTrace(w http.ResponseWriter, r *http.Request) {
@@ -871,8 +1141,9 @@ func (h *Handler) handleTrace(w http.ResponseWriter, r *http.Request) {
 		h.decisionCache.mu.RUnlock()
 
 		if h.receiptsStore != nil {
-			if rcp, err := h.receiptsStore.Get(decisionID); err == nil {
-				receipt = rcp
+			// Receipts are keyed by receipt_id, not decision_id; look up by decision.
+			if rcps := h.receiptsStore.ListByDecision(decisionID); len(rcps) > 0 {
+				receipt = rcps[0]
 			}
 		}
 
@@ -990,14 +1261,14 @@ func (h *Handler) handleTrace(w http.ResponseWriter, r *http.Request) {
 }
 
 type SummaryResponse struct {
-	Approvals      ApprovalSummary      `json:"approvals"`
-	Executions     ExecutionSummary     `json:"executions"`
-	Capabilities   CapabilitySummary    `json:"capabilities"`
-	DecisionCache  int                 `json:"decision_cache_size"`
+	Approvals     ApprovalSummary   `json:"approvals"`
+	Executions    ExecutionSummary  `json:"executions"`
+	Capabilities  CapabilitySummary `json:"capabilities"`
+	DecisionCache int               `json:"decision_cache_size"`
 }
 
 type ApprovalSummary struct {
-	Pending   int `json:"pending"`
+	Pending  int `json:"pending"`
 	Approved int `json:"approved"`
 	Denied   int `json:"denied"`
 	Total    int `json:"total"`
@@ -1012,9 +1283,9 @@ type ExecutionSummary struct {
 }
 
 type CapabilitySummary struct {
-	Active   int `json:"active"`
-	Revoked  int `json:"revoked"`
-	Total    int `json:"total"`
+	Active  int `json:"active"`
+	Revoked int `json:"revoked"`
+	Total   int `json:"total"`
 }
 
 func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
@@ -1073,4 +1344,254 @@ func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
 		Capabilities:  capabilitySummary,
 		DecisionCache: cacheSize,
 	})
+}
+
+// RequiredActionFieldsResponse describes the schema of an action request.
+type RequiredActionFieldsResponse struct {
+	ActionType            ActionTypeField    `json:"action_type"`
+	Environment           ActionTypeField    `json:"environment"`
+	Resource              ActionTypeField    `json:"resource"`
+	Nonce                 ActionTypeField    `json:"nonce"`
+	IssuedAt              ActionTypeField    `json:"issued_at"`
+	AgentIdentity         OptionalFieldGroup `json:"agent_identity"`
+	CapabilityLease       OptionalFieldGroup `json:"capability_lease"`
+	TrustMetadata         OptionalFieldGroup `json:"trust_metadata"`
+	Metadata              OptionalFieldGroup `json:"metadata"`
+	SupportedActionTypes  []string           `json:"supported_action_types"`
+	SupportedEnvironments []string           `json:"supported_environments"`
+}
+
+// ActionTypeField describes a required string field with allowed values.
+type ActionTypeField struct {
+	Required      bool     `json:"required"`
+	Type          string   `json:"type"`
+	Description   string   `json:"description"`
+	AllowedValues []string `json:"allowed_values,omitempty"`
+	Example       string   `json:"example,omitempty"`
+}
+
+// OptionalFieldGroup describes an optional JSON object field.
+type OptionalFieldGroup struct {
+	Required    bool                       `json:"required"`
+	Type        string                     `json:"type"`
+	Description string                     `json:"description"`
+	Fields      map[string]ActionTypeField `json:"fields,omitempty"`
+	Example     map[string]interface{}     `json:"example,omitempty"`
+}
+
+// handleRequiredActionFields returns the schema for /v1/runtime/check requests.
+//
+// This endpoint is useful for client SDKs and integration tests that need
+// to construct valid action requests without consulting the source code.
+func (h *Handler) handleRequiredActionFields(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		api.JSONMethodNotAllowed(w)
+		return
+	}
+
+	resp := RequiredActionFieldsResponse{
+		ActionType: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "The type of action being requested. Must be one of the supported action types.",
+			AllowedValues: []string{
+				"shell", "exec", "shell.sandboxed",
+				"git.push", "git.pull", "git.fetch", "git.checkout",
+				"github.push", "github.pr", "github.merge", "github.delete_branch",
+				"ci.trigger",
+			},
+			Example: "shell",
+		},
+		Environment: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "The environment in which the action is being requested.",
+			AllowedValues: []string{
+				"local", "dev", "staging", "production",
+			},
+			Example: "dev",
+		},
+		Resource: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "The resource identifier. Format depends on the action_type (e.g., 'shell:<command>' for shell, 'repo:<owner>/<repo>' for git/github).",
+			Example:     "shell:git push origin main",
+		},
+		Nonce: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "Unique per-request nonce. A nonce already seen within the dedup window is rejected (replay protection).",
+			Example:     "9f3c2a1e-7b4d-4e5f-8a9c-1d2e3f4a5b6c",
+		},
+		IssuedAt: ActionTypeField{
+			Required:    true,
+			Type:        "string",
+			Description: "RFC 3339 timestamp of when the request was issued. Must be within ±60s of gateway time.",
+			Example:     "2026-06-01T00:00:00Z",
+		},
+		AgentIdentity: OptionalFieldGroup{
+			Required:    false,
+			Type:        "object",
+			Description: "The agent's identity. Required for cryptographic verification.",
+			Fields: map[string]ActionTypeField{
+				"issuer":     {Required: true, Type: "string", Description: "The identity issuer (e.g., 'ovara')."},
+				"subject_id": {Required: true, Type: "string", Description: "The agent's subject identifier (e.g., 'agt_001')."},
+			},
+			Example: map[string]interface{}{
+				"issuer":     "ovara",
+				"subject_id": "agt_001",
+			},
+		},
+		CapabilityLease: OptionalFieldGroup{
+			Required:    false,
+			Type:        "object",
+			Description: "The capability lease authorizing the action. Required for actions that need cryptographic authorization.",
+			Fields: map[string]ActionTypeField{
+				"lease_id":         {Required: true, Type: "string", Description: "Unique lease identifier."},
+				"issuer":           {Required: true, Type: "string", Description: "The lease issuer."},
+				"subject":          {Required: true, Type: "string", Description: "The lease subject (agent ID)."},
+				"allowed_actions":  {Required: true, Type: "array", Description: "List of action types the lease permits."},
+				"resource_scope":   {Required: true, Type: "string", Description: "Resource scope glob."},
+				"expiry":           {Required: true, Type: "string", Description: "RFC 3339 expiry timestamp."},
+				"delegation_depth": {Required: true, Type: "integer", Description: "Maximum delegation depth (0 = non-delegable)."},
+			},
+			Example: map[string]interface{}{
+				"lease_id":         "cap_abc123",
+				"issuer":           "ovara",
+				"subject":          "agt_001",
+				"allowed_actions":  []string{"shell", "exec"},
+				"resource_scope":   "shell:*",
+				"expiry":           "2026-06-01T01:00:00Z",
+				"delegation_depth": 1,
+			},
+		},
+		TrustMetadata: OptionalFieldGroup{
+			Required:    false,
+			Type:        "object",
+			Description: "Signed posture attestation for the agent.",
+		},
+		Metadata: OptionalFieldGroup{
+			Required:    false,
+			Type:        "object",
+			Description: "Free-form metadata for audit. Not used for policy evaluation.",
+		},
+		SupportedActionTypes: []string{
+			"shell", "exec", "shell.sandboxed",
+			"git.push", "git.pull", "git.fetch", "git.checkout",
+			"github.push", "github.pr", "github.merge", "github.delete_branch",
+			"ci.trigger",
+		},
+		SupportedEnvironments: []string{
+			"local", "dev", "staging", "production",
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// bindIdentity makes the authenticated principal the sole authoritative
+// request identity. Caller-supplied agent_identity is ADVISORY metadata:
+// a subject_id matching the authenticated principal is accepted, an
+// omitted identity is bound to the principal, and a conflicting
+// subject_id is rejected outright — callers may describe themselves,
+// never impersonate. Issuer/owner fields are ignored for authorization.
+// Open mode (no credential) leaves identity untouched: authentication
+// is the trust boundary, dev mode is out of scope by design.
+func (h *Handler) bindIdentity(r *http.Request, req *models.ActionRequest) string {
+	principalID := auth.PrincipalID(r)
+	if principalID == "" {
+		return ""
+	}
+	if req.AgentIdentity == nil {
+		req.AgentIdentity = &models.AgentIdentity{SubjectID: principalID}
+	}
+	if req.AgentIdentity.Issuer == "" && h.enrollmentSvc != nil &&
+		h.enrollmentSvc.GetIdentity() != nil {
+		req.AgentIdentity.Issuer = h.enrollmentSvc.GetIdentity().ID
+	}
+	if req.AgentIdentity.SubjectID == "" {
+		req.AgentIdentity.SubjectID = principalID
+		return ""
+	}
+	if req.AgentIdentity.SubjectID != "" && req.AgentIdentity.SubjectID != principalID {
+		if h.eventStore != nil {
+			evt := events.NewEvent(events.EventTypeSecurityViolation).
+				WithAgentID(principalID).
+				WithPayload(map[string]any{
+					"kind":             "identity_mismatch",
+					"claimed_subject":  req.AgentIdentity.SubjectID,
+					"actual_principal": principalID,
+				})
+			h.eventStore.Append(evt)
+		}
+		return "identity_mismatch: agent_identity.subject_id does not match the authenticated principal — identity is derived from your credential, not request metadata"
+	}
+	req.AgentIdentity.SubjectID = principalID
+	// Issuer is advisory, but downstream validation requires it non-empty.
+	// The honest issuer of a credential-derived identity is this gateway —
+	// stamp it when the caller didn't supply one.
+	if req.AgentIdentity.Issuer == "" && h.enrollmentSvc != nil &&
+		h.enrollmentSvc.GetIdentity() != nil {
+		req.AgentIdentity.Issuer = h.enrollmentSvc.GetIdentity().ID
+	}
+	return ""
+}
+
+// recordDecision is the single decision-evidence path shared by
+// /v1/runtime/check and /v1/runtime/batch-check: decision log, receipt,
+// events, and the provenance cache approvals later resolve against.
+func (h *Handler) recordDecision(req *models.ActionRequest, resp *models.DecisionResponse, latencyMs int64) {
+	if h.logger != nil {
+		_ = h.logger.Log(req, resp, latencyMs)
+	}
+
+	if h.receiptsStore != nil && resp.ReceiptStub != nil {
+		receipt := h.buildReceipt(resp, req)
+		_ = h.receiptsStore.Put(receipt)
+
+		if h.eventStore != nil {
+			var agentID string
+			if req.AgentIdentity != nil {
+				agentID = req.AgentIdentity.SubjectID
+			}
+			gwID := ""
+			if h.enrollmentSvc != nil && h.enrollmentSvc.GetIdentity() != nil {
+				gwID = h.enrollmentSvc.GetIdentity().ID
+			}
+
+			evt := events.NewEvent(events.EventTypeDecisionEvaluated).
+				WithGatewayID(gwID).
+				WithAgentID(agentID).
+				WithDecisionID(resp.DecisionID).
+				WithReceiptID(resp.ReceiptStub.ReceiptID).
+				WithPayload(map[string]any{
+					"action_type":       string(req.ActionType),
+					"resource":          req.Resource,
+					"decision":          string(resp.Decision),
+					"trust_score":       resp.TrustScore,
+					"trust_level":       resp.TrustLevel,
+					"requires_approval": resp.RequiresApproval,
+					"latency_ms":        latencyMs,
+				})
+			h.eventStore.Append(evt)
+
+			receiptEvt := events.NewEvent(events.EventTypeReceiptIssued).
+				WithGatewayID(gwID).
+				WithAgentID(agentID).
+				WithDecisionID(resp.DecisionID).
+				WithReceiptID(resp.ReceiptStub.ReceiptID).
+				WithPayload(map[string]any{
+					"action_type":    string(req.ActionType),
+					"resource":       req.Resource,
+					"decision":       string(resp.Decision),
+					"policy_version": resp.ReceiptStub.PolicyVersion,
+				})
+			h.eventStore.Append(receiptEvt)
+		}
+	}
+
+	if h.decisionCache != nil && resp.DecisionID != "" {
+		h.decisionCache.Put(resp.DecisionID, req, resp)
+	}
 }

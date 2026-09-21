@@ -19,7 +19,7 @@ const (
 	EventTypeShieldRestrictionChanged   = "shield.restriction_changed"
 	EventTypeEnrollmentHeartbeat        = "enrollment.heartbeat"
 	EventTypeContinuationCreated        = "continuation.created"
-	EventTypeContinuationReady          = "continuation.ready"
+	EventTypeContinuationQueued         = "continuation.queued"
 	EventTypeContinuationDenied        = "continuation.denied"
 	EventTypeContinuationResumed       = "continuation.resumed"
 	EventTypeContinuationExpired        = "continuation.expired"
@@ -42,6 +42,14 @@ const (
 	EventTypeCapabilityTracked        = "capability.tracked"
 	EventTypeCapabilityRevoked        = "capability.revoked"
 	EventTypeCapabilityUsed           = "capability.used"
+	EventTypeBatchRetryExecuted       = "batch.retry.executed"
+	EventTypeBatchRetrySkipped        = "batch.retry.skipped"
+	EventTypeBatchCancelExecuted      = "batch.cancel.executed"
+	EventTypeBatchCancelSkipped       = "batch.cancel.skipped"
+	// Emitted whenever an untrusted caller attempts something the
+	// authorization model forbids (fabricated decisions, field tampering,
+	// privilege escalation). Reason strings never contain secrets.
+	EventTypeSecurityViolation        = "security.violation"
 )
 
 type Event struct {
@@ -166,7 +174,8 @@ func (s *InMemoryStore) Get(eventID string) (*Event, bool) {
 	defer s.mu.RUnlock()
 	for i := len(s.events) - 1; i >= 0; i-- {
 		if s.events[i].EventID == eventID {
-			return s.events[i], true
+			cp := *s.events[i]
+			return &cp, true
 		}
 	}
 	return nil, false

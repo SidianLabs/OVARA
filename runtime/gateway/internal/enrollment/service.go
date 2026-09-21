@@ -1,13 +1,16 @@
 package enrollment
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
 	"time"
 
 	"ovara.runtime.gateway/internal/metrics"
+	"ovara.runtime.gateway/internal/persist"
 )
 
 type Service interface {
@@ -117,14 +120,13 @@ func (s *localService) Initialize(env string) error {
 	}
 
 	if s.filePath != "" {
-		if err := os.MkdirAll(s.dir(), 0755); err != nil {
-			return err
-		}
 		data, err := json.MarshalIndent(s.identity, "", "  ")
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(s.filePath, data, 0644)
+		// Atomic write (tmp + fsync + rename): a crash mid-write must not
+		// leave a corrupt identity file.
+		return persist.WriteFileAtomic(s.filePath, data, 0644)
 	}
 
 	return nil
@@ -145,7 +147,7 @@ func (s *localService) Heartbeat() error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(s.filePath, data, 0644); err != nil {
+		if err := persist.WriteFileAtomic(s.filePath, data, 0644); err != nil {
 			return err
 		}
 	}
@@ -164,6 +166,7 @@ func (s *localService) IsEnrolled() bool {
 }
 
 func (s *localService) StartHeartbeat(interval time.Duration) func() {
+	var stopOnce sync.Once
 	s.mu.Lock()
 	s.stopCh = make(chan struct{})
 	s.mu.Unlock()
@@ -182,12 +185,11 @@ func (s *localService) StartHeartbeat(interval time.Duration) func() {
 	}()
 
 	return func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.stopCh != nil {
+		stopOnce.Do(func() {
+			s.mu.Lock()
 			close(s.stopCh)
-			s.stopCh = nil
-		}
+			s.mu.Unlock()
+		})
 	}
 }
 
@@ -204,5 +206,8 @@ func (s *localService) dir() string {
 }
 
 func newGatewayID() string {
-	return fmt.Sprintf("gw_%d", time.Now().UnixNano()%1000000)
+	var b [8]byte
+	rand.Read(b[:])
+	nanos := time.Now().UnixNano()
+	return fmt.Sprintf("gw_%d%06d", nanos/1000000, nanos%1000000) + fmt.Sprintf("%04x", binary.BigEndian.Uint32(b[:4]))
 }

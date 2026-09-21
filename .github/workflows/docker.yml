@@ -1,0 +1,30 @@
+name: Docker Builds
+
+on:
+  push:
+    branches: [main, "phase-7-foundations"]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Gateway Image
+        run: docker build -t ovara/gateway:latest runtime/gateway
+      - name: Build Control Plane
+        run: docker build -t ovara/control-plane:latest cloud/control-plane
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: 1

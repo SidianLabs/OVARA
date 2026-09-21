@@ -1,0 +1,59 @@
+# OVARA MicroVM Sandbox — Firecracker configuration (STARTING TEMPLATE)
+#
+# This is a valid `firecracker --config-file` document. Only keys the
+# Firecracker config-file parser accepts are used. Everything else the old
+# template listed (seccomp_path, balloon stats, network_enabled, cgroup
+# weights, snapshot flags, pids_limit, etc.) is either a JAILER CLI flag, a
+# separate API call, or not a Firecracker concept — see notes below.
+#
+# Launch: firecracker --config-file firecracker.yaml
+# (or use the jailer: jailer --id <id> --exec-file /usr/bin/firecracker
+#   --uid <uid> --gid <gid> --chroot-base-dir /srv/jailer ...)
+#
+# IMPORTANT: prepare kernel_image_path and the rootfs drive before use.
+
+boot_args: "console=ttyS0 reboot=k panic=1 pci=off nomodules"
+
+kernel_image_path: "/var/lib/ovara/vmlinux.bin"
+
+# Root filesystem: read-only, attached as the root block device.
+drives:
+  - drive_id: "rootfs"
+    path_on_host: "/var/lib/ovara/rootfs.ext4"
+    is_root_device: true
+    is_read_only: true
+
+machine-config:
+  vcpu_count: 1
+  mem_size_mib: 128
+  smt: false
+  track_dirty_pages: false
+
+# NETWORK: intentionally absent. A Firecracker config only creates a NIC when
+# a `network_interfaces` entry is present; omitting it means the guest has NO
+# network device. Do not add one unless the workload genuinely requires it.
+
+# Logging/metrics for the firecracker process itself.
+logger:
+  log_path: "/var/log/ovara/firecracker.log"
+  level: "Warning"
+  show_level: true
+  show_log_origin: false
+metrics:
+  metrics_path: "/var/log/ovara/firecracker-metrics"
+
+# ---------------------------------------------------------------------------
+# Things that are NOT config-file keys (for the record):
+# - Seccomp: the jailer applies a seccomp filter via `--seccomp-level` (or the
+#   jailer binary path); seccomp-profile.json in this directory is for
+#   container runtimes (e.g. docker --security-opt seccomp=...), not firecracker.
+# - Balloon device: configured via the API (`PUT /balloon`), not config file.
+# - Snapshots: taken/restored via API calls (`PUT /snapshot/create`), and only
+#   with a matching firecracker version — there is no `enable_snapshotting` key.
+# - cgroup limits (cpu.max, pids.max, memory.max), user namespaces, and chroot
+#   are jailer/host concerns — apply them when launching firecracker, e.g.:
+#     systemd-run --property=MemoryMax=128M --property=TasksMax=50 \
+#       --property=CPUWeight=10 firecracker --config-file firecracker.yaml
+# - "max_runtime_seconds": enforce with your supervisor (timeout(1) or
+#   systemd RuntimeMaxSec).
+# ---------------------------------------------------------------------------

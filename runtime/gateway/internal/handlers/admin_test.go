@@ -44,6 +44,52 @@ func (m *mockContinuationStore) ListNonTerminal() []*continuation.Continuation {
 	return m.nonTerminal
 }
 
+func (m *mockContinuationStore) ClaimForExecution(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) ClaimForRetry(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) RetryForExecution(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) ApplyApprovalDecision(approvalID string, approved bool, resolvedBy, reason string) []*continuation.Continuation {
+	return nil
+}
+
+func (m *mockContinuationStore) ResumeForApproval(approvalID string) []*continuation.Continuation {
+	return nil
+}
+
+func (m *mockContinuationStore) EnqueueForExecution(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) ExpireIfDue(id string, now time.Time) (*continuation.Continuation, bool) {
+	for _, c := range m.nonTerminal {
+		if c.ContinuationID == id && c.ShouldExpire(now) {
+			c.MarkExpired()
+			return c, true
+		}
+	}
+	return nil, false
+}
+
+func (m *mockContinuationStore) CancelForOperation(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) RecoverFromExecuting(id string) (*continuation.Continuation, bool) {
+	return nil, false
+}
+
+func (m *mockContinuationStore) ListExecutingIDs() []string {
+	return nil
+}
+
 func (m *mockContinuationStore) MarkExpired(id string) error {
 	return nil
 }
@@ -82,10 +128,10 @@ func (m *mockExecutionStore) Stats() (int, int, int, int, int) {
 
 type mockEventStore struct{}
 
-func (m *mockEventStore) Append(e *events.Event) {}
-func (m *mockEventStore) List(limit int) []*events.Event { return nil }
+func (m *mockEventStore) Append(e *events.Event)              {}
+func (m *mockEventStore) List(limit int) []*events.Event      { return nil }
 func (m *mockEventStore) Get(id string) (*events.Event, bool) { return nil, false }
-func (m *mockEventStore) Count() int { return 0 }
+func (m *mockEventStore) Count() int                          { return 0 }
 
 func TestAdminHandler_ReconcileContinuations(t *testing.T) {
 	h := NewAdminHandler()
