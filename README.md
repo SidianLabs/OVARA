@@ -114,17 +114,21 @@ Ovara provides that missing layer.
 
 ## Product Surface
 
+> **Pre-release software (v0.x).** The gateway core is real and heavily
+> tested; packaging, CI, and parts of the surrounding ecosystem are still
+> being hardened. Not yet certified for production use.
+
 | Product | Status | Description |
 |---------|--------|-------------|
-| **Ovara Runtime** | ✅ GA | Single-binary Go gateway: interception, policy evaluation, approvals, execution, receipts |
-| **Ovara Identity** | ✅ GA | Machine identity primitives (ed25519) with capability leases and delegation chains |
-| **Ovara Observe** | 🚧 Partial | Action lineage & event log today; OTLP/NATS telemetry + ClickHouse analytics planned (not wired — see `observability/README.md`) |
-| **Ovara Shield** | ✅ GA | Anomaly signals, trust degradation, containment hooks |
-| **Ovara Cloud** | ✅ GA | Hosted control plane, gateway enrollment, policy distribution, multi-tenant |
-| **Ovara Federation** | ✅ GA | Cross-organization trust graph with portable receipts |
-| **Ovara SDKs** | ✅ GA | TypeScript (`@ovara/sdk`) and Python (`ovara-sdk`) with portable verification |
-| **Ovara Integrations** | ✅ GA | CrewAI, OpenAI Agents, OpenAI, LangChain, MCP, Browser Automation |
-| **Ovara Admin** | ✅ GA | Next.js dashboard for gateway monitoring, policy editor, audit log |
+| **Ovara Runtime** | 🟡 Beta | Single-binary Go gateway: interception, policy evaluation, approvals, execution, receipts — the most complete component |
+| **Ovara Identity** | 🟡 Beta | Machine identity primitives (ed25519) with capability leases and delegation chains |
+| **Ovara Observe** | 🚧 Scaffold | Action lineage & event log today; OTLP/NATS telemetry + ClickHouse analytics planned (not wired — see `observability/README.md`) |
+| **Ovara Shield** | 🟡 Beta | Anomaly signals, trust degradation, containment hooks |
+| **Ovara Cloud** | 🔶 Alpha | Hosted control plane, gateway enrollment, policy distribution, multi-tenant — partially implemented |
+| **Ovara Federation** | 🔶 Alpha | Cross-organization trust graph with portable receipts — partially implemented |
+| **Ovara SDKs** | 🟡 Beta | TypeScript (`@ovara/sdk`) and Python (`ovara-sdk`) with portable verification |
+| **Ovara Integrations** | 🔶 Alpha | CrewAI, OpenAI Agents, OpenAI, LangChain, MCP, Browser Automation |
+| **Ovara Admin** | 🔶 Alpha | Next.js dashboard for gateway monitoring, policy editor, audit log |
 
 ---
 

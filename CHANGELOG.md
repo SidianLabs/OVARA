@@ -5,7 +5,7 @@ All notable changes to Ovara are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2026-09-21
+## [0.9.0] - 2026-09-21
 
 The OVARA 2.0 security series: the gateway becomes an enforceable execution
 boundary — enrolled gateway identity, durable revocation, claim-time
@@ -77,7 +77,7 @@ authority verification, and Ed25519-signed receipts.
   a credential-starving executor proxy where every side effect transits a
   notarizing chokepoint.
 
-## [1.0.0] - 2026-06-12
+## [0.1.0] - 2026-06-12 (previously tagged v1.0.0 — premature; renumbered)
 
 ### Added
 
