@@ -28,3 +28,4 @@ __pycache__/
 .commandcode/
 trust/trust-server
 tools/benchmarks/benchmark
+dist/

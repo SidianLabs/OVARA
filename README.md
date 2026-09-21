@@ -44,7 +44,7 @@ One binary runs the whole local deployment — gateway plus executor proxy.
 **Install** (requires git + Go 1.25+):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/feat/executor-proxy/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.sh | sh
 ```
 
 or build from source:
@@ -250,8 +250,10 @@ curl -X POST http://localhost:8080/v1/runtime/check \
 
 ### Use the TypeScript SDK
 
+The SDK is not yet published to npm — install it from the repo:
+
 ```bash
-npm install @ovara/sdk
+npm install ./sdk/typescript
 ```
 
 ```typescript
@@ -275,8 +277,10 @@ if (decision.decision === 'escalate') { /* request approval */ }
 
 ### Use the Python SDK
 
+The SDK is not yet published to PyPI — install it from the repo:
+
 ```bash
-pip install ovara-sdk
+pip install ./sdk/python
 ```
 
 ```python
