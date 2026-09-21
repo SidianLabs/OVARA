@@ -14,6 +14,7 @@ const (
 	EventTypeApprovalResolved           = "approval.resolved"
 	EventTypeApprovalResumed            = "approval.resumed"
 	EventTypeReceiptIssued              = "receipt.issued"
+	EventTypeReceiptPersistFailed       = "receipt.persist_failed"
 	EventTypePolicyReloaded             = "policy.reloaded"
 	EventTypePolicyReloadFailed         = "policy.reload_failed"
 	EventTypeShieldRestrictionChanged   = "shield.restriction_changed"

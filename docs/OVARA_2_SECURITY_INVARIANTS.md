@@ -9,8 +9,15 @@ test is a wish, not a guarantee. Current test status is noted.
 > connectivity except through the Ovara proxy.
 
 Test: `tests/boundary/netns_test.sh`, `tests/boundary/docker_test.sh` —
-direct IPv4, direct IP literal, IPv6, UDP/443, SSH/22, alt ports.
-**Status: LIVE VERIFIED** (manual run, both modes — needs automation).
+deploy the real boundary and assert from inside: proxy port reachable,
+non-proxy host/gateway port unreachable, direct external egress denied,
+IPv6 disabled (netns). Scripts SKIP (exit 77) when prerequisites
+(root/nft/docker) are absent — a skipped environment is not a pass.
+**Status: LIVE-ENVIRONMENT VERIFIED** — netns 4/4 and docker 3/3 ran
+green against a real deployed boundary in the post-review environment.
+The property remains deployment-bounded: the software ships the
+boundary script and the test; enforcement exists only where an
+operator has actually applied it.
 
 ## I2 — Credential custody
 > The agent cannot obtain a brokered credential.
@@ -30,6 +37,10 @@ upstream → [REDACTED]`).
 Test: induced failures at each stage; verify receipt exists for each
 (unreceipted-transit = invariant violation).
 **Status: IMPLEMENTED** — abort-after-upstream edge case needs a test.
+Post-review hardening (F-01): a failed `receiptsStore.Put` now emits
+`receipt.persist_failed` (never `receipt.issued`) and logs a SECURITY
+line — a missing receipt can no longer masquerade as persisted.
+Covered by `internal/handlers/receipt_persist_test.go`.
 
 ## I4 — Denied cannot execute
 > A `deny` decision cannot result in upstream execution, and a denied

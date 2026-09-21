@@ -23,6 +23,11 @@ NOT cover:
   FR-J  deleted replay journal → restart → consumed nonce re-presented
         (documents the journal-deletion residual)
   FR-K  sync execute path on a planted record (operator endpoint)
+  FR-L  identity gate on planted records: agent_id naming a suspended
+        identity must never execute; agent_id="" skips the gate
+        (documents the exact claim surface — F-03 precision)
+  FR-M  restart drops in-flight escalation provenance: approval create
+        for a pre-restart decision_id → 404, no resurrection (F-04)
 
 usage: python3 tests/e2e/final_review.py [workdir]
 """
@@ -194,7 +199,7 @@ def main():
         req(P, "POST", "/v1/continuations/queue/resume")
         time.sleep(3)
         st, cb = req(P, "GET", f"/v1/continuations/{cntD}")
-        stt = (cb.get("state") or "")
+        stt = (cb.get("state") or (cb.get("continuation") or {}).get("state") or "")
         H.rec("FR-D2: queued work still executes after credential revoke "
               "(credential not in claim-time pairs — documented semantics)",
               "executed", stt, stt == "executed")
@@ -325,6 +330,52 @@ def main():
     ran = os.path.exists(f"{MARK}-k")
     H.rec("FR-K1: operator sync-execute on planted record executes",
           True, ran, ran)
+
+    # ── FR-L: identity gate on planted records ──────────────────────
+    # The drain checks cnt.AgentID against identity state before claim.
+    # A planted record naming a SUSPENDED identity must never execute.
+    st, _ = req(P, "POST", "/v1/identities/status",
+                {"identity_id": H.PRIN, "action": "suspend"})
+    H.rec("FR-L0: suspend principal identity", True, st == 200, st == 200)
+    fake4 = planted("shell", f"shell:touch {MARK}-l")
+    with open(CNT(d), "a") as f:
+        f.write(json.dumps(fake4) + "\n")
+    restart(d, P)
+    time.sleep(3)  # drain interval
+    ran = os.path.exists(f"{MARK}-l")
+    H.rec("FR-L1: planted record w/ suspended identity never executes",
+          False, ran, not ran)
+    # The gate guards on cnt.AgentID != "" — a planted record with an
+    # EMPTY agent_id skips the check entirely. Document the bound.
+    fake5 = planted("shell", f"shell:touch {MARK}-l2", agent_id="")
+    with open(CNT(d), "a") as f:
+        f.write(json.dumps(fake5) + "\n")
+    restart(d, P)
+    time.sleep(3)
+    ran = os.path.exists(f"{MARK}-l2")
+    H.rec("FR-L2: planted record w/ empty agent_id bypasses identity "
+          "gate (documented bound)", True, ran, ran)
+    # hygiene: resume the identity and remove both planted lines.
+    for p in list(H.PROCS): p.kill(); p.wait()
+    H.PROCS.clear(); time.sleep(0.3)
+    lines = [l for l in open(CNT(d))
+             if fake4["continuation_id"] not in l
+             and fake5["continuation_id"] not in l]
+    open(CNT(d), "w").writelines(lines)
+    p, ok = H.launch(d); H.PROCS.append(p)
+    req(P, "POST", "/v1/identities/status",
+        {"identity_id": H.PRIN, "action": "resume"})
+
+    # ── FR-M: restart drops in-flight escalation provenance (F-04) ──
+    st, b = H.check(P, {"action_type": "git.push", "resource": "repo:m"})
+    esc = b.get("decision") == "escalate"
+    did = b.get("decision_id")
+    H.rec("FR-M0: decision escalates", True, esc, esc)
+    restart(d, P)
+    st, b = req(P, "POST", "/v1/approval/create", {"decision_id": did},
+                token=H.AGENT)
+    H.rec("FR-M1: approval create for pre-restart decision → 404 "
+          "(fail-closed, no resurrection)", 404, st, st == 404)
 
     # summary
     fails = [r for r in H.RESULTS if not r[3]]

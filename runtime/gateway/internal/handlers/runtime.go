@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"sync"
@@ -1548,7 +1549,13 @@ func (h *Handler) recordDecision(req *models.ActionRequest, resp *models.Decisio
 
 	if h.receiptsStore != nil && resp.ReceiptStub != nil {
 		receipt := h.buildReceipt(resp, req)
-		_ = h.receiptsStore.Put(receipt)
+		// The receipt is post-decision evidence, not an authorization
+		// prerequisite: a failed write must not change the decision,
+		// but it must never be reported as a durable receipt.
+		persistErr := h.receiptsStore.Put(receipt)
+		if persistErr != nil {
+			log.Printf("SECURITY: receipt persistence failed for decision %s: %v", resp.DecisionID, persistErr)
+		}
 
 		if h.eventStore != nil {
 			var agentID string
@@ -1576,17 +1583,33 @@ func (h *Handler) recordDecision(req *models.ActionRequest, resp *models.Decisio
 				})
 			h.eventStore.Append(evt)
 
-			receiptEvt := events.NewEvent(events.EventTypeReceiptIssued).
-				WithGatewayID(gwID).
-				WithAgentID(agentID).
-				WithDecisionID(resp.DecisionID).
-				WithReceiptID(resp.ReceiptStub.ReceiptID).
-				WithPayload(map[string]any{
-					"action_type":    string(req.ActionType),
-					"resource":       req.Resource,
-					"decision":       string(resp.Decision),
-					"policy_version": resp.ReceiptStub.PolicyVersion,
-				})
+			var receiptEvt *events.Event
+			if persistErr == nil {
+				receiptEvt = events.NewEvent(events.EventTypeReceiptIssued).
+					WithGatewayID(gwID).
+					WithAgentID(agentID).
+					WithDecisionID(resp.DecisionID).
+					WithReceiptID(resp.ReceiptStub.ReceiptID).
+					WithPayload(map[string]any{
+						"action_type":    string(req.ActionType),
+						"resource":       req.Resource,
+						"decision":       string(resp.Decision),
+						"policy_version": resp.ReceiptStub.PolicyVersion,
+					})
+			} else {
+				receiptEvt = events.NewEvent(events.EventTypeReceiptPersistFailed).
+					WithGatewayID(gwID).
+					WithAgentID(agentID).
+					WithDecisionID(resp.DecisionID).
+					WithReceiptID(resp.ReceiptStub.ReceiptID).
+					WithPayload(map[string]any{
+						"action_type":    string(req.ActionType),
+						"resource":       req.Resource,
+						"decision":       string(resp.Decision),
+						"policy_version": resp.ReceiptStub.PolicyVersion,
+						"error":          persistErr.Error(),
+					})
+			}
 			h.eventStore.Append(receiptEvt)
 		}
 	}

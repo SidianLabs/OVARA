@@ -382,7 +382,7 @@ permissive.
 - **Existing Test Coverage:** none for Put failure.
 - **Recommended Remediation:** check the Put error; on failure emit `receipt_persist_failed` (not `receipt_issued`); optionally gate on a config choice whether evidence failure is transit-fatal.
 - **Invalidates existing claim?:** partially — I3 is already documented IMPLEMENTED-not-fully-tested; this is the concrete hole.
-- **Status:** documented; not auto-fixed per review rules.
+- **Status:** **FIXED** (post-review hardening). `Put` error is checked; failure emits `receipt.persist_failed` (never `receipt.issued`) and a SECURITY log line. Decision flow unchanged — receipts remain evidence, not authorization. Tests: `internal/handlers/receipt_persist_test.go` (success emits issued; failure emits persist_failed, no issued, no panic, decision still recorded).
 
 ### F-02
 - **Severity:** LOW
@@ -398,7 +398,7 @@ permissive.
 - **Existing Test Coverage:** none.
 - **Recommended Remediation:** commit the two scripts or amend the doc to state manual-only verification.
 - **Invalidates existing claim?:** no — I1 is documented as deployment-bounded and manually verified.
-- **Status:** documented.
+- **Status:** **FIXED** (post-review hardening). `tests/boundary/netns_test.sh` and `tests/boundary/docker_test.sh` now exist, deploy the real boundary via `setup-egress-boundary.sh`, and assert live connectivity from inside (proxy port reachable, non-proxy host/gateway port unreachable, external egress denied, IPv6 disabled). Both ran green in the review environment (netns 4/4, docker 3/3). Scripts exit 77 (SKIP) without prerequisites — a skipped environment is not a pass. I1 remains a deployment-bounded property, not a software guarantee.
 
 ### F-03
 - **Severity:** LOW (hardening; preconditioned on trust-domain write access)
@@ -414,7 +414,7 @@ permissive.
 - **Existing Test Coverage:** p234 covers claim-time authority; nothing covers record integrity.
 - **Recommended Remediation:** reuse the existing hash-chain journal format for continuations, or HMAC each record with the gateway key; either converts silent tamper into startup refuse.
 - **Invalidates existing claim?:** no — explicitly inside the documented trust-domain assumption.
-- **Status:** documented; architectural limitation + hardening recommendation.
+- **Status:** **DEFERRED HARDENING** (post-review analysis). Adversarial matrix completed: `state`, `action_type`, `resource`, `expires_at` are trusted from the journal; `lease_id`/delegation keys/issuers are revalidated against current revocation (revoked → deny, **empty → skip**); `agent_id` passes through the drain's identity gate (suspended identity → never executes — proven by FR-L1 — but `agent_id:""` skips the gate entirely — proven by FR-L2); `approval_id`/`decision_id` are never revalidated against real records, and cannot be — the approval store is also plaintext, so a trust-domain writer can plant a consistent fake approval. The only effective integrity mechanism is cryptographic record binding (HMAC/signature per record with the gateway key); that is an architecture-adjacent change deferred to a future milestone, tracked in `docs/OVARA_2.0_SECURITY_FREEZE.md`. Adversarial coverage: FR-A/FR-B/FR-C/FR-K/FR-L in `tests/e2e/final_review.py`.
 
 ### F-04
 - **Severity:** INFORMATIONAL
@@ -422,7 +422,7 @@ permissive.
 - **Affected Component:** `decisionCache` (runtime.go) / approval provenance
 - **Observed:** approval create after restart → 404 "unknown decision_id". Fail-closed (no fabrication possible), availability-only impact.
 - **Invalidates existing claim?:** no.
-- **Status:** documented.
+- **Status:** **DOCUMENTED** + **tested** — FR-M1 in `tests/e2e/final_review.py` proves escalation→restart→approval-create fails closed (404), no resurrection path.
 
 ### F-05
 - **Severity:** INFORMATIONAL
@@ -430,7 +430,7 @@ permissive.
 - **Observed:** FR-D2 — queued continuation executed after its credential was revoked; new auth under the credential → 401. Documented semantic: claim-time revalidation covers lease/delegation/issuer; identity suspension is the freeze control.
 - **Risk:** semantic over-reading — "revoked the credential" does not mean "stopped the work".
 - **Recommended Remediation:** none required; keep docs explicit (they are).
-- **Status:** documented.
+- **Status:** **ACCEPTED LIMITATION** — documented execution semantics, verified live (FR-D1: revoked credential → 401; FR-D2: queued work executes — now machine-checked, earlier parse artifact fixed; FR-L1: suspended identity's queued work never executes). The four revocation scopes are distinct: credential → authentication; identity suspension → claim-time execution authority; lease/delegation/issuer → claim-time authority; gateway → trust binding.
 
 ## 22. Security Claim Matrix
 
