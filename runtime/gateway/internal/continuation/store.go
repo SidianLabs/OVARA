@@ -59,6 +59,13 @@ type Continuation struct {
 	LeaseID       string         `json:"lease_id,omitempty"`       // presented capability lease id
 	DelegationKeys []string       `json:"delegation_keys,omitempty"` // every hop presentation key
 	Issuers       []string       `json:"issuers,omitempty"`        // every hop issuer of the chain
+	// AuthorityExpiresAt is the earliest expiry of all captured
+	// authority — min(lease.Expiry, terminal delegation-hop ExpiresAt) —
+	// bound into the record at approval-creation (C4). Claim-time
+	// revalidation denies when it has passed: a lease that was valid at
+	// evaluation cannot execute after it expires. Nil = no timed
+	// authority was recorded.
+	AuthorityExpiresAt *time.Time `json:"authority_expires_at,omitempty"`
 	Metadata      map[string]any `json:"metadata,omitempty"`
 	RetryCount    int            `json:"retry_count,omitempty"`
 	MaxRetries    int            `json:"max_retries,omitempty"`
@@ -147,6 +154,15 @@ func (c *Continuation) WithAuthorityIDs(leaseID string, delegationKeys, issuers 
 		c.CapabilityRef = leaseID // the tracked-lease lookup path already reads CapabilityRef
 	}
 	c.Issuers = issuers
+	return c
+}
+
+// WithAuthorityExpiry records the earliest expiry across all captured
+// authority (C4): the presented lease's Expiry and the delegation
+// chain's terminal-hop ExpiresAt. Claim-time revalidation denies once
+// it passes — validity at evaluation does not carry past expiry.
+func (c *Continuation) WithAuthorityExpiry(expiry *time.Time) *Continuation {
+	c.AuthorityExpiresAt = expiry
 	return c
 }
 

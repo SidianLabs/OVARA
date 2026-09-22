@@ -108,6 +108,10 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	_, gatewayPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", err
+	}
 	// Two separate principals: the operator token is gateway-root
 	// (approval resolution, policy, admin); the agent token is the proxy's
 	// gateway_token and can only submit decisions + create/poll approvals.
@@ -135,6 +139,22 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		"operator_tokens":     []string{operatorToken},
 		"agent_tokens":        []string{agentToken},
 		"trusted_issuers":     map[string]string{"ovara-init": hex.EncodeToString(issuerPub)},
+		// Durable trust + signed journals out of the box (P2.4): a fresh
+		// deployment must never run memory-mode authority stores — a
+		// restart would otherwise silently lose identity, replay
+		// protection, and every pending approval.
+		"gateway_key_file":        "var/gateway.key",
+		"gateway_registry_file":   "var/data/gateway_registry.jsonl",
+		"identity_registry_file":  "var/data/identity_registry.json",
+		"replay_file":             "var/data/replay.jsonl",
+		"continuations_file":      "var/data/continuations.jsonl",
+		"approvals_file":          "var/data/approvals.json",
+		"execution_file":          "var/data/executions.jsonl",
+		"receipts_file":           "var/data/receipts.json",
+		"events_file":             "var/data/events.jsonl",
+		"capabilities_file":       "var/data/capabilities.json",
+		"enrollment_file":         "var/data/enrollment.json",
+		"journal_signing_required": true,
 	}
 
 	policy := map[string]any{
@@ -181,6 +201,7 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	files := []file{
 		{filepath.Join(dir, "var", "issuer.key"), []byte(hex.EncodeToString(issuerPriv) + "\n"), 0o600},
 		{filepath.Join(dir, "var", "receipt.key"), []byte(hex.EncodeToString(receiptPriv) + "\n"), 0o600},
+		{filepath.Join(dir, "var", "gateway.key"), []byte(hex.EncodeToString(gatewayPriv) + "\n"), 0o600},
 		{filepath.Join(dir, "var", "receipt_pubkey.hex"), []byte(hex.EncodeToString(receiptPub) + "\n"), 0o644},
 		{filepath.Join(dir, "config.json"), mustJSON(gwConfig), 0o600},
 		{filepath.Join(dir, "policy.json"), mustJSON(policy), 0o644},
@@ -199,6 +220,20 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		for _, f := range files {
 			base := filepath.Base(f.path)
 			if base == "receipt.key" || base == "receipt_pubkey.hex" {
+				continue
+			}
+			kept = append(kept, f)
+		}
+		files = kept
+	}
+	// The gateway key is the journal-signing root: re-init must never
+	// silently rotate it (existing signed journals would fail closed at
+	// next boot). Same keep-on-force semantics as receipt.key.
+	if _, err := os.Stat(filepath.Join(dir, "var", "gateway.key")); err == nil {
+		fmt.Println("keeping existing gateway key (var/gateway.key)")
+		kept := make([]file, 0, len(files))
+		for _, f := range files {
+			if filepath.Base(f.path) == "gateway.key" {
 				continue
 			}
 			kept = append(kept, f)

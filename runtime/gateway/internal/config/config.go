@@ -125,6 +125,12 @@ type Config struct {
 	// rotation never churns anchor lineage (anchor-key rotation uses
 	// gwctl anchor-addkey). Empty falls back to gateway_key_file.
 	GatewayAnchorKeyFile         string   `json:"gateway_anchor_key_file"`
+	// JournalSigningRequired (P2.4/C1): when true, startup REFUSES
+	// unless gateway trust is fully durable (gateway_registry_file
+	// AND gateway_key_file both set) — signed journals need a signing
+	// key that survives restart, so unsigned-legacy operation is an
+	// explicit opt-out, never a silent downgrade.
+	JournalSigningRequired       bool     `json:"journal_signing_required"`
 	CapabilitiesFile             string   `json:"capabilities_file"`
 	CapabilitiesMaxSize          int      `json:"capabilities_max_size"`
 	CapabilitiesHistoryFile      string   `json:"capabilities_history_file"`

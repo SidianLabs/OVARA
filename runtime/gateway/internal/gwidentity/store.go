@@ -150,6 +150,7 @@ type Registry struct {
 	grantsByGW  map[string]map[string]*GrantRecord // gateway_id → grant_id → record
 	revoked     map[string]map[string]bool         // class → target → revoked (P2.3.4)
 	revokedList []*RevokeRecord                    // folded revoke records, journal order
+	tips        map[string]map[string]Tip          // gateway_id → store → latest committed tip (P2.4 tip-ledger)
 
 	// P2.3.3 chain state — folded from the journal, committed only
 	// after fsync (see sealRecord/mutate).
@@ -164,7 +165,7 @@ type Registry struct {
 func NewInMemory() *Registry {
 	return &Registry{keys: map[string]map[string]*KeyRecord{},
 		grants: map[string]*GrantRecord{}, grantsByGW: map[string]map[string]*GrantRecord{},
-		revoked: map[string]map[string]bool{}}
+		revoked: map[string]map[string]bool{}, tips: map[string]map[string]Tip{}}
 }
 
 // Open loads or creates the registry file. Corrupt non-tail records
@@ -208,7 +209,7 @@ func open(path string, create bool) (*Registry, error) {
 	}
 	r := &Registry{f: f, keys: map[string]map[string]*KeyRecord{},
 		grants: map[string]*GrantRecord{}, grantsByGW: map[string]map[string]*GrantRecord{},
-		revoked: map[string]map[string]bool{}}
+		revoked: map[string]map[string]bool{}, tips: map[string]map[string]Tip{}}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("gateway registry: lock: %w", err)
@@ -304,6 +305,12 @@ func (r *Registry) absorb() error {
 				return fmt.Errorf("gateway registry: corrupt revoke record at offset %d", r.off+pos)
 			}
 			r.indexRevoke(&rv)
+		case "tips":
+			var tp TipsRecord
+			if err := json.Unmarshal(line, &tp); err != nil || tp.GatewayID == "" {
+				return fmt.Errorf("gateway registry: corrupt tips record at offset %d", r.off+pos)
+			}
+			r.indexTips(&tp)
 		default:
 			return fmt.Errorf("gateway registry: unknown record kind %q at offset %d", probe.Kind, r.off+pos)
 		}
@@ -404,6 +411,8 @@ func (r *Registry) mutate(fn func() ([]any, error)) error {
 			r.migrated++
 		case *RevokeRecord:
 			r.indexRevoke(v)
+		case *TipsRecord:
+			r.indexTips(v)
 		}
 	}
 	if r.f != nil {
@@ -776,6 +785,57 @@ func (r *Registry) Close() error {
 		return r.f.Close()
 	}
 	return nil
+}
+
+// indexTips folds a tips record into the ledger index: latest record
+// wins per (gateway_id, store). Journal order is the ordering — a
+// ledger cannot un-commit an earlier floor by folding a later one.
+func (r *Registry) indexTips(tp *TipsRecord) {
+	m := r.tips[tp.GatewayID]
+	if m == nil {
+		m = map[string]Tip{}
+		r.tips[tp.GatewayID] = m
+	}
+	for store, tip := range tp.Tips {
+		if ex, ok := m[store]; !ok || tip.Seq > ex.Seq {
+			m[store] = tip
+		}
+	}
+}
+
+// RecordTips commits a tip-ledger record into the gateway identity
+// journal — the anchored domain ledger (P2.4/C1). It rides the same
+// serialized mutate path as key/revocation records, so a committed
+// tips record is fsynced and, when anchoring is configured, pushed to
+// the oracle in the same mutation.
+//
+// Ordering rule the caller must preserve: record tips ONLY after the
+// covered store writes are durable (fsync returned). The ledger is a
+// floor — it may lag the store, it must never claim a tip ahead of it.
+func (r *Registry) RecordTips(gatewayID string, tips map[string]Tip) error {
+	if len(tips) == 0 {
+		return nil
+	}
+	rec := &TipsRecord{Kind: "tips", GatewayID: gatewayID,
+		IssuedAt: time.Now().UTC(), Tips: tips}
+	return r.mutate(func() ([]any, error) { return []any{rec}, nil })
+}
+
+// LatestTips returns the folded tip floor for (gateway_id) — the set
+// of committed store tips the domain currently stands behind. Nil map
+// when the gateway has never recorded tips.
+func (r *Registry) LatestTips(gatewayID string) map[string]Tip {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	src := r.tips[gatewayID]
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]Tip, len(src))
+	for s, t := range src {
+		out[s] = t
+	}
+	return out
 }
 
 // Usable reports whether a key record may prove possession now —

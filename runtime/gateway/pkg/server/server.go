@@ -39,6 +39,7 @@ import (
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipt"
+	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/receipts"
 	"ovara.runtime.gateway/internal/replay"
 	"ovara.runtime.gateway/internal/revocation"
@@ -123,17 +124,93 @@ func Run(configPath string) error {
 		revRegistry = gwTrust.registry
 	}
 
+	// P2.4 (C1/C5/C6): durable gateway trust signs every authority
+	// journal — continuation, approval, execution, replay, receipts
+	// (the decision journal), events, and the whole-file snapshots
+	// (idregistry, capabilities). Signed mode requires BOTH a durable
+	// registry AND a durable key file: a journal must still verify
+	// against the same key after restart, so ephemeral-key deployments
+	// keep the unsigned legacy format (documented trust level).
+	// journal_signing_required=true refuses unsigned startup.
+	durableSigning := gwTrust != nil && cfg.GatewayRegistryFile != "" && cfg.GatewayKeyFile != ""
+	if cfg.JournalSigningRequired && !durableSigning {
+		return fmt.Errorf("journal_signing_required=true but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
+	}
+	var jsigner *record.Signer
+	var jresolve record.ResolveFunc
+	if durableSigning {
+		jsigner = record.NewSigner(gwTrust.priv, gwTrust.registry.DomainID(), gwTrust.record.GatewayID, gwTrust.record.KeyID)
+		resolver := receipt.RegistryResolver{Reg: gwTrust.registry}
+		jresolve = resolver.ResolvePublicKey
+		log.Printf("journal signing active: domain=%s key=%s — authority stores signed+chained+tip-ledgered", gwTrust.registry.DomainID(), gwTrust.record.KeyID)
+	} else {
+		log.Printf("journal signing inactive — authority stores unsigned (set gateway_registry_file+gateway_key_file, or journal_signing_required=true to enforce)")
+	}
+	var boundTips map[string]gwidentity.Tip
+	if durableSigning && revRegistry != nil {
+		boundTips = revRegistry.LatestTips(gwTrust.record.GatewayID)
+	}
+	bind := func(storeName string) *record.Binding {
+		if !durableSigning {
+			return nil
+		}
+		var floor record.Floor
+		if t, ok := boundTips[storeName]; ok {
+			floor = record.Floor{Known: true, Seq: t.Seq, Hash: t.Hash}
+		}
+		return &record.Binding{Signer: jsigner, Resolve: jresolve, Floor: floor}
+	}
+	// sinkFor returns the committed-floor hook: every fsynced journal
+	// write ratchets the store's tip inside the anchored gwidentity
+	// journal. A tip-ledger write failure must not succeed the append
+	// — the store write is already durable; failing the caller keeps
+	// the floor honest (the alternative is a floor that claims more
+	// than the ledger recorded, which open-time fold would accept as
+	// a tail-truncation signal).
+	sinkFor := func(storeName string) func(seq uint64, hash string) error {
+		if !durableSigning {
+			return nil
+		}
+		return func(seq uint64, hash string) error {
+			return revRegistry.RecordTips(gwTrust.record.GatewayID, map[string]gwidentity.Tip{
+				storeName: {Seq: seq, Hash: hash},
+			})
+		}
+	}
+	// postOpenRatchet commits a store's current journal tip into the
+	// ledger once, at startup — covers the store-ahead-of-ledger case
+	// (crash between append fsync and tips write). seq==0 means an
+	// empty journal — nothing to ratchet yet. Tip-of is used so every
+	// binding-capable store shape (file stores, replay, idregistry)
+	// needs no adapter.
+	postOpenRatchet := func(storeName string, tipOf func() (uint64, string)) {
+		if !durableSigning {
+			return
+		}
+		seq, hash := tipOf()
+		if seq == 0 {
+			return
+		}
+		if err := revRegistry.RecordTips(gwTrust.record.GatewayID, map[string]gwidentity.Tip{
+			storeName: {Seq: seq, Hash: hash},
+		}); err != nil {
+			log.Printf("warning: tip-ledger ratchet for %s failed: %v", storeName, err)
+		}
+	}
+
 	policyStore := policy.NewStore(cfg.PolicyVersion)
 	var watcher *policy.Watcher
 	var wg sync.WaitGroup
 
 	var eventStore events.Store
 	if cfg.EventsFile != "" {
-		store, err := events.NewFileBackedStoreWithRetention(cfg.EventsFile, cfg.EventsMaxSize, cfg.EventsRetentionDays, cfg.EventsMaxRecords)
+		store, err := events.NewFileBackedStoreWithRetention(cfg.EventsFile, cfg.EventsMaxSize, cfg.EventsRetentionDays, cfg.EventsMaxRecords, bind("events"))
 		if err != nil {
 			log.Printf("warning: failed to create file-backed event store: %v, using in-memory", err)
 			eventStore = events.NewInMemoryStore(10000)
 		} else {
+			store.SetTipsSink(sinkFor("events"))
+			postOpenRatchet("events", store.JournalTip)
 			eventStore = store
 			log.Printf("event store persisted to %s (max=%d, retention_days=%d, max_records=%d)", cfg.EventsFile, cfg.EventsMaxSize, cfg.EventsRetentionDays, cfg.EventsMaxRecords)
 		}
@@ -219,11 +296,13 @@ func Run(configPath string) error {
 		if cfg.ReceiptsMaxAgeMinutes > 0 {
 			maxAge = time.Duration(cfg.ReceiptsMaxAgeMinutes) * time.Minute
 		}
-		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, maxAge)
+		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, maxAge, bind("receipts"))
 		if err != nil {
 			log.Printf("warning: failed to create file-backed receipt store: %v, falling back to in-memory", err)
 			receiptsStore = receipts.NewInMemoryStore()
 		} else {
+			store.SetTipsSink(sinkFor("receipts"))
+			postOpenRatchet("receipts", store.JournalTip)
 			receiptsStore = store
 			log.Printf("receipts persisted to %s (max=%d, max_age=%dm)", cfg.ReceiptsFile, cfg.ReceiptsMaxSize, cfg.ReceiptsMaxAgeMinutes)
 		}
@@ -240,10 +319,12 @@ func Run(configPath string) error {
 	// replay would downgrade the security guarantee without the operator
 	// knowing.
 	if cfg.ReplayFile != "" {
-		replayStore, err := replay.OpenFile(cfg.ReplayFile, cfg.ReplayMaxBytes)
+		replayStore, err := replay.OpenFile(cfg.ReplayFile, cfg.ReplayMaxBytes, bind("replay"))
 		if err != nil {
 			return fmt.Errorf("replay store %s: %w", cfg.ReplayFile, err)
 		}
+		replayStore.SetTipsSink(sinkFor("replay"))
+		postOpenRatchet("replay", replayStore.JournalTip)
 		eval.SetReplayStore(replayStore)
 		log.Printf("replay protection durable at %s", cfg.ReplayFile)
 	} else {
@@ -281,11 +362,13 @@ func Run(configPath string) error {
 
 	var approvalStore approval.Store
 	if cfg.ApprovalsFile != "" {
-		store, err := approval.NewFileBackedStore(cfg.ApprovalsFile)
+		store, err := approval.NewFileBackedStore(cfg.ApprovalsFile, bind("approval"))
 		if err != nil {
 			log.Printf("warning: failed to create file-backed approval store: %v, falling back to in-memory", err)
 			approvalStore = approval.NewInMemoryStore()
 		} else {
+			store.SetTipsSink(sinkFor("approval"))
+			postOpenRatchet("approval", store.JournalTip)
 			approvalStore = store
 			log.Printf("approvals persisted to %s", cfg.ApprovalsFile)
 		}
@@ -296,11 +379,13 @@ func Run(configPath string) error {
 
 	var continuationStore continuation.Store
 	if cfg.ContinuationsFile != "" {
-		store, err := continuation.NewFileBackedStoreWithRetention(cfg.ContinuationsFile, cfg.ContinuationsMaxSize, cfg.ContinuationRetentionDays, cfg.ContinuationMaxRecords)
+		store, err := continuation.NewFileBackedStoreWithRetention(cfg.ContinuationsFile, cfg.ContinuationsMaxSize, cfg.ContinuationRetentionDays, cfg.ContinuationMaxRecords, bind("continuation"))
 		if err != nil {
 			log.Printf("warning: failed to create file-backed continuation store: %v, using in-memory", err)
 			continuationStore = continuation.NewInMemoryStore()
 		} else {
+			store.SetTipsSink(sinkFor("continuation"))
+			postOpenRatchet("continuation", store.JournalTip)
 			continuationStore = store
 			log.Printf("continuation store persisted to %s (max=%d, retention_days=%d, max_records=%d)", cfg.ContinuationsFile, cfg.ContinuationsMaxSize, cfg.ContinuationRetentionDays, cfg.ContinuationMaxRecords)
 		}
@@ -330,11 +415,13 @@ func Run(configPath string) error {
 
 	var capabilitiesStore capabilities.Store
 	if cfg.CapabilitiesFile != "" {
-		store, err := capabilities.NewFileBackedStore(cfg.CapabilitiesFile, cfg.CapabilitiesMaxSize, 0)
+		store, err := capabilities.NewFileBackedStore(cfg.CapabilitiesFile, cfg.CapabilitiesMaxSize, 0, bind("capabilities"))
 		if err != nil {
 			log.Printf("warning: failed to create file-backed capabilities store: %v, falling back to in-memory", err)
 			capabilitiesStore = capabilities.NewInMemoryStore()
 		} else {
+			store.SetTipsSink(sinkFor("capabilities"))
+			postOpenRatchet("capabilities", store.JournalTip)
 			capabilitiesStore = store
 			log.Printf("capabilities persisted to %s (max=%d)", cfg.CapabilitiesFile, cfg.CapabilitiesMaxSize)
 		}
@@ -450,11 +537,14 @@ func Run(configPath string) error {
 			cfg.ExecutionsMaxSize,
 			cfg.ExecutionRetentionDays,
 			cfg.ExecutionMaxRecords,
+			bind("execution"),
 		)
 		if err != nil {
 			log.Printf("warning: failed to create file-backed execution store: %v, using in-memory", err)
 			execStore = execution.NewInMemoryStore()
 		} else {
+			store.SetTipsSink(sinkFor("execution"))
+			postOpenRatchet("execution", store.JournalTip)
 			execStore = store
 			log.Printf("execution store persisted to %s (max=%d, retention_days=%d, max_records=%d)",
 				cfg.ExecutionFile, cfg.ExecutionsMaxSize, cfg.ExecutionRetentionDays, cfg.ExecutionMaxRecords)
@@ -612,10 +702,12 @@ func Run(configPath string) error {
 	// dies at restart — RC1 parity).
 	var idReg *idregistry.Registry
 	if cfg.IdentityRegistryFile != "" {
-		idReg, err = idregistry.Open(cfg.IdentityRegistryFile)
+		idReg, err = idregistry.Open(cfg.IdentityRegistryFile, bind("idregistry"))
 		if err != nil {
 			return fmt.Errorf("identity registry %s: %w", cfg.IdentityRegistryFile, err)
 		}
+		idReg.SetTipsSink(sinkFor("idregistry"))
+		postOpenRatchet("idregistry", idReg.JournalTip)
 		log.Printf("identity registry durable at %s", cfg.IdentityRegistryFile)
 	} else {
 		idReg = idregistry.NewInMemory()

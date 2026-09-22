@@ -544,7 +544,8 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 	// P2.2 identity gate: the synchronous execute path must enforce the
 	// same suspension/retirement semantics as the orchestrator's claim
 	// filter — a suspended subject's work requeues, never executes.
-	if h.identityChecker != nil && cnt.AgentID != "" && !h.identityChecker(cnt.AgentID) {
+	// C3: unconditional — empty/unknown agent identity never executes.
+	if h.identityChecker != nil && !h.identityChecker(cnt.AgentID) {
 		cnt.MarkRequeue()
 		h.store.Update(cnt)
 		api.JSONConflict(w, "continuation subject identity is not active")

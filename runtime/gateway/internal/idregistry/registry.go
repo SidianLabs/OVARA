@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"ovara.runtime.gateway/internal/persist"
+	"ovara.runtime.gateway/internal/record"
 )
 
 type IdentityStatus string
@@ -115,9 +116,14 @@ type fileState struct {
 // trust domain: one file, one writer. Multi-gateway consistency is a
 // documented non-goal for P2.2.
 type Registry struct {
-	path string
-	mu   sync.RWMutex
-	ids  map[string]*Identity
+	path      string
+	signer    *record.Signer      // non-nil → sealed-file mode (P2.4)
+	resolve   record.ResolveFunc
+	fileSeq   uint64
+	fileHash  string
+	tipsSink  func(seq uint64, hash string) error
+	mu        sync.RWMutex
+	ids       map[string]*Identity
 	cred map[string]*Credential // by fingerprint
 }
 
@@ -127,9 +133,39 @@ func NewInMemory() *Registry {
 
 // Open loads or creates the registry file. Corrupt state fails open:
 // the registry cannot prove identity state, so startup must refuse.
-func Open(path string) (*Registry, error) {
+// A non-nil record.Binding switches the file into sealed mode (P2.4):
+// every snapshot is a signed whole-file envelope with a file_seq
+// chain; a silent replacement, rollback, or forge fails closed.
+func Open(path string, bindings ...*record.Binding) (*Registry, error) {
 	r := NewInMemory()
 	r.path = path
+	var binding *record.Binding
+	if len(bindings) > 0 {
+		binding = bindings[0]
+	}
+	if binding != nil {
+		r.signer = binding.Signer
+		r.resolve = binding.Resolve
+		payload, seq, hash, err := record.OpenSealedFile("idregistry", path, binding.Signer.Domain(), binding.Resolve, binding.Floor)
+		if err != nil {
+			return nil, err
+		}
+		if payload == nil {
+			return r, nil
+		}
+		var fs fileState
+		if err := json.Unmarshal(payload, &fs); err != nil {
+			return nil, fmt.Errorf("identity registry: corrupt %s: %w", path, err)
+		}
+		r.fileSeq, r.fileHash = seq, hash
+		for _, id := range fs.Identities {
+			r.ids[id.ID] = id
+		}
+		for _, c := range fs.Credentials {
+			r.cred[c.Fingerprint] = c
+		}
+		return r, nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -170,11 +206,48 @@ func (r *Registry) persist() error {
 	if err := os.MkdirAll(filepath.Dir(r.path), 0755); err != nil {
 		return err
 	}
+	if r.signer != nil {
+		// The new snapshot chains onto the current file: prev_hash is
+		// this file's hash, file_seq is file_seq+1. The committed-floor
+		// sink then commits the new tip into the domain ledger —
+		// strictly after the sealed write is durable.
+		prevBytes, err := os.ReadFile(r.path)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		sealed, err := record.SealFile("idregistry", r.signer, data, prevBytes, r.fileSeq)
+		if err != nil {
+			return err
+		}
+		if err := persist.WriteFileAtomic(r.path, sealed, 0600); err != nil {
+			return err
+		}
+		r.fileSeq++
+		r.fileHash = record.TipHash(sealed)
+		if r.tipsSink != nil {
+			if err := r.tipsSink(r.fileSeq, r.fileHash); err != nil {
+				return fmt.Errorf("tip-ledger commit failed (sealed write is durable, floor not advanced): %w", err)
+			}
+		}
+		return nil
+	}
 	return persist.WriteFileAtomic(r.path, data, 0600)
 }
 
+// SetTipsSink wires the committed-floor hook (gwidentity tip-ledger).
+// Must be called before concurrent use.
+func (r *Registry) SetTipsSink(fn func(seq uint64, hash string) error) {
+	r.tipsSink = fn
+}
+
+// JournalTip exposes the sealed file's committed (file_seq, hash).
+// Zero values in legacy mode.
+func (r *Registry) JournalTip() (uint64, string) {
+	return r.fileSeq, r.fileHash
+}
+
 func (r *Registry) clone() (*Registry, error) {
-	c := &Registry{path: r.path, ids: map[string]*Identity{}, cred: map[string]*Credential{}}
+	c := &Registry{path: r.path, signer: r.signer, resolve: r.resolve, fileSeq: r.fileSeq, fileHash: r.fileHash, tipsSink: r.tipsSink, ids: map[string]*Identity{}, cred: map[string]*Credential{}}
 	for k, v := range r.ids {
 		cp := *v
 		c.ids[k] = &cp

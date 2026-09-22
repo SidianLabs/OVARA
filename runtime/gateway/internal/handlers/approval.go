@@ -180,6 +180,27 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if origReq.DelegationChain != nil {
 		bound.DelegationKeys, bound.Issuers = identity.ChainRevocationIDs(origReq.DelegationChain)
 	}
+	// C4 — the earliest expiry across all captured authority (lease
+	// expiry, delegation-hop expiries). The validator enforces
+	// expiry narrowing, so min-over-hops equals the effective bound.
+	var authorityExpiry *time.Time
+	minInto := func(t time.Time) {
+		if t.IsZero() {
+			return
+		}
+		if authorityExpiry == nil || t.Before(*authorityExpiry) {
+			tt := t
+			authorityExpiry = &tt
+		}
+	}
+	if origReq.CapabilityLease != nil {
+		minInto(origReq.CapabilityLease.Expiry)
+	}
+	if origReq.DelegationChain != nil {
+		for _, hop := range origReq.DelegationChain.Authorities {
+			minInto(hop.ExpiresAt)
+		}
+	}
 
 	created, err := h.service.CreateApproval(&bound)
 	if err != nil {
@@ -195,6 +216,7 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		WithTrustContext(bound.TrustScore, string(bound.TrustLevel), bound.AnomalyCodes, bound.ShieldActive, bound.Restricted).
 		WithApprovalID(created.ApprovalID).
 		WithAuthorityIDs(bound.LeaseID, bound.DelegationKeys, bound.Issuers).
+		WithAuthorityExpiry(authorityExpiry).
 		WithExpiration(continuation.DefaultExpirationMinutes).
 		WithMetadata("request_hash", bound.RequestHash).
 		WithMetadata("policy_version", bound.PolicyVersion)

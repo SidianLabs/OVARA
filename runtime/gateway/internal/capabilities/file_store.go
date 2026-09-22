@@ -10,6 +10,7 @@ import (
 
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/persist"
+	"ovara.runtime.gateway/internal/record"
 )
 
 // touchPersistInterval debounces Touch persistence: LastSeenAt is updated in
@@ -19,6 +20,10 @@ const touchPersistInterval = 5 * time.Second
 
 type FileBackedStore struct {
 	path     string
+	signer   *record.Signer      // non-nil → sealed-file mode (P2.4)
+	fileSeq  uint64
+	fileHash string
+	tipsSink func(seq uint64, hash string) error
 	mu       sync.RWMutex
 	fileMu   sync.Mutex
 	leases   map[string]*TrackedLease
@@ -27,7 +32,11 @@ type FileBackedStore struct {
 	lastPersist time.Time
 }
 
-func NewFileBackedStore(path string, maxSize int, maxAge time.Duration) (*FileBackedStore, error) {
+// NewFileBackedStore opens the tracked-lease store. A non-nil
+// record.Binding switches it into sealed-file mode (P2.4): snapshots
+// are signed whole-file envelopes with a file_seq chain — silent
+// replacement or rollback fails closed.
+func NewFileBackedStore(path string, maxSize int, maxAge time.Duration, bindings ...*record.Binding) (*FileBackedStore, error) {
 	store := &FileBackedStore{
 		path:    path,
 		leases:  make(map[string]*TrackedLease),
@@ -36,6 +45,29 @@ func NewFileBackedStore(path string, maxSize int, maxAge time.Duration) (*FileBa
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory for capabilities store: %w", err)
+	}
+	var binding *record.Binding
+	if len(bindings) > 0 {
+		binding = bindings[0]
+	}
+	if binding != nil {
+		store.signer = binding.Signer
+		payload, seq, hash, err := record.OpenSealedFile("capabilities", path, binding.Signer.Domain(), binding.Resolve, binding.Floor)
+		if err != nil {
+			return nil, err
+		}
+		if payload == nil {
+			return store, nil
+		}
+		var leases []*TrackedLease
+		if err := json.Unmarshal(payload, &leases); err != nil {
+			return nil, fmt.Errorf("failed to parse capabilities JSON: %w", err)
+		}
+		store.fileSeq, store.fileHash = seq, hash
+		for _, l := range leases {
+			store.leases[l.Lease.LeaseID] = l
+		}
+		return store, nil
 	}
 	if err := store.load(); err != nil {
 		if !os.IsNotExist(err) {
@@ -69,10 +101,43 @@ func (s *FileBackedStore) persist(snapshot []*TrackedLease) error {
 	}
 	s.fileMu.Lock()
 	defer s.fileMu.Unlock()
+	if s.signer != nil {
+		prevBytes, err := os.ReadFile(s.path)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to read capabilities file: %w", err)
+		}
+		sealed, err := record.SealFile("capabilities", s.signer, data, prevBytes, s.fileSeq)
+		if err != nil {
+			return fmt.Errorf("failed to seal capabilities file: %w", err)
+		}
+		if err := persist.WriteFileAtomic(s.path, sealed, 0644); err != nil {
+			return fmt.Errorf("failed to write capabilities file: %w", err)
+		}
+		s.fileSeq++
+		s.fileHash = record.TipHash(sealed)
+		if s.tipsSink != nil {
+			if err := s.tipsSink(s.fileSeq, s.fileHash); err != nil {
+				return fmt.Errorf("tip-ledger commit failed (sealed write is durable, floor not advanced): %w", err)
+			}
+		}
+		return nil
+	}
 	if err := persist.WriteFileAtomic(s.path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write capabilities file: %w", err)
 	}
 	return nil
+}
+
+// SetTipsSink wires the committed-floor hook (gwidentity tip-ledger).
+// Must be called before concurrent use.
+func (s *FileBackedStore) SetTipsSink(fn func(seq uint64, hash string) error) {
+	s.tipsSink = fn
+}
+
+// JournalTip exposes the sealed file's committed (file_seq, hash).
+// Zero values in legacy mode.
+func (s *FileBackedStore) JournalTip() (uint64, string) {
+	return s.fileSeq, s.fileHash
 }
 
 func (s *FileBackedStore) snapshot() []*TrackedLease {

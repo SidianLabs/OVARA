@@ -23,6 +23,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"ovara.runtime.gateway/internal/record"
 )
 
 type Result int
@@ -54,7 +56,7 @@ type Store interface {
 
 // record is one journal line. Zero ExpiresAt = permanent record (an
 // unbounded capability needs unbounded replay state).
-type record struct {
+type entry struct {
 	Kind       string    `json:"k"`
 	ID         string    `json:"p"`
 	ConsumedAt time.Time `json:"c"`
@@ -74,24 +76,46 @@ func live(exp time.Time, now time.Time) bool {
 // last read, so another process's consume is never missed.
 type FileStore struct {
 	f        *os.File
+	journal  *record.Journal // non-nil → signed journal mode (P2.4)
+	tipsSink func(seq uint64, hash string) error
 	mu       sync.Mutex
 	seen     map[string]time.Time
 	offset   int64
 	maxBytes int64
 }
 
-// OpenFile opens (creating) the journal at path. A corrupt tail —
-// possible after a crash between write and fsync — is truncated to the
-// last good record (a partially-written record was never confirmed
-// consumed, so discarding it cannot resurrect a granted authorization).
-// Corruption anywhere else fails open: the store cannot prove its
-// replay state, so the caller must fail closed.
-func OpenFile(path string, maxBytes int64) (*FileStore, error) {
+// OpenFile opens (creating) the journal at path. In legacy mode a
+// corrupt tail — possible after a crash between write and fsync — is
+// truncated to the last good record; corruption anywhere else fails
+// open: the store cannot prove its replay state, so the caller must
+// fail closed. A non-nil
+// record.Binding switches it into signed-journal mode (P2.4): every
+// consume record is a domain-bound signed envelope, tail-absorb
+// re-verifies chain continuity, and unsigned/corrupt history fails
+// closed. Multi-process sharing still works — every Consume re-absorbs
+// under flock and appends on top of the absorbed tip. Compaction is
+// disabled in signed mode (a rewrite would fork sibling processes'
+// absorbed chains); the journal grows bounded by capability volume.
+func OpenFile(path string, maxBytes int64, bindings ...*record.Binding) (*FileStore, error) {
 	if maxBytes <= 0 {
 		maxBytes = 8 << 20
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("replay store: mkdir: %w", err)
+	}
+	var binding *record.Binding
+	if len(bindings) > 0 {
+		binding = bindings[0]
+	}
+	if binding != nil {
+		s := &FileStore{seen: make(map[string]time.Time), maxBytes: maxBytes}
+		j, err := record.Open("replay", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, s.foldEnvelope)
+		if err != nil {
+			return nil, fmt.Errorf("replay store: fold: %w", err)
+		}
+		s.f = j.File()
+		s.journal = j
+		return s, nil
 	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	if err != nil {
@@ -110,6 +134,39 @@ func OpenFile(path string, maxBytes int64) (*FileStore, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// foldEnvelope applies one verified envelope to the seen map.
+func (s *FileStore) foldEnvelope(env *record.Envelope) error {
+	if env.Type == record.TypeMigration {
+		return nil // provenance marker
+	}
+	if env.Type != "consume" {
+		return fmt.Errorf("unknown record type %q", env.Type)
+	}
+	var r entry
+	if err := json.Unmarshal(env.Payload, &r); err != nil {
+		return fmt.Errorf("corrupt consume payload: %w", err)
+	}
+	if live(r.ExpiresAt, time.Now().UTC()) {
+		s.seen[key(Kind(r.Kind), r.ID)] = r.ExpiresAt
+	}
+	return nil
+}
+
+// SetTipsSink wires the committed-floor hook (gwidentity tip-ledger).
+// Must be called before concurrent use.
+func (s *FileStore) SetTipsSink(fn func(seq uint64, hash string) error) {
+	s.tipsSink = fn
+}
+
+// JournalTip exposes the journal's committed (seq, tip hash).
+// Zero values in legacy mode.
+func (s *FileStore) JournalTip() (uint64, string) {
+	if s.journal == nil {
+		return 0, ""
+	}
+	return s.journal.Tip()
 }
 
 // absorb reads journal bytes appended since s.offset into the live
@@ -145,7 +202,7 @@ func (s *FileStore) absorb() error {
 			pos = nl + 1
 			continue
 		}
-		var r record
+		var r entry
 		if err := json.Unmarshal(line, &r); err != nil {
 			// Corrupt TAIL: a crash between write and fsync can leave a
 			// partial final line. It was never a confirmed consume —
@@ -183,7 +240,7 @@ func (s *FileStore) compact() error {
 		for idx < len(k) && k[idx] != 0 {
 			idx++
 		}
-		data, err := json.Marshal(record{Kind: k[:idx], ID: k[idx+1:], ConsumedAt: now, ExpiresAt: exp})
+		data, err := json.Marshal(entry{Kind: k[:idx], ID: k[idx+1:], ConsumedAt: now, ExpiresAt: exp})
 		if err != nil {
 			return fmt.Errorf("replay store: compact marshal: %w", err)
 		}
@@ -229,11 +286,13 @@ func (s *FileStore) Consume(kind Kind, id string, expiresAt time.Time) Result {
 	}
 	defer syscall.Flock(int(s.f.Fd()), syscall.LOCK_UN)
 
-	if err := s.absorb(); err != nil {
-		return StorageFailure
-	}
-	if exp, ok := s.seen[key(kind, id)]; ok && live(exp, now) {
-		return AlreadyConsumed
+	if s.journal == nil {
+		if err := s.absorb(); err != nil {
+			return StorageFailure
+		}
+		if exp, ok := s.seen[key(kind, id)]; ok && live(exp, now) {
+			return AlreadyConsumed
+		}
 	}
 	if !expiresAt.IsZero() && !now.Before(expiresAt) {
 		// Already-expired capability reaching consume is meaningless —
@@ -241,7 +300,34 @@ func (s *FileStore) Consume(kind Kind, id string, expiresAt time.Time) Result {
 		// denies expired artifacts before this point regardless.
 		return FirstConsume
 	}
-	data, err := json.Marshal(record{Kind: string(kind), ID: id, ConsumedAt: now, ExpiresAt: expiresAt})
+	if s.journal != nil {
+		// Signed mode: absorb siblings' committed records (verifying
+		// each envelope), then append on top of the true tip. A forked
+		// chain surfaces as a parent mismatch → StorageFailure, never
+		// a silently-diverged consume.
+		if err := s.journal.Absorb(); err != nil {
+			return StorageFailure
+		}
+		if exp, ok := s.seen[key(kind, id)]; ok && live(exp, now) {
+			return AlreadyConsumed
+		}
+		payload, err := json.Marshal(entry{Kind: string(kind), ID: id, ConsumedAt: now, ExpiresAt: expiresAt})
+		if err != nil {
+			return StorageFailure
+		}
+		seq, tip, err := s.journal.Append("consume", key(kind, id), json.RawMessage(payload), nil)
+		if err != nil {
+			return StorageFailure
+		}
+		if s.tipsSink != nil && s.tipsSink(seq, tip) != nil {
+			return StorageFailure
+		}
+		s.seen[key(kind, id)] = expiresAt
+		// Compaction deliberately skipped in signed mode — rewriting
+		// the file would invalidate sibling processes' absorbed chains.
+		return FirstConsume
+	}
+	data, err := json.Marshal(entry{Kind: string(kind), ID: id, ConsumedAt: now, ExpiresAt: expiresAt})
 	if err != nil {
 		return StorageFailure
 	}

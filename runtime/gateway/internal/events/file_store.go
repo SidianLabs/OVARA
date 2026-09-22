@@ -9,11 +9,16 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"ovara.runtime.gateway/internal/record"
 )
 
 type FileBackedStore struct {
 	path          string
 	file          *os.File
+	journal       *record.Journal // non-nil → signed journal mode (P2.4)
+	tipsSink      func(seq uint64, hash string) error
+	journalErr    error          // sticky append failure in journal mode
 	mu            sync.RWMutex
 	events        []*Event
 	maxLen        int
@@ -24,11 +29,17 @@ type FileBackedStore struct {
 	staleEvents   []string
 }
 
-func NewFileBackedStore(path string, maxEvents int) (*FileBackedStore, error) {
-	return NewFileBackedStoreWithRetention(path, maxEvents, 0, 0)
+func NewFileBackedStore(path string, maxEvents int, bindings ...*record.Binding) (*FileBackedStore, error) {
+	return NewFileBackedStoreWithRetention(path, maxEvents, 0, 0, bindings...)
 }
 
-func NewFileBackedStoreWithRetention(path string, maxEvents int, retentionDays int, maxRecords int) (*FileBackedStore, error) {
+// NewFileBackedStoreWithRetention opens the event store. A non-nil
+// record.Binding switches it into signed-journal mode (P2.4): one signed
+// envelope per event, hash-chained and domain-bound; unsigned legacy
+// lines fail closed — run `gwctl migrate` first. In journal mode,
+// Sweep's _cleanup pseudo-records become TypeCompact envelopes and
+// file-level Compact is a no-op (sweeps are journaled deletions).
+func NewFileBackedStoreWithRetention(path string, maxEvents int, retentionDays int, maxRecords int, bindings ...*record.Binding) (*FileBackedStore, error) {
 	if maxEvents <= 0 {
 		maxEvents = 50000
 	}
@@ -49,6 +60,19 @@ func NewFileBackedStoreWithRetention(path string, maxEvents int, retentionDays i
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory for event store: %w", err)
+	}
+
+	var binding *record.Binding
+	if len(bindings) > 0 {
+		binding = bindings[0]
+	}
+	if binding != nil {
+		j, err := record.Open("events", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fold events journal: %w", err)
+		}
+		store.journal = j
+		return store, nil
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644)
@@ -116,14 +140,46 @@ func (s *FileBackedStore) Append(event *Event) {
 
 	data, err := json.Marshal(event)
 	if err == nil {
-		s.file.Write(append(data, '\n'))
-		s.file.Sync()
+		if s.journal != nil {
+			seq, tip, jerr := s.journal.Append("event", event.EventID, json.RawMessage(data), nil)
+			if jerr != nil {
+				s.journalErr = jerr
+			} else if s.tipsSink != nil {
+				s.journalErr = s.tipsSink(seq, tip)
+			}
+		} else {
+			s.file.Write(append(data, '\n'))
+			s.file.Sync()
+		}
 	}
 
 	s.events = append(s.events, event)
 	if len(s.events) > s.maxLen {
 		s.events = s.events[len(s.events)-s.maxLen:]
 	}
+}
+
+// SetTipsSink wires the committed-floor hook (gwidentity tip-ledger).
+// Must be called before concurrent use.
+func (s *FileBackedStore) SetTipsSink(fn func(seq uint64, hash string) error) {
+	s.tipsSink = fn
+}
+
+// JournalTip exposes the journal's committed (seq, tip hash).
+// Zero values in legacy mode.
+func (s *FileBackedStore) JournalTip() (uint64, string) {
+	if s.journal == nil {
+		return 0, ""
+	}
+	return s.journal.Tip()
+}
+
+// LastError surfaces the sticky journal-append failure — Append's
+// frozen signature returns nothing, so audit-path failures land here.
+func (s *FileBackedStore) LastError() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.journalErr
 }
 
 func (s *FileBackedStore) Close() error {
@@ -197,10 +253,22 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 	cleanup := map[string]any{"_cleanup": true, "event_ids": toRemove}
 	data, err := json.Marshal(cleanup)
 	if err == nil {
-		// Tombstone must be durable: without Sync a crash can lose it and
-		// swept events resurrect on reload.
-		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
-			_ = s.file.Sync()
+		if s.journal != nil {
+			cc, _ := json.Marshal(map[string]any{"removed_ids": toRemove})
+			seq, tip, jerr := s.journal.Append(record.TypeCompact, "", json.RawMessage(cc), nil)
+			if jerr != nil {
+				s.mu.Unlock()
+				return 0, jerr
+			}
+			if s.tipsSink != nil {
+				_ = s.tipsSink(seq, tip)
+			}
+		} else {
+			// Tombstone must be durable: without Sync a crash can lose it and
+			// swept events resurrect on reload.
+			if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+				_ = s.file.Sync()
+			}
 		}
 	}
 
@@ -225,6 +293,12 @@ func (s *FileBackedStore) removeByIDsInMemory(ids []string) {
 }
 
 func (s *FileBackedStore) Compact() error {
+	if s.journal != nil {
+		// ponytail: file-level rewrite would orphan envelopes the journal
+		// fold still re-verifies; swept rows are already durable
+		// TypeCompact deletions, so compaction is a no-op in journal mode.
+		return nil
+	}
 	s.mu.Lock()
 	stale := s.staleEvents
 	staleSet := make(map[string]bool, len(stale))

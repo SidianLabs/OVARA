@@ -186,9 +186,10 @@ func (o *Orchestrator) drainQueue() {
 	candidates := o.store.ListByState(StateQueued)
 	for _, cnt := range candidates {
 		// P2.2 identity gate: a suspended/retired/migrated subject's
-		// queued work never executes. Check→claim is a bounded TOCTOU —
-		// revocation landing inside the window is documented.
-		if o.identityChecker != nil && cnt.AgentID != "" && !o.identityChecker(cnt.AgentID) {
+		// queued work never executes. C3: the gate is unconditional —
+		// an empty agent_id is not a bypass; when a checker is wired
+		// the record must pass it, and an unknown/empty identity fails.
+		if o.identityChecker != nil && !o.identityChecker(cnt.AgentID) {
 			continue
 		}
 		o.execSem <- struct{}{}

@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"ovara.runtime.gateway/internal/record"
 )
 
 // FileBackedStore appends execution records to a JSONL file while serving
@@ -20,6 +22,9 @@ type FileBackedStore struct {
 	*InMemoryStore
 	path         string
 	file         *os.File
+	journal      *record.Journal // non-nil → signed journal mode (P2.4)
+	tipsSink     func(seq uint64, hash string) error
+	compactSeen  bool
 	maxSize      int
 	loadedCount  int
 	retentionDays int
@@ -31,7 +36,10 @@ func NewFileBackedStore(path string, maxSize int) (*FileBackedStore, error) {
 	return NewFileBackedStoreWithRetention(path, maxSize, 0, 0)
 }
 
-func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int, maxRecords int) (*FileBackedStore, error) {
+// NewFileBackedStoreWithRetention opens the execution store. A non-nil
+// record.Binding switches the file into signed-journal mode (P2.4);
+// unsigned legacy files fail closed — run `gwctl migrate` first.
+func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int, maxRecords int, bindings ...*record.Binding) (*FileBackedStore, error) {
 	if maxSize <= 0 {
 		maxSize = 10000
 	}
@@ -52,6 +60,19 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory for execution store: %w", err)
+	}
+
+	var binding *record.Binding
+	if len(bindings) > 0 {
+		binding = bindings[0]
+	}
+	if binding != nil {
+		j, err := record.Open("execution", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fold execution journal: %w", err)
+		}
+		store.journal = j
+		return store, nil
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644)
@@ -127,15 +148,46 @@ func (s *FileBackedStore) Create(e *Execution) error {
 		return fmt.Errorf("failed to marshal execution: %w", err)
 	}
 
-	if _, err := s.file.Write(append(data, '\n')); err != nil {
+	if err := s.appendLocked(e.ExecutionID, data); err != nil {
 		return fmt.Errorf("failed to write execution: %w", err)
-	}
-	if err := s.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync execution file: %w", err)
 	}
 
 	s.executions[e.ExecutionID] = stored
 	return nil
+}
+
+// appendLocked writes one record line — a signed envelope in journal
+// mode, raw JSON in legacy mode — and fsyncs. Callers must hold s.mu.
+func (s *FileBackedStore) appendLocked(recordID string, data []byte) error {
+	if s.journal != nil {
+		seq, tip, err := s.journal.Append("execution", recordID, json.RawMessage(data), nil)
+		if err != nil {
+			return err
+		}
+		if s.tipsSink != nil {
+			return s.tipsSink(seq, tip)
+		}
+		return nil
+	}
+	if _, err := s.file.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	return s.file.Sync()
+}
+
+// SetTipsSink wires the committed-floor hook (gwidentity tip-ledger).
+// Must be called before concurrent use.
+func (s *FileBackedStore) SetTipsSink(fn func(seq uint64, hash string) error) {
+	s.tipsSink = fn
+}
+
+// JournalTip exposes the journal's committed (seq, tip hash).
+// Zero values in legacy mode.
+func (s *FileBackedStore) JournalTip() (uint64, string) {
+	if s.journal == nil {
+		return 0, ""
+	}
+	return s.journal.Tip()
 }
 
 func (s *FileBackedStore) Update(e *Execution) error {
@@ -152,11 +204,8 @@ func (s *FileBackedStore) Update(e *Execution) error {
 		return fmt.Errorf("failed to marshal execution: %w", err)
 	}
 
-	if _, err := s.file.Write(append(data, '\n')); err != nil {
+	if err := s.appendLocked(e.ExecutionID, data); err != nil {
 		return fmt.Errorf("failed to write execution update: %w", err)
-	}
-	if err := s.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync execution file: %w", err)
 	}
 
 	s.executions[e.ExecutionID] = stored
@@ -223,6 +272,19 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 		return 0, nil
 	}
 
+	if s.journal != nil {
+		data, _ := json.Marshal(map[string]any{"removed_ids": toRemove})
+		if seq, tip, werr := s.journal.Append(record.TypeCompact, "",
+			json.RawMessage(data), nil); werr == nil && s.tipsSink != nil {
+			_ = s.tipsSink(seq, tip)
+		}
+		for _, id := range toRemove {
+			delete(s.executions, id)
+		}
+		s.staleIDs = append(s.staleIDs, toRemove...)
+		return len(toRemove), nil
+	}
+
 	cleanup := map[string]any{"_cleanup": true, "execution_ids": toRemove}
 	data, err := json.Marshal(cleanup)
 	if err == nil {
@@ -270,6 +332,10 @@ func (s *FileBackedStore) CurrentCount() int {
 func (s *FileBackedStore) Compact() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if s.journal != nil {
+		return s.compactSigned()
+	}
 
 	stale := s.staleIDs
 	staleSet := make(map[string]bool, len(stale))
@@ -325,6 +391,59 @@ func (s *FileBackedStore) Compact() error {
 
 	oldFile.Close()
 	s.mu.Lock()
+	return nil
+}
+
+// compactSigned rewrites the journal preserving chain continuity: the
+// first line is a signed compact marker carrying compacted_through +
+// prior_tip, adopting the previous tip's (seq, parent) position.
+func (s *FileBackedStore) compactSigned() error {
+	seq, tip := s.journal.Tip()
+	tmpPath := s.path + ".compact.tmp"
+	w, err := record.ResumeAt("execution", tmpPath, s.journal.Domain(), s.journal.Signer(), seq, tip)
+	if err != nil {
+		return fmt.Errorf("compact: %w", err)
+	}
+	marker, _ := json.Marshal(map[string]any{
+		"compacted_through": seq, "prior_tip": tip,
+		"removed_ids":       s.staleIDs})
+	if _, _, err := w.Append(record.TypeCompact, "", json.RawMessage(marker),
+		[]record.Link{{Kind: "prior_tip", Hash: tip}}); err != nil {
+		w.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("compact: marker: %w", err)
+	}
+	for _, exe := range s.executions {
+		data, err := json.Marshal(exe)
+		if err != nil {
+			w.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("compact: marshal: %w", err)
+		}
+		if _, _, err := w.Append("execution", exe.ExecutionID, json.RawMessage(data), nil); err != nil {
+			w.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("compact: record: %w", err)
+		}
+	}
+	newSeq, newTip := w.Tip()
+	if err := w.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("compact: close: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return fmt.Errorf("compact: rename: %w", err)
+	}
+	j, err := record.ResumeAt("execution", s.path, s.journal.Domain(), s.journal.Signer(), newSeq, newTip)
+	if err != nil {
+		return fmt.Errorf("compact: reopen: %w", err)
+	}
+	_ = s.journal.Close()
+	s.journal = j
+	s.staleIDs = nil
+	if s.tipsSink != nil {
+		_ = s.tipsSink(newSeq, newTip)
+	}
 	return nil
 }
 

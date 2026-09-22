@@ -9,22 +9,43 @@ import (
 
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/persist"
+	"ovara.runtime.gateway/internal/record"
 )
 
 type FileBackedStore struct {
 	path     string
+	journal  *record.Journal // non-nil → signed journal mode (P2.4)
+	tipsSink func(seq uint64, hash string) error
 	mu       sync.RWMutex
 	receipts map[string]*models.Receipt
 	maxSize  int
 	maxAge   time.Duration
+	evictedIDs []string // ids evicted this Put — journaled as compact
 }
 
-func NewFileBackedStore(path string, maxSize int, maxAge time.Duration) (*FileBackedStore, error) {
+// NewFileBackedStore opens the receipts store. A non-nil record.Binding
+// switches it into signed-journal mode (P2.4): the store becomes the
+// durable decision journal (D9) — one signed envelope per receipt,
+// hash-chained and domain-bound. Unsigned legacy files fail closed;
+// run `gwctl migrate` first.
+func NewFileBackedStore(path string, maxSize int, maxAge time.Duration, bindings ...*record.Binding) (*FileBackedStore, error) {
 	store := &FileBackedStore{
 		path:     path,
 		receipts: make(map[string]*models.Receipt),
 		maxSize:  maxSize,
 		maxAge:   maxAge,
+	}
+	var binding *record.Binding
+	if len(bindings) > 0 {
+		binding = bindings[0]
+	}
+	if binding != nil {
+		j, err := record.Open("receipts", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fold receipts journal: %w", err)
+		}
+		store.journal = j
+		return store, nil
 	}
 	if err := store.load(); err != nil {
 		if !os.IsNotExist(err) {
@@ -72,11 +93,60 @@ func (s *FileBackedStore) Put(receipt *models.Receipt) error {
 	if s.maxSize > 0 && len(s.receipts) > s.maxSize {
 		s.evictOldest(len(s.receipts) - s.maxSize)
 	}
+	if s.journal != nil {
+		if err := s.persistJournalLocked(receipt); err != nil {
+			return err
+		}
+		if len(s.evictedIDs) > 0 {
+			data, _ := json.Marshal(map[string]any{"removed_ids": s.evictedIDs})
+			seq, tip, err := s.journal.Append(record.TypeCompact, "", json.RawMessage(data), nil)
+			s.evictedIDs = nil
+			if err != nil {
+				return err
+			}
+			if s.tipsSink != nil {
+				return s.tipsSink(seq, tip)
+			}
+		}
+		return nil
+	}
 	var all []*models.Receipt
 	for _, r := range s.receipts {
 		all = append(all, r)
 	}
 	return s.persist(all)
+}
+
+// persistJournalLocked appends the receipt as a signed journal record
+// and commits the new tip to the ledger sink. Callers must hold s.mu.
+func (s *FileBackedStore) persistJournalLocked(r *models.Receipt) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("failed to marshal receipt: %w", err)
+	}
+	seq, tip, err := s.journal.Append("receipt", r.ReceiptID, json.RawMessage(data), nil)
+	if err != nil {
+		return err
+	}
+	if s.tipsSink != nil {
+		return s.tipsSink(seq, tip)
+	}
+	return nil
+}
+
+// SetTipsSink wires the committed-floor hook (gwidentity tip-ledger).
+// Must be called before concurrent use.
+func (s *FileBackedStore) SetTipsSink(fn func(seq uint64, hash string) error) {
+	s.tipsSink = fn
+}
+
+// JournalTip exposes the journal's committed (seq, tip hash).
+// Zero values in legacy mode.
+func (s *FileBackedStore) JournalTip() (uint64, string) {
+	if s.journal == nil {
+		return 0, ""
+	}
+	return s.journal.Tip()
 }
 
 func (s *FileBackedStore) evictOldest(count int) {
@@ -93,6 +163,7 @@ func (s *FileBackedStore) evictOldest(count int) {
 	}
 	for i := 0; i < count && i < len(oldest); i++ {
 		delete(s.receipts, oldest[i].ReceiptID)
+		s.evictedIDs = append(s.evictedIDs, oldest[i].ReceiptID)
 	}
 }
 

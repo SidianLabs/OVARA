@@ -13,6 +13,7 @@ package continuation
 
 import (
 	"fmt"
+	"time"
 
 	"ovara.runtime.gateway/internal/revocation"
 )
@@ -35,6 +36,13 @@ func (c *Continuation) RevocationPairs() []revocation.Pair {
 //	                      kill otherwise-valid work
 //	deny=false, err=nil  → authority clear under the current view
 func CheckClaimAuthority(rc revocation.Checker, c *Continuation) (deny bool, reason string, err error) {
+	// C4 — the continuation's captured authority must still be valid
+	// at claim: a lease or delegation hop valid at evaluation must not
+	// execute after its expiry. Checked unconditionally (before the
+	// revocation boundary) and independent of revocation plumbing.
+	if c.AuthorityExpiresAt != nil && !c.AuthorityExpiresAt.After(time.Now()) {
+		return true, "captured authority expired before claim", nil
+	}
 	if rc == nil {
 		return false, "", nil // no revocation boundary configured — runtime-only mode
 	}

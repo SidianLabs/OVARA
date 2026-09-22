@@ -30,6 +30,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // MarkerRecord is the "migrate" journal line — the migration evidence
@@ -49,6 +50,31 @@ type seqChainProbe struct {
 	Kind  string `json:"kind"`
 	Seq   uint64 `json:"seq"`
 	Chain string `json:"chain"`
+}
+
+// Tip is one store's committed watermark: the seq and sha256 of its
+// last physical journal line at ledger-commit time (P2.4 tip-ledger).
+type Tip struct {
+	Seq  uint64 `json:"seq"`
+	Hash string `json:"hash"`
+}
+
+// TipsRecord is a "tips" journal line (P2.4/C1): the domain tip-ledger.
+// It records the committed tip of every authority-bearing store at a
+// point in time inside the anchored gateway identity journal — the
+// one journal whose tail an attacker cannot truncate without tripping
+// the anchor. Store opens compare their folded tip against the latest
+// ledger entry: a store BEHIND its floor was truncated/rolled back and
+// must refuse; a store ahead is authentic-but-uncommitted and ratchets
+// the floor forward at open. The ledger is evidence of expected state,
+// never permission to manufacture it.
+type TipsRecord struct {
+	Kind      string          `json:"kind"` // "tips"
+	GatewayID string          `json:"gateway_id"`
+	IssuedAt  time.Time       `json:"issued_at"`
+	Tips      map[string]Tip  `json:"tips"` // store name → committed tip
+	Seq       uint64          `json:"seq,omitempty"`
+	Chain     string          `json:"chain,omitempty"`
 }
 
 // chainFoldLine folds one raw journal line (already parsed as p) into
@@ -127,6 +153,14 @@ func chainContent(line []byte, kind string) []byte {
 		rv.Chain = ""
 		b, _ := json.Marshal(&rv)
 		return b
+	case "tips":
+		var tp TipsRecord
+		if json.Unmarshal(line, &tp) != nil {
+			return nil
+		}
+		tp.Chain = ""
+		b, _ := json.Marshal(&tp)
+		return b
 	}
 	return nil
 }
@@ -151,6 +185,9 @@ func sealRecord(rec any, seq uint64, chain [32]byte) ([32]byte, error) {
 	case *RevokeRecord:
 		v.Seq, v.Chain = seq, ""
 		content, _ = json.Marshal(v)
+	case *TipsRecord:
+		v.Seq, v.Chain = seq, ""
+		content, _ = json.Marshal(v)
 	default:
 		return chain, fmt.Errorf("gateway registry: unchainable record type %T", rec)
 	}
@@ -164,6 +201,8 @@ func sealRecord(rec any, seq uint64, chain [32]byte) ([32]byte, error) {
 	case *MarkerRecord:
 		v.Chain = chainHex
 	case *RevokeRecord:
+		v.Chain = chainHex
+	case *TipsRecord:
 		v.Chain = chainHex
 	}
 	return sum, nil

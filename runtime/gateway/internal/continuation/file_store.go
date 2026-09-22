@@ -9,11 +9,15 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"ovara.runtime.gateway/internal/record"
 )
 
 type FileBackedStore struct {
 	path          string
 	file          *os.File
+	journal       *record.Journal // non-nil → signed journal mode (P2.4)
+	tipsSink      func(seq uint64, hash string) error
 	mu            sync.RWMutex
 	continuations map[string]*Continuation
 	maxSize       int
@@ -21,13 +25,20 @@ type FileBackedStore struct {
 	retentionDays int
 	maxRecords    int
 	staleIDs      []string
+	tombstones    map[string]bool // ids pruned to terminal skeletons by compact events
 }
 
 func NewFileBackedStore(path string, maxSize int) (*FileBackedStore, error) {
 	return NewFileBackedStoreWithRetention(path, maxSize, 0, 0)
 }
 
-func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int, maxRecords int) (*FileBackedStore, error) {
+// NewFileBackedStoreWithRetention opens the continuation store. A
+// non-nil record.Binding switches the file into signed-journal mode
+// (P2.4): every persisted record becomes a domain-bound signed envelope
+// folded through the total transition table at open. Unsigned legacy
+// files fail closed in signed mode — run `gwctl migrate` first. A nil
+// binding preserves legacy behaviour exactly.
+func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int, maxRecords int, bindings ...*record.Binding) (*FileBackedStore, error) {
 	if maxSize <= 0 {
 		maxSize = 10000
 	}
@@ -44,10 +55,24 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		retentionDays: retentionDays,
 		maxRecords:    maxRecords,
 		continuations: make(map[string]*Continuation),
+		tombstones:    map[string]bool{},
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create directory for continuation store: %w", err)
+	}
+
+	var binding *record.Binding
+	if len(bindings) > 0 {
+		binding = bindings[0]
+	}
+	if binding != nil {
+		j, err := record.Open("continuation", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fold continuation journal: %w", err)
+		}
+		store.journal = j
+		return store, nil
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644)
@@ -122,15 +147,54 @@ func (s *FileBackedStore) Create(c *Continuation) error {
 		return fmt.Errorf("failed to marshal continuation: %w", err)
 	}
 
-	if _, err := s.file.Write(append(data, '\n')); err != nil {
+	if err := s.appendLocked(c.ContinuationID, data); err != nil {
 		return fmt.Errorf("failed to write continuation: %w", err)
-	}
-	if err := s.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync continuation file: %w", err)
 	}
 
 	s.continuations[c.ContinuationID] = c
 	return nil
+}
+
+// appendLocked writes one physical record line — a signed journal
+// envelope in signed mode, a raw JSON line in legacy mode — and fsyncs.
+// In signed mode a successful write is committed-floor eligible: the
+// tips sink (when wired) records the new tip into the domain ledger.
+// Callers must hold s.mu.
+func (s *FileBackedStore) appendLocked(recordID string, data []byte) error {
+	if s.journal != nil {
+		seq, tip, err := s.journal.Append("continuation", recordID, json.RawMessage(data), nil)
+		if err != nil {
+			return err
+		}
+		if s.tipsSink != nil {
+			// The ledger write happens strictly AFTER the store's own
+			// fsync — the floor may lag, never lead.
+			if err := s.tipsSink(seq, tip); err != nil {
+				return fmt.Errorf("tip-ledger commit failed (store write is durable, floor not advanced): %w", err)
+			}
+		}
+		return nil
+	}
+	if _, err := s.file.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	return s.file.Sync()
+}
+
+// SetTipsSink wires the committed-floor hook: every durable mutation
+// forwards the new journal tip to the domain tip-ledger (gwidentity).
+// Must be called before concurrent use.
+func (s *FileBackedStore) SetTipsSink(fn func(seq uint64, hash string) error) {
+	s.tipsSink = fn
+}
+
+// JournalTip exposes the journal's committed (seq, tip hash) for
+// open-time floor ratcheting. Zero values in legacy mode.
+func (s *FileBackedStore) JournalTip() (uint64, string) {
+	if s.journal == nil {
+		return 0, ""
+	}
+	return s.journal.Tip()
 }
 
 // persistLocked appends the continuation record and fsyncs. Callers must
@@ -141,10 +205,7 @@ func (s *FileBackedStore) persistLocked(c *Continuation) {
 	if err != nil {
 		return
 	}
-	if _, err := s.file.Write(append(data, '\n')); err != nil {
-		return
-	}
-	_ = s.file.Sync()
+	_ = s.appendLocked(c.ContinuationID, data)
 }
 
 func (s *FileBackedStore) Get(id string) (*Continuation, bool) {
@@ -304,9 +365,7 @@ func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) 
 	}
 	c.State = StateExecuted
 	if data, err := json.Marshal(c); err == nil {
-		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
-			_ = s.file.Sync()
-		}
+		_ = s.appendLocked(c.ContinuationID, data)
 	}
 	return c.snapshot(), true
 }
@@ -349,9 +408,7 @@ func (s *FileBackedStore) RetryForExecution(id string) (*Continuation, bool) {
 	// A best-effort write keeps the incremented RetryCount durable across restarts;
 	// the in-memory transition has already been applied under the lock.
 	if data, err := json.Marshal(c); err == nil {
-		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
-			_ = s.file.Sync()
-		}
+		_ = s.appendLocked(c.ContinuationID, data)
 	}
 	return c.snapshot(), true
 }
@@ -371,9 +428,7 @@ func (s *FileBackedStore) CancelForOperation(id string) (*Continuation, bool) {
 	}
 	c.MarkCancelled()
 	if data, err := json.Marshal(c); err == nil {
-		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
-			_ = s.file.Sync()
-		}
+		_ = s.appendLocked(c.ContinuationID, data)
 	}
 	return c.snapshot(), true
 }
@@ -460,6 +515,21 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 		return 0, nil
 	}
 
+	if s.journal != nil {
+		// Signed mode: the compact event is a signed record; fold
+		// semantics tombstone terminal records rather than deleting
+		// them — terminal facts survive compaction (C5/tombstone rule).
+		data, _ := json.Marshal(map[string]any{"removed_ids": toRemove})
+		seq, tip, werr := s.journal.Append(record.TypeCompact, "",
+			json.RawMessage(data), nil)
+		if werr == nil && s.tipsSink != nil {
+			_ = s.tipsSink(seq, tip)
+		}
+		s.foldCompact(toRemove)
+		s.staleIDs = append(s.staleIDs, toRemove...)
+		return len(toRemove), nil
+	}
+
 	cleanup := map[string]any{"_cleanup": true, "continuation_ids": toRemove}
 	data, err := json.Marshal(cleanup)
 	if err == nil {
@@ -480,6 +550,10 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 
 func (s *FileBackedStore) Compact() error {
 	s.mu.Lock()
+	if s.journal != nil {
+		defer s.mu.Unlock()
+		return s.compactSigned()
+	}
 	stale := s.staleIDs
 	staleSet := make(map[string]bool, len(stale))
 	for _, id := range stale {
@@ -549,6 +623,81 @@ func (s *FileBackedStore) Compact() error {
 
 	oldFile.Close()
 	return nil
+}
+
+// compactSigned rewrites the journal, preserving chain continuity: the
+// first line of the new file is a signed compact marker that attests
+// the pre-compaction tip and adopts its position (seq, parent) — the
+// chain never restarts. Tombstoned ids are re-emitted as tombstone
+// records so terminal facts survive; live records are re-emitted whole.
+func (s *FileBackedStore) compactSigned() error {
+	seq, tip := s.journal.Tip()
+	tmpPath := s.path + ".compact.tmp"
+	w, err := record.ResumeAt("continuation", tmpPath, s.journal.Domain(), s.journalSigner(), seq, tip)
+	if err != nil {
+		return fmt.Errorf("compact: %w", err)
+	}
+	marker, _ := json.Marshal(map[string]any{
+		"compacted_through": seq, "prior_tip": tip})
+	if _, _, err := w.Append(record.TypeCompact, "", json.RawMessage(marker),
+		[]record.Link{{Kind: "prior_tip", Hash: tip}}); err != nil {
+		w.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("compact: marker: %w", err)
+	}
+	for id := range s.tombstones {
+		st := s.continuations[id].State
+		tb, _ := json.Marshal(map[string]any{"state": string(st)})
+		if _, _, err := w.Append(record.TypeTombstone, id, json.RawMessage(tb), nil); err != nil {
+			w.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("compact: tombstone: %w", err)
+		}
+	}
+	for _, c := range s.continuations {
+		if s.tombstones[c.ContinuationID] {
+			continue
+		}
+		data, err := json.Marshal(c)
+		if err != nil {
+			w.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("compact: marshal: %w", err)
+		}
+		if _, _, err := w.Append("continuation", c.ContinuationID, json.RawMessage(data), nil); err != nil {
+			w.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("compact: record: %w", err)
+		}
+	}
+	newSeq, newTip := w.Tip()
+	if err := w.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("compact: close: %w", err)
+	}
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return fmt.Errorf("compact: rename: %w", err)
+	}
+	// Reopen the journal on the compacted file so the writer continues
+	// from the new physical tip (ResumeAt keeps logical seq/parent).
+	j, err := record.ResumeAt("continuation", s.path, s.journal.Domain(), s.journalSigner(), newSeq, newTip)
+	if err != nil {
+		return fmt.Errorf("compact: reopen: %w", err)
+	}
+	_ = s.journal.Close()
+	s.journal = j
+	s.staleIDs = nil
+	if s.tipsSink != nil {
+		// The compacted tip becomes the committed floor — strictly after
+		// the rewrite is durable.
+		_ = s.tipsSink(newSeq, newTip)
+	}
+	return nil
+}
+
+// journalSigner returns the journal's signer — exposed for compaction.
+func (s *FileBackedStore) journalSigner() *record.Signer {
+	return s.journal.Signer()
 }
 
 // ExpireIfDue atomically expires a continuation that is due under the store

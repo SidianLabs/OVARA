@@ -36,8 +36,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -51,6 +53,7 @@ import (
 	"ovara.runtime.gateway/internal/gwidentity"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/receipt"
+	"ovara.runtime.gateway/internal/record"
 )
 
 func openReg(path string, create bool) *gwidentity.Registry {
@@ -205,6 +208,8 @@ func main() {
 	domain := fs.String("domain", "", "anchor domain id (reset)")
 	confirm := fs.Bool("confirm", false, "explicit operator confirmation for authority operations")
 	attest := fs.Bool("attest", false, "anchor-init: print attestation artifact and exit")
+	gwKeyFile := fs.String("gateway-key", "", "migrate: gateway private key file (ed25519 hex, 0600)")
+	mStores := fs.String("stores", "", "migrate: comma list name=path — idregistry|capabilities (sealed import), receipts|replay (verified import), continuation|approval|execution|events (quarantine)")
 	class := fs.String("class", "", "revocation class: issuer | delegation | lease")
 	target := fs.String("target", "", "revocation target (canonical id for the class)")
 	actor := fs.String("actor", "", "revocation actor identity (default: operator)")
@@ -380,6 +385,11 @@ func main() {
 		_, seq, tip := r.ChainTip()
 		fmt.Printf("epoch: %d  tip: %x\n", seq, tip)
 
+	case "migrate":
+		r := openReg(*reg, false)
+		defer r.Close()
+		runMigrate(r, *gw, *gwKeyFile, *mStores, *confirm)
+
 	case "verify-receipt":
 		// P2.3.5 independent verification: the verifier needs ONLY the
 		// registry file (public material) + the receipt — never the
@@ -516,4 +526,261 @@ func main() {
 			fatal("unknown command %q", cmd)
 		}
 	}
+}
+
+// --- migrate (P2.4) ---------------------------------------------------------
+
+// runMigrate converts 2.0 stores to 2.1 signed form under explicit
+// operator attestation (design §16, MIG-01..03):
+//
+//   - sealed-file stores (idregistry, capabilities): legacy payload
+//     imported verbatim into a signed snapshot (file_seq=1) — the
+//     operator's --confirm IS the blessing of unsigned provenance.
+//   - verified-record stores (receipts, replay): individually
+//     verifiable records are imported (edsig_v1 receipts; live replay
+//     consume keys — dropping live nonces would reopen replay
+//     windows). Receipts failing verification are skipped and reported.
+//   - mutable-state stores (continuation, approval, execution,
+//     events): legacy contents are NEVER imported — unsigned
+//     provenance cannot be honestly vouched. The file is quarantined
+//     to <path>.pre21 and a signed migration marker records the
+//     quarantine hash on the fresh journal.
+//
+// Every write is preceded by the printed plan; --confirm executes.
+func runMigrate(r *gwidentity.Registry, gwID, keyFile, stores string, confirm bool) {
+	if gwID == "" || keyFile == "" {
+		fatal("migrate requires --gateway-id and --gateway-key")
+	}
+	if stores == "" {
+		fatal("migrate requires --stores name=path[,name=path...]")
+	}
+	priv, err := gwidentity.LoadOrCreateKey(keyFile)
+	if err != nil {
+		fatal("gateway key: %v", err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	rec := r.FindByPub(gwID, pub)
+	if rec == nil {
+		fatal("no registered key matching --gateway-key for %s — refusing to sign migration with an unbound key", gwID)
+	}
+	signer := record.NewSigner(priv, r.DomainID(), gwID, rec.KeyID)
+	resolver := receipt.RegistryResolver{Reg: r}
+
+	type job struct{ name, path string }
+	var jobs []job
+	for _, kv := range strings.Split(stores, ",") {
+		kv = strings.TrimSpace(kv)
+		if kv == "" {
+			continue
+		}
+		name, path, ok := strings.Cut(kv, "=")
+		if !ok || name == "" || path == "" {
+			fatal("--stores entry %q must be name=path", kv)
+		}
+		switch name {
+		case "idregistry", "capabilities", "receipts", "replay",
+			"continuation", "approval", "execution", "events":
+		default:
+			fatal("unknown store %q", name)
+		}
+		jobs = append(jobs, job{name, path})
+	}
+
+	fmt.Printf("OVARA 2.0 → 2.1 migration plan (gateway=%s domain=%s):\n", gwID, r.DomainID())
+	for _, j := range jobs {
+		data, err := os.ReadFile(j.path)
+		switch {
+		case os.IsNotExist(err):
+			fmt.Printf("  %-14s %s — absent, skipped\n", j.name, j.path)
+		case err != nil:
+			fatal("read %s: %v", j.path, err)
+		case len(data) == 0:
+			fmt.Printf("  %-14s %s — empty, skipped\n", j.name, j.path)
+		case alreadySigned(data):
+			fmt.Printf("  %-14s %s — already signed, skipped\n", j.name, j.path)
+		default:
+			sum := sha256.Sum256(data)
+			fmt.Printf("  %-14s %s — legacy, %d bytes sha256=%s\n", j.name, j.path, len(data), hex.EncodeToString(sum[:])[:16])
+		}
+	}
+	if !confirm {
+		fmt.Println("re-run with --confirm to execute")
+		return
+	}
+
+	tips := map[string]gwidentity.Tip{}
+	for _, j := range jobs {
+		data, err := os.ReadFile(j.path)
+		if os.IsNotExist(err) || len(data) == 0 || alreadySigned(data) {
+			continue
+		}
+		if err != nil {
+			fatal("read %s: %v", j.path, err)
+		}
+		sum := sha256.Sum256(data)
+		switch j.name {
+		case "idregistry", "capabilities":
+			// Operator-blessed verbatim import under a signed snapshot.
+			var probe any
+			if json.Unmarshal(data, &probe) != nil {
+				fatal("%s: legacy payload is not valid JSON — refusing to import", j.path)
+			}
+			quarantine(j.path, data)
+			sealed, err := record.SealFile(j.name, signer, data, nil, 0)
+			if err != nil {
+				fatal("seal %s: %v", j.name, err)
+			}
+			if err := os.WriteFile(j.path, sealed, 0o600); err != nil {
+				fatal("write sealed %s: %v", j.path, err)
+			}
+			tips[j.name] = gwidentity.Tip{Seq: 1, Hash: record.TipHash(sealed)}
+			fmt.Printf("  %-14s sealed (file_seq=1) %s\n", j.name, j.path)
+		default:
+			journalMigrate(j.name, j.path, data, sum, signer, resolver, tips)
+		}
+	}
+	if len(tips) > 0 {
+		if err := r.RecordTips(gwID, tips); err != nil {
+			fatal("tip-ledger commit failed (migrated files are durable): %v", err)
+		}
+	}
+	fmt.Printf("migration complete — %d store(s) ledgered\n", len(tips))
+}
+
+// alreadySigned sniffs sealed files (_sec key) and journals (first
+// non-empty line carries sig+parent+v) so re-runs are idempotent.
+func alreadySigned(data []byte) bool {
+	s := strings.TrimLeft(string(data), " \t\r\n")
+	sc := bufio.NewScanner(strings.NewReader(s))
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var m map[string]json.RawMessage
+		if json.Unmarshal(line, &m) != nil {
+			return false
+		}
+		if _, ok := m["_sec"]; ok {
+			return true
+		}
+		_, sig := m["sig"]
+		_, parent := m["parent"]
+		_, v := m["v"]
+		return sig && parent && v
+	}
+	return false
+}
+
+// quarantine moves a legacy file aside before its signed replacement
+// lands. Refuses to clobber an existing quarantine — the operator
+// resolves collisions by hand (MIG-01: one migration per store).
+func quarantine(path string, data []byte) string {
+	q := path + ".pre21"
+	if _, err := os.Stat(q); err == nil {
+		fatal("%s already exists — resolve manually", q)
+	}
+	if err := os.WriteFile(q, data, 0o600); err != nil {
+		fatal("quarantine %s: %v", q, err)
+	}
+	if err := os.Remove(path); err != nil {
+		fatal("remove legacy %s: %v", path, err)
+	}
+	return q
+}
+
+// journalMigrate quarantines the legacy file, opens a fresh signed
+// journal in its place, imports what is honestly importable, and
+// appends a migration marker binding (store, quarantine hash) into the
+// chain.
+func journalMigrate(store, path string, legacy []byte, sum [32]byte,
+	signer *record.Signer, resolver receipt.RegistryResolver,
+	tips map[string]gwidentity.Tip) {
+
+	q := quarantine(path, legacy)
+	// Fresh journal — apply never fires on an empty file; the marker
+	// append then extends the genesis parent.
+	j, err := record.Open(store, path, signer.Domain(), signer, resolver.ResolvePublicKey,
+		record.Floor{}, func(*record.Envelope) error {
+			return fmt.Errorf("unexpected record in fresh %s journal", store)
+		})
+	if err != nil {
+		fatal("open %s journal: %v", store, err)
+	}
+	defer j.Close()
+
+	imported, skipped := 0, 0
+	switch store {
+	case "replay":
+		// Live consume keys carry over — dropping them would reopen
+		// replay windows for in-flight leases.
+		sc := bufio.NewScanner(strings.NewReader(string(legacy)))
+		for sc.Scan() {
+			line := sc.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			var e struct {
+				Kind      string    `json:"k"`
+				ID        string    `json:"p"`
+				ExpiresAt time.Time `json:"e,omitempty"`
+			}
+			if json.Unmarshal(line, &e) != nil || e.ID == "" {
+				skipped++
+				continue
+			}
+			if !e.ExpiresAt.IsZero() && !e.ExpiresAt.After(time.Now().UTC()) {
+				skipped++ // dead key — not worth importing
+				continue
+			}
+			payload := map[string]any{"k": e.Kind, "p": e.ID, "c": time.Now().UTC()}
+			if !e.ExpiresAt.IsZero() {
+				payload["e"] = e.ExpiresAt
+			}
+			if _, _, err := j.Append("consume", e.Kind+"\x00"+e.ID, payload, nil); err != nil {
+				fatal("replay import: %v", err)
+			}
+			imported++
+		}
+	case "receipts":
+		// edsig_v1 receipts are self-verifying — import only those
+		// whose signatures still verify against the registry.
+		var arr []json.RawMessage
+		if err := json.Unmarshal(legacy, &arr); err == nil {
+			for _, raw := range arr {
+				var rcpt models.Receipt
+				if json.Unmarshal(raw, &rcpt) != nil || rcpt.ReceiptID == "" {
+					skipped++
+					continue
+				}
+				ok, verr := receipt.VerifySignature(resolver, &rcpt)
+				if !ok || verr != nil {
+					skipped++
+					continue
+				}
+				if _, _, err := j.Append("receipt", rcpt.ReceiptID, raw, nil); err != nil {
+					fatal("receipt import: %v", err)
+				}
+				imported++
+			}
+		} else {
+			skipped = -1 // unparseable list — quarantined wholesale
+		}
+	}
+
+	marker := map[string]any{
+		"migrated_from": "ovara-2.0",
+		"store":         store,
+		"quarantined":   q,
+		"legacy_sha256": hex.EncodeToString(sum[:]),
+		"imported":      imported,
+		"skipped":       skipped,
+		"migrated_at":   time.Now().UTC().Format(time.RFC3339),
+	}
+	seq, tip, err := j.Append(record.TypeMigration, "migration-0", marker, nil)
+	if err != nil {
+		fatal("migration marker %s: %v", store, err)
+	}
+	tips[store] = gwidentity.Tip{Seq: seq, Hash: tip}
+	fmt.Printf("  %-14s quarantined → signed journal (imported=%d skipped=%d) %s\n", store, imported, skipped, path)
 }

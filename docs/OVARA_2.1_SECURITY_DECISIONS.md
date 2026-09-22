@@ -1,0 +1,155 @@
+# OVARA 2.1 — SECURITY DECISIONS
+
+Phase A decisions, grounded in the inspected code. Each entry states the
+decision, its basis in the actual implementation, and the security
+consequence. Items needing operator/product approval are marked
+**OPEN**.
+
+## D1 — Signed journal activation rule (RESOLVED)
+
+Decision: signed journals activate per-store when the store is file-backed
+AND durable gateway identity is configured (`gateway_key_file` +
+`gateway_registry_file`).
+
+Basis: `domain_id` derives from the gwidentity first line, and `key_ref`
+resolution needs the durable registry. Without durable identity, no
+durable domain exists to bind signatures to — signing against an ephemeral
+domain adds bytes, not security.
+
+Consequence: `ovara init` now writes `gateway_key_file` +
+`gateway_registry_file` + the authority file paths so a default deployment
+is durable-signed rather than silent memory-mode. Deployments that
+override to memory-mode get exactly 2.0 guarantees (documented degraded
+mode — not silently weaker, the degraded list is printed at boot).
+
+A `journal_signing_required` config flag forces fail-closed for hardened
+deployments: any authority `*_file` without durable identity = boot error.
+
+## D2 — Tip-ledger cadence (RESOLVED)
+
+Decision: ledger = committed **floor**. Writes happen (a) after every
+authority-store mutation batch (piggybacked on the store's own fsync
+ordering — the tips write strictly follows the covered fsync), and (b) a
+ratchet at store open covering any newer tip.
+
+Basis: alternatives considered — per-record ledger fsync on a timer
+(amortized) leaves a window where committed state is unledgered and
+complicates "is this tail committed"; open-only ratcheting lets a long
+uptime stretch accumulate unledgered state but adds no exposure since the
+store's own chain authenticates the tail. Mutation-coupled writes are one
+extra fsync per mutation — same cost class as the store's own write; the
+journal is already in the latency path.
+
+Consequence: honest crashes can only produce store ≥ ledger (never
+store < ledger), so the open-time rule "behind → refuse" cannot false-
+positive on a crash — provided the write ordering is held: **tips records
+are written only after the covered mutation's fsync returns.**
+
+## D3 — Unledgered tail handling (RESOLVED)
+
+Decision: a store tip ahead of the ledger is **authentic-but-uncommitted**
+— it loads (its own sig+chain prove authenticity), the ledger ratchets
+forward at open, and the records become fully authoritative once the
+ratchet lands.
+
+Basis: the ledger's job is truncation detection, not commit gating —
+gating would make every crash brick the gateway (availability DoS by
+power loss). Records past the floor are still signature-verified.
+
+Consequence: an attacker truncating to below the floor is caught; an
+attacker truncating store AND ledger identically rolls both back
+consistently — bounded by the anchor floor (the gwidentity journal
+carrying tips is itself anchored; anchor reconciliation detects
+gwidentity-side truncation). Whole-domain atomic rollback remains an
+oracle-level limitation — unchanged, documented.
+
+## D4 — Lease expiry at claim (RESOLVED — implement)
+
+Confirmed: `CheckClaimAuthority` re-checks revocation only; lease `Expiry`
+and delegation-hop `ExpiresAt` are validated at eval only.
+
+Decision: `Continuation.authority_expires_at` = `min(lease.Expiry,
+terminal-hop ExpiresAt)` — captured server-side at `handleCreate`,
+immutable in the fold, deny-direction check inside `CheckClaimAuthority`
+before the revocation check. Signature and claim ordering unchanged.
+Executables whose authority expired between eval and claim transition to
+`denied` (terminal), never execute.
+
+## D5 — Policy freshness (RESOLVED — not implemented this phase)
+
+Inspected: `Policy` carries `policy_version`/history; approvals bind
+`PolicyVersion` into the record; no claim-time policy check exists;
+`watchPolicy` hot-reloads but never revalidates pending work.
+
+Current semantic (code): **"policy at evaluation time"** — the receipt
+binds the eval-time version. Nothing in code or docs promises validity at
+execution time.
+
+Decision: keep eval-time semantics; DO NOT add `policy_epoch` in this
+phase. Rationale: it is a new frozen-surface semantic (an approved
+continuation could be killed by a later policy edit — a new deny vector
+and a product-level semantics change). Documented as an **OPEN** product
+decision:
+
+- Model A (current): eval-time binding. Approved work survives policy
+  tightening until its own expiry. Simple, honest.
+- Model B (execution-time): claim re-checks policy version/evaluation.
+  Stronger revocation surface; needs a policy-history lookup at claim and
+  a definition of "tightened" (version mismatch vs semantic conflict).
+
+## D6 — C2 boot attestation (DEFERRED pending approval)
+
+Bootstrap inputs (`config.json`, `policy.json`, `proxy.json`,
+`trusted_issuers`) remain plaintext trust roots — the bootstrap-laundering
+class from the adversarial review is unchanged this phase. The trust
+boundary is documented: *an attacker who can write the bootstrap config
+owns the domain until the attestation phase lands.*
+
+If approved later: a signed `boot_attestation` gwidentity record at
+startup hashing each configured bootstrap input; drift becomes
+**detectable** (never preventive).
+
+## D7 — Migration (RESOLVED)
+
+Per §7 of the journal spec: identity/capabilities/enrollment import under
+operator attestation (`gwctl migrate`); continuation/approval/execution
+files are quarantined (`.pre21`), not imported — drain-or-expire. Old-file
+hash proves provenance, not honesty. Single-genesis enforced by fold.
+
+## D8 — Compaction/tombstones (RESOLVED)
+
+Terminal facts survive compaction via tombstone records (spec §8).
+Existing `_cleanup` deletion records are replaced by signed `compact`
+events; unsigned ones are fold errors. Replay/revocation keep their
+existing compaction shape (append-only, no per-record state) under the new
+envelope.
+
+## D9 — Decision journal (RESOLVED — reuse receipts)
+
+The design's "decision journal" is the journaled receipts store: each
+receipt record already carries `decision_id`, `request_hash`,
+`policy_version`, `verdict`, `capability_lease_id` under `edsig_v1`.
+Journalizing the receipts store (per-record envelope + chain + domain)
+turns it into the durable decision journal — no new store, no new file
+key. `receipt.persist_failed` ordering is untouched.
+
+## D10 — Executor identity gate (RESOLVED)
+
+Both dispatch sites drop the `agent_id != ""` precondition. Empty
+`agent_id` → gate fails → deny (record to `denied`, reason
+`identity_missing`). Nil `identityChecker` keeps current semantics
+(registry not configured = nothing to check) — fail-closed happens inside
+the registry path, not by inventing a checker.
+
+## OPEN items needing explicit approval
+
+1. **D6 boot attestation** — defer (recommended) or implement.
+2. **D5 policy freshness model** — keep eval-time (recommended) or add
+   execution-time recheck (frozen-surface change).
+3. **`ovara init` durable defaults** — writing key/registry/authority
+   paths by default changes a fresh deployment's on-disk layout
+   (recommended: yes — it closes the biggest real-world gap).
+
+Claims intentionally NOT made: bootstrap-input tamper resistance,
+whole-domain atomic rollback, hardware-rooted keys, execution truth,
+distributed replay, kill-running-execution.
