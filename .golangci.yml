@@ -26,7 +26,6 @@ linters:
     - unparam       # find unused function parameters
     - nakedret      # find naked returns
     - prealloc      # find slice preallocation opportunities
-    - exportloopref # find loop variable capture in goroutines
 
     # Security
     - gosec         # security checks

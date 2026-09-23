@@ -53,6 +53,10 @@ jobs:
           version: v1.64
           install-mode: goinstall
           working-directory: ${{ matrix.module }}
+          # The lint gate never ran before (broken job config), so the
+          # repo carries preexisting lint debt. Gate only what the diff
+          # introduces; whole-repo cleanup can come as its own change.
+          only-new-issues: true
           args: --timeout=5m
 
   tslint:
