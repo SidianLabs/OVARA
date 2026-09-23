@@ -126,6 +126,7 @@ func (h *PolicyHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/policy/history/entry", h.handleGetHistoryEntry)
 	mux.HandleFunc("POST /v1/policy/rollback", h.handleRollback)
 	mux.HandleFunc("POST /v1/policy/restore", h.handleRestore)
+	mux.HandleFunc("PUT /v1/policy", h.handleDistribute)
 }
 
 type ValidateRequest struct {
@@ -702,6 +703,99 @@ func (h *PolicyHandler) handleRestore(w http.ResponseWriter, r *http.Request) {
 		"restored_version": entry.Version,
 		"restored_from_id": entry.ID,
 		"previous_version": previousVersion,
+	})
+}
+
+// DistributeRequest is the cloud control plane's push shape —
+// PolicyDistributor PUTs it here after a policy publish. Rules carry
+// the canonical gateway Rule schema and are parsed by the same strict
+// parser as file load: an undecodable push can never partially apply.
+type DistributeRequest struct {
+	PolicyID string          `json:"policyId"`
+	Version  int             `json:"version"`
+	Name     string          `json:"name,omitempty"`
+	Rules    json.RawMessage `json:"rules"`
+}
+
+// handleDistribute applies a control-plane policy push end-to-end:
+// strict-parse, validate, snapshot the current rules into history,
+// swap the live store, then persist to policy_file when configured so
+// the push survives restart. A non-2xx tells the distributor to retry
+// (5xx) or drop it (4xx), matching its delivery semantics.
+func (h *PolicyHandler) handleDistribute(w http.ResponseWriter, r *http.Request) {
+	var req DistributeRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPolicyBodyBytes)).Decode(&req); err != nil {
+		api.JSONBadRequest(w, "invalid request body: "+err.Error())
+		return
+	}
+	if req.PolicyID == "" || req.Version <= 0 || len(req.Rules) == 0 {
+		api.JSONBadRequest(w, "policyId, positive version, and rules are required")
+		return
+	}
+
+	version := fmt.Sprintf("v%d", req.Version)
+	doc, err := json.Marshal(map[string]any{
+		"version": version,
+		"rules":   req.Rules,
+	})
+	if err != nil {
+		api.JSONBadRequest(w, "invalid rules: "+err.Error())
+		return
+	}
+	incoming, err := policy.ParseStore(doc, version)
+	if err != nil {
+		api.JSONBadRequest(w, "invalid policy: "+err.Error())
+		return
+	}
+	validator := policy.NewValidator()
+	if vr := validator.ValidateRules(incoming.ListRules()); !vr.Valid {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":    "policy validation failed",
+			"errors":   vr.Errors,
+			"warnings": vr.Warnings,
+		})
+		return
+	}
+
+	previousVersion := h.store.Version()
+	h.history.SnapshotFromStore(h.store, policy.PolicySourceDistribute, previousVersion, h.gatewayID)
+
+	if err := h.store.ReloadFromStore(incoming); err != nil {
+		api.JSONInternalError(w, "failed to apply policy: "+err.Error())
+		return
+	}
+
+	// Persist to policy_file when configured — without this the push
+	// survives only until restart, which silently reverts distributed
+	// policy. A persistence failure is retried by the distributor.
+	if fp := h.store.FilePath(); fp != "" {
+		if err := h.store.WriteFile(fp); err != nil {
+			api.JSONInternalError(w, "policy applied but failed to persist: "+err.Error())
+			return
+		}
+	}
+
+	if h.eventStore != nil {
+		evt := events.NewEvent(events.EventTypePolicyDistributed)
+		if h.gatewayID != "" {
+			evt.WithGatewayID(h.gatewayID)
+		}
+		evt.Payload = map[string]any{
+			"policy_id":        req.PolicyID,
+			"version":          version,
+			"rules":            len(incoming.ListRules()),
+			"previous_version": previousVersion,
+		}
+		h.eventStore.Append(evt)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"status":  "applied",
+		"version": h.store.Version(),
+		"rules":   len(h.store.ListRules()),
 	})
 }
 

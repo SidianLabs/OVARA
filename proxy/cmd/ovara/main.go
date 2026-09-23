@@ -49,6 +49,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "demo":
 		err = cmdDemo()
+	case "doctor":
+		err = cmdDoctor(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -63,7 +65,8 @@ func usage() {
 
   init [dir] [-force]   generate a working gateway+proxy deployment
   run [-dir .]          start the gateway and the executor proxy
-  demo                  self-contained end-to-end demo (no network, no root)`)
+  demo                  self-contained end-to-end demo (no network, no root)
+  doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
 }
 
 // --- init -----------------------------------------------------------------

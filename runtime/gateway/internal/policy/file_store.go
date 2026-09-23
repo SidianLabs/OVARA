@@ -52,6 +52,26 @@ func ParseStore(data []byte, versionHint string) (*Store, error) {
 	return &Store{version: version, rules: fp.Rules}, nil
 }
 
+// WriteFile atomically persists the store in the canonical file format
+// ({version, rules}) — tmp file + rename so a crash mid-write never
+// leaves a truncated policy for the next LoadStoreFromFile to refuse.
+func (s *Store) WriteFile(filePath string) error {
+	fp := filePolicy{Version: s.Version(), Rules: s.ListRules()}
+	data, err := json.MarshalIndent(fp, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal policy: %w", err)
+	}
+	tmp := filePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write policy file: %w", err)
+	}
+	if err := os.Rename(tmp, filePath); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("failed to replace policy file: %w", err)
+	}
+	return nil
+}
+
 // parseFilePolicyStrict decodes a policy file with full strictness:
 //   - unknown fields rejected (DisallowUnknownFields)
 //   - duplicate keys rejected — `{"resource":"x","resource":""}` must not

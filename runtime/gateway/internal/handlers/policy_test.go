@@ -201,3 +201,76 @@ func TestPolicyHandler_Restore_MissingId(t *testing.T) {
 		t.Fatalf("expected status 400 for missing id, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestPolicyHandler_Distribute(t *testing.T) {
+	dir := t.TempDir()
+	policyFile := dir + "/policy.json"
+	store := policy.NewStore("v0-local")
+	store.SetFilePath(policyFile)
+	e := evaluator.New(store)
+	h := NewPolicyHandler(e, store)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	body := `{"policyId":"pol-1","version":7,"name":"pushed","rules":[{"action_type":"shell","environment":"*","allow":true}]}`
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/policy", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if v := store.Version(); v != "v7" {
+		t.Fatalf("store version = %q, want v7", v)
+	}
+	rules := store.RulesForAction("shell")
+	if len(rules) != 1 || !rules[0].Allow {
+		t.Fatalf("pushed rule not applied: %+v", rules)
+	}
+	// persisted to policy_file so the push survives restart
+	reloaded, err := policy.LoadStoreFromFile(policyFile, "hint")
+	if err != nil {
+		t.Fatalf("policy file not persisted: %v", err)
+	}
+	if reloaded.Version() != "v7" {
+		t.Fatalf("persisted version = %q, want v7", reloaded.Version())
+	}
+
+	// history snapshot must record the previous version for rollback
+	entries := h.history.List()
+	if len(entries) != 1 || entries[0].Source != "distribute" || entries[0].Version != "v0-local" {
+		t.Fatalf("history snapshot missing/incorrect: %+v", entries)
+	}
+}
+
+func TestPolicyHandler_DistributeRejectsInvalid(t *testing.T) {
+	store := policy.NewStore("v0")
+	e := evaluator.New(store)
+	h := NewPolicyHandler(e, store)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	// unknown field — strict parser must refuse, current policy untouched
+	body := `{"policyId":"pol-2","version":1,"rules":[{"action_type":"shell","environment":"*","allow":true,"bogus_field":true}]}`
+	req := httptest.NewRequest(http.MethodPut, "/v1/policy", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown-field rule: expected 400, got %d", w.Code)
+	}
+	if store.Version() != "v0" {
+		t.Fatal("store mutated on rejected push")
+	}
+
+	// missing required fields
+	req = httptest.NewRequest(http.MethodPut, "/v1/policy", strings.NewReader(`{"version":1}`))
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("missing-fields push: expected 400, got %d", w.Code)
+	}
+}

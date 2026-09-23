@@ -60,6 +60,14 @@ func (s *Store) SetFilePath(path string) {
 	s.filePath = path
 }
 
+// FilePath returns the configured backing file, or "" when the store is
+// memory-only. Used by policy distribution to persist pushed rules.
+func (s *Store) FilePath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.filePath
+}
+
 func (s *Store) Reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

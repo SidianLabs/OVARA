@@ -19,10 +19,11 @@ type PolicyHistoryEntry struct {
 }
 
 const (
-	PolicySourcePromote  = "promote"
-	PolicySourceRollback = "rollback"
-	PolicySourceRestore  = "restore"
-	PolicySourceReload   = "reload"
+	PolicySourcePromote    = "promote"
+	PolicySourceRollback   = "rollback"
+	PolicySourceRestore    = "restore"
+	PolicySourceReload     = "reload"
+	PolicySourceDistribute = "distribute"
 )
 
 type PolicyHistoryStore interface {

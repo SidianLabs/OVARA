@@ -39,6 +39,7 @@ const (
 	EventTypePolicyPromoted            = "policy.promoted"
 	EventTypePolicyRolledBack         = "policy.rollback"
 	EventTypePolicyRestored           = "policy.restored"
+	EventTypePolicyDistributed        = "policy.distributed"
 	EventTypePolicyHistoryCreated      = "policy.history_created"
 	EventTypeCapabilityTracked        = "capability.tracked"
 	EventTypeCapabilityRevoked        = "capability.revoked"
