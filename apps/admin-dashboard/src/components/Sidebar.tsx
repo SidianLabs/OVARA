@@ -1,12 +1,13 @@
 'use client';
 
-import { Shield, Activity, FileText, Layers, Search, Settings, Users } from 'lucide-react';
+import { Shield, Activity, FileText, Layers, Search, Settings, Users, CheckCircle2 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import clsx from 'clsx';
 
 const navItems = [
   { href: '/', label: 'Dashboard', icon: Activity },
+  { href: '/approvals', label: 'Approvals', icon: CheckCircle2 },
   { href: '/gateways', label: 'Gateways', icon: Shield },
   { href: '/policies', label: 'Policies', icon: FileText },
   { href: '/audit-log', label: 'Audit Log', icon: Search },

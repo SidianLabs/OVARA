@@ -37,6 +37,55 @@ export interface OrganizationInfo {
   status: string;
 }
 
+// One approval row, flattened from the gateway's approval record with
+// its owning gateway attached (control plane fans out across the org).
+export interface ApprovalInfo {
+  approvalId: string;
+  decisionId: string;
+  actionType: string;
+  resource: string;
+  environment: string;
+  status: string;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  agentId?: string;
+  reason?: string;
+  trustScore?: number;
+  trustLevel?: string;
+  anomalyCodes?: string[];
+  shieldActive?: boolean;
+  restricted?: boolean;
+  gatewayId: string;
+  gatewayName: string;
+}
+
+export interface ApprovalListResult {
+  approvals: ApprovalInfo[];
+  // Gateways that couldn't be reached — surfaced as a warning so a
+  // missing approval is never mistaken for an empty queue.
+  gatewayErrors: { gatewayName: string; error: string }[];
+}
+
+interface GatewayApproval {
+  approval_id: string;
+  decision_id: string;
+  action_type: string;
+  resource: string;
+  environment: string;
+  status: string;
+  created_at: string;
+  resolved_at?: string;
+  resolved_by?: string;
+  agent_id?: string;
+  reason?: string;
+  trust_score?: number;
+  trust_level?: string;
+  anomaly_codes?: string[];
+  shield_active?: boolean;
+  restricted?: boolean;
+}
+
 const DEFAULT_BASE_URL = 'http://localhost:3000/v1';
 
 function timeAgo(iso?: string | null): string {
@@ -156,6 +205,61 @@ export class OvaraClient {
   async listOrganizations(): Promise<OrganizationInfo[]> {
     const rows = await this.request<Array<{ id: string; name: string; displayName: string; status: string }>>('/organizations');
     return rows.map((o) => ({ id: o.id, name: o.name, displayName: o.displayName, status: o.status }));
+  }
+
+  async listApprovals(): Promise<ApprovalListResult> {
+    const res = await this.request<{
+      gateways: Array<{
+        gatewayId: string;
+        gatewayName: string;
+        approvals: GatewayApproval[];
+        error: string | null;
+      }>;
+    }>('/approvals');
+    const approvals: ApprovalInfo[] = [];
+    const gatewayErrors: { gatewayName: string; error: string }[] = [];
+    for (const g of res.gateways) {
+      if (g.error) {
+        gatewayErrors.push({ gatewayName: g.gatewayName, error: g.error });
+        continue;
+      }
+      for (const a of g.approvals) {
+        approvals.push({
+          approvalId: a.approval_id,
+          decisionId: a.decision_id,
+          actionType: a.action_type,
+          resource: a.resource,
+          environment: a.environment,
+          status: a.status,
+          createdAt: a.created_at,
+          resolvedAt: a.resolved_at,
+          resolvedBy: a.resolved_by,
+          agentId: a.agent_id,
+          reason: a.reason,
+          trustScore: a.trust_score,
+          trustLevel: a.trust_level,
+          anomalyCodes: a.anomaly_codes,
+          shieldActive: a.shield_active,
+          restricted: a.restricted,
+          gatewayId: g.gatewayId,
+          gatewayName: g.gatewayName,
+        });
+      }
+    }
+    approvals.sort((x, y) => (x.status === 'pending' ? 0 : 1) - (y.status === 'pending' ? 0 : 1));
+    return { approvals, gatewayErrors };
+  }
+
+  async resolveApproval(
+    gatewayId: string,
+    approvalId: string,
+    action: 'approve' | 'deny',
+    reason?: string
+  ): Promise<unknown> {
+    return this.request(`/approvals/${gatewayId}/${approvalId}/${action}`, {
+      method: 'POST',
+      body: JSON.stringify(reason ? { reason } : {}),
+    });
   }
 }
 

@@ -133,6 +133,57 @@ describe('OvaraClient', () => {
     });
   });
 
+  describe('listApprovals', () => {
+    it('flattens per-gateway approvals and collects gateway errors', async () => {
+      mockFetch({
+        gateways: [
+          {
+            gatewayId: 'gw-1',
+            gatewayName: 'prod-01',
+            approvals: [
+              {
+                approval_id: 'ap_1',
+                decision_id: 'dec_1',
+                action_type: 'shell.exec',
+                resource: 'shell:x',
+                environment: 'production',
+                status: 'pending',
+                created_at: '2026-01-01T00:00:00Z',
+                agent_id: 'agent-a',
+                trust_score: 0.4,
+                anomaly_codes: ['new_resource'],
+              },
+            ],
+            error: null,
+          },
+          { gatewayId: 'gw-2', gatewayName: 'staging-01', approvals: [], error: 'unreachable' },
+        ],
+      });
+
+      const res = await client.listApprovals();
+
+      expect(res.approvals).toHaveLength(1);
+      expect(res.approvals[0]).toMatchObject({
+        approvalId: 'ap_1', actionType: 'shell.exec', status: 'pending',
+        gatewayId: 'gw-1', gatewayName: 'prod-01', trustScore: 0.4,
+      });
+      expect(res.gatewayErrors).toEqual([{ gatewayName: 'staging-01', error: 'unreachable' }]);
+    });
+  });
+
+  describe('resolveApproval', () => {
+    it('posts to the per-gateway resolution path', async () => {
+      mockFetch({ status: 'approved' });
+
+      await client.resolveApproval('gw-1', 'ap_1', 'approve');
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'http://localhost:9090/v1/approvals/gw-1/ap_1/approve',
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+  });
+
   describe('apiKey passthrough', () => {
     it('no auth header when apiKey is not set', async () => {
       const c = new OvaraClient('http://localhost:9090/v1');
