@@ -171,8 +171,10 @@ func (s *localService) StartHeartbeat(interval time.Duration) func() {
 	s.stopCh = make(chan struct{})
 	s.mu.Unlock()
 
+	done := make(chan struct{})
 	ticker := time.NewTicker(interval)
 	go func() {
+		defer close(done)
 		for {
 			select {
 			case <-ticker.C:
@@ -190,6 +192,7 @@ func (s *localService) StartHeartbeat(interval time.Duration) func() {
 			close(s.stopCh)
 			s.mu.Unlock()
 		})
+		<-done
 	}
 }
 
