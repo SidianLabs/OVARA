@@ -51,6 +51,10 @@ Create `etc/config.json`:
   "receipts_file": "var/data/receipts.json",
   "approvals_file": "var/data/approvals.json",
   "capabilities_file": "var/data/capabilities.json",
+  "gateway_key_file": "var/keys/gateway.ed25519",
+  "gateway_registry_file": "var/data/gateway_registry.jsonl",
+  "identity_registry_file": "var/data/identity_registry.jsonl",
+  "replay_file": "var/data/replay.journal",
   "execution_working_dir": "/tmp/ovara-exec",
   "execution_stdout_limit_bytes": 1048576,
   "execution_stderr_limit_bytes": 262144,
@@ -62,6 +66,28 @@ Create `etc/config.json`:
 }
 ```
 
+### Trust-stack persistence (required for production)
+
+The four `*_file` settings above carry the P2.x trust stack across
+restarts:
+
+| Setting | What restart loses without it |
+| --- | --- |
+| `gateway_key_file` | Stable gateway identity — every restart re-enrolls as a NEW gateway |
+| `gateway_registry_file` | Domain key registry — cross-gateway trust falls to memory |
+| `identity_registry_file` | Agent identity + credential lifecycle — revocations die at restart |
+| `replay_file` | Replay protection — a consumed capability can be replayed after restart |
+
+Omitting any of them silently downgrades that layer to in-memory (dev
+semantics). Provision the files with `0700`/`0600` on a backed-up,
+same-host filesystem — they coordinate multi-process access via flock
+but are not designed for network filesystems.
+
+For the P2.3 anchoring layer (tamper-evident checkpoints against an
+anchor oracle), also set `gateway_anchor_mode`, `gateway_anchor_url`,
+and `gateway_anchor_pin` — see `docs/OVARA_P2.3.3_ROLLBACK_ANCHORING_DESIGN.md`.
+When anchoring is not configured, `gateway_anchor_mode` defaults to `off`.
+
 ## Directory Structure
 
 ```
@@ -71,6 +97,7 @@ ovara-runtime/
 │   └── policy.json         # Policy rules
 ├── var/
 │   ├── data/               # Persistent data stores
+│   ├── keys/               # Gateway + anchor signing keys (0600)
 │   └── log/                # Decision and event logs
 ├── ovara-gateway           # Binary
 ```
