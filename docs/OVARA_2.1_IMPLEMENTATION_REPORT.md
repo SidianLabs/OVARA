@@ -71,6 +71,10 @@ New (additive only): `record` package API; `Store` constructors' variadic `bindi
 - Rolled-back/deleted file: floor refuses the open.
 - Signed-mode journal append failure in events is sticky (`LastError`) — evidence writes never silently degrade.
 
+## Independent review pass (post-implementation)
+
+- Review pass over the diff found and fixed two availability bugs in the compaction-rewrite path (`d4d80cd`): `Open` did not adopt the compact marker's tip as the next envelope's expected parent (every compacted journal refused on reopen), and `ResumeAt` opened the post-rename file `O_TRUNC`, wiping the compacted content. `TestCompactReopen` covers compact → reopen → append → reopen plus floor-at-boundary equivocation.
+
 ## Perf / storage impact
 
 - Journals: +1 signed line per mutation vs. legacy whole-file rewrite — writes become O(1) append instead of O(n) rewrite for sealed stores; roughly equal for prior jsonl stores, plus signature verify cost at open only.
