@@ -66,6 +66,7 @@ type ResolveFunc func(gatewayID, keyID string) (ed25519.PublicKey, error)
 // Signer holds the gateway's journal signing identity.
 type Signer struct {
 	priv      ed25519.PrivateKey
+	sign      func(payload []byte) ([]byte, error) // remote signing path
 	domainID  string
 	gatewayID string
 	keyID     string
@@ -76,6 +77,18 @@ func NewSigner(priv ed25519.PrivateKey, domainID, gatewayID, keyID string) *Sign
 		panic("record: signer requires a full ed25519 key, domain, gateway_id and key_id")
 	}
 	return &Signer{priv: priv, domainID: domainID, gatewayID: gatewayID, keyID: keyID}
+}
+
+// NewRemoteSigner builds a signer whose private key lives off-box:
+// each envelope payload goes to an external signing service over the
+// provided callback. The gateway never possesses the approver/gateway
+// private key — custody separation (C2-B A2). A failed sign call
+// aborts the append (fail closed).
+func NewRemoteSigner(domainID, gatewayID, keyID string, sign func(payload []byte) ([]byte, error)) *Signer {
+	if sign == nil || domainID == "" || gatewayID == "" || keyID == "" {
+		panic("record: remote signer requires sign func, domain, gateway_id and key_id")
+	}
+	return &Signer{sign: sign, domainID: domainID, gatewayID: gatewayID, keyID: keyID}
 }
 
 func (s *Signer) Domain() string { return s.domainID }
@@ -178,9 +191,9 @@ type Journal struct {
 	f       *os.File
 	seq     uint64
 	tip     string
-	off     int64                        // bytes folded so far (Absorb support)
-	floor   Floor                       // committed floor carried for Absorb
-	apply   func(*Envelope) error       // fold callback retained from Open
+	off     int64                 // bytes folded so far (Absorb support)
+	floor   Floor                 // committed floor carried for Absorb
+	apply   func(*Envelope) error // fold callback retained from Open
 }
 
 // Open loads path and folds every envelope through apply. A missing or
@@ -412,7 +425,16 @@ func (j *Journal) Append(typ, recordID string, payload any, links []Link) (uint6
 		Payload:  body,
 		KeyRef:   j.signer.Ref(),
 	}
-	sig := ed25519.Sign(j.signer.priv, signingPayload(env))
+	var sig []byte
+	if j.signer.sign != nil {
+		var err error
+		sig, err = j.signer.sign(signingPayload(env))
+		if err != nil {
+			return 0, "", fmt.Errorf("record %s: remote sign: %w", j.store, err)
+		}
+	} else {
+		sig = ed25519.Sign(j.signer.priv, signingPayload(env))
+	}
 	env.Sig = hex.EncodeToString(sig)
 	line, err := json.Marshal(env)
 	if err != nil {

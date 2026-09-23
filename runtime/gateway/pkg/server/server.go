@@ -174,32 +174,55 @@ func Run(configPath string) error {
 	// approver trust root — a C2-A bootstrap input.
 	var approverBinding *record.Binding
 	var approverKeys continuation.ApproverKeyChecker
-	if cfg.ApproverKeyFile != "" || cfg.ApproverPubKey != "" {
-		if cfg.ApproverKeyFile == "" || cfg.ApproverPubKey == "" {
+	approverLocal := cfg.ApproverKeyFile != "" || cfg.ApproverPubKey != ""
+	approverRemote := cfg.ApproverSignerURL != "" || cfg.ApproverSignerToken != "" || cfg.ApproverSignerKeyID != ""
+	if approverLocal && approverRemote {
+		return fmt.Errorf("approver custody is either local (approver_key_file) or remote (approver_signer_url), never both")
+	}
+	if approverRemote && cfg.ApproverPubKey == "" {
+		return fmt.Errorf("approver_signer_url requires approver_pubkey (the verification pin)")
+	}
+	if approverLocal || approverRemote {
+		if approverLocal && (cfg.ApproverKeyFile == "" || cfg.ApproverPubKey == "") {
 			return fmt.Errorf("approver_key_file and approver_pubkey must be set together")
+		}
+		if approverRemote && (cfg.ApproverSignerURL == "" || cfg.ApproverSignerToken == "" || cfg.ApproverSignerKeyID == "") {
+			return fmt.Errorf("approver_signer_url, approver_signer_token and approver_signer_key_id must be set together")
 		}
 		if !durableSigning {
 			return fmt.Errorf("approver root configured but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
 		}
-		privA, err := gwidentity.LoadOrCreateKey(cfg.ApproverKeyFile)
-		if err != nil {
-			return fmt.Errorf("approver key: %w", err)
+		pinPub, err := hex.DecodeString(cfg.ApproverPubKey)
+		if err != nil || len(pinPub) != ed25519.PublicKeySize {
+			return fmt.Errorf("approver_pubkey must be a hex ed25519 public key")
 		}
-		pubA := privA.Public().(ed25519.PublicKey)
-		if !strings.EqualFold(hex.EncodeToString(pubA), cfg.ApproverPubKey) {
-			return fmt.Errorf("approver pin mismatch: approver_key_file does not match approver_pubkey")
-		}
-		if err := gwTrust.registry.SetApproverPin(pubA); err != nil {
+		if err := gwTrust.registry.SetApproverPin(pinPub); err != nil {
 			return fmt.Errorf("approver pin refused: %w", err)
 		}
-		recA, err := gwTrust.registry.AdmitApprover(pubA)
+		recA, err := gwTrust.registry.AdmitApprover(pinPub)
 		if err != nil {
 			return fmt.Errorf("approver admission refused: %w", err)
 		}
-		asigner := record.NewSigner(privA, gwTrust.registry.DomainID(), gwidentity.ApproverID, recA.KeyID)
+		var asigner *record.Signer
+		if approverRemote {
+			asigner = record.NewRemoteSigner(gwTrust.registry.DomainID(), gwidentity.ApproverID, cfg.ApproverSignerKeyID,
+				record.HTTPSigner(cfg.ApproverSignerURL, cfg.ApproverSignerToken,
+					gwTrust.registry.DomainID(), gwidentity.ApproverID, cfg.ApproverSignerKeyID))
+			log.Printf("approver-root active: remote signer %s key_id=%s — approver key lives OFF the gateway", cfg.ApproverSignerURL, cfg.ApproverSignerKeyID)
+		} else {
+			privA, err := gwidentity.LoadOrCreateKey(cfg.ApproverKeyFile)
+			if err != nil {
+				return fmt.Errorf("approver key: %w", err)
+			}
+			pubA := privA.Public().(ed25519.PublicKey)
+			if hex.EncodeToString(pubA) != hex.EncodeToString(pinPub) {
+				return fmt.Errorf("approver pin mismatch: approver_key_file does not match approver_pubkey")
+			}
+			asigner = record.NewSigner(privA, gwTrust.registry.DomainID(), gwidentity.ApproverID, recA.KeyID)
+			log.Printf("approver-root active: approver_key_id=%s — approvals sign under an independent root", recA.KeyID)
+		}
 		approverBinding = bindWith("approval", asigner, gwTrust.registry.ResolveApproverKey)
 		approverKeys = gwTrust.registry
-		log.Printf("approver-root active: approver_key_id=%s — approvals sign under an independent root", recA.KeyID)
 	}
 	// sinkFor returns the committed-floor hook: every fsynced journal
 	// write ratchets the store's tip inside the anchored gwidentity
