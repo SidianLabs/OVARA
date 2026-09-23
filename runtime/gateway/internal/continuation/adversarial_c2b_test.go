@@ -105,10 +105,10 @@ func (e *c2bEnv) approvalStore(t *testing.T) *approval.FileBackedStore {
 
 // c2bLegitApproval writes a real approver-signed approval (pending →
 // approved) through the store — the honest pipeline path.
-func (e *c2bEnv) c2bLegitApproval(t *testing.T, st *approval.FileBackedStore, id, decID string) *approval.ApprovalRequest {
+func (e *c2bEnv) c2bLegitApproval(t *testing.T, st *approval.FileBackedStore, id string) *approval.ApprovalRequest {
 	t.Helper()
 	req := &approval.ApprovalRequest{
-		ApprovalID: id, DecisionID: decID,
+		ApprovalID: id, DecisionID: "dec_1",
 		ActionType: models.ActionType("shell"), Resource: "shell:ls",
 		Status: approval.StatusPending, AgentID: "agt_a",
 		CreatedAt: time.Now().UTC(),
@@ -224,7 +224,7 @@ func TestAdvC2B_ForgeApprovalUnderGatewayKey(t *testing.T) {
 func TestAdvC2B_ReferenceRealApprovalWrongContext(t *testing.T) {
 	e := c2bSetup(t)
 	apSt := e.approvalStore(t)
-	e.c2bLegitApproval(t, apSt, "app_real", "dec_1")
+	e.c2bLegitApproval(t, apSt, "app_real")
 
 	c := NewContinuation("dec_1", "shell", "shell:rm -rf /").WithAgentID("agt_evil")
 	c.WithApprovalID("app_real")
@@ -274,7 +274,7 @@ func TestAdvC2B_ApproverKeyCannotForgeContinuation(t *testing.T) {
 func TestAdvC2B_TamperApprovalLine(t *testing.T) {
 	e := c2bSetup(t)
 	apSt := e.approvalStore(t)
-	e.c2bLegitApproval(t, apSt, "app_1", "dec_1")
+	e.c2bLegitApproval(t, apSt, "app_1")
 
 	// attacker flips a byte inside the signed record
 	data, _ := os.ReadFile(e.apPath)
@@ -299,7 +299,7 @@ func TestAdvC2B_TamperApprovalLine(t *testing.T) {
 func TestAdvC2B_LegitPathPasses(t *testing.T) {
 	e := c2bSetup(t)
 	apSt := e.approvalStore(t)
-	e.c2bLegitApproval(t, apSt, "app_1", "dec_1")
+	e.c2bLegitApproval(t, apSt, "app_1")
 
 	c := NewContinuation("dec_1", "shell", "shell:ls").WithAgentID("agt_a")
 	c.WithApprovalID("app_1")
@@ -326,7 +326,7 @@ func TestAdvC2B_LegitPathPasses(t *testing.T) {
 func TestAdvC2B_RevokedApproverKeyDenies(t *testing.T) {
 	e := c2bSetup(t)
 	apSt := e.approvalStore(t)
-	e.c2bLegitApproval(t, apSt, "app_1", "dec_1")
+	e.c2bLegitApproval(t, apSt, "app_1")
 
 	c := NewContinuation("dec_1", "shell", "shell:ls").WithAgentID("agt_a")
 	c.WithApprovalID("app_1")
@@ -408,7 +408,7 @@ func TestAdvC2B_StoreUnavailable(t *testing.T) {
 func TestAdvC2B_RotateApproverKey(t *testing.T) {
 	e := c2bSetup(t)
 	apSt := e.approvalStore(t)
-	e.c2bLegitApproval(t, apSt, "app_old", "dec_1")
+	e.c2bLegitApproval(t, apSt, "app_old")
 
 	c := NewContinuation("dec_1", "shell", "shell:ls").WithAgentID("agt_a")
 	c.WithApprovalID("app_old")

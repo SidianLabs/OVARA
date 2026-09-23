@@ -51,7 +51,7 @@ func (r *Registry) SetApproverPin(pub ed25519.PublicKey) error {
 // a foreign approver record absorbed from disk is a hard fold error:
 // mutate and Lookup both fail closed.
 func (r *Registry) validateApproverLocked(rec *KeyRecord) error {
-	if rec.Role != "approver" {
+	if rec.Role != ApproverID {
 		return nil
 	}
 	if r.approverPin == "" {
@@ -96,7 +96,7 @@ func (r *Registry) AdmitApprover(pub ed25519.PublicKey) (*KeyRecord, error) {
 		}
 		now := time.Now().UTC()
 		nr := &KeyRecord{Kind: "key", GatewayID: ApproverID,
-			KeyID: newKeyID(), PublicKey: pubHex, Role: "approver",
+			KeyID: newKeyID(), PublicKey: pubHex, Role: ApproverID,
 			State: KeyActive, CreatedAt: now, ActivatedAt: now, Generation: 1}
 		rec = nr
 		return []any{nr}, nil
@@ -121,7 +121,7 @@ func (r *Registry) ResolveApproverKey(gatewayID, keyID string) (ed25519.PublicKe
 		return nil, err
 	}
 	for _, rec := range recs {
-		if rec.KeyID != keyID || rec.Role != "approver" {
+		if rec.KeyID != keyID || rec.Role != ApproverID {
 			continue
 		}
 		pub, err := hex.DecodeString(rec.PublicKey)
@@ -142,7 +142,7 @@ func (r *Registry) ApproverUsable(keyID string) bool {
 		return false
 	}
 	for _, rec := range recs {
-		if rec.KeyID == keyID && rec.Role == "approver" {
+		if rec.KeyID == keyID && rec.Role == ApproverID {
 			return Usable(rec)
 		}
 	}
