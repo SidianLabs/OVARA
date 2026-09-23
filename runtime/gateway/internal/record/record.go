@@ -187,8 +187,10 @@ type Journal struct {
 // empty file yields a fresh journal (tip = genesis parent). Corruption
 // fails closed — no skipping, repairing, or guessing. A torn final line
 // (missing newline) is truncated as an uncommitted partial write.
+// The file is opened O_APPEND: a journal only ever writes at its end,
+// so appends after reopen land at true EOF rather than offset 0.
 func Open(store, path, domainID string, signer *Signer, resolve ResolveFunc, floor Floor, apply func(*Envelope) error) (*Journal, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("record %s: open: %w", store, err)
 	}
