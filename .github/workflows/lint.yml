@@ -44,10 +44,14 @@ jobs:
       # The action runs the linter itself in its own working-directory
       # (repo root by default) — pass the matrix module or it scans the
       # root, which has no go.mod and fails with exit code 7.
+      # Prebuilt v1.x binaries are compiled with an older Go and refuse
+      # modules targeting go1.25+ ("language version lower than targeted").
+      # goinstall builds the linter with the runner's Go so the check passes.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.62
+          version: v1.64
+          install-mode: goinstall
           working-directory: ${{ matrix.module }}
           args: --timeout=5m
 
