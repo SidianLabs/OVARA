@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ovara.runtime.gateway/internal/execution"
+	"ovara.runtime.gateway/internal/gwidentity"
 	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/revocation"
 )
@@ -33,8 +34,10 @@ func (m setChecker) AnyRevoked(pairs ...revocation.Pair) (revocation.Pair, bool,
 func (m setChecker) Epoch() (uint64, error) { return 1, nil }
 
 const (
-	c2LegitID  = "cont_legit"
-	c2ForgedID = "cont_forged"
+	c2LegitID    = "cont_legit"
+	c2ForgedID   = "cont_forged"
+	c2NoDecision = "dec_NONE"
+	c2PayloadRes = "shell:payload"
 )
 
 // KEY-01: a correctly-signed, attacker-crafted "queued" continuation
@@ -58,7 +61,7 @@ func TestAdvC2_KEY01_ForgedQueuedContinuationIsClaimable(t *testing.T) {
 
 	// attacker (holding the key) appends a forged queued genesis:
 	// no approval decision, no lease, no delegation — chosen action.
-	forged := NewContinuation("dec_NONE", "shell", "shell:rm -rf /").WithAgentID("agt_live")
+	forged := NewContinuation(c2NoDecision, "shell", "shell:rm -rf /").WithAgentID("agt_live")
 	forged.ContinuationID = c2ForgedID
 	forged.MarkApproved("attacker")
 	forged.MarkQueued()
@@ -109,7 +112,7 @@ func TestAdvC2_KEY02_RatchetCommitsForgedTip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forged := NewContinuation("dec_NONE", "shell", "shell:payload").WithAgentID("agt_live")
+	forged := NewContinuation(c2NoDecision, "shell", c2PayloadRes).WithAgentID("agt_live")
 	forged.ContinuationID = c2ForgedID
 	forged.MarkApproved("attacker")
 	forged.MarkQueued()
@@ -177,7 +180,7 @@ func TestAdvC2_KEY03_FloorBlocksRewriteBelowTip(t *testing.T) {
 // are out of revocation's reach — pairs==0 → pass.
 func TestAdvC2_KEY04_RevocationBoundIsPairsScoped(t *testing.T) {
 	rc := setChecker{revocation.P(revocation.ClassLease, "lease_fake"): true}
-	c := NewContinuation("dec_NONE", "shell", "shell:payload").WithAgentID("agt_live")
+	c := NewContinuation(c2NoDecision, "shell", c2PayloadRes).WithAgentID("agt_live")
 	c.LeaseID = "lease_fake"
 	deny, _, err := CheckClaimAuthority(rc, c)
 	if !deny || err != nil {
@@ -185,7 +188,7 @@ func TestAdvC2_KEY04_RevocationBoundIsPairsScoped(t *testing.T) {
 	}
 
 	// same forge with EMPTY authority fields → nothing to revoke → pass
-	c2 := NewContinuation("dec_NONE", "shell", "shell:payload").WithAgentID("agt_live")
+	c2 := NewContinuation(c2NoDecision, "shell", c2PayloadRes).WithAgentID("agt_live")
 	deny, _, err = CheckClaimAuthority(rc, c2)
 	if deny || err != nil {
 		t.Fatalf("empty-authority forge was denied — unexpected: %v", err)
@@ -228,6 +231,130 @@ func TestAdvC2_KEY05_RotationKeepsOldKeyVerifiable(t *testing.T) {
 	st.journal.Close()
 }
 
+// ANCHOR-01: the full T0–T7 sequence the reviewing agent specified.
+// A compromised key converts attacker-created authority state into
+// externally anchored legitimate-looking state — the forged tip is
+// committed to the anchored gwidentity ledger, the key is "lost",
+// the gateway restarts under the committed floor, and the forged
+// record still opens, folds, and claims. The anchor seals semantic
+// content it cannot validate.
+func TestAdvC2_ANCHOR01_CompromiseToAnchorToClaim(t *testing.T) {
+	signer, resolve := advSigner(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.jsonl")
+	gwPath := filepath.Join(dir, "gwid.jsonl")
+
+	// T0: honest gateway — legit record, anchored ledger exists.
+	j, _ := record.Open("continuation", p, signer.Domain(), signer, resolve, record.Floor{}, func(*record.Envelope) error { return nil })
+	c := NewContinuation("dec_1", "shell", "shell:ls").WithAgentID("agt_a")
+	c.ContinuationID = c2LegitID
+	c.MarkApproved("admin")
+	c.MarkQueued()
+	appendCont(t, j, c)
+	j.Close()
+	reg, err := gwidentity.Open(gwPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// T1: attacker obtains gateway.key (same signer — posits no secrecy).
+	// T2: attacker injects a signed queued record.
+	j, _ = record.Open("continuation", p, signer.Domain(), signer, resolve, record.Floor{}, func(*record.Envelope) error { return nil })
+	forged := NewContinuation(c2NoDecision, "shell", c2PayloadRes).WithAgentID("agt_live")
+	forged.ContinuationID = c2ForgedID
+	forged.MarkApproved("attacker")
+	forged.MarkQueued()
+	appendCont(t, j, forged)
+	j.Close()
+
+	// T3: honest gateway boots — folds the forged tip, ratchets it
+	// into the anchored ledger exactly as postOpenRatchet does.
+	st, err := openBoundStore(t, p, signer, resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, tip := st.JournalTip()
+	st.journal.Close()
+	// T4: the anchor commits — the forged tip becomes committed state.
+	if err := reg.RecordTips("gw1", map[string]gwidentity.Tip{
+		"continuation": {Seq: seq, Hash: tip},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	floorTips := reg.LatestTips("gw1")
+	committed, ok := floorTips["continuation"]
+	if !ok || committed.Seq != seq || committed.Hash != tip {
+		t.Fatalf("forged tip not committed to ledger: %+v", floorTips)
+	}
+
+	// T5: attacker loses the key — irrelevant; the forge is durable.
+	// T6: gateway restarts under the committed floor — forged state
+	// is now the floor the ledger stands behind.
+	b := &record.Binding{Signer: signer, Resolve: resolve,
+		Floor: record.Floor{Known: true, Seq: committed.Seq, Hash: committed.Hash}}
+	st, err = NewFileBackedStoreWithRetention(p, 0, 0, 0, b)
+	if err != nil {
+		t.Fatalf("post-anchor restart refused — floor would have detected the forge: %v", err)
+	}
+	// T7: the forged record claims under the committed floor.
+	claimed, ok := st.ClaimForExecution(c2ForgedID)
+	if !ok || claimed == nil {
+		t.Fatal("anchored forged record not claimable post-restart")
+	}
+	deny, _, err := CheckClaimAuthority(nil, claimed)
+	if deny || err != nil {
+		t.Fatalf("anchored forged record denied — boundary holds: %v", err)
+	}
+	st.journal.Close()
+	reg.Close()
+}
+
+// ANCHOR-02: rotation variant — forge committed pre-rotation, key
+// rotates (old key stays resolvable for history), forged pre-rotation
+// record still claims. Rotation changes the signer, not the past.
+func TestAdvC2_ANCHOR02_PostRotationForgedRecordClaims(t *testing.T) {
+	pubOld, privOld, _ := ed25519.GenerateKey(nil)
+	pubNew, privNew, _ := ed25519.GenerateKey(nil)
+	attacker := record.NewSigner(privOld, "dom-test", "gw1", "k-old")
+	honest := record.NewSigner(privNew, "dom-test", "gw1", "k-new")
+	// resolver keeps BOTH keys — rotation must resolve old for history.
+	resolve := func(gw, kid string) (ed25519.PublicKey, error) {
+		switch kid {
+		case "k-old":
+			return pubOld, nil
+		case "k-new":
+			return pubNew, nil
+		}
+		return nil, errTestNoKey("no key")
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.jsonl")
+
+	// forge under the pre-rotation (stolen) key
+	j, _ := record.Open("continuation", p, attacker.Domain(), attacker, resolve, record.Floor{}, func(*record.Envelope) error { return nil })
+	forged := NewContinuation(c2NoDecision, "shell", c2PayloadRes).WithAgentID("agt_live")
+	forged.ContinuationID = c2ForgedID
+	forged.MarkApproved("attacker")
+	forged.MarkQueued()
+	appendCont(t, j, forged)
+	j.Close()
+
+	// rotation happened; gateway now signs with k-new but resolves both.
+	st, err := openBoundStore(t, p, honest, resolve)
+	if err != nil {
+		t.Fatalf("post-rotation store refused old-key history: %v", err)
+	}
+	claimed, ok := st.ClaimForExecution(c2ForgedID)
+	if !ok || claimed == nil {
+		t.Fatal("post-rotation forged record not claimable")
+	}
+	deny, _, err := CheckClaimAuthority(nil, claimed)
+	if deny || err != nil {
+		t.Fatalf("post-rotation forged record denied — rotation bounded the forge: %v", err)
+	}
+	st.journal.Close()
+}
+
 // KEY-06: full-path demonstration — the forged record DISPATCHES to
 // the executor when the identity gate sees a live agent_id. This is
 // the end of the kill chain, not a fold-level detail.
@@ -244,7 +371,7 @@ func TestAdvC2_KEY06_ForgedContinuationExecutes(t *testing.T) {
 	orch.Start()
 	defer orch.Stop()
 
-	forged := NewContinuation("dec_NONE", "shell", "shell:payload").WithAgentID("agt_live")
+	forged := NewContinuation(c2NoDecision, "shell", c2PayloadRes).WithAgentID("agt_live")
 	forged.ContinuationID = c2ForgedID
 	forged.MarkApproved("attacker")
 	forged.MarkQueued()
