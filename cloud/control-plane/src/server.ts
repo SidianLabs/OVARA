@@ -10,6 +10,7 @@ import { policyRoutes } from "./routes/policies";
 import { revocationRoutes } from "./routes/revocations";
 import { apiKeyRoutes } from "./routes/apiKeys";
 import { distributionRoutes } from "./routes/distribution";
+import { auditRoutes } from "./routes/audit";
 import { db } from "./db/connection";
 
 const app = Fastify({
@@ -34,6 +35,7 @@ async function start() {
   await app.register(revocationRoutes, { prefix: "/v1/revocations" });
   await app.register(apiKeyRoutes, { prefix: "/v1/api-keys" });
   await app.register(distributionRoutes, { prefix: "/v1/distribution" });
+  await app.register(auditRoutes, { prefix: "/v1/audit" });
 
   app.setErrorHandler((error, _request, reply) => {
     const err = error as Error & { statusCode?: number };

@@ -3,6 +3,7 @@ import { db } from "../db/connection";
 import { policies, policyDistributions, gateways } from "../db/schema";
 import { createPolicySchema, publishPolicySchema, paginationSchema } from "../schemas";
 import { authenticate, requireScope } from "../middleware/auth";
+import { writeAudit } from "../audit";
 import { eq, inArray } from "drizzle-orm";
 
 export function policyRoutes(app: FastifyInstance) {
@@ -20,6 +21,7 @@ export function policyRoutes(app: FastifyInstance) {
         status: "draft",
       })
       .returning();
+    await writeAudit(auth, request, "policy.create", "policy", policy.id, { name: policy.name });
     return reply.status(201).send(policy);
   });
 
@@ -72,6 +74,7 @@ export function policyRoutes(app: FastifyInstance) {
       );
     }
 
+    await writeAudit(auth, request, "policy.publish", "policy", policy.id, { name: policy.name, distributedTo: targetGatewayIds.length });
     return reply.send({ ...policy, distributedTo: targetGatewayIds.length });
   });
 

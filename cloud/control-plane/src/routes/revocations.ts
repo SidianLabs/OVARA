@@ -3,6 +3,7 @@ import { db } from "../db/connection";
 import { revocations } from "../db/schema";
 import { createRevocationSchema } from "../schemas";
 import { authenticate, requireScope } from "../middleware/auth";
+import { writeAudit } from "../audit";
 import { eq } from "drizzle-orm";
 
 export function revocationRoutes(app: FastifyInstance) {
@@ -19,6 +20,7 @@ export function revocationRoutes(app: FastifyInstance) {
         reason: body.reason,
       })
       .returning();
+    await writeAudit(auth, request, "revocation.create", "revocation", rev.id, { leaseId: rev.leaseId, reason: rev.reason });
     return reply.status(201).send(rev);
   });
 
@@ -37,6 +39,7 @@ export function revocationRoutes(app: FastifyInstance) {
       .where(eq(revocations.id, id))
       .returning();
     if (!rev) return reply.status(404).send({ error: "Revocation not found" });
+    await writeAudit(auth, request, "revocation.execute", "revocation", rev.id, { leaseId: rev.leaseId });
     return reply.send(rev);
   });
 

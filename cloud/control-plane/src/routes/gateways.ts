@@ -3,6 +3,7 @@ import { db } from "../db/connection";
 import { gateways } from "../db/schema";
 import { enrollGatewaySchema } from "../schemas";
 import { authenticate, requireScope } from "../middleware/auth";
+import { writeAudit } from "../audit";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 
@@ -31,6 +32,7 @@ export function gatewayRoutes(app: FastifyInstance) {
       })
       .returning();
 
+    await writeAudit(auth, request, "gateway.enroll", "gateway", gw.id, { name: gw.name });
     return reply.status(201).send(gw);
   });
 
@@ -49,6 +51,7 @@ export function gatewayRoutes(app: FastifyInstance) {
       .where(eq(gateways.id, id))
       .returning();
     if (!gw) return reply.status(404).send({ error: "Gateway not found" });
+    await writeAudit(auth, request, "gateway.confirm", "gateway", gw.id, { name: gw.name });
     return reply.send(gw);
   });
 
@@ -104,6 +107,7 @@ export function gatewayRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Gateway not found" });
     }
     await db.delete(gateways).where(eq(gateways.id, id));
+    await writeAudit(auth, request, "gateway.delete", "gateway", id, { name: existing.name });
     return reply.status(204).send();
   });
 }

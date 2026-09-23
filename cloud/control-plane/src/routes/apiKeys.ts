@@ -3,6 +3,7 @@ import { db } from "../db/connection";
 import { apiKeys } from "../db/schema";
 import { createApiKeySchema } from "../schemas";
 import { authenticate, requireScope } from "../middleware/auth";
+import { writeAudit } from "../audit";
 import { eq } from "drizzle-orm";
 import { createHash, randomUUID } from "crypto";
 
@@ -40,6 +41,7 @@ export function apiKeyRoutes(app: FastifyInstance) {
       })
       .returning();
 
+    await writeAudit(auth, request, "apikey.create", "apikey", key.id, { name: key.name, scopes: key.scopes });
     // Return explicit safe fields only — never the stored keyHash.
     return reply.status(201).send({
       id: key.id,
@@ -80,6 +82,7 @@ export function apiKeyRoutes(app: FastifyInstance) {
       .where(eq(apiKeys.id, id))
       .returning();
     if (!key) return reply.status(404).send({ error: "API key not found" });
+    await writeAudit(auth, request, "apikey.revoke", "apikey", key.id, { name: key.name });
     return reply.send({ id: key.id, name: key.name, revokedAt: key.revokedAt });
   });
 }

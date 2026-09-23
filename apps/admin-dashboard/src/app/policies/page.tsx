@@ -1,22 +1,29 @@
 'use client';
 
 import { Plus, Edit3, Trash2, Play, Copy } from 'lucide-react';
+import { ovaraClient, PolicyInfo } from '@/lib/api-client';
+import { useApiData } from '@/lib/use-api';
+
+const MOCK_POLICIES: PolicyInfo[] = [
+  { id: 'pol_default', name: 'Default Allow', rules: 3, status: 'active', lastModified: '2h ago' },
+  { id: 'pol_prod_lockdown', name: 'Production Lockdown', rules: 8, status: 'active', lastModified: '1d ago' },
+  { id: 'pol_ci_pipeline', name: 'CI Pipeline Access', rules: 5, status: 'active', lastModified: '3d ago' },
+  { id: 'pol_experimental', name: 'Experimental Features', rules: 2, status: 'draft', lastModified: '5d ago' },
+  { id: 'pol_deprecated', name: 'Deprecated: V1 Rules', rules: 12, status: 'archived', lastModified: '30d ago' },
+];
 
 export default function PoliciesPage() {
-  const policies = [
-    { id: 'pol_default', name: 'Default Allow', rules: 3, status: 'active', lastModified: '2h ago' },
-    { id: 'pol_prod_lockdown', name: 'Production Lockdown', rules: 8, status: 'active', lastModified: '1d ago' },
-    { id: 'pol_ci_pipeline', name: 'CI Pipeline Access', rules: 5, status: 'active', lastModified: '3d ago' },
-    { id: 'pol_experimental', name: 'Experimental Features', rules: 2, status: 'draft', lastModified: '5d ago' },
-    { id: 'pol_deprecated', name: 'Deprecated: V1 Rules', rules: 12, status: 'archived', lastModified: '30d ago' },
-  ];
+  const { data: policies, live } = useApiData(() => ovaraClient.listPolicies(), MOCK_POLICIES);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-white">Policies</h1>
-          <p className="text-slate-400 mt-1">Manage policy rules and evaluation configuration</p>
+          <p className="text-slate-400 mt-1">
+            Manage policy rules and evaluation configuration
+            {!live && <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-yellow-900/40 text-yellow-500">demo data — API offline</span>}
+          </p>
         </div>
         <button className="flex items-center gap-2 px-4 py-2 bg-ovara-600 hover:bg-ovara-500 rounded-lg text-sm text-white font-medium transition-colors">
           <Plus className="h-4 w-4" />
