@@ -18,5 +18,23 @@
     "typescript": "^5.6.0",
     "vitest": "^2.0.0",
     "eslint": "^9.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SidianLabs/OVARA.git",
+    "directory": "sdk/typescript"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
