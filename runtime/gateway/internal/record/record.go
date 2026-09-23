@@ -139,15 +139,23 @@ type Binding struct {
 	Floor   Floor
 }
 
-// ResumeAt creates a journal writer over a NEW empty file that
-// continues an existing chain — used by compaction, which rewrites
-// the physical file without resetting logical position.
+// ResumeAt creates a journal writer that continues an existing chain —
+// used by compaction, which rewrites the physical file without
+// resetting logical position. The file is opened for append at its
+// current end: a fresh tmp path yields an empty file, while the
+// post-rename reopen keeps the compacted content intact.
 func ResumeAt(store, path, domainID string, signer *Signer, seq uint64, parent string) (*Journal, error) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("record %s: compact target: %w", store, err)
 	}
-	return &Journal{store: store, domain: domainID, signer: signer, f: f, seq: seq, tip: parent}, nil
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("record %s: compact target stat: %w", store, err)
+	}
+	return &Journal{store: store, domain: domainID, signer: signer, f: f,
+		seq: seq, tip: parent, off: st.Size()}, nil
 }
 
 // Floor is the tip-ledger's committed watermark for one store.
@@ -251,6 +259,7 @@ func Open(store, path, domainID string, signer *Signer, resolve ResolveFunc, flo
 				return nil, fmt.Errorf("record %s: malformed compact marker at offset %d", store, pos)
 			}
 			seq = env.Seq - 1 // adopt attested position; chain verified below
+			prev = env.Parent // the marker's signature binds this tip
 			// floor inside pruned history: the compact marker is the
 			// signer's attestation; a floor exactly at the boundary
 			// must match its stated tip.

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -275,4 +276,86 @@ func TestSealedFile(t *testing.T) {
 	if _, _, _, err := OpenSealedFile("idregistry", p, e.domain, e.resolve, floor); err == nil {
 		t.Fatal("file_seq regression below floor accepted")
 	}
+}
+
+// COMPACT-REOPEN: a compaction-rewritten journal (first line = signed
+// compact marker attesting the pre-compaction tip) must reopen. The
+// marker's signature — not the genesis parent — vouches for the
+// adopted chain position.
+func TestCompactReopen(t *testing.T) {
+	e := setup(t)
+	src := filepath.Join(e.dir, "src.jsonl")
+	dst := filepath.Join(e.dir, "dst.jsonl")
+	fold := func(*Envelope) error { return nil }
+
+	j, err := Open("continuation", src, e.domain, e.signer, e.resolve, Floor{}, fold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, _, err := j.Append("continuation", fmt.Sprintf("c%d", i), map[string]int{"i": i}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seq, tip := j.Tip()
+	j.Close()
+
+	// rewrite like compactSigned: marker adopts (seq, tip), then live records
+	w, err := ResumeAt("continuation", dst, e.domain, e.signer, seq, tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, _ := json.Marshal(map[string]any{"compacted_through": seq, "prior_tip": tip})
+	if _, _, err := w.Append(TypeCompact, "", json.RawMessage(marker), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w.Append("continuation", "c2", map[string]int{"i": 2}, nil); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	j2, err := Open("continuation", dst, e.domain, e.signer, e.resolve, Floor{}, fold)
+	if err != nil {
+		t.Fatalf("compacted journal refused on reopen: %v", err)
+	}
+	gotSeq, _ := j2.Tip()
+	if gotSeq != seq+2 {
+		t.Fatalf("reopened tip seq = %d, want %d", gotSeq, seq+2)
+	}
+	j2.Close()
+
+	// Post-compact writes must chain onto the marker, not clobber the
+	// compacted file — ResumeAt reopens at the tail (regression: O_TRUNC
+	// used to wipe the marker and orphan the chain).
+	_, tip2 := j2.Tip()
+	w2, err := ResumeAt("continuation", dst, e.domain, e.signer, seq+2, tip2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w2.Append("continuation", "c3", map[string]int{"i": 3}, nil); err != nil {
+		t.Fatal(err)
+	}
+	w2.Close()
+	j4, err := Open("continuation", dst, e.domain, e.signer, e.resolve, Floor{}, fold)
+	if err != nil {
+		t.Fatalf("post-compact-append journal refused: %v", err)
+	}
+	gotSeq, _ = j4.Tip()
+	if gotSeq != seq+3 {
+		t.Fatalf("tip after post-compact append = %d, want %d", gotSeq, seq+3)
+	}
+	j4.Close()
+
+	// floor exactly at the compaction boundary must match the marker's
+	// stated prior tip — a mismatch is equivocation and refuses.
+	bad := Floor{Known: true, Seq: seq, Hash: "00" + tip[2:]}
+	if _, err := Open("continuation", dst, e.domain, e.signer, e.resolve, bad, fold); err == nil {
+		t.Fatal("floor/prior_tip mismatch accepted")
+	}
+	good := Floor{Known: true, Seq: seq, Hash: tip}
+	j3, err := Open("continuation", dst, e.domain, e.signer, e.resolve, good, fold)
+	if err != nil {
+		t.Fatalf("floor at compaction boundary rejected: %v", err)
+	}
+	j3.Close()
 }
