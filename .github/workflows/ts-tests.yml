@@ -34,6 +34,14 @@ jobs:
           cache: npm
           cache-dependency-path: ${{ matrix.module }}/package-lock.json
 
+      # Modules that declare @ovara/sdk via file:../../sdk/typescript get a
+      # symlink, not a build — the SDK's dist/ must exist before typecheck.
+      # npm ci in sdk/typescript runs `prepare` which builds dist.
+      - name: Build local @ovara/sdk
+        if: matrix.module == 'integrations/mcp' || matrix.module == 'integrations/openai'
+        working-directory: sdk/typescript
+        run: npm ci
+
       - name: Install
         working-directory: ${{ matrix.module }}
         run: npm ci

@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "@ovara/sdk": "*"
+    "@ovara/sdk": "file:../../sdk/typescript"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
