@@ -150,6 +150,35 @@ the registry path, not by inventing a checker.
    paths by default changes a fresh deployment's on-disk layout
    (recommended: yes — it closes the biggest real-world gap).
 
+
+## D11 — C2 split + claim-time provenance (RESOLVED scope)
+
+Post-merge C2 evaluation (adversarial suite `adversarial_c2_test.go`)
+confirmed **C2-KEY-ROOT**: `gateway.key` is a root-of-authority
+credential — a stolen key plus trust-domain write injects validly
+signed `queued` records that fold, anchor, and execute without
+traversing the approval pipeline. C2 splits:
+
+- **C2-A bootstrap/configuration integrity** — policy.json,
+  proxy.json, config.json, operator tokens, `${ENV}` bindings.
+  Attestation/signed-config addressable. Open.
+- **C2-B signing-root compromise** — NOT addressable by attestation
+  alone (a post-attestation key theft still produces indistinguishable
+  signatures). Deferred to 2.3 research: key custody (HSM/KMS/sealed
+  storage), attested signing contexts, threshold authorization.
+
+**Provenance hardening (implemented, defense-in-depth only):**
+`CheckClaimProvenance` runs inside the claim path after revocation —
+a claimed continuation must carry `ApprovalID` resolving to an
+APPROVED approval record whose decision_id/action_type/resource/
+agent_id match. Eliminates the demonstrated empty-authority forge
+(one signed record, nothing to evaluate); the attacker must now
+manufacture a coherent cross-journal state — still possible under
+key compromise, since the same key signs every journal. Claim NOT
+made: this bounds C2-B — it does not.
+
 Claims intentionally NOT made: bootstrap-input tamper resistance,
 whole-domain atomic rollback, hardware-rooted keys, execution truth,
-distributed replay, kill-running-execution.
+distributed replay, kill-running-execution, signing-root compromise
+resistance.
+

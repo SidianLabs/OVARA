@@ -44,6 +44,12 @@ type Orchestrator struct {
 	// claim window, after ClaimForExecution wins and before any
 	// execution record or side effect exists.
 	revocation revocation.Checker
+
+	// approvals is the post-C2 provenance boundary — consulted INSIDE
+	// the claim path after revocation, so a record that passes
+	// revocation but lacks pipeline provenance never reaches an
+	// executor.
+	approvals ApprovalGetter
 }
 
 // SetIdentityChecker installs the identity-status gate called in the
@@ -55,6 +61,13 @@ func (o *Orchestrator) SetIdentityChecker(fn func(agentID string) bool) {
 // SetRevocation installs the claim-time revocation boundary (P2.3.4).
 func (o *Orchestrator) SetRevocation(rc revocation.Checker) {
 	o.revocation = rc
+}
+
+// SetApprovalStore installs the claim-time provenance boundary
+// (post-C2): the approvals store whose records prove a queued
+// continuation came through the approval pipeline.
+func (o *Orchestrator) SetApprovalStore(approvals ApprovalGetter) {
+	o.approvals = approvals
 }
 
 func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
@@ -233,6 +246,42 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 			cnt.MarkDenied("revocation", why)
 			o.store.Update(cnt)
 			o.logf("DENY claim-time revocation continuation_id=%s reason=%q", cnt.ContinuationID, why)
+			if o.eventStore != nil {
+				evt := events.NewEvent(events.EventTypeContinuationDenied).
+					WithGatewayID(o.gatewayID).
+					WithApprovalID(cnt.ApprovalID).
+					WithDecisionID(cnt.DecisionID).
+					WithAgentID(cnt.AgentID).
+					WithContinuationID(cnt.ContinuationID).
+					WithPayload(map[string]any{
+						"continuation_id": cnt.ContinuationID,
+						"reason":          why,
+					})
+				o.eventStore.Append(evt)
+			}
+			return
+		}
+	}
+
+	// Post-C2 provenance boundary: a validly signed journal record is
+	// not proof of pipeline provenance (C2-KEY-ROOT). The continuation
+	// must resolve an approved approval record with matching context.
+	// Same semantics as the revocation check — deny is terminal,
+	// UNKNOWN requeues.
+	if o.approvals != nil {
+		deny, why, err := CheckClaimProvenance(o.approvals, cnt)
+		switch {
+		case err != nil:
+			now := time.Now().UTC()
+			cnt.LastSkippedAt = &now
+			cnt.MarkRequeue()
+			o.store.Update(cnt)
+			o.logf("SKIP provenance state unavailable continuation_id=%s err=%v", cnt.ContinuationID, err)
+			return
+		case deny:
+			cnt.MarkDenied("provenance", why)
+			o.store.Update(cnt)
+			o.logf("DENY claim-time provenance continuation_id=%s reason=%q", cnt.ContinuationID, why)
 			if o.eventStore != nil {
 				evt := events.NewEvent(events.EventTypeContinuationDenied).
 					WithGatewayID(o.gatewayID).
