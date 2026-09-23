@@ -32,6 +32,11 @@ func (m setChecker) AnyRevoked(pairs ...revocation.Pair) (revocation.Pair, bool,
 
 func (m setChecker) Epoch() (uint64, error) { return 1, nil }
 
+const (
+	c2LegitID  = "cont_legit"
+	c2ForgedID = "cont_forged"
+)
+
 // KEY-01: a correctly-signed, attacker-crafted "queued" continuation
 // survives fold, is claimable, and passes the claim-time authority
 // check — proving signature authenticates a record but does NOT prove
@@ -46,7 +51,7 @@ func TestAdvC2_KEY01_ForgedQueuedContinuationIsClaimable(t *testing.T) {
 		t.Fatal(err)
 	}
 	legit := NewContinuation("dec_1", "shell", "shell:ls").WithAgentID("agt_a")
-	legit.ContinuationID = "cont_legit"
+	legit.ContinuationID = c2LegitID
 	legit.MarkApproved("admin")
 	legit.MarkQueued()
 	appendCont(t, j, legit)
@@ -54,7 +59,7 @@ func TestAdvC2_KEY01_ForgedQueuedContinuationIsClaimable(t *testing.T) {
 	// attacker (holding the key) appends a forged queued genesis:
 	// no approval decision, no lease, no delegation — chosen action.
 	forged := NewContinuation("dec_NONE", "shell", "shell:rm -rf /").WithAgentID("agt_live")
-	forged.ContinuationID = "cont_forged"
+	forged.ContinuationID = c2ForgedID
 	forged.MarkApproved("attacker")
 	forged.MarkQueued()
 	// authority fields deliberately EMPTY: LeaseID/DelegationKeys/
@@ -66,11 +71,11 @@ func TestAdvC2_KEY01_ForgedQueuedContinuationIsClaimable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("forged journal rejected — this would close the scenario: %v", err)
 	}
-	got, ok := st.Get("cont_forged")
+	got, ok := st.Get(c2ForgedID)
 	if !ok || got.State != StateQueued {
 		t.Fatalf("forged record not folded to queued: %v %v", got, ok)
 	}
-	claimed, ok := st.ClaimForExecution("cont_forged")
+	claimed, ok := st.ClaimForExecution(c2ForgedID)
 	if !ok || claimed == nil {
 		t.Fatal("forged record not claimable")
 	}
@@ -91,7 +96,7 @@ func TestAdvC2_KEY02_RatchetCommitsForgedTip(t *testing.T) {
 
 	j, _ := record.Open("continuation", p, signer.Domain(), signer, resolve, record.Floor{}, func(*record.Envelope) error { return nil })
 	c := NewContinuation("dec_1", "shell", "shell:ls").WithAgentID("agt_a")
-	c.ContinuationID = "cont_legit"
+	c.ContinuationID = c2LegitID
 	c.MarkApproved("admin")
 	c.MarkQueued()
 	appendCont(t, j, c)
@@ -105,7 +110,7 @@ func TestAdvC2_KEY02_RatchetCommitsForgedTip(t *testing.T) {
 		t.Fatal(err)
 	}
 	forged := NewContinuation("dec_NONE", "shell", "shell:payload").WithAgentID("agt_live")
-	forged.ContinuationID = "cont_forged"
+	forged.ContinuationID = c2ForgedID
 	forged.MarkApproved("attacker")
 	forged.MarkQueued()
 	appendCont(t, j, forged)
@@ -137,7 +142,7 @@ func TestAdvC2_KEY03_FloorBlocksRewriteBelowTip(t *testing.T) {
 
 	j, _ := record.Open("continuation", p, signer.Domain(), signer, resolve, record.Floor{}, func(*record.Envelope) error { return nil })
 	c := NewContinuation("dec_1", "shell", "shell:ls").WithAgentID("agt_a")
-	c.ContinuationID = "cont_legit"
+	c.ContinuationID = c2LegitID
 	c.MarkApproved("admin")
 	c.MarkQueued()
 	appendCont(t, j, c)
@@ -240,7 +245,7 @@ func TestAdvC2_KEY06_ForgedContinuationExecutes(t *testing.T) {
 	defer orch.Stop()
 
 	forged := NewContinuation("dec_NONE", "shell", "shell:payload").WithAgentID("agt_live")
-	forged.ContinuationID = "cont_forged"
+	forged.ContinuationID = c2ForgedID
 	forged.MarkApproved("attacker")
 	forged.MarkQueued()
 	store.Create(forged)
