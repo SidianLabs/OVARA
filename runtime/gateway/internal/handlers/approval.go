@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,8 +16,10 @@ import (
 	"ovara.runtime.gateway/internal/continuation"
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/identity"
+	"ovara.runtime.gateway/internal/lineage"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
+	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/revocation"
 )
 
@@ -36,6 +39,13 @@ type ApprovalHandler struct {
 	// revocation is the P2.3.4 shared boundary — consulted at resume so
 	// an approval cannot ride authority revoked after it was granted.
 	revocation revocation.Checker
+	// lineageEmitter + envGetter wire cross-domain action lineage
+	// (docs/ACTION_LINEAGE.md): an approval resolve emits the approval
+	// stage of the decision's lineage, bound to its approver-signed
+	// journal envelope. envGetter is nil for stores that can't produce
+	// envelopes — emit then fails and is logged, never hidden.
+	lineageEmitter *lineage.Emitter
+	envGetter      func(approvalID string) *record.Envelope
 }
 
 func NewApprovalHandler(s *approval.Service) *ApprovalHandler {
@@ -57,6 +67,14 @@ func (h *ApprovalHandler) SetGatewayID(id string) {
 
 func (h *ApprovalHandler) SetContinuationStore(store continuation.Store) {
 	h.continuationStore = store
+}
+
+// SetLineageEmitter wires cross-domain lineage emission (nil = off).
+// envGetter resolves an approval id to its approver-signed journal
+// envelope — the provenance artifact the lineage carries.
+func (h *ApprovalHandler) SetLineageEmitter(e *lineage.Emitter, envGetter func(string) *record.Envelope) {
+	h.lineageEmitter = e
+	h.envGetter = envGetter
 }
 
 // SetRevocation installs the shared revocation boundary (P2.3.4) —
@@ -361,6 +379,19 @@ func (h *ApprovalHandler) handleApprove(w http.ResponseWriter, r *http.Request) 
 					})
 				h.eventStore.Append(evt)
 			}
+		}
+	}
+
+	// Lineage: the approval boundary — bind the approval record and its
+	// approver-signed envelope into the decision's lineage (evidence,
+	// never authorization; failure is logged, not hidden).
+	if h.lineageEmitter != nil {
+		var env *record.Envelope
+		if h.envGetter != nil {
+			env = h.envGetter(id)
+		}
+		if _, err := h.lineageEmitter.EmitApproval(updated.DecisionID, updated, env); err != nil {
+			log.Printf("SECURITY: lineage emission failed for approval %s: %v", id, err)
 		}
 	}
 

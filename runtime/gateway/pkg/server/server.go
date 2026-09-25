@@ -35,6 +35,7 @@ import (
 	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/idregistry"
 	"ovara.runtime.gateway/internal/integrity"
+	"ovara.runtime.gateway/internal/lineage"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
@@ -224,6 +225,7 @@ func Run(configPath string) error {
 		approverBinding = bindWith("approval", asigner, gwTrust.registry.ResolveApproverKey)
 		approverKeys = gwTrust.registry
 	}
+
 	// sinkFor returns the committed-floor hook: every fsynced journal
 	// write ratchets the store's tip inside the anchored gwidentity
 	// journal. A tip-ledger write failure must not succeed the append
@@ -260,6 +262,41 @@ func Run(configPath string) error {
 		}); err != nil {
 			log.Printf("warning: tip-ledger ratchet for %s failed: %v", storeName, err)
 		}
+	}
+
+	// Cross-domain action lineage (docs/ACTION_LINEAGE.md): when
+	// configured, each authority boundary — decision, approval,
+	// execution dispatch — emits a signed lineage bundle and registers
+	// its digest on a transparency ledger. The ledger's key is a
+	// separate root (a stolen gateway.key cannot mint inclusions).
+	var linEmitter *lineage.Emitter
+	lineageConfigured := cfg.LineageFile != "" || cfg.LineageLedgerFile != "" || cfg.LineageLedgerKeyFile != ""
+	if lineageConfigured {
+		if cfg.LineageFile == "" || cfg.LineageLedgerFile == "" || cfg.LineageLedgerKeyFile == "" {
+			return fmt.Errorf("lineage_file, lineage_ledger_file and lineage_ledger_key_file must be set together")
+		}
+		if !durableSigning {
+			return fmt.Errorf("lineage emission requires durable gateway trust (set gateway_registry_file AND gateway_key_file)")
+		}
+		ledPriv, err := gwidentity.LoadOrCreateKey(cfg.LineageLedgerKeyFile)
+		if err != nil {
+			return fmt.Errorf("lineage ledger key: %w", err)
+		}
+		ledger, err := lineage.NewFileLedger(cfg.LineageLedgerFile, gwTrust.registry.DomainID()+"/ledger", ledPriv, "l1")
+		if err != nil {
+			return fmt.Errorf("lineage ledger: %w", err)
+		}
+		lstore, err := lineage.OpenStore(cfg.LineageFile, bind("lineage"))
+		if err != nil {
+			return fmt.Errorf("lineage store: %w", err)
+		}
+		lstore.SetTipsSink(sinkFor("lineage"))
+		postOpenRatchet("lineage", lstore.JournalTip)
+		linEmitter, err = lineage.NewEmitter(gwTrust.registry.DomainID(), jsigner, ledger, lstore)
+		if err != nil {
+			return fmt.Errorf("lineage emitter: %w", err)
+		}
+		log.Printf("lineage emission active: store=%s ledger=%s — signed bundles emitted+registered at each authority boundary", cfg.LineageFile, cfg.LineageLedgerFile)
 	}
 
 	policyStore := policy.NewStore(cfg.PolicyVersion)
@@ -570,6 +607,14 @@ func Run(configPath string) error {
 	if revChecker != nil {
 		approvalHandler.SetRevocation(revChecker)
 	}
+	if linEmitter != nil {
+		h.SetLineageEmitter(linEmitter)
+		var envGetter func(string) *record.Envelope
+		if fb, ok := approvalStore.(*approval.FileBackedStore); ok {
+			envGetter = fb.EnvelopeFor
+		}
+		approvalHandler.SetLineageEmitter(linEmitter, envGetter)
+	}
 	// Approval provenance: /v1/approval/create resolves decision_id against
 	// the decision cache — approvals exist only for gateway-produced
 	// escalated decisions, bound to the exact recorded request.
@@ -717,6 +762,9 @@ func Run(configPath string) error {
 	orchestrator.SetEventStore(eventStore)
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	orchestrator.SetApprovalStore(approvalStore, approverKeys)
+	if linEmitter != nil {
+		orchestrator.SetLineageEmitter(linEmitter)
+	}
 	if revChecker != nil {
 		orchestrator.SetRevocation(revChecker)
 		continuationHandler.SetRevocation(revChecker)

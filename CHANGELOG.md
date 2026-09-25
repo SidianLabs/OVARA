@@ -45,6 +45,22 @@ authority verification, and Ed25519-signed receipts.
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-domain action lineage**: the gateway emits signed `lin_v1`
+  lineage bundles at each authority boundary (decision, approval,
+  execution dispatch), each carrying the edsig receipt + presented
+  delegation chain + capability lease + approver-signed approval
+  envelope, and registers each bundle digest on a transparency ledger
+  countersigned under a separate ledger root (`lineage_file`,
+  `lineage_ledger_file`, `lineage_ledger_key_file` config — requires
+  durable gateway trust). `internal/lineage.Verify` is the offline
+  verifier contract: a receiving domain validates a bundle against a
+  pinned anchor (gateway/issuer/approver/ledger keys + revocation
+  snapshot) without contacting the issuer — provenance evidence, not
+  enforcement. Design and honest limits: `docs/ACTION_LINEAGE.md`,
+  decision D14.
+
 ### Security
 
 - **Capability lease trust anchor**: lease signatures are now verified against
