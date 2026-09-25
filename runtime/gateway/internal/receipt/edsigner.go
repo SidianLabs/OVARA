@@ -151,7 +151,11 @@ func (rr RegistryResolver) ResolvePublicKey(gatewayID, keyID string) (ed25519.Pu
 		return nil, err
 	}
 	for _, rec := range recs {
-		if rec.KeyID != keyID {
+		if rec.KeyID != keyID || rec.Role == "approver" {
+			// C2-B A1: approver-root keys resolve ONLY through the
+			// approvals journal (Registry.ResolveApproverKey) — a
+			// gateway-key resolver must never bless them, or the two
+			// signing domains collapse into one.
 			continue
 		}
 		pub, err := hex.DecodeString(rec.PublicKey)

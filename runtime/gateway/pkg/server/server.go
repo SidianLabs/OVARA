@@ -39,8 +39,8 @@ import (
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipt"
-	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/receipts"
+	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/replay"
 	"ovara.runtime.gateway/internal/revocation"
 	"ovara.runtime.gateway/internal/sandbox"
@@ -150,15 +150,56 @@ func Run(configPath string) error {
 	if durableSigning && revRegistry != nil {
 		boundTips = revRegistry.LatestTips(gwTrust.record.GatewayID)
 	}
-	bind := func(storeName string) *record.Binding {
-		if !durableSigning {
+	bindWith := func(storeName string, s *record.Signer, rz record.ResolveFunc) *record.Binding {
+		if s == nil || rz == nil {
 			return nil
 		}
 		var floor record.Floor
 		if t, ok := boundTips[storeName]; ok {
 			floor = record.Floor{Known: true, Seq: t.Seq, Hash: t.Hash}
 		}
-		return &record.Binding{Signer: jsigner, Resolve: jresolve, Floor: floor}
+		return &record.Binding{Signer: s, Resolve: rz, Floor: floor}
+	}
+	bind := func(storeName string) *record.Binding {
+		if !durableSigning {
+			return nil
+		}
+		return bindWith(storeName, jsigner, jresolve)
+	}
+
+	// C2-B A1: optional approver root — the approvals journal signs
+	// under an INDEPENDENT key registered with role=approver, so a
+	// stolen gateway.key alone can no longer manufacture claimable
+	// authority. The pin (approver_pubkey, operator-held) is the
+	// approver trust root — a C2-A bootstrap input.
+	var approverBinding *record.Binding
+	var approverKeys continuation.ApproverKeyChecker
+	if cfg.ApproverKeyFile != "" || cfg.ApproverPubKey != "" {
+		if cfg.ApproverKeyFile == "" || cfg.ApproverPubKey == "" {
+			return fmt.Errorf("approver_key_file and approver_pubkey must be set together")
+		}
+		if !durableSigning {
+			return fmt.Errorf("approver root configured but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
+		}
+		privA, err := gwidentity.LoadOrCreateKey(cfg.ApproverKeyFile)
+		if err != nil {
+			return fmt.Errorf("approver key: %w", err)
+		}
+		pubA := privA.Public().(ed25519.PublicKey)
+		if !strings.EqualFold(hex.EncodeToString(pubA), cfg.ApproverPubKey) {
+			return fmt.Errorf("approver pin mismatch: approver_key_file does not match approver_pubkey")
+		}
+		if err := gwTrust.registry.SetApproverPin(pubA); err != nil {
+			return fmt.Errorf("approver pin refused: %w", err)
+		}
+		recA, err := gwTrust.registry.AdmitApprover(pubA)
+		if err != nil {
+			return fmt.Errorf("approver admission refused: %w", err)
+		}
+		asigner := record.NewSigner(privA, gwTrust.registry.DomainID(), gwidentity.ApproverID, recA.KeyID)
+		approverBinding = bindWith("approval", asigner, gwTrust.registry.ResolveApproverKey)
+		approverKeys = gwTrust.registry
+		log.Printf("approver-root active: approver_key_id=%s — approvals sign under an independent root", recA.KeyID)
 	}
 	// sinkFor returns the committed-floor hook: every fsynced journal
 	// write ratchets the store's tip inside the anchored gwidentity
@@ -362,7 +403,11 @@ func Run(configPath string) error {
 
 	var approvalStore approval.Store
 	if cfg.ApprovalsFile != "" {
-		store, err := approval.NewFileBackedStore(cfg.ApprovalsFile, bind("approval"))
+		apprBind := bind("approval")
+		if approverBinding != nil {
+			apprBind = approverBinding
+		}
+		store, err := approval.NewFileBackedStore(cfg.ApprovalsFile, apprBind)
 		if err != nil {
 			log.Printf("warning: failed to create file-backed approval store: %v, falling back to in-memory", err)
 			approvalStore = approval.NewInMemoryStore()
@@ -648,7 +693,7 @@ func Run(configPath string) error {
 	orchestrator := continuation.NewOrchestrator(continuationStore, execStore, execRegistry)
 	orchestrator.SetEventStore(eventStore)
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
-	orchestrator.SetApprovalStore(approvalStore)
+	orchestrator.SetApprovalStore(approvalStore, approverKeys)
 	if revChecker != nil {
 		orchestrator.SetRevocation(revChecker)
 		continuationHandler.SetRevocation(revChecker)

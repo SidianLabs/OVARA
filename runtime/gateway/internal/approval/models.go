@@ -41,9 +41,13 @@ type ApprovalRequest struct {
 	// was created under, captured from the evaluated request. Claim-time
 	// revalidation of the continuation checks them against CURRENT
 	// revocation state; the approval record itself stays historical.
-	LeaseID       string   `json:"lease_id,omitempty"`
+	LeaseID        string   `json:"lease_id,omitempty"`
 	DelegationKeys []string `json:"delegation_keys,omitempty"`
-	Issuers       []string `json:"issuers,omitempty"`
+	Issuers        []string `json:"issuers,omitempty"`
+	// SignerKeyID is the journal-envelope key_ref this record was
+	// signed under — stamped at fold (C2-B A1). Claim-time provenance
+	// uses it to verify the signing key is a live approver-role key.
+	SignerKeyID string `json:"signer_key_id,omitempty"`
 }
 
 func (a *ApprovalRequest) MarshalJSON() ([]byte, error) {
@@ -108,30 +112,30 @@ type CreateRequest struct {
 	PolicyVersion string             `json:"policy_version,omitempty"`
 	// P2.3.4 authority identifiers — server-populated from the recorded
 	// decision request, never caller-authoritative.
-	LeaseID       string   `json:"lease_id,omitempty"`
+	LeaseID        string   `json:"lease_id,omitempty"`
 	DelegationKeys []string `json:"delegation_keys,omitempty"`
-	Issuers       []string `json:"issuers,omitempty"`
+	Issuers        []string `json:"issuers,omitempty"`
 }
 
 func (c *CreateRequest) ToApproval(approvalID string) *ApprovalRequest {
 	return &ApprovalRequest{
-		ApprovalID:    approvalID,
-		DecisionID:    c.DecisionID,
-		ActionType:    c.ActionType,
-		Resource:      c.Resource,
-		Environment:   c.Environment,
-		Status:        StatusPending,
-		CreatedAt:     time.Now().UTC(),
-		AgentID:       c.AgentID,
-		TrustScore:    c.TrustScore,
-		TrustLevel:    c.TrustLevel,
-		AnomalyCodes:  c.AnomalyCodes,
-		ShieldActive:  c.ShieldActive,
-		Restricted:    c.Restricted,
-		RequestHash:   c.RequestHash,
-		PolicyVersion: c.PolicyVersion,
-		LeaseID:       c.LeaseID,
+		ApprovalID:     approvalID,
+		DecisionID:     c.DecisionID,
+		ActionType:     c.ActionType,
+		Resource:       c.Resource,
+		Environment:    c.Environment,
+		Status:         StatusPending,
+		CreatedAt:      time.Now().UTC(),
+		AgentID:        c.AgentID,
+		TrustScore:     c.TrustScore,
+		TrustLevel:     c.TrustLevel,
+		AnomalyCodes:   c.AnomalyCodes,
+		ShieldActive:   c.ShieldActive,
+		Restricted:     c.Restricted,
+		RequestHash:    c.RequestHash,
+		PolicyVersion:  c.PolicyVersion,
+		LeaseID:        c.LeaseID,
 		DelegationKeys: c.DelegationKeys,
-		Issuers:       c.Issuers,
+		Issuers:        c.Issuers,
 	}
 }

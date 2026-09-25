@@ -29,6 +29,14 @@ type ApprovalGetter interface {
 	Get(id string) (*approval.ApprovalRequest, error)
 }
 
+// ApproverKeyChecker reports whether a key id is a live approver-
+// role key (C2-B A1: *gwidentity.Registry implements it). Role is
+// part of the trust decision — the approval's envelope key_ref must
+// resolve to a currently usable approver key.
+type ApproverKeyChecker interface {
+	ApproverUsable(keyID string) bool
+}
+
 // CheckClaimProvenance revalidates a claimed continuation's pipeline
 // provenance at the same atomic claim boundary as CheckClaimAuthority.
 //
@@ -36,7 +44,7 @@ type ApprovalGetter interface {
 //	err≠nil              → UNKNOWN (storage failure): never execute —
 //	                      requeue so the claim fails closed
 //	deny=false, err=nil  → provenance chain resolves
-func CheckClaimProvenance(approvals ApprovalGetter, c *Continuation) (deny bool, reason string, err error) {
+func CheckClaimProvenance(approvals ApprovalGetter, keys ApproverKeyChecker, c *Continuation) (deny bool, reason string, err error) {
 	if approvals == nil {
 		return false, "", nil // no provenance boundary configured — runtime-only mode
 	}
@@ -61,6 +69,15 @@ func CheckClaimProvenance(approvals ApprovalGetter, c *Continuation) (deny bool,
 	}
 	if ap.AgentID != "" && c.AgentID != "" && ap.AgentID != c.AgentID {
 		return true, "approval/continuation agent mismatch", nil
+	}
+	// C2-B A1: when the registry is wired, a record that carries a
+	// signer key_ref must have been made by a currently-usable
+	// approver key. Legacy/unsigned records (no SignerKeyID) and
+	// checker-less deployments (in-memory, runtime-only) skip this —
+	// the journal fold already enforces signer authenticity when a
+	// durable binding exists.
+	if keys != nil && ap.SignerKeyID != "" && !keys.ApproverUsable(ap.SignerKeyID) {
+		return true, fmt.Sprintf("approval signer %s is not a usable approver key", ap.SignerKeyID), nil
 	}
 	return false, "", nil
 }

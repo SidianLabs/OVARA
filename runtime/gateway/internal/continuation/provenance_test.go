@@ -59,7 +59,7 @@ func TestCheckClaimProvenance(t *testing.T) {
 		{"storage error is UNKNOWN", errGetter{fmt.Errorf("disk io")}, provContinuation("app_1", "dec_1"), false, true},
 	}
 	for _, tc := range cases {
-		deny, _, err := CheckClaimProvenance(tc.getter, tc.c)
+		deny, _, err := CheckClaimProvenance(tc.getter, nil, tc.c)
 		if deny != tc.wantDeny || (err != nil) != tc.wantErr {
 			t.Fatalf("%s: deny=%v err=%v, want deny=%v err=%v", tc.name, deny, err, tc.wantDeny, tc.wantErr)
 		}

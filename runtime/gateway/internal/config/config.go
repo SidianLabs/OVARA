@@ -11,7 +11,7 @@ import (
 )
 
 type Config struct {
-	ServerPort    string `json:"server_port"`
+	ServerPort string `json:"server_port"`
 	// ListenAddr overrides the bind address (default "0.0.0.0:<port>" for
 	// backward compat). Set "127.0.0.1" when the only legitimate clients are
 	// on-box — e.g. the executor proxy — so a bounded agent can never reach
@@ -64,95 +64,104 @@ type Config struct {
 	// empty, replay state is process-local in-memory (RC1 semantics).
 	// Multiple gateway processes on one host may share this file — the
 	// journal coordinates them via flock (one trusted state domain).
-	ReplayFile                   string   `json:"replay_file"`
-	ReplayMaxBytes               int64    `json:"replay_max_bytes"`
+	ReplayFile     string `json:"replay_file"`
+	ReplayMaxBytes int64  `json:"replay_max_bytes"`
 	// IdentityRegistryFile enables durable stable-identity + credential
 	// lifecycle state (P2.2). When empty the registry is in-memory:
 	// runtime revocation works but dies at restart (RC1 parity — RC1
 	// had no revocation at all). Single gateway = single trust domain.
-	IdentityRegistryFile         string   `json:"identity_registry_file"`
+	IdentityRegistryFile string `json:"identity_registry_file"`
 	// GatewayRegistryFile enables the durable domain gateway-key
 	// registry (P2.3.1): gw_id → registered ed25519 public keys +
 	// lifecycle. When empty the registry is in-memory (runtime-only
 	// trust — same convention as identity_registry_file). Configured
 	// but unopenable/corrupt fails startup: persistence failure never
 	// becomes successful trust.
-	GatewayRegistryFile          string   `json:"gateway_registry_file"`
+	GatewayRegistryFile string `json:"gateway_registry_file"`
 	// GatewayKeyFile is the gateway's ed25519 private key (0600).
 	// Empty → ephemeral key generated at boot (runtime-only).
-	GatewayKeyFile               string   `json:"gateway_key_file"`
+	GatewayKeyFile string `json:"gateway_key_file"`
 	// TOFU pins (both or neither): expected enrollment gw_id and its
 	// expected public key (hex). A mismatch fails startup — pinned
 	// pre-provisioning, not a warning.
-	GatewayExpectedID            string   `json:"gateway_expected_id"`
-	GatewayExpectedPubKey        string   `json:"gateway_expected_pubkey"`
+	GatewayExpectedID     string `json:"gateway_expected_id"`
+	GatewayExpectedPubKey string `json:"gateway_expected_pubkey"`
 	// GatewayForceRekey makes startup rotate (not register): our key
 	// becomes ACTIVE, prior active keys enter bounded ROTATING grace.
 	// Idempotent — restart-safe when the key file is unchanged.
-	GatewayForceRekey            bool     `json:"gateway_force_rekey"`
+	GatewayForceRekey bool `json:"gateway_force_rekey"`
 	// GatewayKeyGraceSeconds bounds rotation dual-validity (default
 	// 60s, max 24h — the P2.3 bounded-grace design).
-	GatewayKeyGraceSeconds       int      `json:"gateway_key_grace_seconds"`
+	GatewayKeyGraceSeconds int `json:"gateway_key_grace_seconds"`
 	// GatewayRequireAdmission (P2.3.2): when true a NEW gateway
 	// identity may only enter ACTIVE via an operator-authorized
 	// enrollment grant (gwctl grant) or a matching TOFU pin —
 	// self-generated identity alone is not admission. Unset keeps
 	// the P2.3.1 compat behavior (first-binding auto-admit, dev
 	// mode — explicitly NOT a domain admission guarantee).
-	GatewayRequireAdmission      bool     `json:"gateway_require_admission"`
+	GatewayRequireAdmission bool `json:"gateway_require_admission"`
 	// GatewayAnchorMode (P2.3.3): "off" (default) | "strict" |
 	// "degraded". Strict: every refusal case is fatal — oracle
 	// unreachable, unregistered domain, rollback, equivocation,
 	// unanchored tail. Degraded: rollback/equivocation still refuse;
 	// unavailable oracle and unanchored tail only log (documented
 	// weaker — use only while standing up Tier-1).
-	GatewayAnchorMode            string   `json:"gateway_anchor_mode"`
+	GatewayAnchorMode string `json:"gateway_anchor_mode"`
 	// GatewayAnchorURL — unix:///socket (Tier 1) or https://addr
 	// (Tier 2, mTLS). Required when anchoring is on.
-	GatewayAnchorURL             string   `json:"gateway_anchor_url"`
+	GatewayAnchorURL string `json:"gateway_anchor_url"`
 	// GatewayAnchorPin — expected oracle identity: "uid:<n>" for
 	// unix, "key:<hex-ed25519-pub>" for https. Provisioned at domain
 	// setup; rotation is an operator act. Mismatch fails closed.
-	GatewayAnchorPin             string   `json:"gateway_anchor_pin"`
+	GatewayAnchorPin string `json:"gateway_anchor_pin"`
 	// GatewayAnchorCatchup — "manual" (default) | "auto". Auto pushes
 	// an unanchored tail on boot; honored ONLY in degraded mode
 	// (strict never auto-pushes — a forged tail must never crown
 	// itself). Documented-weaker opt-in.
-	GatewayAnchorCatchup         string   `json:"gateway_anchor_catchup"`
+	GatewayAnchorCatchup string `json:"gateway_anchor_catchup"`
 	// GatewayAnchorKeyFile — the checkpoint signing key (Ed25519,
 	// 0600), the domain's registered signing principal. Dedicated by
 	// design: decoupled from gateway identity keys so identity
 	// rotation never churns anchor lineage (anchor-key rotation uses
 	// gwctl anchor-addkey). Empty falls back to gateway_key_file.
-	GatewayAnchorKeyFile         string   `json:"gateway_anchor_key_file"`
+	GatewayAnchorKeyFile string `json:"gateway_anchor_key_file"`
 	// JournalSigningRequired (P2.4/C1): when true, startup REFUSES
 	// unless gateway trust is fully durable (gateway_registry_file
 	// AND gateway_key_file both set) — signed journals need a signing
 	// key that survives restart, so unsigned-legacy operation is an
 	// explicit opt-out, never a silent downgrade.
-	JournalSigningRequired       bool     `json:"journal_signing_required"`
-	CapabilitiesFile             string   `json:"capabilities_file"`
-	CapabilitiesMaxSize          int      `json:"capabilities_max_size"`
-	CapabilitiesHistoryFile      string   `json:"capabilities_history_file"`
-	OperatorTokens               []string `json:"operator_tokens"`
+	JournalSigningRequired bool `json:"journal_signing_required"`
+	// ApproverKeyFile / ApproverPubKey (C2-B A1): when set, the
+	// approvals journal signs under a SEPARATE approver-root key —
+	// possessing gateway.key alone can no longer mint claimable
+	// continuations. ApproverPubKey is the operator-held pin: the
+	// presented key must equal it, and registry approver-role records
+	// fold only against it. Both must be set together; requires durable
+	// gateway trust (gateway_registry_file).
+	ApproverKeyFile         string   `json:"approver_key_file"`
+	ApproverPubKey          string   `json:"approver_pubkey"`
+	CapabilitiesFile        string   `json:"capabilities_file"`
+	CapabilitiesMaxSize     int      `json:"capabilities_max_size"`
+	CapabilitiesHistoryFile string   `json:"capabilities_history_file"`
+	OperatorTokens          []string `json:"operator_tokens"`
 	// AgentTokens are lower-privilege credentials (e.g. the executor
 	// proxy's gateway_token). They may call decision/approval-read APIs
 	// but NEVER operator routes: approve/deny/resume, continuations,
 	// policy mutation, shield, capability revocation, admin, audit/execution
 	// export. A general operator token is gateway-root — keep it scarce.
-	AgentTokens                  []string `json:"agent_tokens"`
-	AuthEnabled                  bool     `json:"auth_enabled"`
+	AgentTokens []string `json:"agent_tokens"`
+	AuthEnabled bool     `json:"auth_enabled"`
 	// UnsafeNoAuth explicitly opts in to running WITHOUT authentication.
 	// Without it, auth_enabled=false is only permitted on a loopback bind;
 	// a non-loopback listener with no auth is an unauthenticated privileged
 	// API and the gateway refuses to start.
-	UnsafeNoAuth                 bool     `json:"unsafe_no_auth"`
+	UnsafeNoAuth bool `json:"unsafe_no_auth"`
 	// EnableHostExecutors registers executors that run commands on the
 	// gateway host itself (shell, exec, git.*). Default false — the
 	// externally exposed API can never reach arbitrary host execution.
-	EnableHostExecutors          bool     `json:"enable_host_executors"`
-	BulkMaxBatchCap              int      `json:"bulk_max_batch_cap"`
-	BulkDefaultBatch             int      `json:"bulk_default_batch"`
+	EnableHostExecutors bool `json:"enable_host_executors"`
+	BulkMaxBatchCap     int  `json:"bulk_max_batch_cap"`
+	BulkDefaultBatch    int  `json:"bulk_default_batch"`
 
 	ReceiptSigningKey string `json:"receipt_signing_key"`
 
