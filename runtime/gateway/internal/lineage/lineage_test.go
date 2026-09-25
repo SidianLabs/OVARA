@@ -184,6 +184,7 @@ func testLeasePayload(l *models.CapabilityLease) []byte {
 	lpStr(&b, l.ResourceScope)
 	lpI64(&b, l.Expiry.Unix())
 	lpI64(&b, l.IssuedAt.Unix())
+	// #nosec G115 -- lease depth is a small non-negative field.
 	lpU32(&b, uint32(l.DelegationDepth))
 	return b
 }

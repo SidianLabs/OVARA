@@ -104,6 +104,8 @@ type Bundle struct {
 
 func lp(b []byte, s string) []byte {
 	var l [4]byte
+	// #nosec G115 -- the frame is u32-bounded by design (same convention
+	// as identity/canon.go); in-memory strings cannot exceed it.
 	binary.BigEndian.PutUint32(l[:], uint32(len(s)))
 	return append(l[:], b...)
 }
@@ -132,6 +134,8 @@ func (b *Bundle) Payload() []byte {
 	out = lp(out, b.LineageID)
 	out = lp(out, b.DomainID)
 	out = lp(out, b.Stage)
+	// #nosec G115 -- u64 unix nanos is the wire format (same convention
+	// as record.signingPayload); post-epoch timestamps only.
 	out = lpu64(out, uint64(b.IssuedAt.UnixNano()))
 	out = lp(out, b.Action.ActionType)
 	out = lp(out, b.Action.Resource)
