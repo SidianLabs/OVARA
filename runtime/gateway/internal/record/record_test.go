@@ -282,6 +282,49 @@ func TestSealedFile(t *testing.T) {
 // compact marker attesting the pre-compaction tip) must reopen. The
 // marker's signature — not the genesis parent — vouches for the
 // adopted chain position.
+// Reopen-append: a journal opened a second time must append at EOF —
+// a write at offset 0 would silently overwrite history (found: Open
+// used O_RDWR without O_APPEND; the file offset stayed at 0).
+func TestReopenAppendPreservesHistory(t *testing.T) {
+	e := setup(t)
+	p := filepath.Join(e.dir, "j.jsonl")
+
+	j, err := Open("s", p, e.domain, e.signer, e.resolve, Floor{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := j.Append("r", "a", map[string]int{"n": 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	j, err = Open("s", p, e.domain, e.signer, e.resolve, Floor{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := j.Append("r", "b", map[string]int{"n": 2}, nil); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	var n int
+	j, err = Open("s", p, e.domain, e.signer, e.resolve, Floor{}, func(*Envelope) error {
+		n++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("history lost on reopen+append: folded %d records, want 2", n)
+	}
+	seq, _ := j.Tip()
+	if seq != 2 {
+		t.Fatalf("tip seq = %d, want 2", seq)
+	}
+	j.Close()
+}
+
 func TestCompactReopen(t *testing.T) {
 	e := setup(t)
 	src := filepath.Join(e.dir, "src.jsonl")
