@@ -138,8 +138,17 @@ type Config struct {
 	// presented key must equal it, and registry approver-role records
 	// fold only against it. Both must be set together; requires durable
 	// gateway trust (gateway_registry_file).
-	ApproverKeyFile         string   `json:"approver_key_file"`
-	ApproverPubKey          string   `json:"approver_pubkey"`
+	ApproverKeyFile string `json:"approver_key_file"`
+	ApproverPubKey  string `json:"approver_pubkey"`
+	// ApproverSignerURL/Token/KeyID (C2-B A2): instead of a local
+	// approver key file, delegate envelope signing to a remote signing
+	// service (signerd) holding the key outside the gateway trust
+	// domain — the gateway can request signatures but can never
+	// extract the root. Mutually exclusive with approver_key_file;
+	// approver_pubkey (the verification pin) is still required.
+	ApproverSignerURL       string   `json:"approver_signer_url"`
+	ApproverSignerToken     string   `json:"approver_signer_token"`
+	ApproverSignerKeyID     string   `json:"approver_signer_key_id"`
 	CapabilitiesFile        string   `json:"capabilities_file"`
 	CapabilitiesMaxSize     int      `json:"capabilities_max_size"`
 	CapabilitiesHistoryFile string   `json:"capabilities_history_file"`

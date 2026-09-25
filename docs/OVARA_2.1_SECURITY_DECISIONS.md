@@ -224,3 +224,28 @@ without custody separation. A2 moves approver custody off-gateway
 further research. Enabling an approver root mid-deployment fail-
 closes the existing approvals journal (foreign-domain records) —
 approver must be on at init or the journal migrated.
+
+## D13 — C2-B Phase A2: approver custody separation (remote signer)
+
+**Decision.** `record.Signer` gains a remote-signing path
+(`NewRemoteSigner` + `HTTPSigner`): each envelope payload is signed
+by a service OUTSIDE the gateway trust domain — `signerd`, a minimal
+daemon holding the approver key — over an authenticated HTTP
+endpoint that pins exactly one (domain, principal, key) identity and
+refuses every other request. Config `approver_signer_url` /
+`_token` / `_key_id` is mutually exclusive with `approver_key_file`;
+`approver_pubkey` remains the verification pin.
+
+**Now demonstrated:** gateway memory and filesystem contain NO
+approver private key — a full gateway compromise yields a signing
+*client credential*, not the root. Remote refusal aborts the append
+(fail closed — `remote_test.go`).
+
+**Residuals (honest):** (1) confused deputy — a compromised gateway
+can still *request* signatures; signerd's token+identity pin is a
+first choke point, real defense needs request-policy/attestation
+(M5); (2) bearer token is the custody credential — treat as a
+gateway secret, mTLS in production; (3) a gateway without the
+approver key cannot mint approvals but the CLAIM path still needs
+them present — kill the remote endpoint and in-flight approvals
+still verify (pubkey-only), new approvals stop.
