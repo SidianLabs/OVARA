@@ -135,6 +135,25 @@ tip-ledgered store), clones it forward, stamps the new stage, signs
 a `record.RemoteSigner` keeps the key off-box), registers the digest,
 and stores the final artifact.
 
+Operational preconditions for each stage (verified e2e):
+
+- **decision** — only emitted when the receipt persisted; requires all
+  three `lineage_*` config paths AND durable gateway trust
+  (`gateway_registry_file` + `gateway_key_file`) or startup fails.
+- **approval** — the envelope comes from the signed approvals journal,
+  so `approvals_file` must be set (an in-memory store has no envelopes
+  → emit fails, logged, never blocks). Without an approver root
+  (`approver_key_file`/`_pubkey` or the remote signer) bundles still
+  emit, but the envelope is gateway-signed and `Verify` rejects at
+  layer 7 — *verifiable* approval provenance needs the approver root.
+- **execution** — requires a registered executor for the action type:
+  no executor → the continuation requeues, no dispatch, no stage-3
+  bundle.
+- A stage emit for a decision with no prior decision bundle (its
+  decision-stage emission failed earlier) refuses before
+  sign/register — an unbound bundle would be unverifiable and
+  unfoldable anyway.
+
 ## 4. The verifier contract (domain B) — `lineage.Verify(bundle, anchor)`
 
 B pins a **trust anchor** — exported out-of-band (registry/anchor sync,

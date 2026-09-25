@@ -74,6 +74,15 @@ func (e *Emitter) emit(decisionID string, stage string, action ActionRef, mutate
 	b.Inclusion = nil
 	mutate(&b)
 
+	// A bundle without a receipt carries no decision binding — refuse
+	// before sign/register, or the ledger would vouch a digest the
+	// journal then refuses to fold. Reachable when a stage emits for a
+	// decision whose decision-stage emission itself failed (evidence
+	// failure is logged-and-continued by design).
+	if b.Receipt == nil || b.Receipt.DecisionID == "" {
+		return nil, e.failf("lineage: stage %s for decision %s has no decision lineage — refusing an unbound bundle", stage, decisionID)
+	}
+
 	ref := e.signer.Ref()
 	b.GatewayID, b.GatewayKeyID = ref.GatewayID, ref.KeyID
 	sig, err := e.signer.Sign(b.Payload())

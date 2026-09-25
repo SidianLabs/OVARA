@@ -435,6 +435,35 @@ func TestLineage_StoreRefolds(t *testing.T) {
 	}
 }
 
+// Regression — a stage emit for a decision with NO prior decision
+// bundle must fail cleanly: no ledger registration, no journaled
+// (unfoldable) record, no nil-deref. Found in e2e review: reachable
+// when the decision-stage emission itself failed earlier.
+func TestLineage_OrphanedStageEmitRefuses(t *testing.T) {
+	d := domASetup(t)
+	_, rc := d.buildAuthority(t)
+	ap := &approval.ApprovalRequest{
+		ApprovalID: "app_orph", DecisionID: rc.DecisionID,
+		ActionType: models.ActionTypeShell, Resource: "shell:ls",
+		Status: approval.StatusApproved, AgentID: agentID,
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := d.emitter.EmitApproval(rc.DecisionID, ap, &record.Envelope{}); err == nil {
+		t.Fatal("orphaned approval emission succeeded — unbound bundle accepted")
+	}
+	if got := d.lstore.ByDecision(rc.DecisionID); got != nil {
+		t.Fatal("orphaned emission journaled an unbound bundle")
+	}
+	// The journal must still open — nothing poisoned was appended.
+	if err := d.lstore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenStore(filepath.Join(d.dir, "lineage.jsonl"),
+		&record.Binding{Signer: d.gwSigner, Resolve: resolveGW(d.reg)}); err != nil {
+		t.Fatalf("journal poisoned by orphaned emission: %v", err)
+	}
+}
+
 // LIN-01 — forged lineage: attacker re-signs the honest bundle under
 // their own key while still claiming the real gateway identity.
 func TestLinAdv_ForgedBundleSignature(t *testing.T) {

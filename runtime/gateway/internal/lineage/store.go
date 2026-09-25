@@ -54,6 +54,13 @@ func OpenStore(path string, binding *record.Binding) (*Store, error) {
 // record is exactly what a verifier would check). Failure propagates —
 // the emitter treats it like any evidence-write failure.
 func (s *Store) Put(b *Bundle) error {
+	// Same rule as the fold below: a bundle without a receipt carries no
+	// decision binding — refuse it BEFORE the append, or the journal
+	// would hold a record no reopen can fold (and the index deref below
+	// would panic after the damage was done).
+	if b.Receipt == nil || b.Receipt.DecisionID == "" {
+		return fmt.Errorf("lineage store: bundle %s carries no decision binding", b.LineageID)
+	}
 	seq, tip, err := s.j.Append("lineage", b.LineageID, b, nil)
 	if err != nil {
 		return err
