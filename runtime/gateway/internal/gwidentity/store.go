@@ -67,6 +67,7 @@ type KeyRecord struct {
 	ActivatedAt   time.Time `json:"activated_at,omitempty"`
 	RotatingUntil time.Time `json:"rotating_until,omitempty"`
 	RetiredAt     time.Time `json:"retired_at,omitempty"`
+	Role          string    `json:"role,omitempty"` // "approver" = approval-root key (C2-B A1)
 	Generation    uint64    `json:"generation"`
 	Seq           uint64    `json:"seq,omitempty"`   // P2.3.3 journal position
 	Chain         string    `json:"chain,omitempty"` // P2.3.3 running hash
@@ -160,6 +161,10 @@ type Registry struct {
 	migrated  int    // "migrate" markers seen (anchor-init evidence)
 	anchor    anchor.Pusher
 	signer    CheckpointSigner
+
+	// approverPin (hex) is the operator-held approver root — set via
+	// SetApproverPin. Approver-role records fold only against it.
+	approverPin string
 }
 
 func NewInMemory() *Registry {
@@ -293,6 +298,9 @@ func (r *Registry) absorb() error {
 			if m == nil {
 				m = map[string]*KeyRecord{}
 				r.keys[rec.GatewayID] = m
+			}
+			if err := r.validateApproverLocked(&rec); err != nil {
+				return err
 			}
 			cp := rec
 			m[rec.KeyID] = &cp

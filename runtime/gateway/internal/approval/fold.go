@@ -23,6 +23,10 @@ func (s *FileBackedStore) foldEvent(env *record.Envelope) error {
 		if env.RecordID != a.ApprovalID {
 			return fmt.Errorf("envelope record_id %q does not match payload approval_id %q", env.RecordID, a.ApprovalID)
 		}
+		// C2-B A1: stamp the signing key_ref onto the folded record so
+		// claim-time provenance can verify the approver-key role/state
+		// without trusting the payload.
+		a.SignerKeyID = env.KeyRef.KeyID
 		return s.foldApproval(&a)
 	case record.TypeTombstone:
 		// Deletion: the approval is erased but the tombstone keeps the

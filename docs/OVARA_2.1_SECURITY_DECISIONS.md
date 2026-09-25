@@ -179,6 +179,48 @@ made: this bounds C2-B — it does not.
 
 Claims intentionally NOT made: bootstrap-input tamper resistance,
 whole-domain atomic rollback, hardware-rooted keys, execution truth,
-distributed replay, kill-running-execution, signing-root compromise
-resistance.
+distributed replay, kill-running-execution. Signing-root compromise:
+PARTIALLY claimed (D12) — gateway.key alone can no longer mint
+claimable authority, but approver custody is currently same-
+filesystem; whole-trust-domain compromise still wins until A2.
 
+## D12 — C2-B Phase A1: dual-root approvals
+
+**Decision.** The approvals journal signs under a SEPARATE root key —
+`role=approver` records in the gwidentity registry — when
+`approver_key_file` + `approver_pubkey` are configured. Possession of
+`gateway.key` alone can no longer mint a claimable continuation.
+
+**The trust decision, in order:**
+
+- `approver_pubkey` is the approver trust root — operator-held,
+  bootstrap input (C2-A territory: it must be protected like the rest
+  of the unanchored configuration surface).
+- `key_ref → registry → KeyRecord exists → role==approver → key
+  usable → sig verifies` — role is part of the trust decision, not
+  metadata. An attacker-written `role=approver` registry record fails:
+  the gwidentity journal is hash-chain-sealed, NOT keyed — so the pin
+  is enforced at fold/absorb and at admit. Fold-time rejection is
+  fail-closed (store will not open).
+- Signing domains are MUTUALLY exclusive: `ResolveApproverKey` only
+  accepts envelopes naming the `approver` principal, and the gateway
+  resolver refuses `role=approver` records — neither root can forge
+  in the other's journal.
+- Claim-time `ApproverUsable(SignerKeyID)`: approvals signed under a
+  revoked/retired approver key deny at claim (rotation = a kill
+  switch for in-flight authority under the old root).
+- Stacks on #12's provenance checks — nothing is replaced.
+
+**Demonstrated** (`adversarial_c2b_test.go`, 10 tests): gateway.key +
+fs-write cannot produce a claimable continuation; ANCHOR-01-style
+forge → fold → claim → PROVENANCE DENIED → no execution; approver
+key alone cannot forge in the continuation journal; registry-forged
+approver records die against the pin; revoke/rotate both deny.
+
+**What remains (honest):** shared-custody deployment — approver key
+in the same directory as `gateway.key` — is cryptographic separation
+without custody separation. A2 moves approver custody off-gateway
+(control-plane signing / KMS); M5-style confused-deputy hardening is
+further research. Enabling an approver root mid-deployment fail-
+closes the existing approvals journal (foreign-domain records) —
+approver must be on at init or the journal migrated.

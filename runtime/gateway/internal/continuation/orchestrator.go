@@ -48,8 +48,10 @@ type Orchestrator struct {
 	// approvals is the post-C2 provenance boundary — consulted INSIDE
 	// the claim path after revocation, so a record that passes
 	// revocation but lacks pipeline provenance never reaches an
-	// executor.
-	approvals ApprovalGetter
+	// executor. approverKeys verifies the approval's signer is a live
+	// approver-role key (C2-B A1); nil skips the signer-state gate.
+	approvals    ApprovalGetter
+	approverKeys ApproverKeyChecker
 }
 
 // SetIdentityChecker installs the identity-status gate called in the
@@ -65,9 +67,11 @@ func (o *Orchestrator) SetRevocation(rc revocation.Checker) {
 
 // SetApprovalStore installs the claim-time provenance boundary
 // (post-C2): the approvals store whose records prove a queued
-// continuation came through the approval pipeline.
-func (o *Orchestrator) SetApprovalStore(approvals ApprovalGetter) {
+// continuation came through the approval pipeline, plus the optional
+// approver-key state checker (C2-B A1).
+func (o *Orchestrator) SetApprovalStore(approvals ApprovalGetter, keys ApproverKeyChecker) {
 	o.approvals = approvals
+	o.approverKeys = keys
 }
 
 func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
@@ -280,7 +284,7 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 		return
 	}
 	if o.approvals != nil && o.claimGate("provenance", cnt, func() (bool, string, error) {
-		return CheckClaimProvenance(o.approvals, cnt)
+		return CheckClaimProvenance(o.approvals, o.approverKeys, cnt)
 	}) {
 		return
 	}
