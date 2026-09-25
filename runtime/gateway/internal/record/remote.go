@@ -2,6 +2,7 @@ package record
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -35,7 +36,7 @@ func HTTPSigner(endpoint, token, domainID, gatewayID, keyID string) func([]byte)
 			GatewayID: gatewayID,
 			KeyID:     keyID,
 		})
-		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("remote signer request: %w", err)
 		}

@@ -21,6 +21,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"ovara.runtime.gateway/internal/gwidentity"
 )
@@ -91,5 +92,11 @@ func main() {
 		sig := ed25519.Sign(priv, payload)
 		json.NewEncoder(w).Encode(map[string]string{"sig": hex.EncodeToString(sig)})
 	})
-	log.Fatal(http.ListenAndServe(*listen, nil))
+	log.Fatal((&http.Server{
+		Addr:              *listen,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}).ListenAndServe())
 }
