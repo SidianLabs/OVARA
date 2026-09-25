@@ -44,6 +44,12 @@ type Orchestrator struct {
 	// claim window, after ClaimForExecution wins and before any
 	// execution record or side effect exists.
 	revocation revocation.Checker
+
+	// approvals is the post-C2 provenance boundary — consulted INSIDE
+	// the claim path after revocation, so a record that passes
+	// revocation but lacks pipeline provenance never reaches an
+	// executor.
+	approvals ApprovalGetter
 }
 
 // SetIdentityChecker installs the identity-status gate called in the
@@ -55,6 +61,13 @@ func (o *Orchestrator) SetIdentityChecker(fn func(agentID string) bool) {
 // SetRevocation installs the claim-time revocation boundary (P2.3.4).
 func (o *Orchestrator) SetRevocation(rc revocation.Checker) {
 	o.revocation = rc
+}
+
+// SetApprovalStore installs the claim-time provenance boundary
+// (post-C2): the approvals store whose records prove a queued
+// continuation came through the approval pipeline.
+func (o *Orchestrator) SetApprovalStore(approvals ApprovalGetter) {
+	o.approvals = approvals
 }
 
 func NewOrchestrator(store Store, execStore execution.Store, registry *execution.ExecutorRegistry) *Orchestrator {
@@ -200,6 +213,43 @@ func (o *Orchestrator) drainQueue() {
 	}
 }
 
+// claimGate runs one claim-time boundary check (revocation,
+// provenance) inside the claim window. Returns true when the
+// continuation must not dispatch this tick: err → UNKNOWN → requeue
+// (fail closed, transient errors don't kill valid work); deny →
+// terminal denied + denied event; pass → false.
+func (o *Orchestrator) claimGate(name string, cnt *Continuation, check func() (deny bool, reason string, err error)) bool {
+	deny, why, err := check()
+	switch {
+	case err != nil:
+		now := time.Now().UTC()
+		cnt.LastSkippedAt = &now
+		cnt.MarkRequeue()
+		o.store.Update(cnt)
+		o.logf("SKIP %s state unavailable continuation_id=%s err=%v", name, cnt.ContinuationID, err)
+		return true
+	case deny:
+		cnt.MarkDenied(name, why)
+		o.store.Update(cnt)
+		o.logf("DENY claim-time %s continuation_id=%s reason=%q", name, cnt.ContinuationID, why)
+		if o.eventStore != nil {
+			evt := events.NewEvent(events.EventTypeContinuationDenied).
+				WithGatewayID(o.gatewayID).
+				WithApprovalID(cnt.ApprovalID).
+				WithDecisionID(cnt.DecisionID).
+				WithAgentID(cnt.AgentID).
+				WithContinuationID(cnt.ContinuationID).
+				WithPayload(map[string]any{
+					"continuation_id": cnt.ContinuationID,
+					"reason":          why,
+				})
+			o.eventStore.Append(evt)
+		}
+		return true
+	}
+	return false
+}
+
 func (o *Orchestrator) executeOne(cnt *Continuation) {
 	if cnt.LastSkippedAt != nil && !cnt.LastSkippedAt.IsZero() {
 		if time.Since(*cnt.LastSkippedAt) < o.pollInterval {
@@ -219,35 +269,20 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 	// execution marker, no side effect); one committed after is not
 	// retroactive to a legitimately-started execution (RVI-14). A
 	// storage failure is UNKNOWN → requeue, never execute (RVI-09).
-	if o.revocation != nil {
-		deny, why, err := CheckClaimAuthority(o.revocation, cnt)
-		switch {
-		case err != nil:
-			now := time.Now().UTC()
-			cnt.LastSkippedAt = &now
-			cnt.MarkRequeue()
-			o.store.Update(cnt)
-			o.logf("SKIP revocation state unavailable continuation_id=%s err=%v", cnt.ContinuationID, err)
-			return
-		case deny:
-			cnt.MarkDenied("revocation", why)
-			o.store.Update(cnt)
-			o.logf("DENY claim-time revocation continuation_id=%s reason=%q", cnt.ContinuationID, why)
-			if o.eventStore != nil {
-				evt := events.NewEvent(events.EventTypeContinuationDenied).
-					WithGatewayID(o.gatewayID).
-					WithApprovalID(cnt.ApprovalID).
-					WithDecisionID(cnt.DecisionID).
-					WithAgentID(cnt.AgentID).
-					WithContinuationID(cnt.ContinuationID).
-					WithPayload(map[string]any{
-						"continuation_id": cnt.ContinuationID,
-						"reason":          why,
-					})
-				o.eventStore.Append(evt)
-			}
-			return
-		}
+	// Claim-time boundaries, in order: revocation (P2.3.4) then
+	// provenance (post-C2 — a valid signature is not pipeline
+	// provenance, C2-KEY-ROOT). Each runs at the same linearization
+	// point after ClaimForExecution wins: deny is terminal, UNKNOWN
+	// requeues, pass continues to dispatch.
+	if o.revocation != nil && o.claimGate("revocation", cnt, func() (bool, string, error) {
+		return CheckClaimAuthority(o.revocation, cnt)
+	}) {
+		return
+	}
+	if o.approvals != nil && o.claimGate("provenance", cnt, func() (bool, string, error) {
+		return CheckClaimProvenance(o.approvals, cnt)
+	}) {
+		return
 	}
 
 	if o.registry != nil {

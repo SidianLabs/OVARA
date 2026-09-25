@@ -648,6 +648,7 @@ func Run(configPath string) error {
 	orchestrator := continuation.NewOrchestrator(continuationStore, execStore, execRegistry)
 	orchestrator.SetEventStore(eventStore)
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
+	orchestrator.SetApprovalStore(approvalStore)
 	if revChecker != nil {
 		orchestrator.SetRevocation(revChecker)
 		continuationHandler.SetRevocation(revChecker)
