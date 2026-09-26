@@ -11,12 +11,17 @@ Authorization: Bearer <operator_token>
 ```
 
 The operator token is configured via `operator_tokens` in
-[`etc/config.json`](../../runtime/gateway/etc/config.json). For local
-development, the token is optional. For production deployments, the
-token **must** be set and `auth_enabled: true` in the config.
+[`etc/config.json`](../../runtime/gateway/etc/config.json); agent
+callers use `agent_tokens` on the agent-role endpoints
+(`/v1/runtime/check`, `/v1/runtime/batch-check`, `/v1/approval/create`,
+`/v1/approval/*` reads except `/pending`, `/v1/whoami`). The shipped
+`etc/config.json` sets `auth_enabled: true` with empty token lists —
+deny-all until you configure tokens. For local development, run
+`examples/sample_config.json` instead (open auth on loopback) or add
+tokens to your own config.
 
-When `auth_enabled` is `false`, all endpoints are open. This is the
-default for local development only.
+`auth_enabled: false` is only accepted when `listen_addr` is a loopback
+address; the gateway refuses to boot open on a non-loopback bind.
 
 ## Transport
 
