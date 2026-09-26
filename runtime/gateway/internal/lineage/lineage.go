@@ -81,9 +81,9 @@ func RequestDigestFor(req *models.ActionRequest) string {
 	p = lp(p, agent)
 	p = lp(p, string(req.Environment))
 	p = lp(p, req.Nonce)
+	var tb [8]byte
 	// #nosec G115 -- u64 unix nanos is the wire format (same convention
 	// as record.signingPayload); post-epoch timestamps only.
-	var tb [8]byte
 	binary.BigEndian.PutUint64(tb[:], uint64(req.IssuedAt.UnixNano()))
 	p = append(p, tb[:]...)
 	sum := sha256.Sum256(p)
