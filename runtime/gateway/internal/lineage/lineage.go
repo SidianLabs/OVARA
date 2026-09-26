@@ -49,12 +49,45 @@ const BundleDomain = "OVARA-LINEAGE-BUNDLE-V1"
 // InclusionDomain separates ledger inclusion countersignatures.
 const InclusionDomain = "OVARA-LINEAGE-INCLUSION-V1"
 
-// ActionRef is the action under attestation.
+// RequestDomain separates the request-binding digest from every other
+// preimage.
+const RequestDomain = "OVARA-LINEAGE-REQUEST-V1"
+
+// ActionRef is the action under attestation. RequestDigest binds the
+// bundle to the specific request instance the emitter evaluated —
+// nonce and issued_at included — so a receiver can recompute it over
+// the request it actually received (VerifyDelivered) rather than
+// trusting an emitted claim about an unattributed one.
 type ActionRef struct {
-	ActionType  string `json:"action_type"`
-	Resource    string `json:"resource"`
-	AgentID     string `json:"agent_id,omitempty"`
-	Environment string `json:"environment,omitempty"`
+	ActionType    string `json:"action_type"`
+	Resource      string `json:"resource"`
+	AgentID       string `json:"agent_id,omitempty"`
+	Environment   string `json:"environment,omitempty"`
+	RequestDigest string `json:"request_digest,omitempty"`
+}
+
+// RequestDigestFor is the canonical digest an emitter stamps and a
+// receiver recomputes: "sha256:" + hex over the length-prefixed
+// request identity fields. Any divergence — a swapped nonce, a
+// re-dated request — changes the digest.
+func RequestDigestFor(req *models.ActionRequest) string {
+	p := lp(nil, RequestDomain)
+	p = lp(p, string(req.ActionType))
+	p = lp(p, req.Resource)
+	agent := ""
+	if req.AgentIdentity != nil {
+		agent = req.AgentIdentity.SubjectID
+	}
+	p = lp(p, agent)
+	p = lp(p, string(req.Environment))
+	p = lp(p, req.Nonce)
+	// #nosec G115 -- u64 unix nanos is the wire format (same convention
+	// as record.signingPayload); post-epoch timestamps only.
+	var tb [8]byte
+	binary.BigEndian.PutUint64(tb[:], uint64(req.IssuedAt.UnixNano()))
+	p = append(p, tb[:]...)
+	sum := sha256.Sum256(p)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ExecRef binds the dispatch the lineage culminates in.
@@ -107,7 +140,8 @@ func lp(b []byte, s string) []byte {
 	// #nosec G115 -- the frame is u32-bounded by design (same convention
 	// as identity/canon.go); in-memory strings cannot exceed it.
 	binary.BigEndian.PutUint32(l[:], uint32(len(s)))
-	return append(l[:], b...)
+	b = append(b, l[:]...)
+	return append(b, s...)
 }
 
 func lpu64(b []byte, v uint64) []byte {
@@ -141,6 +175,7 @@ func (b *Bundle) Payload() []byte {
 	out = lp(out, b.Action.Resource)
 	out = lp(out, b.Action.AgentID)
 	out = lp(out, b.Action.Environment)
+	out = lp(out, b.Action.RequestDigest)
 	out = lp(out, digestHex(b.Receipt))
 	out = lp(out, digestHex(b.Lease))
 	out = lp(out, digestHex(b.Delegation))
