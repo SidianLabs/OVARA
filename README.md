@@ -241,22 +241,32 @@ gateway alone; the standalone proxy binary is `proxy/cmd/ovara-proxy`.
 
 ```bash
 git clone https://github.com/SidianLabs/OVARA.git
-cd OVARA/runtime/gateway
-go build -o ovara-gateway ./cmd/server
-./ovara-gateway                              # uses etc/config.json
-OVARA_CONFIG=./etc/config.json ./ovara-gateway
+cd OVARA
+make demo          # one-command tour: boot → check → approval → execution → signed receipt
 ```
 
-The gateway starts on `:8080` with the bundled policy in `etc/`. To issue
-your first decision:
+Or run the gateway by hand: copy `runtime/gateway/etc/config.example.json`
+(annotated — covers auth tokens, durable trust, and the optional `lineage_*`
+keys), set your tokens, then:
+
+```bash
+cd OVARA/runtime/gateway
+go build -o ovara-gateway ./cmd/server
+OVARA_CONFIG=/path/to/your-config.json ./ovara-gateway
+```
+
+The bundled `etc/config.json` ships with `auth_enabled=true` and zero tokens
+— it refuses to boot until you add credentials. To issue a decision, pass a
+configured `agent_tokens` value as the bearer token; the agent identity is
+bound to it:
 
 ```bash
 curl -X POST http://localhost:8080/v1/runtime/check \
+  -H "Authorization: Bearer $AGENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "action_type": "shell",
     "resource": "shell:git push origin main",
-    "agent_identity": { "issuer": "ovara", "subject_id": "agt_001" },
     "environment": "dev",
     "nonce": "'$(uuidgen)'",
     "issued_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"

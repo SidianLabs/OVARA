@@ -1,0 +1,51 @@
+{
+  "_readme": "Annotated local-dev config. Copy to etc/config.json (or point OVARA_CONFIG at your copy) and replace the token values. This file is itself loadable — keys starting with _ are ignored.",
+
+  "server_port": "8080",
+  "listen_addr": "127.0.0.1",
+  "_note_listen_addr": "loopback only. The approval API lives on this port — on a shared interface a bound agent could reach it and approve its own escalations. auth_enabled=false on a non-loopback bind is refused at startup unless unsafe_no_auth=true.",
+
+  "auth_enabled": true,
+  "operator_tokens": ["replace-me-operator-token"],
+  "agent_tokens": ["replace-me-agent-token"],
+  "_note_tokens": "auth_enabled=true requires at least one active credential or the gateway refuses to boot (it would deny every request). operator_tokens: full API incl. approvals + policy. agent_tokens: only POST /v1/runtime/check, /v1/runtime/batch-check, POST /v1/approval/create, GET /v1/approval/{id}, GET /v1/whoami. Generate real tokens: openssl rand -hex 32. Tokens map to stable identities (ag_/op_<hash>); callers may not supply agent_identity themselves.",
+
+  "policy_file": "../../examples/sample_policy_local.json",
+  "_note_policy": "{version, rules:[{action_type, environment, resource?, allow?|deny?|escalate?}]}. Evaluation order: deny rules → allow rules → escalate rules; no match defaults to escalate. resource uses glob match (e.g. \"shell:*\"). An action reaching execution needs the matching executor enabled.",
+
+  "receipt_signing_key": "replace-me-hmac-key",
+  "_note_receipt_signing": "HMAC key behind every receipt's signature field (sig_v1:). With durable trust below, receipts also get an ed25519 gateway_sig (edsig_v1:).",
+
+  "_section_durable_trust": "P2.3.x durable signing — set BOTH files or neither. Auto-created on first boot. Signs/seals authority stores and chains them to a tip ledger.",
+  "gateway_key_file": "var/gateway.key",
+  "gateway_registry_file": "var/gateway_registry.json",
+  "identity_registry_file": "var/identity_registry.json",
+  "replay_file": "var/replay.json",
+  "journal_signing_required": true,
+  "_note_journal_signing_required": "true = fail closed if durable trust can't initialize. Remove the key/registry files above and this flag together for unsigned in-memory mode.",
+
+  "_section_lineage": "OPTIONAL cross-domain action lineage (lin_v1 bundles + inclusion-ledger registration). ALL THREE keys required together, AND require the durable-trust files above — otherwise startup refuses. Files auto-created on first boot.",
+  "lineage_file": "var/lineage.jsonl",
+  "lineage_ledger_file": "var/lineage_ledger.json",
+  "lineage_ledger_key_file": "var/lineage_ledger.key",
+
+  "_section_persistence": "omit any of these for in-memory stores (state dies at restart)",
+  "decision_log_file": "var/decisions.jsonl",
+  "receipts_file": "var/receipts.json",
+  "approvals_file": "var/approvals.json",
+  "continuations_file": "var/continuations.jsonl",
+  "execution_file": "var/executions.jsonl",
+  "events_file": "var/events.jsonl",
+
+  "enable_host_executors": false,
+  "_note_host_executors": "true lets approved shell:* / git.* actions run on THIS host via the executor registry (the demo needs it). Leave false to stay decision/approval-only.",
+
+  "trusted_issuers": {},
+  "_note_trusted_issuers": "{issuer_name: base64-ed25519-pubkey}. Required to verify signed capability leases/delegations — empty means lease-gated actions fail validation.",
+
+  "fail_closed": true,
+  "log_level": "info",
+  "gateway_name": "local-gateway",
+  "gateway_version": "0.8.0",
+  "policy_version": "v1-local"
+}

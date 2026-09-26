@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -311,7 +313,16 @@ func Load(path string) (*Config, error) {
 	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		var syn *json.SyntaxError
+		if errors.As(err, &syn) {
+			line := 1 + bytes.Count(data[:syn.Offset], []byte("\n"))
+			return nil, fmt.Errorf("config %q: invalid JSON at line %d: %w", path, line, err)
+		}
+		var typ *json.UnmarshalTypeError
+		if errors.As(err, &typ) {
+			return nil, fmt.Errorf("config %q: key %q expects %s, got %s", path, typ.Field, typ.Type, typ.Value)
+		}
+		return nil, fmt.Errorf("config %q: %w", path, err)
 	}
 	if cfg.GatewayID == "" {
 		cfg.GatewayID = newGatewayID()
