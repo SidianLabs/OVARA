@@ -167,6 +167,21 @@ Ovara provides that missing layer.
   the key is no longer live for authentication
 - File-backed archival with retention
 
+### Cross-Domain Action Lineage
+
+- **Signed lineage bundles** (`lin_v1`) emitted at each authority
+  boundary — decision, approval, execution — carrying the edsig receipt
+  + presented delegation chain + lease + approver-signed approval
+  envelope, each digest registered on a transparency ledger
+  (SCITT-shaped inclusion countersignatures under a separate ledger
+  root; `lineage_file` / `lineage_ledger_file` / `lineage_ledger_key_file`)
+- **Offline verification** (`internal/lineage.Verify`): a counterparty
+  verifies a bundle against a pinned anchor — gateway, issuer, approver,
+  and ledger keys plus a revocation snapshot — without contacting the
+  issuing domain. An OVARA-verified party can prove where an action's
+  authority came from, offline, even if the issuing domain is later
+  hostile. Format and honest limits: `docs/ACTION_LINEAGE.md`
+
 ### Gateway Trust & Revocation (2.0)
 
 - **Gateway enrollment** — PoP-bound gateway keys admitted to a durable,

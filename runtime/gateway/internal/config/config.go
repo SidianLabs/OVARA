@@ -146,9 +146,19 @@ type Config struct {
 	// domain — the gateway can request signatures but can never
 	// extract the root. Mutually exclusive with approver_key_file;
 	// approver_pubkey (the verification pin) is still required.
-	ApproverSignerURL       string   `json:"approver_signer_url"`
-	ApproverSignerToken     string   `json:"approver_signer_token"`
-	ApproverSignerKeyID     string   `json:"approver_signer_key_id"`
+	ApproverSignerURL   string `json:"approver_signer_url"`
+	ApproverSignerToken string `json:"approver_signer_token"`
+	ApproverSignerKeyID string `json:"approver_signer_key_id"`
+	// LineageFile / LineageLedgerFile / LineageLedgerKeyFile (cross-
+	// domain action lineage, docs/ACTION_LINEAGE.md): emit a signed,
+	// ledger-registered lineage bundle at each authority boundary —
+	// decision, approval, execution. The ledger is a THIRD party: its
+	// key is distinct from the gateway key (a stolen gateway.key cannot
+	// mint inclusions). All three must be set together and require
+	// durable gateway trust; unset = emission off (runtime-only mode).
+	LineageFile             string   `json:"lineage_file"`
+	LineageLedgerFile       string   `json:"lineage_ledger_file"`
+	LineageLedgerKeyFile    string   `json:"lineage_ledger_key_file"`
 	CapabilitiesFile        string   `json:"capabilities_file"`
 	CapabilitiesMaxSize     int      `json:"capabilities_max_size"`
 	CapabilitiesHistoryFile string   `json:"capabilities_history_file"`

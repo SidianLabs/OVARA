@@ -9,6 +9,7 @@ import (
 
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
+	"ovara.runtime.gateway/internal/lineage"
 	"ovara.runtime.gateway/internal/revocation"
 )
 
@@ -52,12 +53,23 @@ type Orchestrator struct {
 	// approver-role key (C2-B A1); nil skips the signer-state gate.
 	approvals    ApprovalGetter
 	approverKeys ApproverKeyChecker
+
+	// lineageEmitter, when set, emits the execution stage of the
+	// decision's cross-domain lineage after dispatch (docs/
+	// ACTION_LINEAGE.md) — evidence, never authorization; failures
+	// are logged by the emitter hook, never hidden.
+	lineageEmitter *lineage.Emitter
 }
 
 // SetIdentityChecker installs the identity-status gate called in the
 // drain loop. Returns false → the continuation is skipped this tick.
 func (o *Orchestrator) SetIdentityChecker(fn func(agentID string) bool) {
 	o.identityChecker = fn
+}
+
+// SetLineageEmitter wires cross-domain lineage emission (nil = off).
+func (o *Orchestrator) SetLineageEmitter(e *lineage.Emitter) {
+	o.lineageEmitter = e
 }
 
 // SetRevocation installs the claim-time revocation boundary (P2.3.4).
@@ -349,6 +361,19 @@ func (o *Orchestrator) executeOne(cnt *Continuation) {
 
 	if o.execStore != nil {
 		o.execStore.Create(exe)
+	}
+
+	// Lineage: the dispatch boundary — bind the execution to the
+	// decision's lineage so a counterparty can trace which chain of
+	// authority produced the action that ran.
+	if o.lineageEmitter != nil {
+		if _, err := o.lineageEmitter.EmitExecution(cnt.DecisionID, lineage.ExecRef{
+			ContinuationID: cnt.ContinuationID,
+			ExecutionID:    exe.ExecutionID,
+			State:          string(exe.State),
+		}); err != nil {
+			o.logf("SECURITY: lineage emission failed for execution %s: %v", exe.ExecutionID, err)
+		}
 	}
 
 	var evtType string

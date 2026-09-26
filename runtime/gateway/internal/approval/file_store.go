@@ -18,6 +18,10 @@ type FileBackedStore struct {
 	mu         sync.RWMutex
 	items      map[string]*ApprovalRequest
 	tombstones map[string]bool
+	// envs holds the latest journal envelope per record id — the signed
+	// provenance artifact a lineage emitter hands to a verifier so the
+	// approval's approver-root signature travels with it.
+	envs map[string]*record.Envelope
 }
 
 // NewFileBackedStore opens the approval store. A non-nil record.Binding
@@ -30,13 +34,21 @@ func NewFileBackedStore(path string, bindings ...*record.Binding) (*FileBackedSt
 		path:       path,
 		items:      make(map[string]*ApprovalRequest),
 		tombstones: map[string]bool{},
+		envs:       map[string]*record.Envelope{},
 	}
 	var binding *record.Binding
 	if len(bindings) > 0 {
 		binding = bindings[0]
 	}
 	if binding != nil {
-		j, err := record.Open("approval", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		j, err := record.Open("approval", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor,
+			func(env *record.Envelope) error {
+				if env.Type == "approval" {
+					cp := *env
+					store.envs[env.RecordID] = &cp
+				}
+				return store.foldEvent(env)
+			})
 		if err != nil {
 			return nil, fmt.Errorf("failed to fold approval journal: %w", err)
 		}
@@ -100,6 +112,7 @@ func (s *FileBackedStore) appendLocked(req *ApprovalRequest) error {
 	if err != nil {
 		return err
 	}
+	s.envs[req.ApprovalID] = s.journal.LastEnvelope()
 	if s.tipsSink != nil {
 		return s.tipsSink(seq, tip)
 	}
@@ -110,6 +123,16 @@ func (s *FileBackedStore) appendLocked(req *ApprovalRequest) error {
 // Must be called before concurrent use.
 func (s *FileBackedStore) SetTipsSink(fn func(seq uint64, hash string) error) {
 	s.tipsSink = fn
+}
+
+// EnvelopeFor returns the latest approver-signed journal envelope for
+// an approval id — nil in unsigned/legacy mode or when unknown. The
+// envelope's key_ref + signature are the offline provenance proof that
+// this record was minted under the approver root (C2-B A1).
+func (s *FileBackedStore) EnvelopeFor(id string) *record.Envelope {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.envs[id]
 }
 
 // JournalTip exposes the journal's committed (seq, tip hash) for
