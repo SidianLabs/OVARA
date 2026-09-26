@@ -107,7 +107,7 @@ func (e *Emitter) emit(decisionID string, stage string, action ActionRef, mutate
 // (lease + delegation, as received) to the signed decision receipt.
 func (e *Emitter) EmitDecision(req *models.ActionRequest, rc *models.Receipt) (*Bundle, error) {
 	action := ActionRef{ActionType: string(req.ActionType), Resource: req.Resource,
-		Environment: string(req.Environment)}
+		Environment: string(req.Environment), RequestDigest: RequestDigestFor(req)}
 	if req.AgentIdentity != nil {
 		action.AgentID = req.AgentIdentity.SubjectID
 	}

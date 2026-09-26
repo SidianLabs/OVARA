@@ -307,6 +307,14 @@ func (d *domA) anchor() *Anchor {
 // execution, all through real stores and the real ledger.
 func (d *domA) honestLineage(t *testing.T) *Bundle {
 	t.Helper()
+	b, _ := d.honestLineageReq(t)
+	return b
+}
+
+// honestLineageReq is honestLineage plus the originating request —
+// tests for delivered-request verification need it to recompute digests.
+func (d *domA) honestLineageReq(t *testing.T) (*Bundle, *models.ActionRequest) {
+	t.Helper()
 	req, rc := d.buildAuthority(t)
 	b1, err := d.emitter.EmitDecision(req, rc)
 	if err != nil {
@@ -334,7 +342,7 @@ func (d *domA) honestLineage(t *testing.T) *Bundle {
 	if b3.Stage != StageExecution || b3.Execution == nil {
 		t.Fatal("execution bundle did not carry the dispatch ref")
 	}
-	return b3
+	return b3, req
 }
 
 func cloneBundle(t *testing.T, b *Bundle) *Bundle {
@@ -621,6 +629,38 @@ func TestLinAdv_HonestAccepts(t *testing.T) {
 	if !v.Accept {
 		t.Fatalf("honest lineage rejected at %s: %s", v.Layer, v.Detail)
 	}
+}
+
+// LIN-13 — delivered-request binding: the bundle attests THIS request
+// instance, not just this action's shape. A receiver recomputing the
+// digest over what it actually got accepts the real request, rejects
+// a replayed/swapped one, and rejects a bundle whose binding was
+// stripped (honestly re-signed + registered — only the request layer
+// can catch it).
+func TestLinAdv_RequestBinding(t *testing.T) {
+	d := domASetup(t)
+	b, req := d.honestLineageReq(t)
+
+	v := VerifyDelivered(cloneBundle(t, b), d.anchor(), req)
+	if !v.Accept {
+		t.Fatalf("delivered request rejected at %s: %s", v.Layer, v.Detail)
+	}
+	if v.Layers[0] != "request" {
+		t.Fatalf("request layer missing from verdict: %v", v.Layers)
+	}
+
+	// Same shape, different instance — a replay with a fresh nonce
+	// digests differently.
+	other := *req
+	other.Nonce = "req-n2"
+	rejectAt(t, VerifyDelivered(b, d.anchor(), &other), "request")
+
+	// Binding stripped: the bundle is still internally consistent
+	// (re-signed + re-registered) but carries nothing to check against.
+	stripped := cloneBundle(t, b)
+	stripped.Action.RequestDigest = ""
+	d.rebind(t, stripped)
+	rejectAt(t, VerifyDelivered(stripped, d.anchor(), req), "request")
 }
 
 // Ensure the compiled bundle stays marshalable — the wire contract is

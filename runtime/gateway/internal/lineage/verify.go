@@ -15,6 +15,7 @@ import (
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/gwidentity"
 	"ovara.runtime.gateway/internal/identity"
+	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/receipt"
 	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/revocation"
@@ -226,6 +227,34 @@ func Verify(b *Bundle, a *Anchor) *Verdict {
 	passed = layerOK(passed, "revocation")
 
 	return &Verdict{Accept: true, Layer: "accept", Layers: passed}
+}
+
+// VerifyDelivered is Verify plus the request binding: the bundle's
+// request digest must equal the digest of the request the receiver
+// actually got. Without it a bundle proves "domain A adjudicated an
+// action of this shape" — with it, "domain A adjudicated THIS action".
+// Fail-closed: a bundle without a digest, or a digest over different
+// request bytes (swapped nonce, modified resource), rejects at the
+// "request" layer before the anchor is consulted.
+func VerifyDelivered(b *Bundle, a *Anchor, req *models.ActionRequest) *Verdict {
+	if req == nil {
+		return reject("request", "no delivered request to bind")
+	}
+	if b == nil {
+		return reject("request", "nil bundle")
+	}
+	if b.Action.RequestDigest == "" {
+		return reject("request", "bundle carries no request binding")
+	}
+	if RequestDigestFor(req) != b.Action.RequestDigest {
+		return reject("request", "delivered request does not match the attested request")
+	}
+	v := Verify(b, a)
+	if !v.Accept {
+		return v
+	}
+	v.Layers = append([]string{"request"}, v.Layers...)
+	return v
 }
 
 // pairsFor derives the revocation pairs the lineage asserts:

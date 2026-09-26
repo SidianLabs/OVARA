@@ -178,9 +178,11 @@ Ovara provides that missing layer.
 - **Offline verification** (`internal/lineage.Verify`): a counterparty
   verifies a bundle against a pinned anchor — gateway, issuer, approver,
   and ledger keys plus a revocation snapshot — without contacting the
-  issuing domain. An OVARA-verified party can prove where an action's
-  authority came from, offline, even if the issuing domain is later
-  hostile. Format and honest limits: `docs/ACTION_LINEAGE.md`
+  issuing domain. `VerifyDelivered` additionally binds the bundle to the
+  exact request received (`request_digest` covers the request fields +
+  nonce). An OVARA-verified party can prove where an action's authority
+  came from, offline, even if the issuing domain is later hostile.
+  Format and honest limits: `docs/ACTION_LINEAGE.md`
 
 ### Gateway Trust & Revocation (2.0)
 

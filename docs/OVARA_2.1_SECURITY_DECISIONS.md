@@ -284,16 +284,23 @@ Format and verifier contract: `docs/ACTION_LINEAGE.md`.
   B's view, never A's.
 - Emission is evidence, never authorization: a lineage write failure
   logs `SECURITY:` and never blocks the boundary it observed.
+- `action.request_digest` binds the bundle to the *delivered request
+  instance* (fields + nonce + issued_at): the receiver's
+  `VerifyDelivered` recomputes it over what it actually received —
+  closing the "the statement attests an adjudication, not THIS
+  request" gap. `Verify` alone stays request-agnostic for
+  evidence-only audits.
 
 **Demonstrated** (`internal/lineage/lineage_test.go`): two-domain
 end-to-end — A emits decision→approval→execution through a real file
-ledger, B verifies the wire form offline through all 8 layers;
-forged bundle sig, tampered receipt member, truncated chain,
-untrusted issuer, forged approval envelope, tampered inclusion,
-wrong domain, revoked issuer/lease/approver-in-snapshot, and a
-C2-KEY-ROOT rerun (stolen gateway key mints a complete counterfeit —
-dies at inclusion, no ledger key) each reject at the named layer;
-honest lineage accepts.
+ledger, B verifies the wire form offline through all 8 layers plus
+the delivered-request binding; forged bundle sig, tampered receipt
+member, truncated chain, untrusted issuer, forged approval envelope,
+tampered inclusion, wrong domain, revoked issuer/lease/approver-in-
+snapshot, a replayed/mismatched request, and a C2-KEY-ROOT rerun
+(stolen gateway key mints a complete counterfeit — dies at
+inclusion, no ledger key) each reject at the named layer; honest
+lineage accepts.
 
 **What remains (honest):** lineage is evidence, not enforcement —
 counterparties must emit and verify; a compromised ISSUER root still

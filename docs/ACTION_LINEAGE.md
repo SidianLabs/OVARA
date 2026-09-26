@@ -6,10 +6,13 @@ Intra-domain OVARA answers this for itself (signed receipts, chained
 journals, delegation narrowing, claim-time revalidation) — but the
 artifacts are stored evidence, not portable proof. Across domains there
 was nothing: a counterparty had to trust the caller's claim of "my
-gateway allowed this." This is the exact hole from the July 2026
-agent-intrusion landscape: a receiving domain (Hugging Face) had no way
-to ask the sender's domain "show me the authority chain" and verify the
-answer offline.
+gateway allowed this." This is the authority-provenance hole the July
+2026 agent-intrusion landscape exposed: a receiving domain (Hugging
+Face) had no way to ask the sender's domain "show me the authority
+chain" and verify the answer offline. Honest scope note: that incident's
+foothold was exploitation of unauthenticated surfaces — lineage gates
+the *credentialed* slice (e.g. the hijacked third-party accounts used
+as relay/staging), not an injection that presents no authority at all.
 
 **The claim this document defines.**
 
@@ -42,7 +45,9 @@ self-contained.
   "stage": "execution",          // decision | approval | execution
   "issued_at": "…",
   "action": { "action_type": "github.push", "resource": "repo:x",
-              "agent_id": "agent-7", "environment": "production" },
+              "agent_id": "agent-7", "environment": "production",
+              "request_digest": "sha256:…" },  // binds THIS request instance
+                                               // (fields + nonce + issued_at)
 
   "receipt":     { /* models.Receipt, edsig_v1-signed at eval */ },
   "capability_lease":   { /* models.CapabilityLease as presented */ },
@@ -172,7 +177,17 @@ type Anchor struct {
 }
 ```
 
-Offline pass, fail-closed, first failure names the layer:
+Offline pass, fail-closed, first failure names the layer.
+
+0. **request binding** (`VerifyDelivered`, receiver-side only) — the
+   receiver recomputes `sha256` over the request IT actually received
+   (action fields + nonce + issued_at, canonical `RequestDomain`
+   preimage) and compares it to `action.request_digest`. Absent or
+   mismatched → reject at `request`. Without this layer the bundle
+   proves "domain A adjudicated an action of this shape"; with it,
+   "domain A adjudicated THIS action" — a replayed bundle over a
+   fresh nonce fails. `Verify` alone (steps 1–8) deliberately stays
+   request-agnostic for evidence-only audits.
 
 1. **shape/domain** — v, stage, domain == anchor.DomainID, action
    fields present. (A bundle from another domain cannot be replayed
@@ -188,9 +203,9 @@ Offline pass, fail-closed, first failure names the layer:
 5. **delegation** — the *same* `identity.Validator` the evaluator
    runs: per-hop signatures under `anchor.IssuerKeys`, chain linkage,
    non-amplification, expiry, audience == `ExpectedAudience`, terminal
-   subject == `action.agent_id`. The request's replay nonce is *not*
-   rechecked — replay protection was domain A's eval-time concern;
-   the lineage proves the chain *as evaluated*.
+   subject == `action.agent_id`. Replay protection of the request
+   itself is the receiver's `request_digest` recompute (step 0) —
+   the lineage proves the chain *as evaluated* for that instance.
 6. **lease** — same validator: signature under issuer key, subject
    binding, expiry, `ValidateCapabilityLeaseScope` covers the action.
 7. **approval** (when present) — `status == approved`; decision /
@@ -241,10 +256,14 @@ was ledgered — all under B's pinned keys, zero trust in A's honesty.
   that "still valid" means "valid as of epoch E." Cross-domain
   anchor/revocation sync transport is out of scope here.
 - **Replay/freshness of the presented chain** is unverifiable
-  offline (the nonce protocol runs at eval inside A). B sees that A
-  validated the chain, not that the chain wasn't replayed from a
+  offline (the hop-nonce protocol runs at eval inside A). B sees that
+  A validated the chain, not that the chain wasn't replayed from a
   stolen artifact — though every hop signature is still required to
-  verify.
+  verify. The *request* side is bound: `request_digest` commits to
+  the request's nonce+issued_at, so a replayed bundle over a fresh
+  request fails `VerifyDelivered` — but the digest covers the
+  declared request fields, not the wire bytes beyond them; a
+  counterparty whose request shape differs must map the same fields.
 - **Execution truth.** Like receipts, the lineage attests the
   authority boundary crossed, not what the executor's bytes actually
   did (RVI-class limitation — unchanged).
@@ -261,5 +280,6 @@ domain A's gateway emits lineage through decision → approval →
 execution against a file-backed ledger; domain B verifies the final
 bundle offline. The adversarial suite asserts forged bundle, truncated
 chain, untrusted issuer, revoked-approver mid-lineage, tampered
-inclusion, and wrong-domain presentation each reject at the named
-layer, and the honest bundle accepts.
+inclusion, wrong-domain presentation, and a mismatched/stripped
+`request_digest` each reject at the named layer, and the honest
+bundle accepts.

@@ -58,8 +58,11 @@ authority verification, and Ed25519-signed receipts.
   verifier contract: a receiving domain validates a bundle against a
   pinned anchor (gateway/issuer/approver/ledger keys + revocation
   snapshot) without contacting the issuer — provenance evidence, not
-  enforcement. Design and honest limits: `docs/ACTION_LINEAGE.md`,
-  decision D14.
+  enforcement. `action.request_digest` (sha256 over the request's
+  canonical fields + nonce + issued_at) binds the bundle to the
+  delivered request instance; receivers that hold the request call
+  `internal/lineage.VerifyDelivered`. Design and honest limits:
+  `docs/ACTION_LINEAGE.md`, decision D14.
 
 ### Security
 
