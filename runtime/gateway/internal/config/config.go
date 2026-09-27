@@ -334,13 +334,17 @@ func (c *Config) ValidateStartup() error {
 	}
 	host := addr
 	if ip := net.ParseIP(addr); ip == nil {
-		// Not a bare IP literal — try host:port or [v6] forms.
-		if i := strings.LastIndex(addr, ":"); i >= 0 && !strings.HasPrefix(addr, "[") {
-			if _, err := strconv.Atoi(addr[i+1:]); err == nil {
-				host = addr[:i]
+		// Not a bare IP literal — host:port or [v6]:port forms.
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			host = h
+		} else {
+			if i := strings.LastIndex(addr, ":"); i >= 0 && !strings.HasPrefix(addr, "[") {
+				if _, err := strconv.Atoi(addr[i+1:]); err == nil {
+					host = addr[:i]
+				}
 			}
+			host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 		}
-		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 	}
 	if host == "localhost" {
 		return nil
