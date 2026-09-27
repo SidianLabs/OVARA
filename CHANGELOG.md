@@ -5,6 +5,26 @@ All notable changes to Ovara are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`linverify`** (`runtime/gateway/cmd/linverify`): standalone
+  receiver-side lineage verifier — `-bundle` + `-anchor` (+ optional
+  `-request` for `VerifyDelivered`) prints the fail-closed layered
+  verdict JSON; exit 0 accept / 1 reject. See docs/ACTION_LINEAGE.md §6.
+- **`gwctl export-anchor` + `gwctl genkey`**: the anchor hand-off seam
+  — exports the pinned receiver-side anchor JSON (usable gateway and
+  approver keys, ledger key, issuer pins, revocation snapshot, epoch)
+  straight from the domain registry + ledger key file, and mints key
+  files for pinning approver/ledger roots. See
+  docs/ACTION_LINEAGE.md §6.
+- **`scripts/lineage_two_domain.sh`** (`make demo-lineage`): the
+  cross-domain lineage story on real processes — A issues and B
+  verifies offline; forged and replayed artifacts reject at named
+  layers, and B's pinned anchor still proves the history after A's
+  gateway key is retired.
+
 ## [0.9.0] - 2026-09-21
 
 The OVARA 2.0 security series: the gateway becomes an enforceable execution
@@ -45,6 +65,25 @@ authority verification, and Ed25519-signed receipts.
 
 ## [Unreleased]
 
+### Added
+
+- **Cross-domain action lineage**: the gateway emits signed `lin_v1`
+  lineage bundles at each authority boundary (decision, approval,
+  execution dispatch), each carrying the edsig receipt + presented
+  delegation chain + capability lease + approver-signed approval
+  envelope, and registers each bundle digest on a transparency ledger
+  countersigned under a separate ledger root (`lineage_file`,
+  `lineage_ledger_file`, `lineage_ledger_key_file` config — requires
+  durable gateway trust). `internal/lineage.Verify` is the offline
+  verifier contract: a receiving domain validates a bundle against a
+  pinned anchor (gateway/issuer/approver/ledger keys + revocation
+  snapshot) without contacting the issuer — provenance evidence, not
+  enforcement. `action.request_digest` (sha256 over the request's
+  canonical fields + nonce + issued_at) binds the bundle to the
+  delivered request instance; receivers that hold the request call
+  `internal/lineage.VerifyDelivered`. Design and honest limits:
+  `docs/ACTION_LINEAGE.md`, decision D14.
+
 ### Security
 
 - **Capability lease trust anchor**: lease signatures are now verified against
@@ -67,6 +106,25 @@ authority verification, and Ed25519-signed receipts.
 - **SDK verification fixes**: TypeScript ed25519 verification now uses a real
   WebCrypto call; Python `verify_capability_lease`/`verify_agent_identity`
   require a trusted public key parameter instead of self-asserted fields.
+
+### Fixed
+
+- **Sealed identity registry restart equivocation**: `mutate()` never
+  propagated the clone's `fileSeq`/`fileHash`, so every sealed persist
+  rewrote seq=1 — the tip ledger double-committed and the next open
+  refused to boot (equivocation). Regression test added.
+- **`ovara run` never exited on SIGINT/SIGTERM**: the proxy's
+  `ListenAndServe` ignored the gateway subsystem's signal handler;
+  the process (and both ports) survived Ctrl+C. The command now shuts
+  the proxy down on signal.
+- **Docs/examples quickstart breakage**: `examples/sample_config.json`
+  lacked `listen_addr` and pointed at a nonexistent policy path (refused
+  to boot); `start_gateway.sh` defaulted to the deny-all shipped config
+  so every demo script failed; `demo_safe_shell.sh` claimed shell
+  commands escalate (demo policy allows them on `local`);
+  `full_stack_demo.sh` printed nine "running" services it never started;
+  `Makefile` test/build loops swallowed mid-loop failures (exit 0) and
+  `npx tsc` could fetch the wrong package.
 
 ### Documentation
 

@@ -66,6 +66,7 @@ type ResolveFunc func(gatewayID, keyID string) (ed25519.PublicKey, error)
 // Signer holds the gateway's journal signing identity.
 type Signer struct {
 	priv      ed25519.PrivateKey
+	sign      func(payload []byte) ([]byte, error) // remote signing path
 	domainID  string
 	gatewayID string
 	keyID     string
@@ -78,8 +79,38 @@ func NewSigner(priv ed25519.PrivateKey, domainID, gatewayID, keyID string) *Sign
 	return &Signer{priv: priv, domainID: domainID, gatewayID: gatewayID, keyID: keyID}
 }
 
+// NewRemoteSigner builds a signer whose private key lives off-box:
+// each envelope payload goes to an external signing service over the
+// provided callback. The gateway never possesses the approver/gateway
+// private key — custody separation (C2-B A2). A failed sign call
+// aborts the append (fail closed).
+func NewRemoteSigner(domainID, gatewayID, keyID string, sign func(payload []byte) ([]byte, error)) *Signer {
+	if sign == nil || domainID == "" || gatewayID == "" || keyID == "" {
+		panic("record: remote signer requires sign func, domain, gateway_id and key_id")
+	}
+	return &Signer{sign: sign, domainID: domainID, gatewayID: gatewayID, keyID: keyID}
+}
+
 func (s *Signer) Domain() string { return s.domainID }
 func (s *Signer) Ref() KeyRef    { return KeyRef{GatewayID: s.gatewayID, KeyID: s.keyID} }
+
+// Sign produces a signature over an arbitrary payload through the
+// signer's configured path — local key or the remote signing service
+// (C2-B A2 custody model is preserved: the caller never touches the
+// key). Used by artifacts that are not journal envelopes but must
+// still be produced under the signing identity (e.g. lineage bundles).
+func (s *Signer) Sign(payload []byte) ([]byte, error) {
+	if s.sign != nil {
+		return s.sign(payload)
+	}
+	return ed25519.Sign(s.priv, payload), nil
+}
+
+// SigningPayload is the canonical preimage an envelope signature
+// covers — exported so an offline verifier can recompute it for a
+// detached envelope (e.g. the approver-signed approval line carried
+// inside a lineage bundle) without journal access.
+func SigningPayload(env *Envelope) []byte { return signingPayload(env) }
 
 // --- canonical signing payload (lp framing, same convention as
 // identity/canon.go and receipt/edsigner.go) ---
@@ -178,9 +209,10 @@ type Journal struct {
 	f       *os.File
 	seq     uint64
 	tip     string
-	off     int64                        // bytes folded so far (Absorb support)
-	floor   Floor                       // committed floor carried for Absorb
-	apply   func(*Envelope) error       // fold callback retained from Open
+	off     int64                 // bytes folded so far (Absorb support)
+	floor   Floor                 // committed floor carried for Absorb
+	apply   func(*Envelope) error // fold callback retained from Open
+	lastEnv *Envelope             // last appended envelope (LastEnvelope)
 }
 
 // Open loads path and folds every envelope through apply. A missing or
@@ -412,7 +444,16 @@ func (j *Journal) Append(typ, recordID string, payload any, links []Link) (uint6
 		Payload:  body,
 		KeyRef:   j.signer.Ref(),
 	}
-	sig := ed25519.Sign(j.signer.priv, signingPayload(env))
+	var sig []byte
+	if j.signer.sign != nil {
+		var err error
+		sig, err = j.signer.sign(signingPayload(env))
+		if err != nil {
+			return 0, "", fmt.Errorf("record %s: remote sign: %w", j.store, err)
+		}
+	} else {
+		sig = ed25519.Sign(j.signer.priv, signingPayload(env))
+	}
 	env.Sig = hex.EncodeToString(sig)
 	line, err := json.Marshal(env)
 	if err != nil {
@@ -428,11 +469,17 @@ func (j *Journal) Append(typ, recordID string, payload any, links []Link) (uint6
 	j.seq = env.Seq
 	j.tip = TipHash(line[:len(line)-1])
 	j.off += int64(len(line))
+	j.lastEnv = env
 	return j.seq, j.tip, nil
 }
 
 // Tip returns the journal's committed tip.
 func (j *Journal) Tip() (seq uint64, hash string) { return j.seq, j.tip }
+
+// LastEnvelope returns the most recently appended envelope — the
+// artifact a caller hands to another party as evidence of the write
+// (its signature binds seq, parent, payload, and key_ref).
+func (j *Journal) LastEnvelope() *Envelope { return j.lastEnv }
 
 // Domain returns the journal's bound domain id.
 func (j *Journal) Domain() string { return j.domain }

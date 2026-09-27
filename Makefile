@@ -1,4 +1,4 @@
-.PHONY: all build test clean docker-build docker-push lint vet check
+.PHONY: all build test clean docker-build docker-push lint vet check demo demo-lineage
 
 GO_MODULES := runtime/gateway identity trust proxy services/approval services/receipt-storage services/alerting services/observability tools/cli tools/migration tools/benchmarks telemetry/collector
 TS_MODULES := cloud/control-plane enterprise/sso enterprise/compliance sdk/typescript integrations/mcp integrations/langchain integrations/crewai integrations/openai-agents integrations/browser-automation integrations/openai policy/compiler apps/admin-dashboard packages/shared-types services/analytics
@@ -8,30 +8,30 @@ all: vet test build
 # ── Go ──────────────────────────────────────────────
 vet:
 	@for mod in $(GO_MODULES); do \
-		echo "=== go vet $$mod ===" && cd $$mod && go vet ./... && cd $(CURDIR); \
+		echo "=== go vet $$mod ===" || exit 1; cd $$mod || exit 1; go vet ./... || exit 1; cd $(CURDIR); \
 	done
 
 test:
 	@for mod in $(GO_MODULES); do \
-		echo "=== go test $$mod ===" && cd $$mod && go test -race -count=1 ./... && cd $(CURDIR); \
+		echo "=== go test $$mod ===" || exit 1; cd $$mod || exit 1; go test -race -count=1 ./... || exit 1; cd $(CURDIR); \
 	done
 
 test-ts:
 	@for mod in $(TS_MODULES); do \
 		if [ -f $$mod/package.json ]; then \
-			echo "=== test $$mod ===" && cd $$mod && npx vitest run; cd $(CURDIR); \
+			echo "=== test $$mod ===" || exit 1; cd $$mod || exit 1; npx --no-install vitest run || exit 1; cd $(CURDIR); \
 		fi; \
 	done
 
 build:
 	@for mod in $(GO_MODULES); do \
-		echo "=== go build $$mod ===" && cd $$mod && go build ./... && cd $(CURDIR); \
+		echo "=== go build $$mod ===" || exit 1; cd $$mod || exit 1; go build ./... || exit 1; cd $(CURDIR); \
 	done
 
 build-ts:
 	@for mod in $(TS_MODULES); do \
 		if [ -f $$mod/package.json ]; then \
-			echo "=== tsc $$mod ===" && cd $$mod && npx tsc --noEmit && cd $(CURDIR); \
+			echo "=== tsc $$mod ===" || exit 1; cd $$mod || exit 1; npx --no-install tsc --noEmit || exit 1; cd $(CURDIR); \
 		fi; \
 	done
 
@@ -40,6 +40,15 @@ bench:
 
 bench-compare:
 	@echo "=== benchmark comparison ===" && cd runtime/gateway && go test -bench=. -benchtime=3s -count=10 -benchmem ./internal/handlers/ 2>/dev/null | grep "^Benchmark" | sort
+
+# ── Demo ─────────────────────────────────────────────
+# One-command tour: throwaway config → gateway boot → check → approval →
+# approved execution → signed receipt + lineage. Fresh temp state each run.
+demo:
+	@./scripts/demo.sh
+
+demo-lineage:
+	@./scripts/lineage_two_domain.sh
 
 # ── Docker ───────────────────────────────────────────
 docker-build:

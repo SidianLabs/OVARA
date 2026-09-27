@@ -1,7 +1,8 @@
 {
   "server_port": "8080",
+  "listen_addr": "127.0.0.1",
   "policy_version": "v1-local",
-  "policy_file": "./examples/sample_policy_local.json",
+  "policy_file": "../../examples/sample_policy_local.json",
   "policy_refresh_interval": 10,
   "log_level": "info",
   "_note_fail_closed": "fail_closed:false means policy-load failures are silently allowed — fine for local dev, NEVER for production. Set true in any deployed config.",

@@ -74,3 +74,40 @@ func TestAdv21_RegistrySealed(t *testing.T) {
 		t.Fatal("registry below ledger floor accepted")
 	}
 }
+
+// Every mutation must advance file_seq. If the parent registry keeps a
+// stale seq, the next persist rewrites the same file_seq under a new
+// hash; the tip ledger has already pinned the first commit, so the next
+// Open fails closed on equivocation (observed: an ovara-init'd
+// deployment refused to boot on its second start).
+func TestAdv21_SeqAdvancesAcrossMutations(t *testing.T) {
+	signer, resolve := advSigner(t)
+	p := filepath.Join(t.TempDir(), "id.json")
+	b := &record.Binding{Signer: signer, Resolve: resolve}
+
+	reg, err := Open(p, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SeedConfig([]string{"tok-op"}, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SeedConfig([]string{"tok-a"}, "agent"); err != nil {
+		t.Fatal(err)
+	}
+	seq, _ := reg.JournalTip()
+	if seq != 2 {
+		t.Fatalf("two mutations committed file_seq=%d, want 2", seq)
+	}
+	// Reopen with the floor pinned at the committed tip — the second
+	// boot path.
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2 := &record.Binding{Signer: signer, Resolve: resolve,
+		Floor: record.Floor{Known: true, Seq: seq, Hash: record.TipHash(data)}}
+	if _, err := Open(p, b2); err != nil {
+		t.Fatalf("reopen at committed floor: %v", err)
+	}
+}

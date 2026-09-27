@@ -150,8 +150,8 @@ func TestSigner_SignatureFormat(t *testing.T) {
 
 	sig := signer.Sign(r)
 
-	if len(sig) < 7 || sig[:7] != "sig_v1:" {
-		t.Fatalf("signature does not start with sig_v1: prefix: %s", sig)
+	if len(sig) < 7 || sig[:7] != "sig_v2:" {
+		t.Fatalf("signature does not start with sig_v2: prefix: %s", sig)
 	}
 }
 

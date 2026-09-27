@@ -21,6 +21,7 @@ import (
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/integrity"
+	"ovara.runtime.gateway/internal/lineage"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/models"
@@ -47,6 +48,7 @@ type Handler struct {
 	shieldStats       func() (restricted, total int)
 	maintenanceMode   bool
 	capabilitiesStore capabilities.Store
+	lineageEmitter    *lineage.Emitter
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -73,6 +75,13 @@ func (h *Handler) SetShieldStats(fn func() (restricted, total int)) {
 
 func (h *Handler) SetEventStore(store events.Store) {
 	h.eventStore = store
+}
+
+// SetLineageEmitter wires cross-domain lineage emission (nil = off).
+// Emission is evidence, not authorization — a failed emit never
+// changes a decision (same posture as receipt persistence).
+func (h *Handler) SetLineageEmitter(e *lineage.Emitter) {
+	h.lineageEmitter = e
 }
 
 func (h *Handler) SetApprovalService(svc *approval.Service) {
@@ -1555,6 +1564,15 @@ func (h *Handler) recordDecision(req *models.ActionRequest, resp *models.Decisio
 		persistErr := h.receiptsStore.Put(receipt)
 		if persistErr != nil {
 			log.Printf("SECURITY: receipt persistence failed for decision %s: %v", resp.DecisionID, persistErr)
+		}
+
+		// Lineage emission (docs/ACTION_LINEAGE.md): bind the presented
+		// authority to the signed receipt and register it — evidence,
+		// never authorization; only durable receipts emit.
+		if h.lineageEmitter != nil && persistErr == nil {
+			if _, err := h.lineageEmitter.EmitDecision(req, receipt); err != nil {
+				log.Printf("SECURITY: lineage emission failed for decision %s: %v", resp.DecisionID, err)
+			}
 		}
 
 		if h.eventStore != nil {

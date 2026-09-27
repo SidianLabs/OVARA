@@ -35,6 +35,7 @@ import (
 	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/idregistry"
 	"ovara.runtime.gateway/internal/integrity"
+	"ovara.runtime.gateway/internal/lineage"
 	"ovara.runtime.gateway/internal/logging"
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
@@ -48,6 +49,55 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 )
+
+// validateTrustConfig rejects inconsistent trust/authority wiring before
+// any state mutation (the approver admission writes to the registry
+// journal). durableSigning reports whether gateway trust is durable
+// (registry file + key file). Returns the decoded approver pin when
+// approver custody is configured, nil otherwise.
+func validateTrustConfig(cfg *config.Config, durableSigning bool) (ed25519.PublicKey, error) {
+	if cfg.JournalSigningRequired && !durableSigning {
+		return nil, fmt.Errorf("journal_signing_required=true but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
+	}
+	// approver_pubkey is the verification pin for EITHER custody mode — it
+	// alone does not select local. Local custody is the key file.
+	approverLocal := cfg.ApproverKeyFile != ""
+	approverRemote := cfg.ApproverSignerURL != "" || cfg.ApproverSignerToken != "" || cfg.ApproverSignerKeyID != ""
+	if approverLocal && approverRemote {
+		return nil, fmt.Errorf("approver custody is either local (approver_key_file) or remote (approver_signer_url), never both")
+	}
+	if cfg.ApproverPubKey != "" && !approverLocal && !approverRemote {
+		return nil, fmt.Errorf("approver_pubkey without a custody mode (approver_key_file or approver_signer_url)")
+	}
+	if approverRemote && cfg.ApproverPubKey == "" {
+		return nil, fmt.Errorf("approver_signer_url requires approver_pubkey (the verification pin)")
+	}
+	if approverLocal || approverRemote {
+		if approverLocal && (cfg.ApproverKeyFile == "" || cfg.ApproverPubKey == "") {
+			return nil, fmt.Errorf("approver_key_file and approver_pubkey must be set together")
+		}
+		if approverRemote && (cfg.ApproverSignerURL == "" || cfg.ApproverSignerToken == "" || cfg.ApproverSignerKeyID == "") {
+			return nil, fmt.Errorf("approver_signer_url, approver_signer_token and approver_signer_key_id must be set together")
+		}
+		if !durableSigning {
+			return nil, fmt.Errorf("approver root configured but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
+		}
+		pinPub, err := hex.DecodeString(cfg.ApproverPubKey)
+		if err != nil || len(pinPub) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("approver_pubkey must be a hex ed25519 public key")
+		}
+		return pinPub, nil
+	}
+	if cfg.LineageFile != "" || cfg.LineageLedgerFile != "" || cfg.LineageLedgerKeyFile != "" {
+		if cfg.LineageFile == "" || cfg.LineageLedgerFile == "" || cfg.LineageLedgerKeyFile == "" {
+			return nil, fmt.Errorf("lineage_file, lineage_ledger_file and lineage_ledger_key_file must be set together")
+		}
+		if !durableSigning {
+			return nil, fmt.Errorf("lineage emission requires durable gateway trust (set gateway_registry_file AND gateway_key_file)")
+		}
+	}
+	return nil, nil
+}
 
 // Run starts the gateway with the given config file and blocks until
 // shutdown. It is safe to call in a goroutine.
@@ -65,6 +115,9 @@ func Run(configPath string) error {
 	}
 	if err := cfg.ValidateStartup(); err != nil {
 		return err
+	}
+	if cfg.ServerPort == "" {
+		return fmt.Errorf("refusing to start: server_port is empty — set server_port in the config (e.g. \"8080\")")
 	}
 
 	env := os.Getenv("OVARA_ENVIRONMENT")
@@ -133,8 +186,11 @@ func Run(configPath string) error {
 	// keep the unsigned legacy format (documented trust level).
 	// journal_signing_required=true refuses unsigned startup.
 	durableSigning := gwTrust != nil && cfg.GatewayRegistryFile != "" && cfg.GatewayKeyFile != ""
-	if cfg.JournalSigningRequired && !durableSigning {
-		return fmt.Errorf("journal_signing_required=true but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
+	// All trust-wiring validation precedes any state mutation (the approver
+	// admission below writes to the registry journal).
+	approverPin, err := validateTrustConfig(cfg, durableSigning)
+	if err != nil {
+		return err
 	}
 	var jsigner *record.Signer
 	var jresolve record.ResolveFunc
@@ -174,33 +230,41 @@ func Run(configPath string) error {
 	// approver trust root — a C2-A bootstrap input.
 	var approverBinding *record.Binding
 	var approverKeys continuation.ApproverKeyChecker
-	if cfg.ApproverKeyFile != "" || cfg.ApproverPubKey != "" {
-		if cfg.ApproverKeyFile == "" || cfg.ApproverPubKey == "" {
-			return fmt.Errorf("approver_key_file and approver_pubkey must be set together")
-		}
-		if !durableSigning {
-			return fmt.Errorf("approver root configured but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
-		}
-		privA, err := gwidentity.LoadOrCreateKey(cfg.ApproverKeyFile)
-		if err != nil {
-			return fmt.Errorf("approver key: %w", err)
-		}
-		pubA := privA.Public().(ed25519.PublicKey)
-		if !strings.EqualFold(hex.EncodeToString(pubA), cfg.ApproverPubKey) {
-			return fmt.Errorf("approver pin mismatch: approver_key_file does not match approver_pubkey")
-		}
-		if err := gwTrust.registry.SetApproverPin(pubA); err != nil {
+	// Same custody detection as validateTrustConfig: the pubkey pin is
+	// shared input, not the local selector.
+	approverLocal := cfg.ApproverKeyFile != ""
+	approverRemote := cfg.ApproverSignerURL != "" || cfg.ApproverSignerToken != "" || cfg.ApproverSignerKeyID != ""
+	if approverLocal || approverRemote {
+		pinPub := approverPin // decoded+validated by validateTrustConfig
+		if err := gwTrust.registry.SetApproverPin(pinPub); err != nil {
 			return fmt.Errorf("approver pin refused: %w", err)
 		}
-		recA, err := gwTrust.registry.AdmitApprover(pubA)
+		recA, err := gwTrust.registry.AdmitApprover(pinPub)
 		if err != nil {
 			return fmt.Errorf("approver admission refused: %w", err)
 		}
-		asigner := record.NewSigner(privA, gwTrust.registry.DomainID(), gwidentity.ApproverID, recA.KeyID)
+		var asigner *record.Signer
+		if approverRemote {
+			asigner = record.NewRemoteSigner(gwTrust.registry.DomainID(), gwidentity.ApproverID, cfg.ApproverSignerKeyID,
+				record.HTTPSigner(cfg.ApproverSignerURL, cfg.ApproverSignerToken,
+					gwTrust.registry.DomainID(), gwidentity.ApproverID, cfg.ApproverSignerKeyID))
+			log.Printf("approver-root active: remote signer %s key_id=%s — approver key lives OFF the gateway", cfg.ApproverSignerURL, cfg.ApproverSignerKeyID)
+		} else {
+			privA, err := gwidentity.LoadOrCreateKey(cfg.ApproverKeyFile)
+			if err != nil {
+				return fmt.Errorf("approver key: %w", err)
+			}
+			pubA := privA.Public().(ed25519.PublicKey)
+			if hex.EncodeToString(pubA) != hex.EncodeToString(pinPub) {
+				return fmt.Errorf("approver pin mismatch: approver_key_file does not match approver_pubkey")
+			}
+			asigner = record.NewSigner(privA, gwTrust.registry.DomainID(), gwidentity.ApproverID, recA.KeyID)
+			log.Printf("approver-root active: approver_key_id=%s — approvals sign under an independent root", recA.KeyID)
+		}
 		approverBinding = bindWith("approval", asigner, gwTrust.registry.ResolveApproverKey)
 		approverKeys = gwTrust.registry
-		log.Printf("approver-root active: approver_key_id=%s — approvals sign under an independent root", recA.KeyID)
 	}
+
 	// sinkFor returns the committed-floor hook: every fsynced journal
 	// write ratchets the store's tip inside the anchored gwidentity
 	// journal. A tip-ledger write failure must not succeed the append
@@ -237,6 +301,35 @@ func Run(configPath string) error {
 		}); err != nil {
 			log.Printf("warning: tip-ledger ratchet for %s failed: %v", storeName, err)
 		}
+	}
+
+	// Cross-domain action lineage (docs/ACTION_LINEAGE.md): when
+	// configured, each authority boundary — decision, approval,
+	// execution dispatch — emits a signed lineage bundle and registers
+	// its digest on a transparency ledger. The ledger's key is a
+	// separate root (a stolen gateway.key cannot mint inclusions).
+	var linEmitter *lineage.Emitter
+	lineageConfigured := cfg.LineageFile != "" || cfg.LineageLedgerFile != "" || cfg.LineageLedgerKeyFile != ""
+	if lineageConfigured {
+		ledPriv, err := gwidentity.LoadOrCreateKey(cfg.LineageLedgerKeyFile)
+		if err != nil {
+			return fmt.Errorf("lineage ledger key: %w", err)
+		}
+		ledger, err := lineage.NewFileLedger(cfg.LineageLedgerFile, gwTrust.registry.DomainID()+"/ledger", ledPriv, "l1")
+		if err != nil {
+			return fmt.Errorf("lineage ledger: %w", err)
+		}
+		lstore, err := lineage.OpenStore(cfg.LineageFile, bind("lineage"))
+		if err != nil {
+			return fmt.Errorf("lineage store: %w", err)
+		}
+		lstore.SetTipsSink(sinkFor("lineage"))
+		postOpenRatchet("lineage", lstore.JournalTip)
+		linEmitter, err = lineage.NewEmitter(gwTrust.registry.DomainID(), jsigner, ledger, lstore)
+		if err != nil {
+			return fmt.Errorf("lineage emitter: %w", err)
+		}
+		log.Printf("lineage emission active: store=%s ledger=%s — signed bundles emitted+registered at each authority boundary", cfg.LineageFile, cfg.LineageLedgerFile)
 	}
 
 	policyStore := policy.NewStore(cfg.PolicyVersion)
@@ -528,7 +621,7 @@ func Run(configPath string) error {
 		log.Printf("WARNING: receipt_signing_key not configured; using a random per-process key. Set receipt_signing_key for cross-restart receipt verification.")
 	}
 	h.SetReceiptSigner(receipt.NewSigner([]byte(signingKey)))
-	log.Printf("receipt signer configured (sig_v1, hmac-sha256)")
+	log.Printf("receipt signer configured (sig_v2, hmac-sha256)")
 	// P2.3.5 asymmetric receipt signatures: the gateway's registered
 	// Ed25519 key signs every receipt. gwTrust.record is the admitted,
 	// durably-registered (gateway_id, key_id) — key registration
@@ -546,6 +639,14 @@ func Run(configPath string) error {
 	approvalHandler.SetContinuationStore(continuationStore)
 	if revChecker != nil {
 		approvalHandler.SetRevocation(revChecker)
+	}
+	if linEmitter != nil {
+		h.SetLineageEmitter(linEmitter)
+		var envGetter func(string) *record.Envelope
+		if fb, ok := approvalStore.(*approval.FileBackedStore); ok {
+			envGetter = fb.EnvelopeFor
+		}
+		approvalHandler.SetLineageEmitter(linEmitter, envGetter)
 	}
 	// Approval provenance: /v1/approval/create resolves decision_id against
 	// the decision cache — approvals exist only for gateway-produced
@@ -694,6 +795,9 @@ func Run(configPath string) error {
 	orchestrator.SetEventStore(eventStore)
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	orchestrator.SetApprovalStore(approvalStore, approverKeys)
+	if linEmitter != nil {
+		orchestrator.SetLineageEmitter(linEmitter)
+	}
 	if revChecker != nil {
 		orchestrator.SetRevocation(revChecker)
 		continuationHandler.SetRevocation(revChecker)
@@ -777,11 +881,23 @@ func Run(configPath string) error {
 	}
 	orchestrator.SetIdentityChecker(identityActive)
 	continuationHandler.SetIdentityChecker(identityActive)
+	// A gateway with auth on but no usable credential serves nothing —
+	// every request 401s. Refuse to boot instead of looking healthy.
+	if cfg.AuthEnabled {
+		live := 0
+		_, creds := idReg.List()
+		for _, c := range creds {
+			if c.State == idregistry.CredActive || c.State == idregistry.CredRotating {
+				live++
+			}
+		}
+		if live == 0 {
+			return fmt.Errorf("refusing to start: auth_enabled=true but no active credentials exist — set operator_tokens and/or agent_tokens in the config (see etc/config.example.json)")
+		}
+	}
 	switch {
-	case cfg.AuthEnabled && len(cfg.OperatorTokens) > 0:
+	case cfg.AuthEnabled:
 		log.Printf("AUTH: auth_enabled=true with %d operator token(s) + %d agent token(s) configured", len(cfg.OperatorTokens), len(cfg.AgentTokens))
-	case cfg.AuthEnabled && len(cfg.OperatorTokens) == 0:
-		log.Printf("AUTH WARNING: auth_enabled=true but operator_tokens is empty — gateway will DENY ALL requests until operator_tokens is configured (fail-closed).")
 	default:
 		log.Printf("AUTH: auth_enabled=false — gateway open (set auth_enabled=true and configure operator_tokens to lock down)")
 	}

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -23,9 +25,11 @@ type Config struct {
 	// endpoints (file_path, candidate_file, ?file=) to this directory.
 	// When empty, the directory containing PolicyFile is used; when neither
 	// is set, file-based policy inputs are rejected.
-	PolicyDir                    string   `json:"policy_dir"`
-	LogLevel                     string   `json:"log_level"`
-	FailClosed                   bool     `json:"fail_closed"`
+	PolicyDir string `json:"policy_dir"`
+	LogLevel  string `json:"log_level"`
+	// fail_closed was retired: it parsed but nothing read it, so an
+	// operator could set it believing it hardened the gateway while it
+	// did nothing (P3b — fail-closed is now the unconditional default).
 	DecisionLogFile              string   `json:"decision_log_file"`
 	GatewayID                    string   `json:"gateway_id"`
 	GatewayName                  string   `json:"gateway_name"`
@@ -138,8 +142,27 @@ type Config struct {
 	// presented key must equal it, and registry approver-role records
 	// fold only against it. Both must be set together; requires durable
 	// gateway trust (gateway_registry_file).
-	ApproverKeyFile         string   `json:"approver_key_file"`
-	ApproverPubKey          string   `json:"approver_pubkey"`
+	ApproverKeyFile string `json:"approver_key_file"`
+	ApproverPubKey  string `json:"approver_pubkey"`
+	// ApproverSignerURL/Token/KeyID (C2-B A2): instead of a local
+	// approver key file, delegate envelope signing to a remote signing
+	// service (signerd) holding the key outside the gateway trust
+	// domain — the gateway can request signatures but can never
+	// extract the root. Mutually exclusive with approver_key_file;
+	// approver_pubkey (the verification pin) is still required.
+	ApproverSignerURL   string `json:"approver_signer_url"`
+	ApproverSignerToken string `json:"approver_signer_token"`
+	ApproverSignerKeyID string `json:"approver_signer_key_id"`
+	// LineageFile / LineageLedgerFile / LineageLedgerKeyFile (cross-
+	// domain action lineage, docs/ACTION_LINEAGE.md): emit a signed,
+	// ledger-registered lineage bundle at each authority boundary —
+	// decision, approval, execution. The ledger is a THIRD party: its
+	// key is distinct from the gateway key (a stolen gateway.key cannot
+	// mint inclusions). All three must be set together and require
+	// durable gateway trust; unset = emission off (runtime-only mode).
+	LineageFile             string   `json:"lineage_file"`
+	LineageLedgerFile       string   `json:"lineage_ledger_file"`
+	LineageLedgerKeyFile    string   `json:"lineage_ledger_key_file"`
 	CapabilitiesFile        string   `json:"capabilities_file"`
 	CapabilitiesMaxSize     int      `json:"capabilities_max_size"`
 	CapabilitiesHistoryFile string   `json:"capabilities_history_file"`
@@ -224,7 +247,6 @@ func Default() *Config {
 		ServerPort:                   "8080",
 		PolicyVersion:                "v1-local",
 		LogLevel:                     "info",
-		FailClosed:                   false,
 		DecisionLogFile:              "var/log/decisions.jsonl",
 		GatewayID:                    newGatewayID(),
 		GatewayName:                  "local-gateway",
@@ -292,7 +314,16 @@ func Load(path string) (*Config, error) {
 	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		var syn *json.SyntaxError
+		if errors.As(err, &syn) {
+			line := 1 + bytes.Count(data[:syn.Offset], []byte("\n"))
+			return nil, fmt.Errorf("config %q: invalid JSON at line %d: %w", path, line, err)
+		}
+		var typ *json.UnmarshalTypeError
+		if errors.As(err, &typ) {
+			return nil, fmt.Errorf("config %q: key %q expects %s, got %s", path, typ.Field, typ.Type, typ.Value)
+		}
+		return nil, fmt.Errorf("config %q: %w", path, err)
 	}
 	if cfg.GatewayID == "" {
 		cfg.GatewayID = newGatewayID()
@@ -315,13 +346,17 @@ func (c *Config) ValidateStartup() error {
 	}
 	host := addr
 	if ip := net.ParseIP(addr); ip == nil {
-		// Not a bare IP literal — try host:port or [v6] forms.
-		if i := strings.LastIndex(addr, ":"); i >= 0 && !strings.HasPrefix(addr, "[") {
-			if _, err := strconv.Atoi(addr[i+1:]); err == nil {
-				host = addr[:i]
+		// Not a bare IP literal — host:port or [v6]:port forms.
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			host = h
+		} else {
+			if i := strings.LastIndex(addr, ":"); i >= 0 && !strings.HasPrefix(addr, "[") {
+				if _, err := strconv.Atoi(addr[i+1:]); err == nil {
+					host = addr[:i]
+				}
 			}
+			host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 		}
-		host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
 	}
 	if host == "localhost" {
 		return nil

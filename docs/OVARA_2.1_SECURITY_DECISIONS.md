@@ -224,3 +224,91 @@ without custody separation. A2 moves approver custody off-gateway
 further research. Enabling an approver root mid-deployment fail-
 closes the existing approvals journal (foreign-domain records) —
 approver must be on at init or the journal migrated.
+
+## D13 — C2-B Phase A2: approver custody separation (remote signer)
+
+**Decision.** `record.Signer` gains a remote-signing path
+(`NewRemoteSigner` + `HTTPSigner`): each envelope payload is signed
+by a service OUTSIDE the gateway trust domain — `signerd`, a minimal
+daemon holding the approver key — over an authenticated HTTP
+endpoint that pins exactly one (domain, principal, key) identity and
+refuses every other request. Config `approver_signer_url` /
+`_token` / `_key_id` is mutually exclusive with `approver_key_file`;
+`approver_pubkey` remains the verification pin.
+
+**Now demonstrated:** gateway memory and filesystem contain NO
+approver private key — a full gateway compromise yields a signing
+*client credential*, not the root. Remote refusal aborts the append
+(fail closed — `remote_test.go`).
+
+**Residuals (honest):** (1) confused deputy — a compromised gateway
+can still *request* signatures; signerd's token+identity pin is a
+first choke point, real defense needs request-policy/attestation
+(M5); (2) bearer token is the custody credential — treat as a
+gateway secret, mTLS in production; (3) a gateway without the
+approver key cannot mint approvals but the CLAIM path still needs
+them present — kill the remote endpoint and in-flight approvals
+still verify (pubkey-only), new approvals stop.
+
+## D14 — Cross-domain action lineage (lin_v1)
+
+**Decision.** Each authority boundary — decision emission, approval
+resolution, execution dispatch — emits a signed **lineage bundle**
+(receipt + presented delegation chain + lease + approver-signed
+approval envelope + execution ref) and registers the bundle digest
+on a transparency ledger (SCITT RFC 9943 shape: statement →
+registration → countersigned inclusion). A receiving domain verifies
+the bundle OFFLINE against a pinned anchor: gateway keys, trusted
+issuers, usable approver keys, ledger key, revocation snapshot.
+Format and verifier contract: `docs/ACTION_LINEAGE.md`.
+
+**The trust decision, in order:**
+
+- The artifact is never trusted — every layer resolves against the
+  receiving domain's pinned anchor. A key carried inside the bundle
+  is a resolution hint, not authority.
+- The bundle signature under the emitting gateway's journal key
+  covers all members (per-member digests inside the payload) — the
+  composition is bound, not just concatenated.
+- Inclusion is a SCITT-style countersignature under a SEPARATE ledger
+  root (`lineage_ledger_key_file`) — a stolen `gateway.key` mints
+  signed bundles but cannot produce an inclusion: the C2-KEY-ROOT
+  forgery class dies one layer up.
+- Approval provenance travels as the approver-signed journal
+  envelope itself, verified under the anchor's PINNED usable
+  approver set — an approver key revoked before the snapshot is
+  absent and fails provenance (revoked approver mid-lineage = reject).
+- Revocation is judged against B's pinned snapshot: every pair the
+  bundle derives (lease, hop keys, issuers, approval-recorded pairs)
+  must be absent — the "is it still valid?" half is answered under
+  B's view, never A's.
+- Emission is evidence, never authorization: a lineage write failure
+  logs `SECURITY:` and never blocks the boundary it observed.
+- `action.request_digest` binds the bundle to the *delivered request
+  instance* (fields + nonce + issued_at): the receiver's
+  `VerifyDelivered` recomputes it over what it actually received —
+  closing the "the statement attests an adjudication, not THIS
+  request" gap. `Verify` alone stays request-agnostic for
+  evidence-only audits.
+
+**Demonstrated** (`internal/lineage/lineage_test.go`): two-domain
+end-to-end — A emits decision→approval→execution through a real file
+ledger, B verifies the wire form offline through all 8 layers plus
+the delivered-request binding; forged bundle sig, tampered receipt
+member, truncated chain, untrusted issuer, forged approval envelope,
+tampered inclusion, wrong domain, revoked issuer/lease/approver-in-
+snapshot, a replayed/mismatched request, and a C2-KEY-ROOT rerun
+(stolen gateway key mints a complete counterfeit — dies at
+inclusion, no ledger key) each reject at the named layer; honest
+lineage accepts.
+
+**What remains (honest):** lineage is evidence, not enforcement —
+counterparties must emit and verify; a compromised ISSUER root still
+writes a poisoned-but-valid chain (lineage shows which chain, not
+that the root was honest — revocation is the correction, not the
+prevention); the ledger is a new availability + custody dependency
+and registration proves only "this digest was submitted," not that
+it was honest; nonce replay stays an eval-time concern of the
+issuing domain; the format is JSON+Ed25519 implementing the SCITT
+*architecture* — real transparency-service interop needs a COSE
+adapter at the `Publisher` seam (deferred).
