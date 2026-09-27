@@ -25,7 +25,9 @@ type Config struct {
 	// is set, file-based policy inputs are rejected.
 	PolicyDir                    string   `json:"policy_dir"`
 	LogLevel                     string   `json:"log_level"`
-	FailClosed                   bool     `json:"fail_closed"`
+	// fail_closed was retired: it parsed but nothing read it, so an
+	// operator could set it believing it hardened the gateway while it
+	// did nothing (P3b — fail-closed is now the unconditional default).
 	DecisionLogFile              string   `json:"decision_log_file"`
 	GatewayID                    string   `json:"gateway_id"`
 	GatewayName                  string   `json:"gateway_name"`
@@ -243,7 +245,6 @@ func Default() *Config {
 		ServerPort:                   "8080",
 		PolicyVersion:                "v1-local",
 		LogLevel:                     "info",
-		FailClosed:                   false,
 		DecisionLogFile:              "var/log/decisions.jsonl",
 		GatewayID:                    newGatewayID(),
 		GatewayName:                  "local-gateway",
