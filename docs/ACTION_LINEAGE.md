@@ -283,3 +283,13 @@ chain, untrusted issuer, revoked-approver mid-lineage, tampered
 inclusion, wrong-domain presentation, and a mismatched/stripped
 `request_digest` each reject at the named layer, and the honest
 bundle accepts.
+
+`cmd/linverify` is the receiver-side CLI: `linverify -bundle b.json
+-anchor a.json [-request r.json]` prints the layered verdict JSON and
+exits non-zero on reject. The anchor file is the JSON form of
+`Anchor` — `domain_id`, `gateway_keys` (`"gwid|keyid": hex-pub`),
+`issuer_keys`, `approver_keys` (`key_id`), `ledger_keys`
+(`ledger_domain`), `expected_audience`, `revocations`
+(`[{class,target}]`), `epoch`. With `-request` it runs
+`VerifyDelivered`, adding the `request` layer over the request the
+receiver actually got.

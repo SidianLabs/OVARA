@@ -59,8 +59,7 @@ cat > "$TMP/config.json" <<EOF
   "lineage_ledger_key_file": "$TMP/var/lineage_ledger.key",
   "journal_signing_required": true,
   "enable_host_executors": true,
-  "decision_log_file": "$TMP/var/decisions.jsonl",
-  "fail_closed": true
+  "decision_log_file": "$TMP/var/decisions.jsonl"
 }
 EOF
 # escalate rules run last; with no allow rule, every check escalates.

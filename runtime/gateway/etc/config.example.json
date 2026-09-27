@@ -43,7 +43,6 @@
   "trusted_issuers": {},
   "_note_trusted_issuers": "{issuer_name: base64-ed25519-pubkey}. Required to verify signed capability leases/delegations — empty means lease-gated actions fail validation.",
 
-  "fail_closed": true,
   "log_level": "info",
   "gateway_name": "local-gateway",
   "gateway_version": "0.8.0",
