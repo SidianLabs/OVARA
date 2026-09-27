@@ -59,10 +59,15 @@ func validateTrustConfig(cfg *config.Config, durableSigning bool) (ed25519.Publi
 	if cfg.JournalSigningRequired && !durableSigning {
 		return nil, fmt.Errorf("journal_signing_required=true but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
 	}
-	approverLocal := cfg.ApproverKeyFile != "" || cfg.ApproverPubKey != ""
+	// approver_pubkey is the verification pin for EITHER custody mode — it
+	// alone does not select local. Local custody is the key file.
+	approverLocal := cfg.ApproverKeyFile != ""
 	approverRemote := cfg.ApproverSignerURL != "" || cfg.ApproverSignerToken != "" || cfg.ApproverSignerKeyID != ""
 	if approverLocal && approverRemote {
 		return nil, fmt.Errorf("approver custody is either local (approver_key_file) or remote (approver_signer_url), never both")
+	}
+	if cfg.ApproverPubKey != "" && !approverLocal && !approverRemote {
+		return nil, fmt.Errorf("approver_pubkey without a custody mode (approver_key_file or approver_signer_url)")
 	}
 	if approverRemote && cfg.ApproverPubKey == "" {
 		return nil, fmt.Errorf("approver_signer_url requires approver_pubkey (the verification pin)")
@@ -222,7 +227,9 @@ func Run(configPath string) error {
 	// approver trust root — a C2-A bootstrap input.
 	var approverBinding *record.Binding
 	var approverKeys continuation.ApproverKeyChecker
-	approverLocal := cfg.ApproverKeyFile != "" || cfg.ApproverPubKey != ""
+	// Same custody detection as validateTrustConfig: the pubkey pin is
+	// shared input, not the local selector.
+	approverLocal := cfg.ApproverKeyFile != ""
 	approverRemote := cfg.ApproverSignerURL != "" || cfg.ApproverSignerToken != "" || cfg.ApproverSignerKeyID != ""
 	if approverLocal || approverRemote {
 		pinPub := approverPin // decoded+validated by validateTrustConfig
