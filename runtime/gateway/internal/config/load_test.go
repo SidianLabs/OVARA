@@ -51,9 +51,9 @@ func TestLoad_GeneratesGatewayIDWhenUnset(t *testing.T) {
 
 func TestEnrollment_StatusHelpers(t *testing.T) {
 	cases := []struct {
-		status    string
-		isLocal   bool
-		enrolled  bool
+		status   string
+		isLocal  bool
+		enrolled bool
 	}{
 		{EnrollmentStatusLocal, true, false},
 		{EnrollmentStatusEnrolled, false, true},

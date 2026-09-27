@@ -18,7 +18,7 @@ func TestNewSigner_PanicsOnIncompleteInputs(t *testing.T) {
 		gw   string
 		kid  string
 	}{
-		{"short key", ed25519.PrivateKey(priv[:10]), "domA", "gw1", "k1"},
+		{"short key", priv[:10], "domA", "gw1", "k1"},
 		{"nil key", nil, "domA", "gw1", "k1"},
 		{"empty domain", priv, "", "gw1", "k1"},
 		{"empty gateway", priv, "domA", "", "k1"},

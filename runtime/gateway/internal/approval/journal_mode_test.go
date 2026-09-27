@@ -28,9 +28,9 @@ type signedFixture struct {
 func signedStore(t *testing.T) *signedFixture {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	signer := record.NewSigner(priv, "domA", gwidentity.ApproverID, "ak1")
+	signer := record.NewSigner(priv, "domA", gwidentity.ApproverID, approverKeyID)
 	resolve := func(gw, kid string) (ed25519.PublicKey, error) {
-		if gw == gwidentity.ApproverID && kid == "ak1" {
+		if gw == gwidentity.ApproverID && kid == approverKeyID {
 			return pub, nil
 		}
 		return nil, errNoApproverKey
@@ -42,6 +42,8 @@ func signedStore(t *testing.T) *signedFixture {
 	}
 	return &signedFixture{store: s, path: p, signer: signer, pub: pub, resolve: resolve}
 }
+
+const approverKeyID = "ak1"
 
 var errNoApproverKey = errString("no approver key")
 
@@ -98,7 +100,7 @@ func TestSignedStore_RoundTripAndRefold(t *testing.T) {
 	if env == nil {
 		t.Fatal("no signed envelope for journaled approval")
 	}
-	if env.KeyRef.GatewayID != gwidentity.ApproverID || env.KeyRef.KeyID != "ak1" {
+	if env.KeyRef.GatewayID != gwidentity.ApproverID || env.KeyRef.KeyID != approverKeyID {
 		t.Fatalf("envelope not under approver root: %+v", env.KeyRef)
 	}
 	sig, _ := hex.DecodeString(env.Sig)
@@ -161,7 +163,7 @@ func TestSignedStore_RoundTripAndRefold(t *testing.T) {
 	if err != nil || a1.Status != StatusApproved || a1.ResumedAt == nil {
 		t.Fatalf("refolded app_1 wrong: %+v err=%v", a1, err)
 	}
-	if a1.SignerKeyID != "ak1" {
+	if a1.SignerKeyID != approverKeyID {
 		t.Fatalf("folded record lost signer key_ref: %q", a1.SignerKeyID)
 	}
 	if re.EnvelopeFor("app_1") == nil {

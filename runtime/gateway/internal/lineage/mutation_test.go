@@ -22,6 +22,8 @@ import (
 
 // mutationBundle is a fully-populated bundle — every Payload member is
 // non-nil so each digestHex position carries real content.
+const resShellXX = "shell:xx" // same-length mutation target for Resource fields
+
 func mutationBundle() *Bundle {
 	return &Bundle{
 		V:         Version,
@@ -84,14 +86,14 @@ func TestPayload_FieldMutationChangesPreimage(t *testing.T) {
 		{"stage_same_len", func(b *Bundle) { b.Stage = "executi_n" }},
 		{"issued_at", func(b *Bundle) { b.IssuedAt = b.IssuedAt.Add(time.Second) }},
 		{"action_type", func(b *Bundle) { b.Action.ActionType = "fetch" }},
-		{"action_resource", func(b *Bundle) { b.Action.Resource = "shell:xx" }},
+		{"action_resource", func(b *Bundle) { b.Action.Resource = resShellXX }},
 		{"action_agent", func(b *Bundle) { b.Action.AgentID = "agt_b" }},
 		{"action_env", func(b *Bundle) { b.Action.Environment = "cloud" }},
-		{"receipt_member", func(b *Bundle) { b.Receipt.Resource = "shell:xx" }},
+		{"receipt_member", func(b *Bundle) { b.Receipt.Resource = resShellXX }},
 		{"receipt_nil", func(b *Bundle) { b.Receipt = nil }},
 		{"lease_member", func(b *Bundle) { b.Lease.LeaseID = "lease_2" }},
 		{"delegation_member", func(b *Bundle) { b.Delegation.Authorities[0].Nonce = "n2" }},
-		{"approval_member", func(b *Bundle) { b.Approval.Resource = "shell:xx" }},
+		{"approval_member", func(b *Bundle) { b.Approval.Resource = resShellXX }},
 		{"approval_env_member", func(b *Bundle) { b.ApprovalEnv.Seq = 8 }},
 		{"approval_env_payload", func(b *Bundle) { b.ApprovalEnv.Payload = []byte(`{"approval_id":"app_2"}`) }},
 		{"execution_member", func(b *Bundle) { b.Execution.ExecutionID = "exe_2" }},
@@ -143,7 +145,7 @@ func TestStatementDigest_FieldMutationChangesDigest(t *testing.T) {
 	}{
 		{"lineage_id", func(b *Bundle) { b.LineageID = "lin_bbb" }},
 		{"stage", func(b *Bundle) { b.Stage = StageApproval }},
-		{"receipt_member", func(b *Bundle) { b.Receipt.Resource = "shell:xx" }},
+		{"receipt_member", func(b *Bundle) { b.Receipt.Resource = resShellXX }},
 		{"sig", func(b *Bundle) { b.Sig = "lin_v1:" + "ff" }},
 	}
 	for _, m := range mutations {
