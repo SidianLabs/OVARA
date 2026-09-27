@@ -5,6 +5,15 @@ All notable changes to Ovara are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`linverify`** (`runtime/gateway/cmd/linverify`): standalone
+  receiver-side lineage verifier — `-bundle` + `-anchor` (+ optional
+  `-request` for `VerifyDelivered`) prints the fail-closed layered
+  verdict JSON; exit 0 accept / 1 reject. See docs/ACTION_LINEAGE.md §6.
+
 ## [0.9.0] - 2026-09-21
 
 The OVARA 2.0 security series: the gateway becomes an enforceable execution
