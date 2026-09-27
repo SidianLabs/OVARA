@@ -1,6 +1,7 @@
 package receipt
 
 import (
+	"bytes"
 	"testing"
 	"time"
 
@@ -76,7 +77,7 @@ func TestCanonicalPayload_FieldMutationChangesString(t *testing.T) {
 	for _, m := range mutations {
 		r := sampleReceipt()
 		m.mut(r)
-		if s.canonicalPayload(r) == base {
+		if bytes.Equal(s.canonicalPayload(r), base) {
 			t.Errorf("%s: mutation produced identical canonical payload", m.name)
 		}
 	}
