@@ -683,7 +683,7 @@ func pubFromKeyFile(path string) (ed25519.PublicKey, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("ledger key: %v", err)
+		return nil, fmt.Errorf("ledger key: %w", err)
 	}
 	priv, err := hex.DecodeString(strings.TrimSpace(string(data)))
 	if err != nil || len(priv) != ed25519.PrivateKeySize {
