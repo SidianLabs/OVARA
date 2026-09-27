@@ -107,7 +107,8 @@ func lp(b []byte, s string) []byte {
 	// #nosec G115 -- the frame is u32-bounded by design (same convention
 	// as identity/canon.go); in-memory strings cannot exceed it.
 	binary.BigEndian.PutUint32(l[:], uint32(len(s)))
-	return append(l[:], b...)
+	b = append(b, l[:]...)
+	return append(b, s...)
 }
 
 func lpu64(b []byte, v uint64) []byte {
