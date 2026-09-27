@@ -23,8 +23,8 @@ type Config struct {
 	// endpoints (file_path, candidate_file, ?file=) to this directory.
 	// When empty, the directory containing PolicyFile is used; when neither
 	// is set, file-based policy inputs are rejected.
-	PolicyDir                    string   `json:"policy_dir"`
-	LogLevel                     string   `json:"log_level"`
+	PolicyDir string `json:"policy_dir"`
+	LogLevel  string `json:"log_level"`
 	// fail_closed was retired: it parsed but nothing read it, so an
 	// operator could set it believing it hardened the gateway while it
 	// did nothing (P3b — fail-closed is now the unconditional default).
