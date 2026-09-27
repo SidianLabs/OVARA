@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receiver-side lineage verifier — `-bundle` + `-anchor` (+ optional
   `-request` for `VerifyDelivered`) prints the fail-closed layered
   verdict JSON; exit 0 accept / 1 reject. See docs/ACTION_LINEAGE.md §6.
+- **`gwctl export-anchor` + `gwctl genkey`**: the anchor hand-off seam
+  — exports the pinned receiver-side anchor JSON (usable gateway and
+  approver keys, ledger key, issuer pins, revocation snapshot, epoch)
+  straight from the domain registry + ledger key file, and mints key
+  files for pinning approver/ledger roots. See
+  docs/ACTION_LINEAGE.md §6.
+- **`scripts/lineage_two_domain.sh`** (`make demo-lineage`): the
+  cross-domain lineage story on real processes — A issues and B
+  verifies offline; forged and replayed artifacts reject at named
+  layers, and B's pinned anchor still proves the history after A's
+  gateway key is retired.
 
 ## [0.9.0] - 2026-09-21
 

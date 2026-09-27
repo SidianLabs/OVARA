@@ -292,4 +292,47 @@ exits non-zero on reject. The anchor file is the JSON form of
 (`ledger_domain`), `expected_audience`, `revocations`
 (`[{class,target}]`), `epoch`. With `-request` it runs
 `VerifyDelivered`, adding the `request` layer over the request the
-receiver actually got.
+receiver actually got. The wire form is `lineage.AnchorFile` — shared
+between the exporter and linverify, so the format is defined once.
+
+`gwctl export-anchor` is the hand-off seam that produces the anchor
+file — no hand-assembly of pins:
+
+```
+gwctl export-anchor --registry gateway_registry.json \
+    --ledger-key lineage_ledger.key [--gateway-id G] \
+    [--config config.json] > anchor.json
+```
+
+It folds the domain registry for the derived `domain_id`, the
+currently-usable gateway keys, the approver pins, the revocation
+snapshot, and the journal-seq `epoch`; reads the lineage ledger's
+public key out of its private key file (`--ledger-key`, strictly
+read-only); and pulls issuer pins from the gateway config's
+`trusted_issuers` (`--config`). `expected_audience` is the gateway
+identity the ledger/bundles attribute to. Only keys usable at export
+time are pinned — what a receiver holds is a snapshot of the domain's
+trust view, refreshed on whatever cadence B chooses; the export never
+mints or guesses keys it cannot derive, and an absent pin is a hard
+absence, not a silent skip.
+
+`scripts/lineage_two_domain.sh` (`make demo-lineage`) is the runnable
+version of this section's story with real processes: it boots domain
+A's gateway on throwaway state (approver root pinned via `gwctl
+genkey`), runs one shell action through check → approval →
+orchestrated execution, extracts the execution-stage bundle (each
+stage enriches the decision bundle, so the final one carries every
+layer), exports B's pinned anchor, then proves:
+
+- honest bundle + delivered request → ACCEPT under `VerifyDelivered`,
+- a same-length tamper → REJECT at `inclusion` (the statement digest
+  covers every signed byte),
+- a nonce-swapped delivered request → REJECT at `request`,
+- `gwctl retire` + a fresh export → REJECT at `signature` (the key is
+  no longer pinned),
+- the pinned anchor → still ACCEPT — B proves the history it saw even
+  after the key that signed it is dead.
+
+The second domain needs no gateway of its own: B's side is `gwctl
+export-anchor` + `linverify` over the two artifacts — verification is
+offline by design.

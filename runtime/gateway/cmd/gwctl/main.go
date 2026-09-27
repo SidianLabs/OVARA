@@ -26,6 +26,9 @@
 //	gwctl revocations --registry F
 //	gwctl epoch  --registry F
 //	gwctl verify-receipt --registry F --receipt receipt.json
+//	gwctl export-anchor  --registry F --ledger-key K [--gateway-id G]
+//	                     [--config config.json]
+//	gwctl genkey --out F            (mint a hex ed25519 key file, print pub)
 //	gwctl anchor-init    --registry F --anchor-url U --anchor-pin P
 //	                     --anchor-key K [--attest] [--confirm]
 //	gwctl anchor-status  --registry F --anchor-url U --anchor-pin P
@@ -50,10 +53,13 @@ import (
 	"time"
 
 	"ovara.runtime.gateway/internal/anchor"
+	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/gwidentity"
+	"ovara.runtime.gateway/internal/lineage"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/receipt"
 	"ovara.runtime.gateway/internal/record"
+	"ovara.runtime.gateway/internal/revocation"
 )
 
 func openReg(path string, create bool) *gwidentity.Registry {
@@ -215,6 +221,9 @@ func main() {
 	actor := fs.String("actor", "", "revocation actor identity (default: operator)")
 	reason := fs.String("reason", "", "revocation reason (audit)")
 	rcptFile := fs.String("receipt", "", "verify-receipt: path to receipt JSON")
+	ledKey := fs.String("ledger-key", "", "export-anchor: lineage ledger private key file")
+	cfgPath := fs.String("config", "", "export-anchor: gateway config.json (trusted_issuers → issuer_keys)")
+	keyOut := fs.String("out", "", "genkey: output key file")
 	fs.Parse(args)
 
 	ctx := context.Background()
@@ -421,6 +430,36 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "export-anchor":
+		// Receiver-side seam for action lineage (docs/ACTION_LINEAGE.md
+		// §6): emit the pinned anchor a counterparty verifies offline
+		// against. Read-only over every store — nothing here is trusted
+		// from an artifact, and a key dead at export time is absent.
+		r := openReg(*reg, false)
+		defer r.Close()
+		a, err := exportAnchor(r, *gw, *ledKey, *cfgPath)
+		if err != nil {
+			fatal("export-anchor: %v", err)
+		}
+		out, err := json.MarshalIndent(a.File(), "", "  ")
+		if err != nil {
+			fatal("export-anchor: %v", err)
+		}
+		fmt.Println(string(out))
+
+	case "genkey":
+		// Mint a hex ed25519 key file (0600), print the pubkey — the
+		// pre-flight step for pinning an approver/ledger key in config
+		// before first boot.
+		if *keyOut == "" {
+			fatal("genkey requires --out <path>")
+		}
+		priv, err := gwidentity.LoadOrCreateKey(*keyOut)
+		if err != nil {
+			fatal("genkey: %v", err)
+		}
+		fmt.Println(hex.EncodeToString(priv.Public().(ed25519.PublicKey)))
+
 	default:
 		// Original admission commands — registry-backed.
 		r := openReg(*reg, cmd == "grant")
@@ -526,6 +565,131 @@ func main() {
 			fatal("unknown command %q", cmd)
 		}
 	}
+}
+
+// --- lineage anchor export (ACTION_LINEAGE §6) ------------------------------
+
+// exportAnchor builds the receiver-side pinned anchor — linverify's
+// -anchor input — out of the domain registry plus the operator's
+// ledger key file and gateway config. Only keys usable at export time
+// are pinned: a key revoked or tombstoned before this snapshot is
+// absent, so a counterparty holding THIS anchor distrusts it, while
+// an older pinned anchor still proves the history it saw. Nothing is
+// trusted from the artifact itself — what these stores cannot derive
+// stays absent rather than guessed.
+func exportAnchor(r *gwidentity.Registry, gwID, ledgerKeyPath, cfgPath string) (*lineage.Anchor, error) {
+	dom := r.DomainID()
+	if dom == "" {
+		return nil, fmt.Errorf("registry journal is empty — no domain to pin")
+	}
+	// With exactly one non-approver gateway admitted, --gateway-id is
+	// optional; ambiguity is a hard failure, never a guess.
+	if gwID == "" {
+		var ids []string
+		for _, id := range r.AllGateways() {
+			if id != gwidentity.ApproverID {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) != 1 {
+			return nil, fmt.Errorf("--gateway-id is required (registry holds: %s)", strings.Join(ids, ", "))
+		}
+		gwID = ids[0]
+	}
+	gwKeys, err := usableKeys(r, gwID, func(k *gwidentity.KeyRecord) string { return k.GatewayID + "|" + k.KeyID })
+	if err != nil {
+		return nil, err
+	}
+	// Approver pins live under the reserved "approver" identity — absent
+	// when the domain runs no approver root (approval layer then simply
+	// cannot be satisfied).
+	appKeys, err := usableKeys(r, gwidentity.ApproverID, func(k *gwidentity.KeyRecord) string { return k.KeyID })
+	if errors.Is(err, gwidentity.ErrUnknownGateway) {
+		err = nil
+		appKeys = map[string]ed25519.PublicKey{}
+	}
+	if err != nil {
+		return nil, err
+	}
+	ledPub, err := pubFromKeyFile(ledgerKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	issuers := map[string]ed25519.PublicKey{}
+	if cfgPath != "" {
+		c, err := config.Load(cfgPath)
+		if err != nil {
+			return nil, err
+		}
+		for name, h := range c.TrustedIssuers {
+			pub, err := hex.DecodeString(h)
+			if err != nil || len(pub) != ed25519.PublicKeySize {
+				return nil, fmt.Errorf("trusted_issuers %q: bad hex pubkey", name)
+			}
+			issuers[name] = ed25519.PublicKey(pub)
+		}
+	}
+	recs, err := r.Revocations()
+	if err != nil {
+		return nil, err
+	}
+	epoch, err := r.Epoch()
+	if err != nil {
+		return nil, err
+	}
+	a := &lineage.Anchor{
+		DomainID:         dom,
+		ExpectedAudience: gwID,
+		GatewayKeys:      gwKeys,
+		IssuerKeys:       issuers,
+		ApproverKeys:     appKeys,
+		LedgerKeys:       map[string]ed25519.PublicKey{dom + "/ledger": ledPub},
+		Revocations:      map[revocation.Pair]bool{},
+		Epoch:            epoch,
+	}
+	for _, rv := range recs {
+		a.Revocations[revocation.Pair{Class: revocation.Class(rv.Class), Target: rv.Target}] = true
+	}
+	return a, nil
+}
+
+// usableKeys collects the registry's currently-usable keys for one
+// gateway into an anchor pin map.
+func usableKeys(r *gwidentity.Registry, gatewayID string, keyName func(*gwidentity.KeyRecord) string) (map[string]ed25519.PublicKey, error) {
+	recs, err := r.Lookup(gatewayID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]ed25519.PublicKey, len(recs))
+	for _, k := range recs {
+		if !gwidentity.Usable(k) {
+			continue
+		}
+		pub, err := hex.DecodeString(k.PublicKey)
+		if err != nil || len(pub) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("%s %s: corrupt registry pubkey", gatewayID, k.KeyID)
+		}
+		out[keyName(k)] = ed25519.PublicKey(pub)
+	}
+	return out, nil
+}
+
+// pubFromKeyFile reads a hex ed25519 key file and derives the public
+// key — strictly read-only (LoadOrCreateKey would mint a fresh key for
+// a mistyped path and export an anchor pinning nothing real).
+func pubFromKeyFile(path string) (ed25519.PublicKey, error) {
+	if path == "" {
+		return nil, fmt.Errorf("--ledger-key is required (the lineage ledger's private key file)")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("ledger key: %v", err)
+	}
+	priv, err := hex.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil || len(priv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("ledger key %s: corrupt hex ed25519 private key", path)
+	}
+	return ed25519.PrivateKey(priv).Public().(ed25519.PublicKey), nil
 }
 
 // --- migrate (P2.4) ---------------------------------------------------------

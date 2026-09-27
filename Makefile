@@ -1,4 +1,4 @@
-.PHONY: all build test clean docker-build docker-push lint vet check demo
+.PHONY: all build test clean docker-build docker-push lint vet check demo demo-lineage
 
 GO_MODULES := runtime/gateway identity trust proxy services/approval services/receipt-storage services/alerting services/observability tools/cli tools/migration tools/benchmarks telemetry/collector
 TS_MODULES := cloud/control-plane enterprise/sso enterprise/compliance sdk/typescript integrations/mcp integrations/langchain integrations/crewai integrations/openai-agents integrations/browser-automation integrations/openai policy/compiler apps/admin-dashboard packages/shared-types services/analytics
@@ -46,6 +46,9 @@ bench-compare:
 # approved execution → signed receipt + lineage. Fresh temp state each run.
 demo:
 	@./scripts/demo.sh
+
+demo-lineage:
+	@./scripts/lineage_two_domain.sh
 
 # ── Docker ───────────────────────────────────────────
 docker-build:

@@ -62,6 +62,11 @@ cd proxy && go build -o ovara ./cmd/ovara && cd ..
 # check → approval → execution → signed receipt + lineage bundles
 make demo
 
+# Cross-domain lineage on real processes (~30s): domain A issues an
+# action, domain B verifies the bundle offline, A's gateway key is
+# retired, and B's pinned anchor still proves the history
+make demo-lineage
+
 # Real deployment directory: keys, config, policy, tokens
 ./proxy/ovara init mydir
 ./proxy/ovara run -dir mydir     # gateway :8080, proxy :9443 — Ctrl+C exits cleanly
