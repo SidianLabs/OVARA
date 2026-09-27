@@ -90,6 +90,8 @@ func (s *Signer) canonicalPayload(r *models.Receipt) []byte {
 	binary.BigEndian.PutUint64(f[:], math.Float64bits(r.TrustScore))
 	b = append(b, lp(f[:])...)
 	var tb [8]byte
+	// #nosec G115 -- int64->u64 is injective; a preimage only needs a
+	// bijection, not sortable order.
 	binary.BigEndian.PutUint64(tb[:], uint64(r.IssuedAt.Unix()))
 	return append(b, lp(tb[:])...)
 }
@@ -103,6 +105,7 @@ func ComputeActionDigest(actionType, resource string, issuedAt time.Time) string
 	b = append(b, lp([]byte(actionType))...)
 	b = append(b, lp([]byte(resource))...)
 	var tb [8]byte
+	// #nosec G115 -- int64->u64 is injective for a preimage encoding.
 	binary.BigEndian.PutUint64(tb[:], uint64(issuedAt.Unix()))
 	h := sha256.Sum256(append(b, lp(tb[:])...))
 	return hex.EncodeToString(h[:])

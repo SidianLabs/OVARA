@@ -857,6 +857,8 @@ func digestField(present bool, v string) []byte {
 
 func digestFrame(b []byte) []byte {
 	var lenb [4]byte
+	// #nosec G115 -- u32-bounded by design (same convention as the
+	// lineage lp frame); digest inputs are request fields, not blobs.
 	binary.BigEndian.PutUint32(lenb[:], uint32(len(b)))
 	return append(lenb[:], b...)
 }

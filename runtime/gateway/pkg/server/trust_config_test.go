@@ -23,6 +23,11 @@ func testPin(t *testing.T) string {
 	return hex.EncodeToString(pub)
 }
 
+const (
+	keyFile = "a.key"
+	linFile = "l.jsonl"
+)
+
 func TestValidateTrustConfig(t *testing.T) {
 	pin := testPin(t)
 	remote := func(c *config.Config) {
@@ -45,7 +50,7 @@ func TestValidateTrustConfig(t *testing.T) {
 			func(c *config.Config) { c.JournalSigningRequired = true }, "", false},
 		{"approver local+remote is never both", true,
 			func(c *config.Config) {
-				c.ApproverKeyFile = "a.key"
+				c.ApproverKeyFile = keyFile
 				remote(c)
 			}, "never both", false},
 		{"remote approver requires pubkey pin", true,
@@ -55,7 +60,7 @@ func TestValidateTrustConfig(t *testing.T) {
 				c.ApproverSignerKeyID = "k"
 			}, "requires approver_pubkey", false},
 		{"local approver requires key+pubkey pair", true,
-			func(c *config.Config) { c.ApproverKeyFile = "a.key" }, "set together", false},
+			func(c *config.Config) { c.ApproverKeyFile = keyFile }, "set together", false},
 		{"remote approver requires all three", true,
 			func(c *config.Config) {
 				c.ApproverSignerURL = "https://s"
@@ -67,26 +72,26 @@ func TestValidateTrustConfig(t *testing.T) {
 			func(c *config.Config) { c.ApproverPubKey = pin }, "custody mode", false},
 		{"bad pin hex rejected", true,
 			func(c *config.Config) {
-				c.ApproverKeyFile = "a.key"
+				c.ApproverKeyFile = keyFile
 				c.ApproverPubKey = "not-hex"
 			}, "hex ed25519 public key", false},
 		{"remote approver returns decoded pin", true, remote, "", true},
 		{"local approver valid", true,
 			func(c *config.Config) {
-				c.ApproverKeyFile = "a.key"
+				c.ApproverKeyFile = keyFile
 				c.ApproverPubKey = pin
 			}, "", true},
 		{"lineage requires all three paths", true,
-			func(c *config.Config) { c.LineageFile = "l.jsonl" }, "set together", false},
+			func(c *config.Config) { c.LineageFile = linFile }, "set together", false},
 		{"lineage refuses ephemeral trust", false,
 			func(c *config.Config) {
-				c.LineageFile = "l.jsonl"
+				c.LineageFile = linFile
 				c.LineageLedgerFile = "led.jsonl"
 				c.LineageLedgerKeyFile = "led.key"
 			}, "requires durable", false},
 		{"lineage full+durable ok", true,
 			func(c *config.Config) {
-				c.LineageFile = "l.jsonl"
+				c.LineageFile = linFile
 				c.LineageLedgerFile = "led.jsonl"
 				c.LineageLedgerKeyFile = "led.key"
 			}, "", false},
