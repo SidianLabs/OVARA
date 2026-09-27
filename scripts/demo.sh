@@ -52,6 +52,7 @@ cat > "$TMP/config.json" <<EOF
   "events_file": "$TMP/var/events.jsonl",
   "gateway_key_file": "$TMP/var/gateway.key",
   "gateway_registry_file": "$TMP/var/gateway_registry.json",
+  "enrollment_file": "$TMP/var/enrollment.json",
   "identity_registry_file": "$TMP/var/identity_registry.json",
   "replay_file": "$TMP/var/replay.json",
   "lineage_file": "$TMP/var/lineage.jsonl",
