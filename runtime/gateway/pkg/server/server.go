@@ -588,7 +588,7 @@ func Run(configPath string) error {
 		log.Printf("WARNING: receipt_signing_key not configured; using a random per-process key. Set receipt_signing_key for cross-restart receipt verification.")
 	}
 	h.SetReceiptSigner(receipt.NewSigner([]byte(signingKey)))
-	log.Printf("receipt signer configured (sig_v1, hmac-sha256)")
+	log.Printf("receipt signer configured (sig_v2, hmac-sha256)")
 	// P2.3.5 asymmetric receipt signatures: the gateway's registered
 	// Ed25519 key signs every receipt. gwTrust.record is the admitted,
 	// durably-registered (gateway_id, key_id) — key registration
