@@ -87,6 +87,25 @@ authority verification, and Ed25519-signed receipts.
   WebCrypto call; Python `verify_capability_lease`/`verify_agent_identity`
   require a trusted public key parameter instead of self-asserted fields.
 
+### Fixed
+
+- **Sealed identity registry restart equivocation**: `mutate()` never
+  propagated the clone's `fileSeq`/`fileHash`, so every sealed persist
+  rewrote seq=1 — the tip ledger double-committed and the next open
+  refused to boot (equivocation). Regression test added.
+- **`ovara run` never exited on SIGINT/SIGTERM**: the proxy's
+  `ListenAndServe` ignored the gateway subsystem's signal handler;
+  the process (and both ports) survived Ctrl+C. The command now shuts
+  the proxy down on signal.
+- **Docs/examples quickstart breakage**: `examples/sample_config.json`
+  lacked `listen_addr` and pointed at a nonexistent policy path (refused
+  to boot); `start_gateway.sh` defaulted to the deny-all shipped config
+  so every demo script failed; `demo_safe_shell.sh` claimed shell
+  commands escalate (demo policy allows them on `local`);
+  `full_stack_demo.sh` printed nine "running" services it never started;
+  `Makefile` test/build loops swallowed mid-loop failures (exit 0) and
+  `npx tsc` could fetch the wrong package.
+
 ### Documentation
 
 - Corrected claims across `docs/` where docs described unimplemented security

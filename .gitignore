@@ -8,7 +8,9 @@
 *.log
 var/log/*.jsonl
 runtime/gateway/var/data/*.jsonl
+runtime/gateway/var/data/*.json
 runtime/gateway/var/log/
+proxy/ovara
 .idea/
 .vscode/
 .DS_Store

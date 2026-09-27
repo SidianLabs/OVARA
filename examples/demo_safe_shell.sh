@@ -1,7 +1,9 @@
 #!/bin/bash
 # demo_safe_shell.sh - Shell command flow demonstration
-# NOTE: By default policy, ALL shell commands escalate to approval (require_approval=true).
-# The approval workflow allows a human to review and approve or deny the escalated action.
+# Under examples/sample_policy_local.json (the demo config): shell commands
+# in the `local` environment are ALLOWED. Use environment=dev to see the
+# escalate path, production to see deny. See demo_approval_flow.sh for the
+# full approval workflow.
 
 set -e
 
@@ -12,15 +14,15 @@ echo "=== Demo: Shell Command Flow ==="
 echo "Gateway: $GATEWAY"
 echo "Agent: $AGENT_ID"
 echo ""
-echo "NOTE: By default policy, ALL shell commands escalate to approval."
-echo "This demonstrates the trust-based escalation path."
+echo "NOTE: under the demo policy, local shell commands are allowed."
+echo "Try environment=dev (escalate) or production (deny) for other outcomes."
 echo ""
 
 echo "--- Step 1: Health check ---"
 curl -s "$GATEWAY/health" | jq .
 echo ""
 
-echo "--- Step 2: Shell check (ls -la) - Escalates by default ---"
+echo "--- Step 2: Shell check (ls -la, env=local) - allowed by demo policy ---"
 curl -s -X POST "$GATEWAY/v1/runtime/check" \
   -H "Content-Type: application/json" \
   -d "{
@@ -36,7 +38,7 @@ curl -s -X POST "$GATEWAY/v1/runtime/check" \
   }" | jq .
 echo ""
 
-echo "--- Step 3: Another shell command (pwd) - Also escalates ---"
+echo "--- Step 3: Another shell command (pwd, env=local) - also allowed ---"
 curl -s -X POST "$GATEWAY/v1/runtime/check" \
   -H "Content-Type: application/json" \
   -d "{
@@ -61,5 +63,5 @@ curl -s "$GATEWAY/v1/trust/context?agent_id=$AGENT_ID" | jq .
 echo ""
 
 echo "=== Shell demo complete ==="
-echo "All shell commands escalated (required_approval=true)."
-echo "Use demo_approval_flow.sh to create and approve an escalation."
+echo "Local shell commands were allowed under the demo policy."
+echo "Use demo_approval_flow.sh (environment=dev) to see escalate → approve → resume."

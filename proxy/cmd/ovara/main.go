@@ -4,12 +4,14 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -20,9 +22,11 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"ovara.proxy/internal/ca"
@@ -127,7 +131,7 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	proxyToken := randHex(32)
 
 	gwConfig := map[string]any{
-		"server_port":         gatewayPort,
+		"server_port": gatewayPort,
 		// Loopback-only: the approval/decision API must never be reachable
 		// from a bounded agent, or the agent could approve its own
 		// escalations. `ovara run` keeps gateway+proxy on the same host.
@@ -146,17 +150,17 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		// deployment must never run memory-mode authority stores — a
 		// restart would otherwise silently lose identity, replay
 		// protection, and every pending approval.
-		"gateway_key_file":        "var/gateway.key",
-		"gateway_registry_file":   "var/data/gateway_registry.jsonl",
-		"identity_registry_file":  "var/data/identity_registry.json",
-		"replay_file":             "var/data/replay.jsonl",
-		"continuations_file":      "var/data/continuations.jsonl",
-		"approvals_file":          "var/data/approvals.json",
-		"execution_file":          "var/data/executions.jsonl",
-		"receipts_file":           "var/data/receipts.json",
-		"events_file":             "var/data/events.jsonl",
-		"capabilities_file":       "var/data/capabilities.json",
-		"enrollment_file":         "var/data/enrollment.json",
+		"gateway_key_file":         "var/gateway.key",
+		"gateway_registry_file":    "var/data/gateway_registry.jsonl",
+		"identity_registry_file":   "var/data/identity_registry.json",
+		"replay_file":              "var/data/replay.jsonl",
+		"continuations_file":       "var/data/continuations.jsonl",
+		"approvals_file":           "var/data/approvals.json",
+		"execution_file":           "var/data/executions.jsonl",
+		"receipts_file":            "var/data/receipts.json",
+		"events_file":              "var/data/events.jsonl",
+		"capabilities_file":        "var/data/capabilities.json",
+		"enrollment_file":          "var/data/enrollment.json",
 		"journal_signing_required": true,
 	}
 
@@ -343,7 +347,20 @@ func cmdRun(args []string) error {
 	log.Printf("ovara executor proxy on %s (env=%s fail_open=%v)", cfg.ListenAddr, cfg.Environment, cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
-	return http.ListenAndServe(cfg.ListenAddr, srv)
+	httpSrv := &http.Server{Addr: cfg.ListenAddr, Handler: srv}
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		httpSrv.Shutdown(ctx)
+	}()
+	err = httpSrv.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 // setupBoundary runs the embedded egress-boundary script so the agent

@@ -15,9 +15,12 @@ set -e
 cd "$(dirname "$0")/.." || { echo "Error: Cannot find repo root"; exit 1; }
 
 GATEWAY_DIR="runtime/gateway"
-# OVARA_CONFIG is resolved relative to the gateway working directory;
-# runtime/gateway/etc/config.json is the bundled default.
-export OVARA_CONFIG="${OVARA_CONFIG:-etc/config.json}"
+# OVARA_CONFIG is resolved relative to the gateway working directory.
+# The default is the demo config: open auth on loopback + the local
+# three-outcome policy (allow/escalate/deny). etc/config.json is the
+# fail-closed production-shaped default — every request denied until
+# operator_tokens/agent_tokens are configured.
+export OVARA_CONFIG="${OVARA_CONFIG:-../../examples/sample_config.json}"
 export OVARA_ENVIRONMENT="${OVARA_ENVIRONMENT:-local}"
 
 echo "=== Starting OVARA Runtime Gateway ==="
