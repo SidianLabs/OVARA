@@ -116,15 +116,15 @@ type fileState struct {
 // trust domain: one file, one writer. Multi-gateway consistency is a
 // documented non-goal for P2.2.
 type Registry struct {
-	path      string
-	signer    *record.Signer      // non-nil → sealed-file mode (P2.4)
-	resolve   record.ResolveFunc
-	fileSeq   uint64
-	fileHash  string
-	tipsSink  func(seq uint64, hash string) error
-	mu        sync.RWMutex
-	ids       map[string]*Identity
-	cred map[string]*Credential // by fingerprint
+	path     string
+	signer   *record.Signer // non-nil → sealed-file mode (P2.4)
+	resolve  record.ResolveFunc
+	fileSeq  uint64
+	fileHash string
+	tipsSink func(seq uint64, hash string) error
+	mu       sync.RWMutex
+	ids      map[string]*Identity
+	cred     map[string]*Credential // by fingerprint
 }
 
 func NewInMemory() *Registry {
@@ -279,6 +279,10 @@ func (r *Registry) mutate(fn func(*Registry) error) error {
 		return err
 	}
 	r.ids, r.cred = c.ids, c.cred
+	// persist() advanced the clone's seal position — commit it too, or the
+	// next mutation re-seals at the same file_seq and reopening reports
+	// equivocation.
+	r.fileSeq, r.fileHash = c.fileSeq, c.fileHash
 	return nil
 }
 

@@ -67,6 +67,9 @@ func Run(configPath string) error {
 	if err := cfg.ValidateStartup(); err != nil {
 		return err
 	}
+	if cfg.ServerPort == "" {
+		return fmt.Errorf("refusing to start: server_port is empty — set server_port in the config (e.g. \"8080\")")
+	}
 
 	env := os.Getenv("OVARA_ENVIRONMENT")
 	if env == "" {
@@ -848,11 +851,23 @@ func Run(configPath string) error {
 	}
 	orchestrator.SetIdentityChecker(identityActive)
 	continuationHandler.SetIdentityChecker(identityActive)
+	// A gateway with auth on but no usable credential serves nothing —
+	// every request 401s. Refuse to boot instead of looking healthy.
+	if cfg.AuthEnabled {
+		live := 0
+		_, creds := idReg.List()
+		for _, c := range creds {
+			if c.State == idregistry.CredActive || c.State == idregistry.CredRotating {
+				live++
+			}
+		}
+		if live == 0 {
+			return fmt.Errorf("refusing to start: auth_enabled=true but no active credentials exist — set operator_tokens and/or agent_tokens in the config (see etc/config.example.json)")
+		}
+	}
 	switch {
-	case cfg.AuthEnabled && len(cfg.OperatorTokens) > 0:
+	case cfg.AuthEnabled:
 		log.Printf("AUTH: auth_enabled=true with %d operator token(s) + %d agent token(s) configured", len(cfg.OperatorTokens), len(cfg.AgentTokens))
-	case cfg.AuthEnabled && len(cfg.OperatorTokens) == 0:
-		log.Printf("AUTH WARNING: auth_enabled=true but operator_tokens is empty — gateway will DENY ALL requests until operator_tokens is configured (fail-closed).")
 	default:
 		log.Printf("AUTH: auth_enabled=false — gateway open (set auth_enabled=true and configure operator_tokens to lock down)")
 	}

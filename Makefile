@@ -1,4 +1,4 @@
-.PHONY: all build test clean docker-build docker-push lint vet check
+.PHONY: all build test clean docker-build docker-push lint vet check demo
 
 GO_MODULES := runtime/gateway identity trust proxy services/approval services/receipt-storage services/alerting services/observability tools/cli tools/migration tools/benchmarks telemetry/collector
 TS_MODULES := cloud/control-plane enterprise/sso enterprise/compliance sdk/typescript integrations/mcp integrations/langchain integrations/crewai integrations/openai-agents integrations/browser-automation integrations/openai policy/compiler apps/admin-dashboard packages/shared-types services/analytics
@@ -40,6 +40,12 @@ bench:
 
 bench-compare:
 	@echo "=== benchmark comparison ===" && cd runtime/gateway && go test -bench=. -benchtime=3s -count=10 -benchmem ./internal/handlers/ 2>/dev/null | grep "^Benchmark" | sort
+
+# ── Demo ─────────────────────────────────────────────
+# One-command tour: throwaway config → gateway boot → check → approval →
+# approved execution → signed receipt + lineage. Fresh temp state each run.
+demo:
+	@./scripts/demo.sh
 
 # ── Docker ───────────────────────────────────────────
 docker-build:
