@@ -39,7 +39,6 @@ func TestE2E_FullDecisionChain(t *testing.T) {
 	execStore := execution.NewInMemoryStore()
 
 	cfg := config.Default()
-	cfg.FailClosed = false
 
 	policyStore.AddRule(policy.Rule{
 		ActionType:  string(models.ActionTypeCIBuildTrigger),

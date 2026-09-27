@@ -50,6 +50,55 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// validateTrustConfig rejects inconsistent trust/authority wiring before
+// any state mutation (the approver admission writes to the registry
+// journal). durableSigning reports whether gateway trust is durable
+// (registry file + key file). Returns the decoded approver pin when
+// approver custody is configured, nil otherwise.
+func validateTrustConfig(cfg *config.Config, durableSigning bool) (ed25519.PublicKey, error) {
+	if cfg.JournalSigningRequired && !durableSigning {
+		return nil, fmt.Errorf("journal_signing_required=true but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
+	}
+	// approver_pubkey is the verification pin for EITHER custody mode — it
+	// alone does not select local. Local custody is the key file.
+	approverLocal := cfg.ApproverKeyFile != ""
+	approverRemote := cfg.ApproverSignerURL != "" || cfg.ApproverSignerToken != "" || cfg.ApproverSignerKeyID != ""
+	if approverLocal && approverRemote {
+		return nil, fmt.Errorf("approver custody is either local (approver_key_file) or remote (approver_signer_url), never both")
+	}
+	if cfg.ApproverPubKey != "" && !approverLocal && !approverRemote {
+		return nil, fmt.Errorf("approver_pubkey without a custody mode (approver_key_file or approver_signer_url)")
+	}
+	if approverRemote && cfg.ApproverPubKey == "" {
+		return nil, fmt.Errorf("approver_signer_url requires approver_pubkey (the verification pin)")
+	}
+	if approverLocal || approverRemote {
+		if approverLocal && (cfg.ApproverKeyFile == "" || cfg.ApproverPubKey == "") {
+			return nil, fmt.Errorf("approver_key_file and approver_pubkey must be set together")
+		}
+		if approverRemote && (cfg.ApproverSignerURL == "" || cfg.ApproverSignerToken == "" || cfg.ApproverSignerKeyID == "") {
+			return nil, fmt.Errorf("approver_signer_url, approver_signer_token and approver_signer_key_id must be set together")
+		}
+		if !durableSigning {
+			return nil, fmt.Errorf("approver root configured but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
+		}
+		pinPub, err := hex.DecodeString(cfg.ApproverPubKey)
+		if err != nil || len(pinPub) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("approver_pubkey must be a hex ed25519 public key")
+		}
+		return pinPub, nil
+	}
+	if cfg.LineageFile != "" || cfg.LineageLedgerFile != "" || cfg.LineageLedgerKeyFile != "" {
+		if cfg.LineageFile == "" || cfg.LineageLedgerFile == "" || cfg.LineageLedgerKeyFile == "" {
+			return nil, fmt.Errorf("lineage_file, lineage_ledger_file and lineage_ledger_key_file must be set together")
+		}
+		if !durableSigning {
+			return nil, fmt.Errorf("lineage emission requires durable gateway trust (set gateway_registry_file AND gateway_key_file)")
+		}
+	}
+	return nil, nil
+}
+
 // Run starts the gateway with the given config file and blocks until
 // shutdown. It is safe to call in a goroutine.
 func Run(configPath string) error {
@@ -137,8 +186,11 @@ func Run(configPath string) error {
 	// keep the unsigned legacy format (documented trust level).
 	// journal_signing_required=true refuses unsigned startup.
 	durableSigning := gwTrust != nil && cfg.GatewayRegistryFile != "" && cfg.GatewayKeyFile != ""
-	if cfg.JournalSigningRequired && !durableSigning {
-		return fmt.Errorf("journal_signing_required=true but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
+	// All trust-wiring validation precedes any state mutation (the approver
+	// admission below writes to the registry journal).
+	approverPin, err := validateTrustConfig(cfg, durableSigning)
+	if err != nil {
+		return err
 	}
 	var jsigner *record.Signer
 	var jresolve record.ResolveFunc
@@ -178,28 +230,12 @@ func Run(configPath string) error {
 	// approver trust root — a C2-A bootstrap input.
 	var approverBinding *record.Binding
 	var approverKeys continuation.ApproverKeyChecker
-	approverLocal := cfg.ApproverKeyFile != "" || cfg.ApproverPubKey != ""
+	// Same custody detection as validateTrustConfig: the pubkey pin is
+	// shared input, not the local selector.
+	approverLocal := cfg.ApproverKeyFile != ""
 	approverRemote := cfg.ApproverSignerURL != "" || cfg.ApproverSignerToken != "" || cfg.ApproverSignerKeyID != ""
-	if approverLocal && approverRemote {
-		return fmt.Errorf("approver custody is either local (approver_key_file) or remote (approver_signer_url), never both")
-	}
-	if approverRemote && cfg.ApproverPubKey == "" {
-		return fmt.Errorf("approver_signer_url requires approver_pubkey (the verification pin)")
-	}
 	if approverLocal || approverRemote {
-		if approverLocal && (cfg.ApproverKeyFile == "" || cfg.ApproverPubKey == "") {
-			return fmt.Errorf("approver_key_file and approver_pubkey must be set together")
-		}
-		if approverRemote && (cfg.ApproverSignerURL == "" || cfg.ApproverSignerToken == "" || cfg.ApproverSignerKeyID == "") {
-			return fmt.Errorf("approver_signer_url, approver_signer_token and approver_signer_key_id must be set together")
-		}
-		if !durableSigning {
-			return fmt.Errorf("approver root configured but gateway trust is not durable (set gateway_registry_file AND gateway_key_file)")
-		}
-		pinPub, err := hex.DecodeString(cfg.ApproverPubKey)
-		if err != nil || len(pinPub) != ed25519.PublicKeySize {
-			return fmt.Errorf("approver_pubkey must be a hex ed25519 public key")
-		}
+		pinPub := approverPin // decoded+validated by validateTrustConfig
 		if err := gwTrust.registry.SetApproverPin(pinPub); err != nil {
 			return fmt.Errorf("approver pin refused: %w", err)
 		}
@@ -275,12 +311,6 @@ func Run(configPath string) error {
 	var linEmitter *lineage.Emitter
 	lineageConfigured := cfg.LineageFile != "" || cfg.LineageLedgerFile != "" || cfg.LineageLedgerKeyFile != ""
 	if lineageConfigured {
-		if cfg.LineageFile == "" || cfg.LineageLedgerFile == "" || cfg.LineageLedgerKeyFile == "" {
-			return fmt.Errorf("lineage_file, lineage_ledger_file and lineage_ledger_key_file must be set together")
-		}
-		if !durableSigning {
-			return fmt.Errorf("lineage emission requires durable gateway trust (set gateway_registry_file AND gateway_key_file)")
-		}
 		ledPriv, err := gwidentity.LoadOrCreateKey(cfg.LineageLedgerKeyFile)
 		if err != nil {
 			return fmt.Errorf("lineage ledger key: %w", err)
@@ -591,7 +621,7 @@ func Run(configPath string) error {
 		log.Printf("WARNING: receipt_signing_key not configured; using a random per-process key. Set receipt_signing_key for cross-restart receipt verification.")
 	}
 	h.SetReceiptSigner(receipt.NewSigner([]byte(signingKey)))
-	log.Printf("receipt signer configured (sig_v1, hmac-sha256)")
+	log.Printf("receipt signer configured (sig_v2, hmac-sha256)")
 	// P2.3.5 asymmetric receipt signatures: the gateway's registered
 	// Ed25519 key signs every receipt. gwTrust.record is the admitted,
 	// durably-registered (gateway_id, key_id) — key registration

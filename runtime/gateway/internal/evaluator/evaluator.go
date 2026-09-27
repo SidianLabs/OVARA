@@ -3,6 +3,7 @@ package evaluator
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -820,17 +821,46 @@ func generateID() string {
 	return fmt.Sprintf("dec_%s", uuid.New().String()[:16])
 }
 
+// actionDigest binds the receipt stub to the exact evaluated request.
+// The preimage is lp-framed (u32be length + bytes, same convention as
+// identity/canon.go) under its own domain, so field boundaries are
+// unambiguous: adjacent values that concatenate to the same bytes
+// ("ab"+"c" vs "a"+"bc"), a present-but-empty field vs an absent one,
+// cannot collide. The digest is the full sha256 — the earlier [:16]
+// truncation left only 64 bits of binding.
 func actionDigest(req *models.ActionRequest) string {
-	h := sha256.New()
-	h.Write([]byte(string(req.ActionType)))
-	h.Write([]byte(req.Resource))
+	agent, lease := "", ""
 	if req.AgentIdentity != nil {
-		h.Write([]byte(req.AgentIdentity.SubjectID))
+		agent = req.AgentIdentity.SubjectID
 	}
 	if req.CapabilityLease != nil {
-		h.Write([]byte(req.CapabilityLease.LeaseID))
+		lease = req.CapabilityLease.LeaseID
 	}
-	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
+	h := sha256.New()
+	h.Write(digestFrame([]byte("OVARA-ACTION-DIGEST-V1")))
+	h.Write(digestFrame([]byte(string(req.ActionType))))
+	h.Write(digestFrame([]byte(req.Resource)))
+	h.Write(digestField(req.AgentIdentity != nil, agent))
+	h.Write(digestField(req.CapabilityLease != nil, lease))
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// digestField frames a present/absent field: absent → a single 0x00;
+// present → 0x01 + u32be(len) + bytes, so a present-but-empty field
+// never collides with an absent one.
+func digestField(present bool, v string) []byte {
+	if !present {
+		return []byte{0}
+	}
+	return append([]byte{1}, digestFrame([]byte(v))...)
+}
+
+func digestFrame(b []byte) []byte {
+	var lenb [4]byte
+	// #nosec G115 -- u32-bounded by design (same convention as the
+	// lineage lp frame); digest inputs are request fields, not blobs.
+	binary.BigEndian.PutUint32(lenb[:], uint32(len(b)))
+	return append(lenb[:], b...)
 }
 
 // trustLevelBelow returns true if actualLevel is below the named minimum.
