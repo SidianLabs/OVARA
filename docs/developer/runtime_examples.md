@@ -931,7 +931,7 @@ Policies are JSON documents with a version and a list of rules:
 }
 ```
 
-Each rule matches an `action_type` (e.g., `shell`, `git.pull`, `github.merge`, or `*`) and an `environment` (e.g., `local`, `dev`, `production`, or `*`). Rule outcomes are evaluated in order: deny first, then allow, then escalate. Default is allow if no rule matches.
+Each rule matches an `action_type` (e.g., `shell`, `git.pull`, `github.merge`, or `*`) and an `environment` (e.g., `local`, `dev`, `production`, or `*`). Rule outcomes are evaluated by precedence: deny first, then allow, then escalate. Default is escalate if no rule matches.
 
 ### Viewing Current Rules
 
@@ -981,9 +981,8 @@ Validation checks:
 - `action_type` and `environment` are required on every rule
 - A rule must have at least one of `allow`, `deny`, or `escalate` set to `true`
 - `allow` and `deny` cannot both be `true` on the same rule
-- Duplicate rules for the same action_type:environment pair are flagged
-- Mixed wildcard (`*`) and specific values for environment or action_type generate order-dependency warnings
-- Empty ruleset generates a warning (all actions will be allowed by default)
+- Mixed wildcard (`*`) and specific values for environment or action_type generate precedence warnings
+- Empty ruleset generates a warning (every action escalates by default)
 
 Validation errors block the candidate from being loaded. Warnings are informational.
 
@@ -1333,13 +1332,13 @@ If a promotion causes issues:
 
 ### Policy Design Notes
 
-- Rules are matched by `action_type:environment` key. The first matching rule wins.
-- `deny` blocks the action immediately (no other rules are evaluated).
+- Rules are matched by `action_type`/`environment`, with precedence deny → allow → escalate, not by rule order.
+- `deny` blocks the action immediately (a matching deny wins over allow/escalate).
 - `escalate` triggers the approval workflow.
-- `allow` permits the action (continues to next rule if no explicit allow).
+- `allow` permits the action (unless a matching deny or escalate exists).
 - `*` wildcard matches any action_type or environment.
-- Default allow: if no rule matches, the action is allowed.
-- Rule order in the JSON does not affect matching — all rules for the matching action_type are evaluated together.
+- Default escalate: if no rule matches, the action is escalated for human approval.
+- Rule order in the JSON does not affect matching — precedence does.
 - The policy file on disk is the source of truth for the live policy. Hot reload (`PolicyRefreshInterval > 0`) watches the file and reloads automatically.
 
 ## Capability Lease Management

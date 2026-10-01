@@ -170,7 +170,8 @@ func (s *InMemoryStore) Get(eventID string) (*Event, bool) {
 	defer s.mu.RUnlock()
 	for i := len(s.events) - 1; i >= 0; i-- {
 		if s.events[i].EventID == eventID {
-			return s.events[i], true
+			cp := *s.events[i]
+			return &cp, true
 		}
 	}
 	return nil, false

@@ -1,39 +1,56 @@
-# eBPF Hook Specifications for Ovara Runtime Interception
+# eBPF Hook Specifications for OVARA Runtime Interception
+#
+# IMPORTANT — audit-only: all hooks below are tracepoints/kprobes attached at
+# sys_enter or function entry. They observe events and push them to the
+# events ring buffer; they CANNOT block or deny the underlying syscall
+# (tracepoint return values are ignored by the kernel). Enforcement of
+# decisions happens in the gateway, executor, and proxy layers — these hooks
+# are a monitoring/forensics feed only.
+#
+# Any real blocking requires LSM hooks (bpf-lsm / security_* programs) or
+# seccomp, neither of which is implemented here. Do not set action to
+# anything other than "audit" for tracepoint/kprobe hooks.
 
-# File system hooks
+metadata:
+  purpose: runtime audit trail
+  enforcement: none  # advisory monitoring only — see note above
+  output: events ring buffer (1 MiB) consumed by userspace collector
+
+# Process execution events
 - hook: tracepoint/syscalls/sys_enter_execve
-  description: Intercept process execution calls
-  action: block_or_allow
+  description: Record process execution calls
+  action: audit
   policy_ref: shell.execute
 
+# File system events
 - hook: tracepoint/syscalls/sys_enter_openat
-  description: Intercept file open calls
-  action: audit_only
+  description: Record file open calls
+  action: audit
   policy_ref: file.access
 
 - hook: tracepoint/syscalls/sys_enter_unlink
-  description: Intercept file deletion
-  action: block_or_allow
+  description: Record file deletion
+  action: audit
   policy_ref: file.delete
 
-# Network hooks
+# Network events
 - hook: kprobe/tcp_connect
-  description: Intercept outbound TCP connections
-  action: audit_only
+  description: Record outbound TCP connections
+  action: audit
   policy_ref: network.outbound
 
 - hook: kprobe/tcp_v4_connect
-  description: Intercept IPv4 connections
-  action: block_or_allow
+  description: Record IPv4 connections
+  action: audit
   policy_ref: network.connect
 
-# Process hooks
+# Process lifecycle events
 - hook: tracepoint/sched/sched_process_fork
   description: Detect new process creation
-  action: audit_only
+  action: audit
   policy_ref: process.fork
 
 - hook: kprobe/do_exit
   description: Detect process termination
-  action: audit_only
+  action: audit
   policy_ref: process.exit

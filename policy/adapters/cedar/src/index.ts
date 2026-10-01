@@ -124,23 +124,37 @@ export function parseCedar(source: string): CedarPolicy {
         continue;
       }
 
+      // `!=` cannot be translated into an equality-based Ovara rule;
+      // reject it rather than silently treating it as `==`.
       const principalMatch = trimmed.match(/^principal\s*(==|!=)\s*([\w:]+?)(?:::"([^"]*)"|\s*==\s*"([^"]*)")?$/);
       if (principalMatch && trimmed.startsWith('principal')) {
-        const [, , type, id1, id2] = principalMatch;
+        const [, op, type, id1, id2] = principalMatch;
+        if (op === '!=') {
+          errors.push(`unsupported operator '!=' in clause: ${trimmed}`);
+          continue;
+        }
         stmt.principal = { type, id: id1 ?? id2 ?? '*' };
         continue;
       }
 
       const actionMatch = trimmed.match(/^action\s*(==|!=)\s*([\w]+?)(?:::"([^"]*)"|\s*==\s*"([^"]*)")?$/);
       if (actionMatch && trimmed.startsWith('action')) {
-        const [, , type, id1, id2] = actionMatch;
+        const [, op, type, id1, id2] = actionMatch;
+        if (op === '!=') {
+          errors.push(`unsupported operator '!=' in clause: ${trimmed}`);
+          continue;
+        }
         stmt.action = { type, id: id1 ?? id2 ?? '*' };
         continue;
       }
 
       const resourceMatch = trimmed.match(/^resource\s*(==|!=)\s*([\w]+?)(?:::"([^"]*)"|\s*==\s*"([^"]*)")?$/);
       if (resourceMatch && trimmed.startsWith('resource')) {
-        const [, , type, id1, id2] = resourceMatch;
+        const [, op, type, id1, id2] = resourceMatch;
+        if (op === '!=') {
+          errors.push(`unsupported operator '!=' in clause: ${trimmed}`);
+          continue;
+        }
         stmt.resource = { type, id: id1 ?? id2 ?? '*' };
         continue;
       }
@@ -265,7 +279,12 @@ export function translateCedar(cedar: string): OvaraPolicy {
   }
 
   const hasPermit = statements.some(s => s.effect === 'permit');
-  const rules = statements.map(mapStatement);
+  // Emit forbid (deny) rules before permit (allow) rules to preserve
+  // fail-closed semantics — in Cedar, forbid always overrides permit.
+  const rules = [
+    ...statements.filter(s => s.effect === 'forbid').map(mapStatement),
+    ...statements.filter(s => s.effect === 'permit').map(mapStatement),
+  ];
 
   if (!hasPermit) {
     rules.push({

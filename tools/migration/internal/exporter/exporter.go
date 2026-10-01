@@ -5,15 +5,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 )
 
 type ExportResult struct {
-	FilesWritten   int `json:"files_written"`
+	FilesWritten    int `json:"files_written"`
 	RecordsExported int `json:"records_exported"`
-	Errors         int `json:"errors"`
+	Errors          int `json:"errors"`
 }
 
 type APIResponse struct {
@@ -34,7 +37,7 @@ func New(sourceURL, targetDir, apiKey string, dryRun bool) *Exporter {
 		targetDir: targetDir,
 		apiKey:    apiKey,
 		dryRun:    dryRun,
-		client:    &http.Client{},
+		client:    &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -97,8 +100,16 @@ func (exp *Exporter) Run() (*ExportResult, error) {
 	return result, nil
 }
 
+// validCollectionName restricts collection names (which come from the remote
+// server) to a safe charset so they can be used in URL paths and output
+// filenames without path traversal.
+var validCollectionName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 func (exp *Exporter) exportCollection(collection string) (int, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/collections/%s/documents", exp.sourceURL, collection)
+	if !validCollectionName.MatchString(collection) {
+		return 0, fmt.Errorf("unsafe collection name %q: skipping (must match [a-zA-Z0-9_-]+)", collection)
+	}
+	endpoint := fmt.Sprintf("%s/api/v1/collections/%s/documents", exp.sourceURL, url.PathEscape(collection))
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
 		return 0, fmt.Errorf("creating request: %w", err)

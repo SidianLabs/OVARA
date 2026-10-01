@@ -16,6 +16,9 @@ Quick reference for what the gateway supports and how it behaves.
 | `git.pull` | GitExecutor | `git:<repo>[:branch]` | `git:/home/user/repo:feature` |
 | `git.fetch` | GitExecutor | `git:<remote>[:<refspec>]` | `git:origin` or `git:origin:refs/heads/main` |
 | `git.checkout` | GitExecutor | `git:<repo>:<branch>` | `git:/home/user/repo:main` or `git:/home/user/repo:feature-branch` |
+| `shell.sandboxed` | SandboxExecutor (docker) | `shell:<command>` | `shell:ls -la` — only registered when `OVARA_SANDBOX_ENABLED=true` |
+| `github.push` / `github.pr` / `github.merge` / `github.delete_branch` | GitHubExecutor | `github:<owner>/<repo>...` | only registered when `github_token` is configured |
+| `ci.trigger` | CIExecutor | `ci:<pipeline>` | only registered when `ci_token` or `ci_webhook_url` is configured |
 
 ### Key Differences: `shell` vs `exec`
 
@@ -189,15 +192,21 @@ These trigger escalation even in `dev` environment:
 
 ---
 
-## Unimplemented Action Types
+## Conditional / Unimplemented Action Types
 
-These are documented but not implemented in V1:
+These action types ARE implemented but only registered when the required
+configuration is present:
 
-- `github.*` — GitHub API executor
-- `ci.*` — CI system executor
-- `git.force_push` — force push executor
+- `github.*` — registered when `github_token` is configured
+- `ci.trigger` — registered when `ci_token` or `ci_webhook_url` is configured
+- `shell.sandboxed` — registered when `OVARA_SANDBOX_ENABLED=true`
 
-Using these in policy is harmless (they never match a registered executor). Using them in a continuation results in `SKIP no executor`.
+Truly unimplemented:
+
+- `git.force_push` — recognized by the interceptor for policy classification,
+  but no executor is registered (force pushes are never executed)
+
+Using an action type whose executor is not registered results in `SKIP no executor`.
 
 ---
 

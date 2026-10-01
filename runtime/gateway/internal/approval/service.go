@@ -37,16 +37,11 @@ func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
 }
 
 func (s *Service) Approve(approvalID, resolvedBy string) (*ApprovalRequest, error) {
-	approval, err := s.store.Get(approvalID)
+	// Atomic check+mutate under the store lock: a concurrent deny cannot
+	// interleave between the pending check and the mutation.
+	approval, err := s.store.Resolve(approvalID, StatusApproved, resolvedBy, "")
 	if err != nil {
 		return nil, err
-	}
-	if !approval.IsPending() {
-		return nil, fmt.Errorf("approval is not pending: %s", approval.Status)
-	}
-	approval.Approve(resolvedBy)
-	if err := s.store.Update(approval); err != nil {
-		return nil, fmt.Errorf("updating approval: %w", err)
 	}
 
 	log.Printf("APPROVAL approved approval_id=%s resolved_by=%s action_type=%s decision_id=%s",
@@ -56,16 +51,9 @@ func (s *Service) Approve(approvalID, resolvedBy string) (*ApprovalRequest, erro
 }
 
 func (s *Service) Deny(approvalID, resolvedBy, reason string) (*ApprovalRequest, error) {
-	approval, err := s.store.Get(approvalID)
+	approval, err := s.store.Resolve(approvalID, StatusDenied, resolvedBy, reason)
 	if err != nil {
 		return nil, err
-	}
-	if !approval.IsPending() {
-		return nil, fmt.Errorf("approval is not pending: %s", approval.Status)
-	}
-	approval.Deny(resolvedBy, reason)
-	if err := s.store.Update(approval); err != nil {
-		return nil, fmt.Errorf("updating approval: %w", err)
 	}
 
 	log.Printf("APPROVAL denied approval_id=%s resolved_by=%s reason=%q action_type=%s decision_id=%s",
@@ -94,13 +82,12 @@ func (s *Service) ListByDecision(decisionID string) []*ApprovalRequest {
 	return s.store.ListByDecision(decisionID)
 }
 
+// ResumeAction consumes the approval's single-use resume token atomically.
+// A second resume for the same approval fails, preventing replay.
 func (s *Service) ResumeAction(approvalID string) (*ResumeResult, error) {
-	approval, err := s.store.Get(approvalID)
+	approval, err := s.store.ConsumeResume(approvalID)
 	if err != nil {
 		return nil, err
-	}
-	if approval.Status != StatusApproved {
-		return nil, fmt.Errorf("approval not approved: %s", approval.Status)
 	}
 
 	result := &ResumeResult{

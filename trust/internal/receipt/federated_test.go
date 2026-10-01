@@ -63,10 +63,11 @@ func TestFederatedIdentity_DigestDeterministic(t *testing.T) {
 
 	d1 := fid.Digest()
 	d2 := fid.Digest()
-	if d1 != d2 {
+	if string(d1) != string(d2) {
 		t.Error("Digest should be deterministic")
 	}
-	if d1 != "sha256:abc|test.com|1735689600|1735776000" {
+	expected := `{"identity_digest":"sha256:abc","domain":"test.com","issued_at":1735689600,"expires_at":1735776000}`
+	if string(d1) != expected {
 		t.Errorf("unexpected digest: %s", d1)
 	}
 }

@@ -9,16 +9,17 @@ import (
 )
 
 type CapabilityLease struct {
-	LeaseID         string    `json:"lease_id"`
-	Issuer          string    `json:"issuer"`
-	Subject         string    `json:"subject"`
-	AllowedActions  []string  `json:"allowed_actions"`
-	ResourceScope   string    `json:"resource_scope"`
-	Expiry          time.Time `json:"expiry"`
-	DelegationDepth int       `json:"delegation_depth"`
-	RevocationHandle string   `json:"revocation_handle,omitempty"`
-	IssuedAt        time.Time `json:"issued_at"`
-	Signature       []byte    `json:"signature,omitempty"`
+	LeaseID          string    `json:"lease_id"`
+	Issuer           string    `json:"issuer"`
+	Subject          string    `json:"subject"`
+	AllowedActions   []string  `json:"allowed_actions"`
+	ResourceScope    string    `json:"resource_scope"`
+	Expiry           time.Time `json:"expiry"`
+	DelegationDepth  int       `json:"delegation_depth"`
+	RevocationHandle string    `json:"revocation_handle,omitempty"`
+	Revoked          bool      `json:"revoked,omitempty"`
+	IssuedAt         time.Time `json:"issued_at"`
+	Signature        []byte    `json:"signature,omitempty"`
 }
 
 func IssueCapabilityLease(issuer *AgentIdentity, issuerKey ed25519.PrivateKey, subject string, allowedActions []string, resourceScope string, ttlMinutes int, delegationDepth int) (*CapabilityLease, error) {
@@ -56,26 +57,35 @@ func IssueCapabilityLease(issuer *AgentIdentity, issuerKey ed25519.PrivateKey, s
 		IssuedAt:        now,
 	}
 
-	payload := cl.digestPayload()
-	sig := ed25519.Sign(issuerKey, []byte(payload))
+	sig := ed25519.Sign(issuerKey, cl.digestPayload())
 	cl.Signature = sig
 	return cl, nil
 }
 
-func (c *CapabilityLease) digestPayload() string {
-	return fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
+// digestPayload returns the canonical byte representation of the fields
+// covered by the lease signature. The format MUST byte-match what the
+// gateway verifier builds in
+// runtime/gateway/internal/identity/validator.go (verifyLeaseSignature)
+// and what both SDKs use:
+//
+//	LeaseID|Issuer|Subject|[AllowedActions]|ResourceScope|ExpiryUnix|DelegationDepth|IssuedAtUnix
+//
+// where [AllowedActions] is Go's fmt %v rendering of a []string
+// ("[a b c]") and the timestamps are Unix seconds.
+func (c *CapabilityLease) digestPayload() []byte {
+	return []byte(fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
 		c.LeaseID, c.Issuer, c.Subject, c.AllowedActions,
 		c.ResourceScope, c.Expiry.Unix(), c.DelegationDepth, c.IssuedAt.Unix(),
-	)
+	))
 }
 
 func (c *CapabilityLease) Digest() string {
-	h := sha256.Sum256([]byte(c.digestPayload()))
+	h := sha256.Sum256(c.digestPayload())
 	return hex.EncodeToString(h[:])
 }
 
 func (c *CapabilityLease) IsExpired() bool {
-	return time.Now().UTC().After(c.Expiry)
+	return c.Revoked || time.Now().UTC().After(c.Expiry)
 }
 
 func (c *CapabilityLease) HasAction(action string) bool {
@@ -95,8 +105,7 @@ func (c *CapabilityLease) Verify(publicKey []byte) bool {
 	if len(c.Signature) == 0 || len(publicKey) != ed25519.PublicKeySize {
 		return false
 	}
-	payload := c.digestPayload()
-	return ed25519.Verify(publicKey, []byte(payload), c.Signature)
+	return ed25519.Verify(publicKey, c.digestPayload(), c.Signature)
 }
 
 func (c *CapabilityLease) CanDelegate() bool {

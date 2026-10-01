@@ -5,7 +5,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,15 +40,15 @@ func TestSelectAction_ShellEcho(t *testing.T) {
 	actionCounts := make(map[string]int)
 	for i := 0; i < 1000; i++ {
 		action := g.SelectAction(rng)
-		key := action.Action
+		key := action.ActionType + "|" + action.Resource
 		actionCounts[key]++
 	}
 
 	expectedActions := []string{
-		"shell:echo test",
-		"git.pull",
-		"git.push",
-		"exec:ls",
+		"shell|shell:echo test",
+		"git.pull|git:ovara-main",
+		"git.push|git:ovara-main:feature/benchmark",
+		"exec|exec:ls -la",
 	}
 	for _, expected := range expectedActions {
 		if actionCounts[expected] == 0 {
@@ -66,7 +65,7 @@ func TestSelectAction_ShellEcho_Distribution(t *testing.T) {
 	shellCount := 0
 	for i := 0; i < samples; i++ {
 		action := g.SelectAction(rng)
-		if strings.HasPrefix(action.Action, "shell:") {
+		if action.ActionType == "shell" {
 			shellCount++
 		}
 	}
@@ -80,11 +79,11 @@ func TestSelectAction_ShellEcho_Distribution(t *testing.T) {
 
 func TestActionRequest_JSONMarshal(t *testing.T) {
 	action := ActionRequest{
-		Action: "shell:echo hello",
-		Payload: map[string]interface{}{
-			"environment": "local",
-			"command":     "echo hello",
-		},
+		ActionType:  "shell",
+		Resource:    "shell:echo hello",
+		Environment: "local",
+		Nonce:       "test-nonce",
+		IssuedAt:    "2026-01-01T00:00:00Z",
 	}
 
 	data, err := json.Marshal(action)
@@ -96,8 +95,11 @@ func TestActionRequest_JSONMarshal(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if decoded["action"] != "shell:echo hello" {
-		t.Errorf("expected action=shell:echo hello, got %v", decoded["action"])
+	if decoded["action_type"] != "shell" {
+		t.Errorf("expected action_type=shell, got %v", decoded["action_type"])
+	}
+	if decoded["resource"] != "shell:echo hello" {
+		t.Errorf("expected resource=shell:echo hello, got %v", decoded["resource"])
 	}
 }
 
@@ -109,9 +111,8 @@ func TestSendRequest_Success(t *testing.T) {
 	defer server.Close()
 
 	g := NewLoadGenerator(server.URL, 1, time.Second, 0, 0)
-	rng := rand.New(rand.NewSource(1))
 
-	success := g.sendRequest(ActionRequest{Action: "shell:echo"}, rng)
+	success := g.sendRequest(ActionRequest{ActionType: "shell", Resource: "shell:echo"})
 	if !success {
 		t.Error("expected success=true for 200 response")
 	}
@@ -124,9 +125,8 @@ func TestSendRequest_Failure(t *testing.T) {
 	defer server.Close()
 
 	g := NewLoadGenerator(server.URL, 1, time.Second, 0, 0)
-	rng := rand.New(rand.NewSource(1))
 
-	success := g.sendRequest(ActionRequest{Action: "shell:echo"}, rng)
+	success := g.sendRequest(ActionRequest{ActionType: "shell", Resource: "shell:echo"})
 	if success {
 		t.Error("expected success=false for 500 response")
 	}
@@ -134,9 +134,8 @@ func TestSendRequest_Failure(t *testing.T) {
 
 func TestSendRequest_ClientError(t *testing.T) {
 	g := NewLoadGenerator("http://localhost:1", 1, time.Second, 0, 0)
-	rng := rand.New(rand.NewSource(1))
 
-	success := g.sendRequest(ActionRequest{Action: "shell:echo"}, rng)
+	success := g.sendRequest(ActionRequest{ActionType: "shell", Resource: "shell:echo"})
 	if success {
 		t.Error("expected success=false for connection error")
 	}

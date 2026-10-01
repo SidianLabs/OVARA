@@ -70,6 +70,12 @@ func (e *Evaluator) SetChainDetector(cd *trust.ChainDetector) {
 	e.chainDetector = cd
 }
 
+// SetValidator configures the identity validator used for lease and
+// identity checks, e.g. one backed by a trusted-issuer key registry.
+func (e *Evaluator) SetValidator(v *identity.Validator) {
+	e.validator = v
+}
+
 func (e *Evaluator) SetRevocationChecker(rc RevocationChecker) {
 	e.revocationChecker = rc
 }
@@ -228,6 +234,12 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 		}
 	}
 
+	// Lease validation only runs when a lease is PRESENT in the request.
+	// A nil lease is not an error: leases are optional for policy-level
+	// checks, and lease-less requests are decided on policy rules plus
+	// agent identity alone. However, a lease that is present but unsigned,
+	// tampered, expired, revoked, or out of scope always denies below — a
+	// caller cannot weaken a decision by attaching a garbage lease.
 	if decision == "" && req.CapabilityLease != nil {
 		if e.revocationChecker != nil && e.revocationChecker.IsRevoked(req.CapabilityLease.LeaseID) {
 			reasons = append(reasons, models.ReasonCapabilityRevoked)
@@ -447,8 +459,13 @@ type RuleOutcome struct {
 }
 
 func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
+	// A rule only applies when its resource pattern matches the request
+	// resource; empty patterns match everything (pre-resource rules keep
+	// their semantics).
+	res := func(r policy.Rule) bool { return policy.MatchResource(r.Resource, req.Resource) }
+
 	for _, r := range actionRules {
-		if r.Deny && (r.Environment == "*" || r.Environment == string(req.Environment)) {
+		if res(r) && r.Deny && (r.Environment == "*" || r.Environment == string(req.Environment)) {
 			if req.Environment == models.EnvironmentProduction {
 				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
 			}
@@ -456,7 +473,7 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 		}
 	}
 	for _, r := range envRules {
-		if r.Deny && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
+		if res(r) && r.Deny && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
 			if req.Environment == models.EnvironmentProduction {
 				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
 			}
@@ -465,28 +482,30 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 	}
 
 	for _, r := range actionRules {
-		if r.Allow && (r.Environment == "*" || r.Environment == string(req.Environment)) {
+		if res(r) && r.Allow && (r.Environment == "*" || r.Environment == string(req.Environment)) {
 			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow}
 		}
 	}
 	for _, r := range envRules {
-		if r.Allow && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
+		if res(r) && r.Allow && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
 			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow}
 		}
 	}
 
 	for _, r := range actionRules {
-		if r.Escalate && (r.Environment == "*" || r.Environment == string(req.Environment)) {
+		if res(r) && r.Escalate && (r.Environment == "*" || r.Environment == string(req.Environment)) {
 			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
 		}
 	}
 	for _, r := range envRules {
-		if r.Escalate && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
+		if res(r) && r.Escalate && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
 			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
 		}
 	}
 
-	return RuleOutcome{Allowed: true, Reason: models.ReasonAllowed}
+	// Default decision is escalate: requests that match no explicit rule
+	// require approval rather than being silently allowed.
+	return RuleOutcome{Escalate: true, Reason: models.ReasonEscalate}
 }
 
 func (e *Evaluator) evaluateRulesWithStore(store *policy.Store, req *models.ActionRequest) RuleOutcome {

@@ -41,6 +41,11 @@ export const gateways = pgTable("gateways", {
   region: varchar("region", { length: 50 }).notNull().default("us-east-1"),
   status: varchar("status", { length: 20 }).notNull().default("enrolling"),
   publicKey: text("public_key").notNull(),
+  // Push endpoint for policy distribution. Must be configured per gateway —
+  // the control plane never fabricates gateway hostnames. HTTPS required
+  // unless allowInsecure is explicitly set.
+  endpointUrl: text("endpoint_url"),
+  allowInsecure: boolean("allow_insecure").notNull().default(false),
   enrollmentToken: text("enrollment_token"),
   enrollmentExpiresAt: timestamp("enrollment_expires_at"),
   lastHeartbeat: timestamp("last_heartbeat"),
@@ -95,7 +100,7 @@ export const apiKeys = pgTable("api_keys", {
   organizationId: uuid("organization_id").references(() => organizations.id).notNull(),
   name: varchar("name", { length: 255 }).notNull(),
   keyHash: varchar("key_hash", { length: 255 }).notNull().unique(),
-  prefix: varchar("prefix", { length: 8 }).notNull(),
+  prefix: varchar("prefix", { length: 32 }).notNull(),
   scopes: jsonb("scopes").default([]),
   expiresAt: timestamp("expires_at"),
   lastUsedAt: timestamp("last_used_at"),

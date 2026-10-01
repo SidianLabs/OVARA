@@ -17,15 +17,19 @@ type GraphStore struct {
 }
 
 // NewGraphStore creates a file-backed store for a TrustGraph.
-// If the file exists, the graph is loaded from it on creation.
-func NewGraphStore(filePath string) (*GraphStore, *TrustGraph) {
+// If the file exists, the graph is loaded from it on creation. A
+// corrupted or checksum-mismatched file returns an error rather than
+// silently yielding an empty graph.
+func NewGraphStore(filePath string) (*GraphStore, *TrustGraph, error) {
 	g := NewTrustGraph()
 	gs := &GraphStore{
 		filePath: filePath,
 		graph:    g,
 	}
-	_ = gs.loadInto(g)
-	return gs, g
+	if err := gs.loadInto(g); err != nil {
+		return nil, nil, err
+	}
+	return gs, g, nil
 }
 
 // Graph returns the underlying TrustGraph for read/write operations.

@@ -152,10 +152,12 @@ func TestListPagination(t *testing.T) {
 	}
 }
 
+var testHMACKey = []byte("test-hmac-key")
+
 func TestVerify(t *testing.T) {
-	s := NewMemoryStore(1000)
+	s := NewMemoryStore(1000, testHMACKey)
 	r := newTestReceipt()
-	r.Signature = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	r.Signature = signReceipt(testHMACKey, r)
 	s.Archive(r)
 
 	result, err := s.Verify(r.ID)
@@ -170,8 +172,33 @@ func TestVerify(t *testing.T) {
 	}
 }
 
+func TestVerifyTamperedReceipt(t *testing.T) {
+	s := NewMemoryStore(1000, testHMACKey)
+	r := newTestReceipt()
+	r.Signature = signReceipt(testHMACKey, r)
+	r.Decision = "deny" // tamper after signing
+	s.Archive(r)
+
+	result, _ := s.Verify(r.ID)
+	if result.Valid {
+		t.Error("expected invalid signature for tampered receipt")
+	}
+}
+
+func TestVerifyWrongKey(t *testing.T) {
+	s := NewMemoryStore(1000, []byte("other-key"))
+	r := newTestReceipt()
+	r.Signature = signReceipt(testHMACKey, r)
+	s.Archive(r)
+
+	result, _ := s.Verify(r.ID)
+	if result.Valid {
+		t.Error("expected invalid signature for wrong key")
+	}
+}
+
 func TestVerifyInvalidSignature(t *testing.T) {
-	s := NewMemoryStore(1000)
+	s := NewMemoryStore(1000, testHMACKey)
 	r := newTestReceipt()
 	r.Signature = ""
 	s.Archive(r)
@@ -179,6 +206,20 @@ func TestVerifyInvalidSignature(t *testing.T) {
 	result, _ := s.Verify(r.ID)
 	if result.Valid {
 		t.Error("expected invalid signature")
+	}
+}
+
+func TestVerifyNoKeyConfigured(t *testing.T) {
+	s := NewMemoryStore(1000)
+	r := newTestReceipt()
+	s.Archive(r)
+
+	result, _ := s.Verify(r.ID)
+	if result.Valid {
+		t.Error("expected invalid result when no key is configured")
+	}
+	if len(result.Errors) == 0 {
+		t.Error("expected error noting verification is not configured")
 	}
 }
 

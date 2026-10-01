@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sort"
 	"time"
@@ -78,12 +77,11 @@ func (h *AdminHandler) handleReconcileContinuations(w http.ResponseWriter, r *ht
 		nonTerminal := h.continuationStore.ListNonTerminal()
 		for _, cnt := range nonTerminal {
 			if cnt.ShouldExpire(now) {
-				expired++
 				if dryRun {
+					expired++
 					candidates = append(candidates, cnt.ContinuationID)
-				} else {
-					cnt.MarkExpired()
-					h.continuationStore.Update(cnt)
+				} else if _, ok := h.continuationStore.ExpireIfDue(cnt.ContinuationID, now); ok {
+					expired++
 				}
 			}
 		}
@@ -104,7 +102,6 @@ func (h *AdminHandler) handleReconcileContinuations(w http.ResponseWriter, r *ht
 
 	if !dryRun && expired > 0 && h.eventStore != nil {
 		evt := events.NewEvent(events.EventTypeAdminReconcile)
-		evt.ContinuationID = fmt.Sprintf("%d", expired)
 		if h.gatewayID != "" {
 			evt.WithGatewayID(h.gatewayID)
 		}

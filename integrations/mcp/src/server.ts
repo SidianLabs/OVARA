@@ -1,7 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { createClient } from "@ovara/sdk";
+import { createClient, verifyAgentIdentity } from "@ovara/sdk";
 
 const OVARA_URL = process.env.OVARA_GATEWAY_URL || "http://localhost:8080";
 const OVARA_KEY = process.env.OVARA_API_KEY || "";
@@ -46,13 +46,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "verify_identity",
-      description: "Verify a machine identity",
+      description: "Verify a machine identity's ed25519 signature against a trusted public key",
       inputSchema: {
         type: "object",
         properties: {
-          identity: { type: "object", description: "Agent identity object" },
+          identity: { type: "object", description: "Agent identity object (with signature)" },
+          public_key: { type: "string", description: "Trusted ed25519 public key (hex) for the issuer" },
         },
-        required: ["identity"],
+        required: ["identity", "public_key"],
       },
     },
   ],
@@ -79,8 +80,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: JSON.stringify(receipts, null, 2) }] };
     }
     case "verify_identity": {
-      const { identity } = args as any;
-      const result = await client.verifyIdentity(identity);
+      const { identity, public_key } = args as any;
+      // Local signature verification against a caller-supplied trusted
+      // key — the gateway has no verify-identity endpoint.
+      // Normalize wire (snake_case) or SDK (camelCase) field names to
+      // the camelCase PortableIdentity the SDK expects.
+      const normalized = {
+        id: identity.id,
+        issuer: identity.issuer,
+        subjectId: identity.subjectId ?? identity.subject_id,
+        owner: identity.owner,
+        lifecycle: identity.lifecycle,
+        publicKey: identity.publicKey ?? identity.public_key ?? "",
+        signature: identity.signature,
+      };
+      const result = { valid: verifyAgentIdentity(normalized, public_key) };
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
     default:
@@ -94,4 +108,9 @@ async function main() {
   console.error("Ovara MCP server running");
 }
 
-main().catch(console.error);
+export { server };
+
+// Only start the stdio transport when run directly, not on import.
+if (process.argv[1] && /server\.(ts|js|mts)$/.test(process.argv[1])) {
+  main().catch(console.error);
+}

@@ -7,7 +7,7 @@ export interface GuardInput {
 }
 
 export interface GuardDecision {
-  decision: "allow" | "deny" | "pending";
+  decision: "allow" | "deny" | "escalate";
   reason?: string;
   trustScore?: number;
   receiptId?: string;

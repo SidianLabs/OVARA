@@ -125,7 +125,7 @@ func TestTrustGraph_Merge(t *testing.T) {
 	}
 }
 
-func TestTrustGraph_Merge_HigherTrustWins(t *testing.T) {
+func TestTrustGraph_Merge_LocalTrustWins(t *testing.T) {
 	tg1 := NewTrustGraph()
 	tg1.AddOrganization("a.com", "Org A", nil)
 	tg1.AddOrganization("b.com", "Org B", nil)
@@ -138,9 +138,10 @@ func TestTrustGraph_Merge_HigherTrustWins(t *testing.T) {
 
 	tg1.Merge(tg2)
 
+	// A merged graph must not be able to inflate a lower local trust level.
 	neighbors := tg1.GetNeighbors("a.com")
-	if neighbors[0].TrustLevel != 0.9 {
-		t.Errorf("trust level after merge = %v, want 0.9", neighbors[0].TrustLevel)
+	if neighbors[0].TrustLevel != 0.5 {
+		t.Errorf("trust level after merge = %v, want 0.5 (local wins)", neighbors[0].TrustLevel)
 	}
 }
 

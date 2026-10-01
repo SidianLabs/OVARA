@@ -12,6 +12,16 @@ export const ssoConfigSchema = z.object({
   scopes: z.array(z.string()).default(["openid", "email", "profile"]),
   redirectUri: z.string().url(),
   domainWhitelist: z.array(z.string()).optional(),
+}).superRefine((config, ctx) => {
+  // issuerUrl is required for OIDC providers: jwtVerify must never run with
+  // an undefined issuer or tokens from any issuer would be accepted.
+  if (config.provider !== "saml" && !config.issuerUrl) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["issuerUrl"],
+      message: "issuerUrl is required for OIDC providers",
+    });
+  }
 });
 
 export const samlConfigSchema = z.object({
@@ -21,6 +31,10 @@ export const samlConfigSchema = z.object({
   x509Cert: z.string().min(1),
   assertionConsumerUrl: z.string().url(),
   nameIdFormat: z.string().default("urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"),
+  // SAML assertion signature verification is not implemented (no XML-DSig
+  // library in dependencies). SAML login fails closed unless this flag is
+  // explicitly set to true — only acceptable for development/testing.
+  samlUnsafeNoVerify: z.boolean().optional(),
 });
 
 export type SSOConfig = z.infer<typeof ssoConfigSchema>;

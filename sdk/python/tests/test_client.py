@@ -64,7 +64,7 @@ class TestOvaraClientCheck:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.check(ActionRequest(action_type="shell", resource="shell:ls", environment="local"))
 
@@ -79,7 +79,7 @@ class TestOvaraClientCheck:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             await client.check(ActionRequest(action_type="exec", resource="exec:ls", environment="dev"))
 
@@ -98,7 +98,7 @@ class TestOvaraClientCheck:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             await client.check(ActionRequest(action_type="shell", resource="shell:echo test", environment="local"))
 
@@ -113,7 +113,7 @@ class TestOvaraClientCheck:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             await client.check(ActionRequest(action_type="shell", resource="shell:ls", environment="local"))
 
@@ -134,7 +134,7 @@ class TestOvaraClientCheck:
                     raise Exception("transient error")
                 return mock_resp
             mock_client.request = request_side_effect
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.check(ActionRequest(action_type="shell", resource="shell:ls", environment="local"))
 
@@ -146,7 +146,7 @@ class TestOvaraClientCheck:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(side_effect=Exception("permanent error"))
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             with pytest.raises(Exception, match="permanent error"):
                 await client.check(ActionRequest(action_type="shell", resource="shell:ls", environment="local"))
@@ -161,7 +161,7 @@ class TestOvaraClientCheck:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.check(ActionRequest(action_type="shell", resource="shell:ls", environment="local"))
             assert result == {}
@@ -174,7 +174,7 @@ class TestOvaraClientAllow:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.allow("shell", "shell:echo test", "local")
             assert result is True
@@ -185,7 +185,7 @@ class TestOvaraClientAllow:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.allow("shell", "shell:rm -rf /", "production")
             assert result is False
@@ -196,7 +196,7 @@ class TestOvaraClientAllow:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.allow("git.push", "git:origin/main", "staging")
             assert result is False
@@ -214,7 +214,7 @@ class TestOvaraClientBatchCheck:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             requests = [
                 ActionRequest(action_type="shell", resource="shell:ls", environment="local"),
@@ -232,7 +232,7 @@ class TestOvaraClientBatchCheck:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             results = await client.batch_check([])
             assert results == []
@@ -249,7 +249,7 @@ class TestOvaraClientStatus:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.status()
             assert result.gateway_id == "gw-abc123"
@@ -264,7 +264,7 @@ class TestOvaraClientHealth:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.health()
             assert result["healthy"] is True
@@ -274,14 +274,17 @@ class TestOvaraClientHealth:
 class TestOvaraClientListReceipts:
     @pytest.mark.asyncio
     async def test_list_receipts_returns_receipt_list(self, client, mock_httpx_response):
-        mock_resp = mock_httpx_response([
-            {"receipt_id": "rcpt-1", "decision_id": "dec-1", "action_type": "shell", "decision": "allow"},
-            {"receipt_id": "rcpt-2", "decision_id": "dec-2", "action_type": "exec", "decision": "deny"},
-        ])
+        mock_resp = mock_httpx_response({
+            "receipts": [
+                {"receipt_id": "rcpt-1", "decision_id": "dec-1", "action_type": "shell", "decision": "allow"},
+                {"receipt_id": "rcpt-2", "decision_id": "dec-2", "action_type": "exec", "decision": "deny"},
+            ],
+            "count": 2,
+        })
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             results = await client.list_receipts(limit=10)
             assert len(results) == 2
@@ -290,11 +293,11 @@ class TestOvaraClientListReceipts:
 
     @pytest.mark.asyncio
     async def test_list_receipts_empty_response(self, client, mock_httpx_response):
-        mock_resp = mock_httpx_response([])
+        mock_resp = mock_httpx_response({"receipts": [], "count": 0})
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             results = await client.list_receipts()
             assert results == []
@@ -307,7 +310,7 @@ class TestOvaraClientGetReceipt:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             await client.get_receipt("rcpt-abc")
 
@@ -323,7 +326,7 @@ class TestOvaraClientListApprovals:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             await client.list_approvals(limit=100, offset=50)
 
@@ -340,7 +343,7 @@ class TestOvaraClientListExecutions:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             await client.list_executions()
 
@@ -357,7 +360,7 @@ class TestOvaraClientListContinuations:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.list_continuations()
             assert result == []
@@ -370,7 +373,7 @@ class TestOvaraClientGetCapabilities:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.get_capabilities()
             assert result["capabilities"] == ["shell", "exec", "git.push"]
@@ -383,7 +386,7 @@ class TestOvaraClientGetMetrics:
         with patch("httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client_cls.return_value.__aenter__.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = await client.get_metrics()
             assert result["decisions"]["allow"] == 10

@@ -168,6 +168,28 @@ func (s *memoryStore) evict() {
 	}
 }
 
+// cloneAlert returns a deep copy of an alert so stored alerts and
+// returned copies do not share the ResolvedAt pointer with callers.
+func cloneAlert(a *models.Alert) *models.Alert {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+	if a.ResolvedAt != nil {
+		t := *a.ResolvedAt
+		cp.ResolvedAt = &t
+	}
+	return &cp
+}
+
+func cloneRule(r *models.AlertRule) *models.AlertRule {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	return &cp
+}
+
 func (s *memoryStore) CreateAlert(a *models.Alert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,7 +197,7 @@ func (s *memoryStore) CreateAlert(a *models.Alert) error {
 	if len(s.alerts) >= s.maxSize {
 		s.evict()
 	}
-	s.alerts[a.ID] = a
+	s.alerts[a.ID] = cloneAlert(a)
 	return s.appendJSONL("alert", a)
 }
 
@@ -187,7 +209,7 @@ func (s *memoryStore) GetAlert(id string) (*models.Alert, error) {
 	if !ok {
 		return nil, fmt.Errorf("alert %s not found", id)
 	}
-	return a, nil
+	return cloneAlert(a), nil
 }
 
 func (s *memoryStore) ListAlerts(filter models.AlertFilter) ([]*models.Alert, error) {
@@ -214,17 +236,25 @@ func (s *memoryStore) ListAlerts(filter models.AlertFilter) ([]*models.Alert, er
 		if filter.OrganizationID != "" && a.OrganizationID != filter.OrganizationID {
 			continue
 		}
-		results = append(results, a)
+		results = append(results, cloneAlert(a))
 	}
 
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Timestamp.After(results[j].Timestamp)
 	})
 
-	if filter.Offset > 0 && filter.Offset < len(results) {
+	if filter.Offset >= len(results) {
+		results = results[:0]
+	} else if filter.Offset > 0 {
 		results = results[filter.Offset:]
 	}
-	if filter.Limit > 0 && filter.Limit < len(results) {
+	if filter.Limit <= 0 {
+		filter.Limit = 100
+	}
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
+	if filter.Limit < len(results) {
 		results = results[:filter.Limit]
 	}
 
@@ -258,6 +288,9 @@ func (s *memoryStore) ResolveAlert(id string) error {
 	if !ok {
 		return fmt.Errorf("alert %s not found", id)
 	}
+	if a.State == models.AlertStateResolved {
+		return fmt.Errorf("alert %s is already resolved", id)
+	}
 	now := time.Now().UTC()
 	a.State = models.AlertStateResolved
 	a.ResolvedAt = &now
@@ -271,7 +304,7 @@ func (s *memoryStore) GetUnacknowledged() []*models.Alert {
 	var results []*models.Alert
 	for _, a := range s.alerts {
 		if a.State == models.AlertStateNew {
-			results = append(results, a)
+			results = append(results, cloneAlert(a))
 		}
 	}
 	return results
@@ -295,7 +328,7 @@ func (s *memoryStore) CreateRule(r *models.AlertRule) error {
 	if _, exists := s.rules[r.ID]; exists {
 		return fmt.Errorf("rule %s already exists", r.ID)
 	}
-	s.rules[r.ID] = r
+	s.rules[r.ID] = cloneRule(r)
 	return s.appendJSONL("rule", r)
 }
 
@@ -307,7 +340,7 @@ func (s *memoryStore) GetRule(id string) (*models.AlertRule, error) {
 	if !ok {
 		return nil, fmt.Errorf("rule %s not found", id)
 	}
-	return r, nil
+	return cloneRule(r), nil
 }
 
 func (s *memoryStore) ListRules() []*models.AlertRule {
@@ -316,7 +349,7 @@ func (s *memoryStore) ListRules() []*models.AlertRule {
 
 	var results []*models.AlertRule
 	for _, r := range s.rules {
-		results = append(results, r)
+		results = append(results, cloneRule(r))
 	}
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].ID < results[j].ID
@@ -334,7 +367,7 @@ func (s *memoryStore) UpdateRule(r *models.AlertRule) error {
 	if _, exists := s.rules[r.ID]; !exists {
 		return fmt.Errorf("rule %s not found", r.ID)
 	}
-	s.rules[r.ID] = r
+	s.rules[r.ID] = cloneRule(r)
 	return s.appendJSONL("rule", r)
 }
 

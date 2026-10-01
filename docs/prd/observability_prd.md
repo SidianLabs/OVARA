@@ -1,5 +1,10 @@
 # Observability PRD
 
+> **Status: planned — not yet implemented.** The OTLP/NATS/ClickHouse
+> pipeline described here is not wired into the runtime gateway today
+> (`internal/observe/` is never instantiated in `server.go`). See
+> `observability/README.md`.
+
 ## Problem
 
 Traditional logs do not model action lineage, dynamic delegation, or evolving

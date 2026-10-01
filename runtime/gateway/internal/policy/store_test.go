@@ -64,3 +64,31 @@ func TestPolicy_RuleTypes(t *testing.T) {
 		t.Error("expected escalate rule")
 	}
 }
+func TestMatchResource(t *testing.T) {
+	cases := []struct {
+		pattern, resource string
+		want              bool
+	}{
+		{"", "GET https://anything.example/x", true},
+		{"*https://api.github.com/*", "GET https://api.github.com/repos/o/r", true},
+		{"*https://api.github.com/*", "POST https://api.github.com/x", true},
+		{"*https://api.github.com/*", "GET https://evil.github.com.evil.com/x", false},
+		{"GET https://pypi.org/*", "GET https://pypi.org/simple/", true},
+		{"GET https://pypi.org/*", "POST https://pypi.org/simple/", false},
+		{"GET https://pypi.org/*", "GET https://pypi.org/simple/", true},
+		{"*webhook.site*", "POST https://webhook.site/abc", true},
+		{"*webhook.site*", "POST https://github.com/x", false},
+		{"exact", "exact", true},
+		{"exact", "notexact", false},
+		{"prefix*", "prefixsuffix", true},
+		{"*suffix", "prefixsuffix", true},
+		{"a*b*c", "abc", true},
+		{"a*b*c", "acb", false},
+		{"*github.com*", "GET https://api.github.com/repos", true},
+	}
+	for _, c := range cases {
+		if got := MatchResource(c.pattern, c.resource); got != c.want {
+			t.Errorf("MatchResource(%q, %q) = %v, want %v", c.pattern, c.resource, got, c.want)
+		}
+	}
+}

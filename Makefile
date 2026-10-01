@@ -1,7 +1,7 @@
 .PHONY: all build test clean docker-build docker-push lint vet check
 
-GO_MODULES := runtime/gateway identity trust services/approval services/receipt-storage services/alerting services/observability tools/cli telemetry/collector
-TS_MODULES := cloud/control-plane enterprise/sso enterprise/compliance sdk/typescript integrations/mcp integrations/langchain integrations/crewai integrations/openai-agents integrations/browser-automation integrations/openai policy/compiler apps/admin-dashboard packages/shared-types
+GO_MODULES := runtime/gateway identity trust proxy services/approval services/receipt-storage services/alerting services/observability tools/cli tools/migration tools/benchmarks telemetry/collector
+TS_MODULES := cloud/control-plane enterprise/sso enterprise/compliance sdk/typescript integrations/mcp integrations/langchain integrations/crewai integrations/openai-agents integrations/browser-automation integrations/openai policy/compiler apps/admin-dashboard packages/shared-types services/analytics
 
 all: vet test build
 

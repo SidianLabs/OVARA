@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { ZodError } from "zod";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
@@ -36,6 +37,12 @@ async function start() {
 
   app.setErrorHandler((error, _request, reply) => {
     const err = error as Error & { statusCode?: number };
+    if (err instanceof ZodError) {
+      return reply.status(400).send({
+        error: "Validation failed",
+        issues: err.issues,
+      });
+    }
     if (err.statusCode) {
       return reply.status(err.statusCode).send({
         error: err.message || "Internal server error",

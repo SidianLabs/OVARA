@@ -49,8 +49,8 @@ describe("Tenants API", () => {
     if (app) await app.close();
   });
 
-  it("creates a tenant", async () => {
-    if (!hasDB) return;
+  it("creates a tenant", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({
       method: "POST",
@@ -62,16 +62,16 @@ describe("Tenants API", () => {
     expect(body.name).toBe("acme-corp");
   });
 
-  it("lists tenants", async () => {
-    if (!hasDB) return;
+  it("lists tenants", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({ method: "GET", url: "/v1/tenants" });
     expect(res.statusCode).toBe(200);
     expect(Array.isArray(JSON.parse(res.payload))).toBe(true);
   });
 
-  it("returns 404 for missing tenant", async () => {
-    if (!hasDB) return;
+  it("returns 404 for missing tenant", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const a = await appPromise;
     const res = await a.inject({
       method: "GET",

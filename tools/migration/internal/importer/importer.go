@@ -10,12 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type ImportResult struct {
-	FilesProcessed int `json:"files_processed"`
+	FilesProcessed  int `json:"files_processed"`
 	RecordsImported int `json:"records_imported"`
-	Errors         int `json:"errors"`
+	Errors          int `json:"errors"`
 }
 
 type Importer struct {
@@ -32,7 +33,7 @@ func New(sourceDir, targetURL, apiKey string, dryRun bool) *Importer {
 		targetURL: strings.TrimRight(targetURL, "/"),
 		apiKey:    apiKey,
 		dryRun:    dryRun,
-		client:    &http.Client{},
+		client:    &http.Client{Timeout: 60 * time.Second},
 	}
 }
 

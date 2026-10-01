@@ -24,9 +24,10 @@ describe("BrowserInterceptor", () => {
 
   it("allows navigation for trusted URLs", async () => {
     const mockCheck = vi.fn().mockResolvedValue({
-      requestId: "req-1",
+      decision_id: "dec-1",
       decision: "allow",
-      evaluatedAt: new Date().toISOString(),
+      reason_codes: ["allowed"],
+      requires_approval: false,
     });
     (interceptor as any).client.check = mockCheck;
 
@@ -47,10 +48,10 @@ describe("BrowserInterceptor", () => {
 
   it("blocks navigation for denied URLs", async () => {
     const mockCheck = vi.fn().mockResolvedValue({
-      requestId: "req-2",
+      decision_id: "dec-2",
       decision: "deny",
-      reason: "Blocked domain",
-      evaluatedAt: new Date().toISOString(),
+      reason_codes: ["Blocked domain"],
+      requires_approval: false,
     });
     (interceptor as any).client.check = mockCheck;
 
@@ -65,23 +66,25 @@ describe("BrowserInterceptor", () => {
     expect(result.reason).toBe("Blocked domain");
   });
 
-  it("handles gateway unavailable errors", async () => {
+  it("fails closed on gateway errors when blockOnDeny is set", async () => {
     const mockCheck = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
     (interceptor as any).client.check = mockCheck;
 
-    await expect(
-      interceptor.evaluate({
-        target: "navigation",
-        url: "https://example.com",
-      })
-    ).rejects.toThrow("ECONNREFUSED");
+    const result = await interceptor.evaluate({
+      target: "navigation",
+      url: "https://example.com",
+    });
+    expect(result.allowed).toBe(false);
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain("gateway_error");
   });
 
   it("maps form submissions to correct action type", async () => {
     const mockCheck = vi.fn().mockResolvedValue({
-      requestId: "req-3",
+      decision_id: "dec-3",
       decision: "allow",
-      evaluatedAt: new Date().toISOString(),
+      reason_codes: ["allowed"],
+      requires_approval: false,
     });
     (interceptor as any).client.check = mockCheck;
 
@@ -98,9 +101,10 @@ describe("BrowserInterceptor", () => {
 
   it("maps file downloads to correct action type", async () => {
     const mockCheck = vi.fn().mockResolvedValue({
-      requestId: "req-4",
+      decision_id: "dec-4",
       decision: "allow",
-      evaluatedAt: new Date().toISOString(),
+      reason_codes: ["allowed"],
+      requires_approval: false,
     });
     (interceptor as any).client.check = mockCheck;
 

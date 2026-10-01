@@ -197,7 +197,11 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 	cleanup := map[string]any{"_cleanup": true, "event_ids": toRemove}
 	data, err := json.Marshal(cleanup)
 	if err == nil {
-		s.file.Write(append(data, '\n'))
+		// Tombstone must be durable: without Sync a crash can lose it and
+		// swept events resurrect on reload.
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
 	}
 
 	s.staleEvents = append(s.staleEvents, toRemove...)
@@ -331,9 +335,17 @@ func (s *FileBackedStore) List(limit int) []*Event {
 func (s *FileBackedStore) Get(eventID string) (*Event, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	staleSet := make(map[string]bool, len(s.staleEvents))
+	for _, id := range s.staleEvents {
+		staleSet[id] = true
+	}
 	for i := len(s.events) - 1; i >= 0; i-- {
 		if s.events[i].EventID == eventID {
-			return s.events[i], true
+			if staleSet[eventID] {
+				return nil, false
+			}
+			cp := *s.events[i]
+			return &cp, true
 		}
 	}
 	return nil, false

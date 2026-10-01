@@ -207,9 +207,12 @@ func (h *ContinuationHandler) handleSweep(w http.ResponseWriter, r *http.Request
 	candidates := h.store.ListNonTerminal()
 	expired := 0
 	for _, cnt := range candidates {
-		if cnt.ShouldExpire(now) {
-			cnt.MarkExpired()
-			h.store.Update(cnt)
+		if !cnt.ShouldExpire(now) {
+			continue
+		}
+		// Atomic recheck under the store lock: a continuation claimed
+		// between the scan and here is not expired mid-run.
+		if _, ok := h.store.ExpireIfDue(cnt.ContinuationID, now); ok {
 			expired++
 		}
 	}
@@ -233,19 +236,18 @@ func (h *ContinuationHandler) handleEnqueue(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	cnt, found := h.store.Get(id)
-	if !found {
-		api.JSONNotFound(w, "continuation not found: "+id)
+	// Atomic check+queue under the store lock (closes the check-then-act
+	// race between CanEnqueue and MarkQueued).
+	cnt, ok := h.store.EnqueueForExecution(id)
+	if !ok {
+		existing, found := h.store.Get(id)
+		if !found {
+			api.JSONNotFound(w, "continuation not found: "+id)
+			return
+		}
+		api.JSONConflict(w, "cannot enqueue continuation: invalid state (current="+string(existing.State)+", required=approved)")
 		return
 	}
-
-	if !cnt.CanEnqueue() {
-		api.JSONConflict(w, "cannot enqueue continuation: invalid state (current="+string(cnt.State)+", required=approved)")
-		return
-	}
-
-	cnt.MarkQueued()
-	h.store.Update(cnt)
 
 	log.Printf("QUEUE enqueue continuation_id=%s decision_id=%s action_type=%s agent_id=%s state=%s",
 		cnt.ContinuationID, cnt.DecisionID, cnt.ActionType, cnt.AgentID, cnt.State)
@@ -342,6 +344,10 @@ func (h *ContinuationHandler) handleRetry(w http.ResponseWriter, r *http.Request
 		}
 		if cnt.State != continuation.StateExecuted && cnt.State != continuation.StateResumed {
 			api.JSONConflict(w, "cannot retry continuation: invalid state (current="+string(cnt.State)+", required=executed)")
+			return
+		}
+		if cnt.State == continuation.StateExecuted && cnt.LastExecutionSucceeded {
+			api.JSONConflict(w, "cannot retry continuation: last execution succeeded; re-running requires a fresh approval")
 			return
 		}
 		if cnt.MaxRetries <= 0 {
@@ -510,6 +516,10 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 			api.JSONConflict(w, "continuation is already claimed for execution")
 			return
 		}
+		if cnt.IsExpired() {
+			api.JSONConflict(w, "continuation is expired and cannot be executed")
+			return
+		}
 		api.JSONConflict(w, "continuation not in executable state: current state="+string(cnt.State))
 		return
 	}
@@ -540,12 +550,22 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		timeout,
 	)
 
-	ctx := context.Background()
-	if h.registry != nil {
-		if exec, ok := h.registry.Get(cnt.ActionType); ok {
-			exec.Execute(ctx, exe)
+	// Recover from executor panics so a synchronous execute request cannot
+	// crash the handler or leave the continuation stuck in StateExecuting
+	// (the orchestrator path has the same protection).
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				exe.MarkFailed("executor panic", 1)
+			}
+		}()
+		ctx := context.Background()
+		if h.registry != nil {
+			if exec, ok := h.registry.Get(cnt.ActionType); ok {
+				exec.Execute(ctx, exe)
+			}
 		}
-	}
+	}()
 
 	if h.execStore != nil {
 		h.execStore.Create(exe)
@@ -593,9 +613,9 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 		"continuation_id": cnt.ContinuationID,
 		"state":         string(exe.State),
 		"exit_code":     exe.ExitCode,
-		"stdout":        exe.Stdout,
-		"stderr":        exe.Stderr,
-		"error":         exe.Error,
+		"stdout":        execution.Redact(exe.Stdout),
+		"stderr":        execution.Redact(exe.Stderr),
+		"error":         execution.Redact(exe.Error),
 		"started_at":    exe.StartedAt,
 		"finished_at":   exe.FinishedAt,
 		"approved_at":   cnt.ApprovedAt,
@@ -666,9 +686,18 @@ func (h *ContinuationHandler) handleRecoverExecuting(w http.ResponseWriter, r *h
 			continue
 		}
 
+		// Measure age from the claim time (ExecutingAt), not CreatedAt: a
+		// continuation that sat queued before being claimed must not be
+		// "recovered" while it is legitimately executing. Falls back to
+		// CreatedAt for records claimed before the field existed (mirrors
+		// the orchestrator's claimTime logic).
+		at := snap.CreatedAt
+		if snap.ExecutingAt != nil && !snap.ExecutingAt.IsZero() {
+			at = *snap.ExecutingAt
+		}
 		ageSeconds := int64(0)
-		if !snap.CreatedAt.IsZero() {
-			ageSeconds = int64(now.Sub(snap.CreatedAt).Seconds())
+		if !at.IsZero() {
+			ageSeconds = int64(now.Sub(at).Seconds())
 		}
 
 		if olderThanMins > 0 {
@@ -802,6 +831,11 @@ func (h *ContinuationHandler) handleRecoverExecutingItem(w http.ResponseWriter, 
 	})
 }
 
+// bulkAbsoluteCap bounds the number of items a single bulk operation may act
+// on, even when confirm=true. Prevents pathological batches from tying up
+// the store lock.
+const bulkAbsoluteCap = 500
+
 type bulkRetryResult struct {
 	ContinuationID string `json:"continuation_id"`
 	DecisionID     string `json:"decision_id"`
@@ -896,6 +930,10 @@ func (h *ContinuationHandler) handleBulkRetry(w http.ResponseWriter, r *http.Req
 			"message":        "re-run with confirm=true to proceed anyway",
 		})
 		return
+	}
+
+	if len(continuations) > bulkAbsoluteCap {
+		continuations = continuations[:bulkAbsoluteCap]
 	}
 
 	var acted []bulkRetryResult
@@ -1041,6 +1079,10 @@ func (h *ContinuationHandler) handleBulkCancel(w http.ResponseWriter, r *http.Re
 			"message":        "re-run with confirm=true to proceed anyway",
 		})
 		return
+	}
+
+	if len(continuations) > bulkAbsoluteCap {
+		continuations = continuations[:bulkAbsoluteCap]
 	}
 
 	var acted []bulkCancelResult

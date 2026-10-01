@@ -13,9 +13,9 @@ This directory contains scripts for exercising the OVARA Runtime Gateway flows.
    ```bash
    ./start_gateway.sh
    ```
-   Or with custom config:
+   Or with custom config (path resolved relative to `runtime/gateway/`):
    ```bash
-   OVARA_CONFIG=../../examples/sample_policy_local.json ./start_gateway.sh
+   OVARA_CONFIG=../../examples/sample_config.json ./start_gateway.sh
    ```
 
 2. **Run demo scripts:**
@@ -32,11 +32,10 @@ This directory contains scripts for exercising the OVARA Runtime Gateway flows.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GATEWAY` | `http://localhost:8080` | Gateway base URL |
-| `OVARA_PORT` | `8080` | Gateway port (used by start_gateway.sh) |
-| `OVARA_CONFIG` | `` | Path to config JSON file |
+| `OVARA_CONFIG` | `etc/config.json` | Path to config JSON file (resolved relative to `runtime/gateway/`) |
 | `OVARA_ENVIRONMENT` | `local` | Gateway environment (local, dev, production) |
 
-Note: Policy configuration is done via the config JSON file (`policy_file` and `policy_refresh_interval` fields), not environment variables.
+Note: The gateway binary reads **only** `OVARA_CONFIG` and `OVARA_ENVIRONMENT` (plus `OVARA_SANDBOX_ENABLED`). `OVARA_PORT`, `OVARA_POLICY_FILE`, and `OVARA_POLICY_REFRESH_INTERVAL` do nothing — set `server_port`, `policy_file`, and `policy_refresh_interval` inside the config JSON instead.
 
 ## Scripts Overview
 
@@ -76,7 +75,7 @@ Inspection endpoints demo:
 ### `sample_config.json`
 Sample gateway configuration in JSON format. Configure with:
 ```bash
-OVARA_CONFIG=./examples/sample_config.json ./start_gateway.sh
+OVARA_CONFIG=../../examples/sample_config.json ./start_gateway.sh
 ```
 
 ### `sample_policy.json`

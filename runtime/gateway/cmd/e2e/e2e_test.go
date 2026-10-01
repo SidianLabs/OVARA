@@ -42,8 +42,9 @@ func TestE2E_FullDecisionChain(t *testing.T) {
 	cfg.FailClosed = false
 
 	policyStore.AddRule(policy.Rule{
-		ActionType: string(models.ActionTypeCIBuildTrigger),
-		Allow:      true,
+		ActionType:  string(models.ActionTypeCIBuildTrigger),
+		Environment: "*",
+		Allow:       true,
 	})
 
 	approvalSvc := approval.NewService(approvalStore)
@@ -212,7 +213,10 @@ func TestE2E_IntegrityClean(t *testing.T) {
 	checker := integrity.NewChecker()
 	result := checker.Check()
 	if !result.Passed {
-		t.Logf("integrity result: passed=%v, issues=%d", result.Passed, len(result.Issues))
+		for _, issue := range result.Issues {
+			t.Logf("integrity issue: %+v", issue)
+		}
+		t.Fatalf("integrity check failed: %d issue(s)", len(result.Issues))
 	}
 }
 

@@ -85,8 +85,9 @@ admin access. We recommend:
 ## Receipt Signing Key
 
 The `receipt_signing_key` config field controls HMAC-SHA256 receipt
-signing. If unset, the gateway falls back to `gateway_id` as the key,
-which is **not cryptographically strong**. For production deployments:
+signing. If unset, the gateway generates a **random per-process key**
+at startup and logs a warning — receipts signed under it cannot be
+verified after a restart (see `server.go`). For production deployments:
 
 ```json
 {

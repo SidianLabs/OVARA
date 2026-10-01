@@ -13,6 +13,8 @@ type Receipt struct {
 	GatewayID     string    `json:"gateway_id"`
 	OrganizationID string   `json:"organization_id"`
 	ActionType    string    `json:"action_type"`
+	ActionDigest  string    `json:"action_digest,omitempty"`
+	PolicyVersion string    `json:"policy_version,omitempty"`
 	Resource      string    `json:"resource"`
 	Decision      string    `json:"decision"`
 	AgentID       string    `json:"agent_id,omitempty"`

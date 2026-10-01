@@ -27,25 +27,22 @@ Exploring cross-organization machine identity without a central authority.
 ### Decision Latency (local, single gateway)
 | Metric | Value |
 |--------|-------|
-| p50 | 5μs |
-| p95 | 8μs |
-| p99 | 12μs |
-| Policy-only (no identity) | 3μs |
-| Identity + lease verification | 7μs |
-| Full trust evaluation | 5-8μs |
+| Policy-only decision | ~9.7 µs |
+| With identity verification | ~10.7 µs |
+| With trust-anomaly matching | ~10.7 µs |
+| With capability lease | ~12.9 µs |
+| Evaluator only (no HTTP) | ~2.7 µs |
+| Load test p50 / p95 / p99 | ~340 µs / ~1.1 ms / ~1.9 ms |
 
 ### HMAC-SHA256 Signing
-| Payload Size | Duration |
-|-------------|----------|
-| 64 bytes | 598ns |
-| 1KB | 750ns |
-| 10KB | 2.4μs |
+| Operation | Duration |
+|-----------|----------|
+| Receipt sign | ~620ns |
+| Receipt verify | ~650ns |
 
 ### Throughput (local, single gateway)
-- 200,000+ decisions/sec sustained
-- 50,000+ receipts/sec with signing
-- Memory: ~40MB baseline, ~120MB under load
+- ~115,000 decisions/sec sustained (measured, loopback, 50-way concurrency)
 
-### Concurrency
-- Handlers scale linearly to ~10,000 concurrent decisions
-- Continuation sweeper maintains sub-50ms pause time with 50,000+ records
+Figures above are the current measured numbers from `docs/BENCHMARKS.md`
+(Apple M4, Go 1.25). Earlier ~5–8µs figures were measured on a revision
+without replay protection.

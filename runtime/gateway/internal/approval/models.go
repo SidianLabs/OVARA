@@ -24,6 +24,7 @@ type ApprovalRequest struct {
 	Status        Status    `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
 	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
+	ResumedAt     *time.Time `json:"resumed_at,omitempty"`
 	ResolvedBy    string    `json:"resolved_by,omitempty"`
 	AgentID       string    `json:"agent_id,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
@@ -58,6 +59,19 @@ func (a *ApprovalRequest) Deny(resolvedBy, reason string) {
 	a.Reason = reason
 	now := time.Now().UTC()
 	a.ResolvedAt = &now
+}
+
+// MarkResumed consumes the single-use resume token for an approved
+// approval. Called by the store while holding its lock.
+func (a *ApprovalRequest) MarkResumed() {
+	now := time.Now().UTC()
+	a.ResumedAt = &now
+}
+
+// CanResume reports whether a resume may still be performed: the approval
+// must be approved and its resume token must not have been consumed.
+func (a *ApprovalRequest) CanResume() bool {
+	return a.Status == StatusApproved && a.ResumedAt == nil
 }
 
 func (a *ApprovalRequest) IsPending() bool {

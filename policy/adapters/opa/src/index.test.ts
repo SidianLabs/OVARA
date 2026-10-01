@@ -147,6 +147,101 @@ allow {
     expect(allowRule!.description).toMatch(/line 3/);
   });
 
+  it('translates Rego v1 syntax: import, default :=, allow if', () => {
+    const rego = `
+      package ovara.runtime
+
+      import rego.v1
+
+      default allow := false
+
+      allow if {
+        input.action_type == "git.pull"
+      }
+
+      allow if input.environment == "local"
+
+      deny if {
+        input.environment == "production"  # never allow shells in prod
+        input.action_type == "shell"
+      }
+    `;
+    const result = translateRego(rego);
+    const allowRule = result.rules.find(r => r.allow && r.action_type === 'git.pull');
+    expect(allowRule).toBeDefined();
+    const localRule = result.rules.find(r => r.allow && r.environment === 'local');
+    expect(localRule).toBeDefined();
+    const denyRule = result.rules.find(r => r.deny);
+    expect(denyRule).toBeDefined();
+    expect(denyRule!.environment).toBe('production');
+  });
+
+  it('splits body expressions joined by semicolons', () => {
+    const rego = `package ovara.runtime
+allow if { input.action_type == "shell"; input.environment == "dev" }`;
+    const result = translateRego(rego);
+    const rule = result.rules.find(r => r.allow);
+    expect(rule).toBeDefined();
+    expect(rule!.action_type).toBe('shell');
+    expect(rule!.environment).toBe('dev');
+  });
+
+  it('substitutes := bindings and accepts some declarations', () => {
+    const rego = `package ovara.runtime
+allow if {
+  some env
+  env := "dev"
+  input.environment == env
+  input.action_type == "shell"
+}`;
+    const result = translateRego(rego);
+    const rule = result.rules.find(r => r.allow);
+    expect(rule).toBeDefined();
+    expect(rule!.environment).toBe('dev');
+  });
+
+  it('maps startswith to a glob condition', () => {
+    const rego = `package ovara.runtime
+allow if {
+  startswith(input.action_type, "git.")
+}`;
+    const result = translateRego(rego);
+    const rule = result.rules.find(r => r.allow);
+    expect(rule).toBeDefined();
+    expect(rule!.action_type).toBe('git.*');
+  });
+
+  it('maps != and > comparisons into conditions', () => {
+    const rego = `package ovara.runtime
+deny if {
+  input.environment != "dev"
+  input.risk > 5
+}`;
+    const result = translateRego(rego);
+    const rule = result.rules.find(r => r.deny);
+    expect(rule).toBeDefined();
+    expect(rule!.environment).toBe('!=dev');
+    expect(rule!.conditions!.risk).toBe('>5');
+  });
+
+  it('still rejects untranslatable expressions fail-closed', () => {
+    const rego = `package ovara.runtime
+allow if {
+  crypto.verify(input.token)
+}`;
+    expect(() => translateRego(rego)).toThrow(/unhandled body expression/);
+  });
+
+  it('rejects else after allow (would broaden allow)', () => {
+    const rego = `package ovara.runtime
+allow if {
+  input.environment == "dev"
+} else {
+  input.environment == "local"
+}`;
+    expect(() => translateRego(rego)).toThrow(/else/i);
+  });
+
   it('emits wildcard rule when there are no explicit allow/deny', () => {
     const rego = `
       package ovara.runtime

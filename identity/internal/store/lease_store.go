@@ -12,6 +12,22 @@ type LeaseStore struct {
 	leases map[string]*crypto.CapabilityLease
 }
 
+// cloneLease returns a deep copy of a lease so callers cannot mutate
+// store-owned state through shared slices.
+func cloneLease(l *crypto.CapabilityLease) *crypto.CapabilityLease {
+	if l == nil {
+		return nil
+	}
+	cp := *l
+	if l.AllowedActions != nil {
+		cp.AllowedActions = append([]string(nil), l.AllowedActions...)
+	}
+	if l.Signature != nil {
+		cp.Signature = append([]byte(nil), l.Signature...)
+	}
+	return &cp
+}
+
 func NewLeaseStore() *LeaseStore {
 	return &LeaseStore{
 		leases: make(map[string]*crypto.CapabilityLease),
@@ -24,7 +40,7 @@ func (s *LeaseStore) Store(lease *crypto.CapabilityLease) error {
 	if _, exists := s.leases[lease.LeaseID]; exists {
 		return fmt.Errorf("lease already exists: %s", lease.LeaseID)
 	}
-	s.leases[lease.LeaseID] = lease
+	s.leases[lease.LeaseID] = cloneLease(lease)
 	return nil
 }
 
@@ -32,7 +48,10 @@ func (s *LeaseStore) Get(leaseID string) (*crypto.CapabilityLease, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	lease, ok := s.leases[leaseID]
-	return lease, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneLease(lease), true
 }
 
 func (s *LeaseStore) List() []*crypto.CapabilityLease {
@@ -40,9 +59,22 @@ func (s *LeaseStore) List() []*crypto.CapabilityLease {
 	defer s.mu.RUnlock()
 	result := make([]*crypto.CapabilityLease, 0, len(s.leases))
 	for _, l := range s.leases {
-		result = append(result, l)
+		result = append(result, cloneLease(l))
 	}
 	return result
+}
+
+// Revoke marks a lease as revoked under the store lock. The lease record is
+// kept for audit purposes; IsExpired reports true for revoked leases.
+func (s *LeaseStore) Revoke(leaseID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lease, ok := s.leases[leaseID]
+	if !ok {
+		return fmt.Errorf("lease not found: %s", leaseID)
+	}
+	lease.Revoked = true
+	return nil
 }
 
 func (s *LeaseStore) ListBySubject(subject string) []*crypto.CapabilityLease {
@@ -51,7 +83,7 @@ func (s *LeaseStore) ListBySubject(subject string) []*crypto.CapabilityLease {
 	var result []*crypto.CapabilityLease
 	for _, l := range s.leases {
 		if l.Subject == subject {
-			result = append(result, l)
+			result = append(result, cloneLease(l))
 		}
 	}
 	return result
@@ -63,7 +95,7 @@ func (s *LeaseStore) ListByIssuer(issuerID string) []*crypto.CapabilityLease {
 	var result []*crypto.CapabilityLease
 	for _, l := range s.leases {
 		if l.Issuer == issuerID {
-			result = append(result, l)
+			result = append(result, cloneLease(l))
 		}
 	}
 	return result
@@ -75,7 +107,7 @@ func (s *LeaseStore) ListActive() []*crypto.CapabilityLease {
 	var result []*crypto.CapabilityLease
 	for _, l := range s.leases {
 		if !l.IsExpired() {
-			result = append(result, l)
+			result = append(result, cloneLease(l))
 		}
 	}
 	return result

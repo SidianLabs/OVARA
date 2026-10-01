@@ -37,7 +37,10 @@ describe("PolicyDistributor", () => {
 
   beforeAll(async () => {
     hasDB = await checkDB();
-    if (!hasDB) return;
+    if (!hasDB) {
+      // No DB: skip seeding. Each test below reports itself as skipped.
+      return;
+    }
 
     const connection = await import("../../db/connection");
     db = connection.db;
@@ -55,6 +58,7 @@ describe("PolicyDistributor", () => {
       organizationId: testOrgId,
       name: "dist-gw-1",
       publicKey: "MCowBQYDK2VwAyEA1",
+      endpointUrl: "https://dist-gw-1.example.internal:9443",
       status: "online",
     }).returning();
     gw1Id = gw1.id;
@@ -63,6 +67,7 @@ describe("PolicyDistributor", () => {
       organizationId: testOrgId,
       name: "dist-gw-2",
       publicKey: "MCowBQYDK2VwAyEA2",
+      endpointUrl: "https://dist-gw-2.example.internal:9443",
       status: "online",
     }).returning();
     gw2Id = gw2.id;
@@ -79,8 +84,9 @@ describe("PolicyDistributor", () => {
     await db.delete(schema.organizations).where(eq(schema.organizations.id, testOrgId));
   });
 
-  it("distributes policy to multiple gateways", async () => {
-    if (!hasDB) return;
+  it("distributes policy to multiple gateways", async (ctx) => {
+    if (!hasDB) return ctx.skip();
+    vi.spyOn(dist as any, "pushPolicyToGateway").mockResolvedValue(undefined);
     const policy = makePolicy();
     const results = await dist.distributePolicy(testOrgId, policy);
 
@@ -88,8 +94,9 @@ describe("PolicyDistributor", () => {
     expect(results.every((r) => r.gatewayId === gw1Id || r.gatewayId === gw2Id)).toBe(true);
   });
 
-  it("distributes to a specific gateway", async () => {
-    if (!hasDB) return;
+  it("distributes to a specific gateway", async (ctx) => {
+    if (!hasDB) return ctx.skip();
+    vi.spyOn(dist as any, "pushPolicyToGateway").mockResolvedValue(undefined);
     const policy = makePolicy({ id: "00000000-0000-0000-0000-000000000101" });
     const result = await dist.distributeToGateway(gw1Id, policy);
 
@@ -97,8 +104,8 @@ describe("PolicyDistributor", () => {
     expect(result.status).toBe("delivered");
   });
 
-  it("handles failed gateway gracefully", async () => {
-    if (!hasDB) return;
+  it("handles failed gateway gracefully", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const [offlineGw] = await db.insert(schema.gateways).values({
       organizationId: testOrgId,
       name: "offline-gw",
@@ -113,12 +120,13 @@ describe("PolicyDistributor", () => {
     expect(result.error).toContain("enrolling");
   });
 
-  it("retries failed distributions", async () => {
-    if (!hasDB) return;
+  it("retries failed distributions", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const [failedGw] = await db.insert(schema.gateways).values({
       organizationId: testOrgId,
       name: "fail-gw",
       publicKey: "MCowBQYDK2VwAyEA4",
+      endpointUrl: "https://fail-gw.example.internal:9443",
       status: "online",
     }).returning();
 
@@ -133,8 +141,9 @@ describe("PolicyDistributor", () => {
     vi.restoreAllMocks();
   });
 
-  it("records distribution history", async () => {
-    if (!hasDB) return;
+  it("records distribution history", async (ctx) => {
+    if (!hasDB) return ctx.skip();
+    vi.spyOn(dist as any, "pushPolicyToGateway").mockResolvedValue(undefined);
     const policy = makePolicy({ id: "00000000-0000-0000-0000-000000000104" });
     await dist.distributeToGateway(gw1Id, policy);
 
@@ -143,8 +152,8 @@ describe("PolicyDistributor", () => {
     expect(history.some((h) => h.gatewayId === gw1Id)).toBe(true);
   });
 
-  it("tracks distribution status", async () => {
-    if (!hasDB) return;
+  it("tracks distribution status", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const status = await dist.getDistributionStatus(testOrgId);
 
     expect(status).toHaveProperty("total");
@@ -154,8 +163,8 @@ describe("PolicyDistributor", () => {
     expect(status.total).toBeGreaterThanOrEqual(0);
   });
 
-  it("returns failed for non-existent gateway", async () => {
-    if (!hasDB) return;
+  it("returns failed for non-existent gateway", async (ctx) => {
+    if (!hasDB) return ctx.skip();
     const policy = makePolicy({ id: "00000000-0000-0000-0000-000000000105" });
     const result = await dist.distributeToGateway(
       "00000000-0000-0000-0000-999999999999",

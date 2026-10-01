@@ -3,12 +3,20 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
 type Rule struct {
 	ActionType    string `json:"action_type"`
 	Environment   string `json:"environment"`
+	// Resource restricts the rule to matching request resources. Resources
+	// are "METHOD scheme://host/path" for egress actions. The pattern is a
+	// simple glob: '*' matches any substring, all other characters are
+	// literal; an empty pattern matches every resource. Examples:
+	//   "*https://api.github.com/*"  — any method to that host
+	//   "GET https://pypi.org/*"     — GETs only
+	Resource      string `json:"resource,omitempty"`
 	Allow         bool   `json:"allow"`
 	Deny          bool   `json:"deny"`
 	Escalate      bool   `json:"escalate"`
@@ -138,6 +146,37 @@ func defaultRules() []Rule {
 	}
 }
 
+// MatchResource reports whether pattern matches resource. '*' matches any
+// (possibly empty) substring; every other character is literal. An empty
+// pattern matches everything — rules that predate resource matching keep
+// their original semantics. Not anchored-optional: matching is over the
+// whole string, so "github" never matches "https://api.github.com/x" unless
+// written "*github*".
+func MatchResource(pattern, resource string) bool {
+	if pattern == "" {
+		return true
+	}
+	parts := strings.Split(pattern, "*")
+	pos := 0
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		idx := strings.Index(resource[pos:], p)
+		if idx < 0 {
+			return false
+		}
+		if i == 0 && idx != 0 {
+			return false // pattern doesn't start with '*': first literal must anchor
+		}
+		pos += idx + len(p)
+	}
+	if last := parts[len(parts)-1]; last != "" && !strings.HasSuffix(resource, last) {
+		return false
+	}
+	return true
+}
+
 func LoadStoreFromConfig(cfg map[string]any) (*Store, error) {
 	version, ok := cfg["policy_version"].(string)
 	if !ok {
@@ -156,6 +195,9 @@ func LoadStoreFromConfig(cfg map[string]any) (*Store, error) {
 			}
 			if env, ok := ruleMap["environment"].(string); ok {
 				rule.Environment = env
+			}
+			if res, ok := ruleMap["resource"].(string); ok {
+				rule.Resource = res
 			}
 			if allow, ok := ruleMap["allow"].(bool); ok {
 				rule.Allow = allow

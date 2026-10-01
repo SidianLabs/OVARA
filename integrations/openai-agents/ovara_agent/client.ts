@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import type { Environment } from "./types.js";
 
 export interface OvaraClientOptions {
@@ -7,13 +8,16 @@ export interface OvaraClientOptions {
   retries?: number;
 }
 
+/** Mirrors the gateway's models.DecisionResponse (snake_case JSON). */
 export interface DecisionResponse {
-  requestId: string;
-  decision: "allow" | "deny" | "pending";
-  reason?: string;
-  trustScore?: number;
-  receiptId?: string;
-  evaluatedAt: string;
+  decision_id: string;
+  decision: "allow" | "deny" | "escalate";
+  reason_codes: string[];
+  trust_score?: number;
+  requires_approval: boolean;
+  approval_id?: string;
+  receipt_stub?: { receipt_id: string; [key: string]: unknown };
+  [key: string]: unknown;
 }
 
 export interface ActionRequest {
@@ -42,6 +46,9 @@ export class OvaraClient {
         action_type: request.actionType,
         resource: request.resource,
         environment: request.environment,
+        // Gateway ActionRequest.Validate() requires nonce and issued_at.
+        nonce: randomUUID(),
+        issued_at: new Date().toISOString(),
       }),
     });
   }
@@ -63,13 +70,20 @@ export class OvaraClient {
         clearTimeout(timeout);
         if (!res.ok) {
           const body = await res.text();
-          throw new Error(`Gateway ${res.status}: ${body}`);
+          const err = new Error(`Gateway ${res.status}: ${body}`);
+          (err as any).status = res.status;
+          throw err;
         }
         const text = await res.text();
         if (!text) return null;
         return JSON.parse(text);
       } catch (err: any) {
         lastError = err;
+        const status = (err as any)?.status;
+        // Only retry network errors, 5xx and 429 — other 4xx are final.
+        if (status !== undefined && status !== 429 && status < 500) {
+          throw err;
+        }
         if (attempt < this.retries) {
           await new Promise((r) => setTimeout(r, 100 * Math.pow(2, attempt)));
         }

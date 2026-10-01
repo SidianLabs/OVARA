@@ -8,9 +8,18 @@ action, deciding whether that action should be **allowed**, **denied**, or
 every decision.
 
 The first product is **Ovara Runtime**: a low-latency, single-binary Go gateway
-that intercepts machine-driven actions (shell, Git, GitHub, CI/CD) and applies
-cryptographically-verified machine identity, capability leases, and trust-aware
-policy in microseconds.
+that evaluates machine-driven actions (shell, Git, GitHub, CI/CD) and applies
+cryptographically-verified capability leases, trust-aware policy, and signed
+receipts in microseconds.
+
+> **Security model, stated plainly:** in V1 the gateway is an *advisory*
+> decision point plus an executor. Client-side interceptors are cooperative —
+> an agent that bypasses them is not constrained. The non-advisory path is
+> actions the gateway executes itself. The target architecture — a
+> credential-starving executor proxy where every side effect physically
+> transits a notarizing chokepoint — is described in
+> [`docs/architecture/executor_proxy.md`](docs/architecture/executor_proxy.md);
+> the first slice has shipped in [`proxy/`](proxy/).
 
 ```text
 ┌────────────┐   ┌─────────────────────┐   ┌────────────────────┐
@@ -24,6 +33,65 @@ policy in microseconds.
                                            │ (signed, auditable)│
                                            └────────────────────┘
 ```
+
+---
+
+## Quickstart
+
+One binary runs the whole local deployment — gateway plus executor proxy.
+
+**Install** (requires git + Go 1.25+):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/feat/executor-proxy/install.sh | sh
+```
+
+or build from source:
+
+```bash
+cd proxy
+go build -o ovara ./cmd/ovara
+```
+
+**Run:**
+
+```bash
+ovara demo            # 30-second self-contained proof, no setup
+ovara init mydir      # generates keys, configs, policy, operator token
+ovara run -dir mydir  # gateway + executor proxy in one process
+```
+
+**Docker** (build context is the repo root):
+
+```bash
+docker build -f proxy/Dockerfile -t ovara .
+docker run -v ovara-data:/data -p 8080:8080 -p 9443:9443 ovara init /data
+docker run -v ovara-data:/data -p 8080:8080 -p 9443:9443 ovara run -dir /data
+```
+
+Then wire your agent's environment to the proxy:
+
+```bash
+export HTTPS_PROXY=http://localhost:9443
+export SSL_CERT_FILE=mydir/var/ca.pem
+```
+
+Credentials: export real API keys (`GITHUB_TOKEN`, `OPENAI_API_KEY`, ...) in
+the **Ovara process** environment — the agent never sees them. The proxy
+injects them at the wire per the host bindings in `proxy.json`.
+
+**What makes it non-advisory:** the agent's environment must have no other
+egress. The boundary is built into the binary — run as root:
+
+```bash
+ovara run -dir mydir --boundary netns    # creates agent0 netns + nftables deny-all
+ovara run -dir mydir --boundary docker   # docker --internal network recipe
+```
+
+then run your agent inside it (the command prints the exact `ip netns exec`
+line). Without that boundary the proxy is advisory: a cooperative agent uses
+it, an uncooperative one routes around it. HTTPS only. Details in
+[`proxy/DEPLOYMENT.md`](proxy/DEPLOYMENT.md).
 
 ---
 
@@ -49,7 +117,7 @@ Ovara provides that missing layer.
 |---------|--------|-------------|
 | **Ovara Runtime** | ✅ GA | Single-binary Go gateway: interception, policy evaluation, approvals, execution, receipts |
 | **Ovara Identity** | ✅ GA | Machine identity primitives (ed25519) with capability leases and delegation chains |
-| **Ovara Observe** | ✅ GA | Action lineage, traces, OTLP/NATS telemetry, ClickHouse analytics |
+| **Ovara Observe** | 🚧 Partial | Action lineage & event log today; OTLP/NATS telemetry + ClickHouse analytics planned (not wired — see `observability/README.md`) |
 | **Ovara Shield** | ✅ GA | Anomaly signals, trust degradation, containment hooks |
 | **Ovara Cloud** | ✅ GA | Hosted control plane, gateway enrollment, policy distribution, multi-tenant |
 | **Ovara Federation** | ✅ GA | Cross-organization trust graph with portable receipts |
@@ -61,7 +129,7 @@ Ovara provides that missing layer.
 
 ## What You Get
 
-### 11 Execution Surfaces
+### 12 Execution Surfaces
 
 `shell` · `exec` · `git.push` · `git.pull` · `git.fetch` · `git.checkout` ·
 `github.push` · `github.pr` · `github.merge` · `github.delete_branch` ·
@@ -69,10 +137,12 @@ Ovara provides that missing layer.
 
 ### Cryptographic Identity
 
-- **ed25519** key pairs for `AgentIdentity`
-- Signed **CapabilityLease** with TTL and delegation depth
-- **SHA-256 hash lineage** for `DelegationChain`
-- Cryptographic signature verification **wired into the gateway evaluator**
+- **ed25519** key pairs for `AgentIdentity` (asserted identity; see security model note above)
+- Signed **CapabilityLease** with TTL and delegation depth — verified against a
+  **trusted-issuer key registry** (`trusted_issuers` in config), never against
+  keys carried in the request
+- **SHA-256 hash lineage** for `DelegationChain` (integrity check, not proof of authority)
+- Unsigned or unknown-issuer leases are rejected
 
 ### Trust-Aware Security
 
@@ -93,7 +163,8 @@ Ovara provides that missing layer.
 - SLA health diagnostics, stuck-executing recovery, panic recovery
 - Batch check endpoint (`POST /v1/runtime/batch-check`)
 - File-backed stores with configurable retention
-- Prometheus metrics, OpenTelemetry traces
+- Structured JSONL event/decision logs (`/var/data/*.jsonl`), `GET /v1/events`, `GET /v1/runtime/metrics`
+- *Planned (not wired yet):* OTLP/NATS telemetry pipeline, Prometheus `ovara_*` metrics — see `observability/README.md`
 
 ### Production Hardening
 
@@ -101,7 +172,7 @@ Ovara provides that missing layer.
 - eBPF ring-buffer syscall interceptor
 - Seccomp syscall allowlist (~130 syscalls)
 - Firecracker microVM sandbox config
-- Multi-region Terraform K8s manifests
+- Terraform K8s manifests (single-region deployable; multi-region layout in `regions.tf` is scaffolded but not wired — modules commented out)
 - systemd, Docker, and Docker Compose deployment
 
 ---
@@ -110,20 +181,23 @@ Ovara provides that missing layer.
 
 | Operation | Latency |
 |-----------|---------|
-| Policy-only decision | 5,374 ns |
-| Decision with identity | 6,126 ns |
-| Decision with anomaly | 6,210 ns |
-| Full identity+lease decision | 7,669 ns |
-| Evaluator (no HTTP) | 1,271 ns |
-| HMAC-SHA256 sign | 598 ns |
-| HMAC-SHA256 verify | 614 ns |
-| Decision cache get/put | 38-39 ns |
+| Policy-only decision (httptest, in-process) | ~9.7 µs |
+| Decision with identity | ~10.7 µs |
+| Decision with trust anomaly | ~10.7 µs |
+| Full identity+lease decision | ~12.9 µs |
+| Evaluator (no HTTP) | ~2.7 µs |
+| HMAC-SHA256 sign | ~620 ns |
+| HMAC-SHA256 verify | ~650 ns |
+| Decision cache get/put | ~39-40 ns |
 
-Sub-10μs decision path — fast enough for inline interception in agent workflows.
+~10-13µs decision path and ~115k decisions/sec on loopback (see `docs/BENCHMARKS.md`) — fast enough for inline interception in agent workflows.
 
 ---
 
-## Quick Start
+## Quick Start (standalone gateway — advanced)
+
+The unified CLI above is the common path. This section runs the advisory
+gateway alone; the standalone proxy binary is `proxy/cmd/ovara-proxy`.
 
 ### Run the Gateway
 
@@ -249,6 +323,7 @@ ovara/
 ├── observability/          # Grafana dashboards, Prometheus alerts
 ├── packages/               # Cross-language shared types
 ├── policy/                 # OPA/Cedar adapters, policy compiler
+├── proxy/                  # Executor proxy + unified `ovara` CLI (init/run/demo)
 ├── research/               # Research notes
 ├── runtime/gateway/        # The main Go gateway
 ├── sdk/                    # TypeScript and Python SDKs

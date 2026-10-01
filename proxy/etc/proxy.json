@@ -1,0 +1,18 @@
+{
+  "listen_addr": ":9443",
+  "gateway_url": "http://localhost:8080",
+  "gateway_token": "",
+  "environment": "dev",
+  "ca_cert_file": "var/ca.pem",
+  "ca_key_file": "var/ca.key",
+  "receipt_key_file": "var/receipt.key",
+  "receipts_file": "var/receipts.jsonl",
+  "pubkey_file": "var/receipt.pubkey",
+  "fail_open": false,
+  "credentials": [
+    {"host": "api.github.com", "headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"}},
+    {"host": "api.openai.com", "headers": {"Authorization": "Bearer ${OPENAI_API_KEY}"}},
+    {"host": "api.anthropic.com", "headers": {"x-api-key": "${ANTHROPIC_API_KEY}", "anthropic-version": "2023-06-01"}},
+    {"host": "*.slack.com", "headers": {"Authorization": "Bearer ${SLACK_TOKEN}"}}
+  ]
+}

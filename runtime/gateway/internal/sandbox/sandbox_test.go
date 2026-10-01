@@ -62,15 +62,14 @@ func TestEnvToSlice_Empty(t *testing.T) {
 func TestNoopSandbox_Execute(t *testing.T) {
 	s := &NoopSandbox{}
 	ctx := context.Background()
+	// NoopSandbox must NOT report a fake success — it returns an error so
+	// callers know the command never ran.
 	result, err := s.Execute(ctx, "echo hello", SandboxOpts{})
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
+	if err == nil {
+		t.Fatal("expected error from NoopSandbox.Execute")
 	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
-	}
-	if result.Stdout != "noop: command not executed" {
-		t.Errorf("stdout = %v", result.Stdout)
+	if result != nil {
+		t.Errorf("expected nil result, got %+v", result)
 	}
 }
 
@@ -78,11 +77,11 @@ func TestNoopSandbox_CreateContainer(t *testing.T) {
 	s := &NoopSandbox{}
 	ctx := context.Background()
 	id, err := s.CreateContainer(ctx, SandboxOpts{})
-	if err != nil {
-		t.Fatalf("CreateContainer failed: %v", err)
+	if err == nil {
+		t.Fatal("expected error from NoopSandbox.CreateContainer")
 	}
-	if id != "noop-container" {
-		t.Errorf("id = %v, want noop-container", id)
+	if id != "" {
+		t.Errorf("id = %v, want empty", id)
 	}
 }
 
@@ -90,14 +89,11 @@ func TestNoopSandbox_ExecInContainer(t *testing.T) {
 	s := &NoopSandbox{}
 	ctx := context.Background()
 	result, err := s.ExecInContainer(ctx, "test-container", "echo hello")
-	if err != nil {
-		t.Fatalf("ExecInContainer failed: %v", err)
+	if err == nil {
+		t.Fatal("expected error from NoopSandbox.ExecInContainer")
 	}
-	if result.ContainerID != "test-container" {
-		t.Errorf("container id = %v, want test-container", result.ContainerID)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
+	if result != nil {
+		t.Errorf("expected nil result, got %+v", result)
 	}
 }
 

@@ -7,7 +7,7 @@ export interface OvaraToolInput {
 }
 
 export interface OvaraDecision {
-  decision: "allow" | "deny" | "pending";
+  decision: "allow" | "deny" | "escalate";
   reason?: string;
   trustScore?: number;
   receiptId?: string;

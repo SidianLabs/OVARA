@@ -1,20 +1,43 @@
 package integration
 
 import (
+	"crypto/ed25519"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"ovara.runtime.gateway/internal/evaluator"
+	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/trust"
 )
 
+// Test issuer keypair: leases in this package are properly issued (signed)
+// keys registered in the validator's trusted-issuer registry.
+var (
+	testIssuerPub  ed25519.PublicKey
+	testIssuerPriv ed25519.PrivateKey
+)
+
+func init() {
+	testIssuerPub, testIssuerPriv, _ = ed25519.GenerateKey(nil)
+}
+
 func newTestEvaluator() *evaluator.Evaluator {
 	store := policy.NewStore("v1-test")
-	return evaluator.New(store)
+	store.AddRule(policy.Rule{
+		ActionType:  string(models.ActionTypeGitPull),
+		Environment: "*",
+		Allow:       true,
+	})
+	ev := evaluator.New(store)
+	ev.SetValidator(identity.NewValidatorWithTrustedKeys(map[string][]byte{
+		"ovara": testIssuerPub,
+	}))
+	return ev
 }
 
 func newTestRequest(actionType, resource, env string) *models.ActionRequest {
@@ -36,7 +59,7 @@ func newTestIdentity(issuer, subjectID string) *models.AgentIdentity {
 }
 
 func newTestLease(leaseID, issuer, subject string, actions []string) *models.CapabilityLease {
-	return &models.CapabilityLease{
+	lease := &models.CapabilityLease{
 		LeaseID:         leaseID,
 		Issuer:          issuer,
 		Subject:         subject,
@@ -46,12 +69,27 @@ func newTestLease(leaseID, issuer, subject string, actions []string) *models.Cap
 		DelegationDepth: 1,
 		IssuedAt:        time.Now(),
 	}
+	signTestLease(lease)
+	return lease
+}
+
+// signTestLease signs the lease with the test issuer key using the same
+// payload format as the ovara.identity module.
+func signTestLease(lease *models.CapabilityLease) {
+	payload := fmt.Sprintf("%s|%s|%s|%v|%s|%d|%d|%d",
+		lease.LeaseID, lease.Issuer, lease.Subject, lease.AllowedActions,
+		lease.ResourceScope, lease.Expiry.Unix(), lease.DelegationDepth, lease.IssuedAt.Unix(),
+	)
+	lease.Signature = ed25519.Sign(testIssuerPriv, []byte(payload))
 }
 
 func newTestEvaluatorWithShield() (*evaluator.Evaluator, *trust.ShieldStore) {
 	shield := trust.NewShieldStore()
 	p := policy.NewStore("v1-test")
 	eval := evaluator.NewWithShield(p, shield)
+	eval.SetValidator(identity.NewValidatorWithTrustedKeys(map[string][]byte{
+		"ovara": testIssuerPub,
+	}))
 	return eval, shield
 }
 

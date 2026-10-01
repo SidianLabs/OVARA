@@ -50,21 +50,33 @@ func SignTrustMetadata(issuer *AgentIdentity, issuerKey ed25519.PrivateKey, subj
 		IssuedBy:          issuer.ID,
 	}
 
-	payload := tm.digestPayload()
-	sig := ed25519.Sign(issuerKey, []byte(payload))
+	sig := ed25519.Sign(issuerKey, tm.digestPayload())
 	tm.Signature = sig
 	return tm, nil
 }
 
-func (t *TrustMetadata) digestPayload() string {
-	return fmt.Sprintf("%s|%s|%s|%s|%d|%s",
-		t.SubjectID, t.Environment, t.AttestationStatus,
-		t.RuntimeVersion, t.EvaluationTime.Unix(), t.IssuedBy,
-	)
+// digestPayload returns the canonical (JSON) byte representation of the
+// fields covered by the metadata signature.
+func (t *TrustMetadata) digestPayload() []byte {
+	return canonicalJSON(struct {
+		SubjectID         string            `json:"subject_id"`
+		Environment       string            `json:"environment"`
+		AttestationStatus AttestationStatus `json:"attestation_status"`
+		RuntimeVersion    string            `json:"runtime_version"`
+		EvaluationTime    int64             `json:"evaluation_time"`
+		IssuedBy          string            `json:"issued_by"`
+	}{
+		SubjectID:         t.SubjectID,
+		Environment:       t.Environment,
+		AttestationStatus: t.AttestationStatus,
+		RuntimeVersion:    t.RuntimeVersion,
+		EvaluationTime:    t.EvaluationTime.Unix(),
+		IssuedBy:          t.IssuedBy,
+	})
 }
 
 func (t *TrustMetadata) Digest() string {
-	h := sha256.Sum256([]byte(t.digestPayload()))
+	h := sha256.Sum256(t.digestPayload())
 	return hex.EncodeToString(h[:])
 }
 
@@ -72,8 +84,7 @@ func (t *TrustMetadata) Verify(publicKey []byte) bool {
 	if len(t.Signature) == 0 || len(publicKey) != ed25519.PublicKeySize {
 		return false
 	}
-	payload := t.digestPayload()
-	return ed25519.Verify(publicKey, []byte(payload), t.Signature)
+	return ed25519.Verify(publicKey, t.digestPayload(), t.Signature)
 }
 
 func (t *TrustMetadata) IsExpired(maxAge time.Duration) bool {

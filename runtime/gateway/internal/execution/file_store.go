@@ -6,15 +6,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 )
 
+// FileBackedStore appends execution records to a JSONL file while serving
+// reads from an embedded in-memory index.
+//
+// Lock discipline: a single mutex — InMemoryStore.mu — guards BOTH the
+// executions map and the append file. All map reads/writes and file appends
+// happen under it (previous code used a second mutex, so file-backed writes
+// raced the embedded store's lock and Stats iterated the map unlocked).
 type FileBackedStore struct {
 	*InMemoryStore
 	path         string
 	file         *os.File
-	mu           sync.Mutex
 	maxSize      int
 	loadedCount  int
 	retentionDays int
@@ -116,7 +121,8 @@ func (s *FileBackedStore) Create(e *Execution) error {
 		return fmt.Errorf("execution already exists: %s", e.ExecutionID)
 	}
 
-	data, err := json.Marshal(e)
+	stored := e.sanitized()
+	data, err := json.Marshal(stored)
 	if err != nil {
 		return fmt.Errorf("failed to marshal execution: %w", err)
 	}
@@ -128,7 +134,7 @@ func (s *FileBackedStore) Create(e *Execution) error {
 		return fmt.Errorf("failed to sync execution file: %w", err)
 	}
 
-	s.executions[e.ExecutionID] = e
+	s.executions[e.ExecutionID] = stored
 	return nil
 }
 
@@ -140,7 +146,8 @@ func (s *FileBackedStore) Update(e *Execution) error {
 		return fmt.Errorf("execution not found: %s", e.ExecutionID)
 	}
 
-	data, err := json.Marshal(e)
+	stored := e.sanitized()
+	data, err := json.Marshal(stored)
 	if err != nil {
 		return fmt.Errorf("failed to marshal execution: %w", err)
 	}
@@ -152,7 +159,7 @@ func (s *FileBackedStore) Update(e *Execution) error {
 		return fmt.Errorf("failed to sync execution file: %w", err)
 	}
 
-	s.executions[e.ExecutionID] = e
+	s.executions[e.ExecutionID] = stored
 	return nil
 }
 
@@ -171,22 +178,9 @@ func (s *FileBackedStore) Close() error {
 	return nil
 }
 
-func (s *FileBackedStore) Stats() (total, succeeded, failed, running, timedOut int) {
-	for _, e := range s.executions {
-		total++
-		switch e.State {
-		case StateSucceeded:
-			succeeded++
-		case StateFailed:
-			failed++
-		case StateRunning:
-			running++
-		case StateTimedOut:
-			timedOut++
-		}
-	}
-	return
-}
+// Stats is inherited from InMemoryStore, which takes the shared RLock — the
+// previous unlocked override was removed so the map is never iterated
+// without the lock.
 
 func (s *FileBackedStore) Sweep() (removed int, err error) {
 	s.mu.Lock()
@@ -232,12 +226,17 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 	cleanup := map[string]any{"_cleanup": true, "execution_ids": toRemove}
 	data, err := json.Marshal(cleanup)
 	if err == nil {
-		s.file.Write(append(data, '\n'))
+		// Tombstone must be durable: without Sync a crash can lose it and
+		// swept records resurrect on reload.
+		if _, werr := s.file.Write(append(data, '\n')); werr == nil {
+			_ = s.file.Sync()
+		}
 	}
 
 	for _, id := range toRemove {
 		delete(s.executions, id)
 	}
+	s.staleIDs = append(s.staleIDs, toRemove...)
 
 	return len(toRemove), nil
 }
@@ -265,21 +264,22 @@ func (s *FileBackedStore) CurrentCount() int {
 	return len(s.executions)
 }
 
+// Compact rewrites the log without stale records. The store lock is held for
+// the whole read-map → write-tmp → rename → reopen sequence so no write can
+// slip into the window between rename and reopen and be lost.
 func (s *FileBackedStore) Compact() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	stale := s.staleIDs
-	s.mu.Unlock()
-
-	if len(stale) == 0 {
-		return nil
-	}
-
-	s.mu.Lock()
+	staleSet := make(map[string]bool, len(stale))
 	for _, id := range stale {
+		staleSet[id] = true
+	}
+	for id := range staleSet {
 		delete(s.executions, id)
 	}
 	s.staleIDs = nil
-	s.mu.Unlock()
 
 	tmpPath := s.path + ".compact.tmp"
 	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -315,10 +315,8 @@ func (s *FileBackedStore) Compact() error {
 		return fmt.Errorf("failed to rename compact file: %w", err)
 	}
 
-	s.mu.Lock()
 	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		s.mu.Unlock()
 		return fmt.Errorf("failed to reopen execution file after compact: %w", err)
 	}
 	oldFile := s.file
@@ -326,6 +324,7 @@ func (s *FileBackedStore) Compact() error {
 	s.mu.Unlock()
 
 	oldFile.Close()
+	s.mu.Lock()
 	return nil
 }
 

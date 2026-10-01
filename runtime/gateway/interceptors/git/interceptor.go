@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -13,14 +14,14 @@ import (
 type Interceptor struct {
 	gatewayURL string
 	agentID    string
-	client    *client.GatewayClient
+	client     *client.GatewayClient
 }
 
 func New(gatewayURL, agentID string) *Interceptor {
 	return &Interceptor{
 		gatewayURL: gatewayURL,
 		agentID:    agentID,
-		client:    client.NewGatewayClient(gatewayURL, agentID),
+		client:     client.NewGatewayClient(gatewayURL, agentID),
 	}
 }
 
@@ -62,7 +63,7 @@ func (i *Interceptor) normaliseAction(cmd string, args []string, opts ...ActionO
 func resolveGitActionType(cmd string, args []string) models.ActionType {
 	switch cmd {
 	case "push":
-		if contains(args, "--force") || contains(args, "-f") {
+		if isForcePush(args) {
 			return models.ActionTypeGitForcePush
 		}
 		return models.ActionTypeGitPush
@@ -77,10 +78,24 @@ func resolveGitActionType(cmd string, args []string) models.ActionType {
 	}
 }
 
-func contains(args []string, target string) bool {
+// isForcePush reports whether the push arguments request any form of forced
+// update: -f/--force, --force-with-lease, --force-if-includes, combined short
+// flags like -uf/--ff, and --force=<mode>.
+func isForcePush(args []string) bool {
 	for _, a := range args {
-		if a == target {
+		switch {
+		case a == "-f", a == "--force":
 			return true
+		case strings.HasPrefix(a, "--force"):
+			// --force-with-lease, --force-if-includes, --force=...
+			return true
+		case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--"):
+			// Combined short flags: any flag cluster containing 'f' (e.g. -uf).
+			for _, c := range a[1:] {
+				if c == 'f' {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -147,7 +162,20 @@ func (i *Interceptor) Execute(ctx context.Context, cmd string, args []string, op
 		}
 	}
 
-	execCmd := exec.CommandContext(ctx, cmd, args...)
+	// Fail closed: only an explicit "allow" proceeds to execution. Any other
+	// or unrecognized decision is treated as denied.
+	if resp.Decision != models.DecisionAllow {
+		return &Result{
+			Decision:   resp.Decision,
+			DecisionID: resp.DecisionID,
+			Error:      fmt.Errorf("action not allowed (decision=%q): %v", resp.Decision, resp.ReasonCodes),
+		}
+	}
+
+	execCmd := exec.CommandContext(ctx, gitBinary, append([]string{cmd}, args...)...)
+	// Strip dangerous environment overrides so an inherited env cannot redirect
+	// git's transport/exec behavior (e.g. GIT_SSH_COMMAND arbitrary commands).
+	execCmd.Env = sanitizedEnv()
 	out, err := execCmd.CombinedOutput()
 	exitCode := 0
 	if err != nil {
@@ -161,8 +189,70 @@ func (i *Interceptor) Execute(ctx context.Context, cmd string, args []string, op
 		DecisionID: resp.DecisionID,
 		Output:     out,
 		ExitCode:   exitCode,
-		Error:     err,
+		Error:      err,
 	}
+}
+
+// gitBinary is the git executable invoked for allowed actions.
+const gitBinary = "git"
+
+// gitEnvDenylist lists environment variables removed before spawning git.
+// These let a caller hijack transport or code execution (e.g. via SSH command
+// injection or exec-path redirection).
+var gitEnvDenylist = map[string]bool{
+	"GIT_SSH_COMMAND":       true,
+	"GIT_SSH":               true,
+	"GIT_EXEC_PATH":         true,
+	"GIT_PROXY_COMMAND":     true,
+	"GIT_EXTERNAL_DIFF":     true,
+	"GIT_PAGER":             true,
+	"GIT_EDITOR":            true,
+	"GIT_ASKPASS":           true,
+	"SSH_ASKPASS":           true,
+	"GIT_TEMPLATE_DIR":      true,
+	"GIT_DIR":               true,
+	"GIT_OBJECT_DIRECTORY":  true,
+}
+
+// gitEnvDeniedPrefixes are stripped by prefix so entire families of dangerous
+// variables cannot be smuggled past the denylist by enumeration:
+//   - GIT_CONFIG* lets a caller inject arbitrary git configuration (including
+//     core.sshCommand / core.fsmonitor hooks) via env (GIT_CONFIG_COUNT,
+//     GIT_CONFIG_KEY_*, GIT_CONFIG_VALUE_*, GIT_CONFIG_PARAMETERS, etc.)
+//   - LD_*/DYLD_* are dynamic-loader variables (LD_PRELOAD, LD_AUDIT,
+//     DYLD_INSERT_LIBRARIES, ...) that inject code into the spawned binary.
+var gitEnvDeniedPrefixes = []string{
+	"GIT_CONFIG",
+	"LD_",
+	"DYLD_",
+}
+
+func gitEnvDenied(name string) bool {
+	if gitEnvDenylist[name] {
+		return true
+	}
+	for _, p := range gitEnvDeniedPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizedEnv() []string {
+	env := os.Environ()
+	out := env[:0]
+	for _, kv := range env {
+		name := kv
+		if idx := strings.IndexByte(kv, '='); idx >= 0 {
+			name = kv[:idx]
+		}
+		if gitEnvDenied(name) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 func ParseArgs(args []string) (gitCmd string, rest []string) {

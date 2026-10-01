@@ -20,9 +20,9 @@ type ChainRecordExport struct {
 
 type ChainState struct {
 	Agents         map[string][]ChainRecordExport `json:"agents"`
-	MaxDepth       int                             `json:"max_depth"`
-	RapidWindowSec int64                           `json:"rapid_window_sec"`
-	RapidThreshold int                             `json:"rapid_threshold"`
+	MaxDepth       int                            `json:"max_depth"`
+	RapidWindowSec int64                          `json:"rapid_window_sec"`
+	RapidThreshold int                            `json:"rapid_threshold"`
 }
 
 type chainRecord struct {
@@ -32,11 +32,11 @@ type chainRecord struct {
 }
 
 type ChainDetector struct {
-	mu              sync.RWMutex
-	chains          map[string][]chainRecord
-	maxDepth        int
-	rapidWindowSec  int64
-	rapidThreshold  int
+	mu             sync.RWMutex
+	chains         map[string][]chainRecord
+	maxDepth       int
+	rapidWindowSec int64
+	rapidThreshold int
 }
 
 func NewChainDetector() *ChainDetector {
@@ -77,11 +77,14 @@ func (cd *ChainDetector) DetectSuspiciousPatterns(agentID string) []Suspicion {
 				Description: "delegation chain depth " + itoa(r.depth) + " exceeds maximum " + itoa(cd.maxDepth),
 			})
 		}
+		// A depth-0 chain record is a weak heuristic for self-delegation; it
+		// may also mean an un-delegated root chain. Report as medium, not
+		// critical.
 		if r.depth == 0 && len(r.chainHash) > 0 {
 			suspicions = append(suspicions, Suspicion{
 				Type:        "self_delegation",
-				Severity:    "critical",
-				Description: "agent delegated to itself (chain hash: " + r.chainHash + ")",
+				Severity:    "medium",
+				Description: "possible self-delegation or root chain (chain hash: " + r.chainHash + ")",
 			})
 		}
 	}

@@ -24,12 +24,16 @@ An attacker steals an agent's private key.
 An attacker creates a new key pair and claims to be a trusted agent.
 
 **Defense:**
-- The gateway maintains a registry of authorized agents
-- New agents must be enrolled through the identity issuance service
+- A self-asserted `AgentIdentity` grants nothing by itself — the
+  gateway validates its structure only. What matters is the
+  `CapabilityLease`
+- Lease signatures only verify if `lease.issuer` is present in the
+  gateway's `trusted_issuers` config map; a forged identity with a
+  lease signed by an unregistered key is denied
+- New issuers are enrolled through the identity issuance service, and
+  their public keys must be configured into `trusted_issuers`
 - The cloud control plane validates enrollment via out-of-band
   confirmation
-- For self-hosted deployments, the operator must explicitly register
-  new agents
 
 ### 3. Chain Hash Forgery
 
@@ -37,13 +41,14 @@ An attacker forges a delegation chain to claim authority they do
 not have.
 
 **Defense:**
-- Each chain entry includes a SHA-256 hash linking it to the
-  previous entry
-- The gateway verifier recomputes the chain hash from the entries
-- If the recomputed hash doesn't match the claimed hash, the chain
-  is rejected
-- Each entry is signed by the delegating party, preventing
-  unauthorized entry creation
+- The chain carries a keyless SHA-256 `chain_hash` over the authority
+  entries; the gateway recomputes it and rejects mismatches
+- This detects corruption or tampering of the transmitted chain, but
+  it is not a signature — chain entries are not individually signed,
+  and a well-formed forged chain would pass the hash check
+- Authority is therefore anchored by the signed lease verified against
+  `trusted_issuers`, not by the chain; a forged chain without a valid
+  trusted-issuer lease grants nothing
 
 ### 4. Deep Delegation
 
@@ -51,10 +56,14 @@ An attacker creates a deep delegation chain to obfuscate the
 authority source.
 
 **Defense:**
-- Delegation chains have a bounded depth (max 10 in V1)
-- The chain detection module flags excessive depth
-- Each delegation reduces the depth counter
-- The final lease's depth is verified against the original
+- The trust evaluator flags chains with `depth > 3` as an anomaly
+  signal (lowering trust and biasing toward escalation)
+- The chain detection module flags excessive depth and suspicious
+  re-delegation patterns
+- `delegation_depth` on the lease must be non-negative
+- Note: subset-verified re-delegation (child lease bounded by parent)
+  is designed but not implemented in the V1 gateway — see
+  [Capability Lease API](../api/delegated_capabilities.md#delegation)
 
 ### 5. Self-Delegation
 
@@ -97,13 +106,16 @@ audited implementations. We do not use custom crypto.
 
 The gateway evaluator performs:
 
-1. **Lease signature verification** — ed25519 against issuer's
-   public key
-2. **Chain hash recomputation** — SHA-256 over chain entries
+1. **Lease signature verification** — ed25519 against the issuer's
+   public key looked up from the `trusted_issuers` config registry.
+   Unsigned leases and unknown issuers are rejected; the lease's
+   embedded `verify_key` is not used for trust.
+2. **Chain hash recomputation** — keyless SHA-256 over chain entries
+   (integrity only)
 3. **Expiry check** — current time < lease expiry
 4. **Revocation check** — lease not in revocation list
-5. **Scope check** — action and resource within lease scope
-6. **Depth check** — delegation depth within bounds
+5. **Scope check** — action in `allowed_actions` (exact or `*`) and
+   resource equal to `resource_scope` (or `*`)
 
 ## Implementation
 

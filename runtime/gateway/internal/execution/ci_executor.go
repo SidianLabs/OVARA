@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -55,7 +56,7 @@ func (g *GitHubActionsProvider) Trigger(ctx context.Context, action, resource st
 		ref = parts[2]
 	}
 
-	url := fmt.Sprintf("%s/repos/%s/%s/actions/workflows/%s/dispatches", g.BaseURL, owner, repo, workflow)
+	url := fmt.Sprintf("%s/repos/%s/%s/actions/workflows/%s/dispatches", g.BaseURL, url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflow))
 	payload := map[string]interface{}{
 		"ref": ref,
 		"inputs": map[string]string{
@@ -176,7 +177,7 @@ func (c *CIExecutor) Execute(ctx context.Context, e *Execution) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 	if err != nil {
 		e.MarkFailed("failed to read ci response: "+err.Error(), 1)
 		return fmt.Errorf("reading ci response: %w", err)

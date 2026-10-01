@@ -3,19 +3,32 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/events"
+	"ovara.runtime.gateway/internal/identity"
 	"ovara.runtime.gateway/internal/models"
 )
+
+// maxCapabilitiesBodyBytes caps request bodies on capabilities endpoints.
+const maxCapabilitiesBodyBytes = 10 << 20 // 10 MiB
 
 type CapabilitiesHandler struct {
 	store        capabilities.Store
 	eventStore   events.Store
 	historyStore *capabilities.FileBackedHistoryStore
 	gatewayID    string
+	// leaseValidator verifies lease signatures against trusted issuer keys
+	// before a lease is accepted for tracking/revocation. When nil, leases
+	// are tracked without signature verification only if allowUnsignedLeases
+	// was explicitly opted in.
+	leaseValidator *identity.Validator
+	// allowUnsignedLeases permits track to accept leases without signature
+	// verification when no validator is configured (dev mode opt-in).
+	allowUnsignedLeases bool
 }
 
 func NewCapabilitiesHandler(s capabilities.Store) *CapabilitiesHandler {
@@ -36,6 +49,20 @@ func (h *CapabilitiesHandler) SetHistoryStore(hs *capabilities.FileBackedHistory
 	h.historyStore = hs
 }
 
+// SetLeaseValidator wires the identity validator used to verify lease
+// signatures (against trusted issuer keys) before tracking. Once set,
+// /v1/capabilities/track rejects leases whose signature does not verify.
+func (h *CapabilitiesHandler) SetLeaseValidator(v *identity.Validator) {
+	h.leaseValidator = v
+}
+
+// SetAllowUnsignedLeases opts in to accepting unsigned leases when no lease
+// validator is configured. Default is false: track rejects leases it cannot
+// verify.
+func (h *CapabilitiesHandler) SetAllowUnsignedLeases(allow bool) {
+	h.allowUnsignedLeases = allow
+}
+
 func (h *CapabilitiesHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/capabilities", h.handleList)
 	mux.HandleFunc("GET /v1/capabilities/{id}", h.handleGet)
@@ -46,11 +73,11 @@ func (h *CapabilitiesHandler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 type ListCapabilitiesResponse struct {
-	Capabilities []*capabilities.TrackedLease `json:"capabilities"`
-	Count       int                          `json:"count"`
-	Active      int                          `json:"active_count"`
-	Revoked     int                          `json:"revoked_count"`
-	DelegationDepths []int                   `json:"delegation_depths,omitempty"`
+	Capabilities     []*capabilities.TrackedLease `json:"capabilities"`
+	Count            int                          `json:"count"`
+	Active           int                          `json:"active_count"`
+	Revoked          int                          `json:"revoked_count"`
+	DelegationDepths []int                        `json:"delegation_depths,omitempty"`
 }
 
 func (h *CapabilitiesHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -98,9 +125,9 @@ func (h *CapabilitiesHandler) handleList(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ListCapabilitiesResponse{
 		Capabilities: filtered,
-		Count:       len(filtered),
-		Active:      len(active),
-		Revoked:     len(revoked),
+		Count:        len(filtered),
+		Active:       len(active),
+		Revoked:      len(revoked),
 	})
 }
 
@@ -145,13 +172,30 @@ func (h *CapabilitiesHandler) handleTrack(w http.ResponseWriter, r *http.Request
 	}
 
 	var req TrackRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCapabilitiesBodyBytes)).Decode(&req); err != nil {
 		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
 
 	if req.Lease == nil || req.Lease.LeaseID == "" {
 		api.JSONBadRequest(w, "lease with lease_id is required")
+		return
+	}
+
+	// Verify the lease signature against trusted issuer keys before tracking:
+	// tracked leases drive revocation decisions, so accepting unsigned or
+	// forged leases would let an attacker revoke or spoof capabilities.
+	if h.leaseValidator != nil {
+		if vr := h.leaseValidator.ValidateCapabilityLease(req.Lease); !vr.Valid {
+			api.JSONBadRequest(w, "lease validation failed: "+strings.Join(vr.Reasons, "; "))
+			return
+		}
+	} else if !h.allowUnsignedLeases {
+		// Fail closed: with no trusted issuers configured there is no way to
+		// verify the lease, and accepting it silently would let an attacker
+		// track or spoof capabilities. Requires the explicit
+		// allow_unsigned_leases config opt-in.
+		api.JSONBadRequest(w, "lease verification unavailable: no trusted_issuers configured and allow_unsigned_leases is not set")
 		return
 	}
 
@@ -177,7 +221,7 @@ func (h *CapabilitiesHandler) handleTrack(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"status":  "tracked",
+		"status":   "tracked",
 		"lease_id": id,
 	})
 }
@@ -189,7 +233,7 @@ type RevokeRequest struct {
 
 type HistoryResponse struct {
 	Entries []capabilities.LeaseHistoryEntry `json:"entries"`
-	Count   int                             `json:"count"`
+	Count   int                              `json:"count"`
 }
 
 func (h *CapabilitiesHandler) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -218,10 +262,10 @@ type RevokeBySubjectRequest struct {
 }
 
 type RevokeBySubjectResponse struct {
-	Subject     string   `json:"subject"`
-	Revoked     int     `json:"revoked_count"`
-	LeaseIDs    []string `json:"lease_ids"`
-	NotFound    int     `json:"not_found_count"`
+	Subject  string   `json:"subject"`
+	Revoked  int      `json:"revoked_count"`
+	LeaseIDs []string `json:"lease_ids"`
+	NotFound int      `json:"not_found_count"`
 }
 
 func (h *CapabilitiesHandler) handleRevokeBySubject(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +275,7 @@ func (h *CapabilitiesHandler) handleRevokeBySubject(w http.ResponseWriter, r *ht
 	}
 
 	var req RevokeBySubjectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCapabilitiesBodyBytes)).Decode(&req); err != nil {
 		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
@@ -292,7 +336,7 @@ func (h *CapabilitiesHandler) handleRevoke(w http.ResponseWriter, r *http.Reques
 	}
 
 	var req RevokeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCapabilitiesBodyBytes)).Decode(&req); err != nil {
 		api.JSONBadRequest(w, "invalid request body: "+err.Error())
 		return
 	}
@@ -332,9 +376,9 @@ func (h *CapabilitiesHandler) handleRevoke(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"status":       "revoked",
-		"lease_id":     req.LeaseID,
-		"revoked_at":   tracked.RevokedAt,
+		"status":         "revoked",
+		"lease_id":       req.LeaseID,
+		"revoked_at":     tracked.RevokedAt,
 		"revoked_reason": tracked.RevocationReason,
 	})
 }

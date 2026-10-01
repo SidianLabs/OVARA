@@ -23,9 +23,9 @@ layer does not grant access past the others.
 │  │  kexec, bpf, module loading                       │  │
 │  └───────────────────────────────────────────────────┘  │
 │  ┌───────────────────────────────────────────────────┐  │
-│  │              eBPF Interceptor                      │  │
-│  │  Runtime syscall monitoring, policy enforcement,   │  │
-│  │  audit trail via ring buffer                       │  │
+│  │              eBPF Monitor                           │  │
+│  │  Runtime syscall monitoring via tracepoints,        │  │
+│  │  audit trail via ring buffer (observe-only)         │  │
 │  └───────────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────┤
 │  ┌───────────────────────────────────────────────────┐  │
@@ -68,14 +68,14 @@ The Seccomp profile is a syscall allowlist:
 
 **File:** `security/ebpf/ovara_interceptor.c`
 
-The eBPF interceptor provides runtime syscall monitoring:
+The eBPF program provides runtime syscall monitoring only — it does
+not block, drop, or modify anything:
 
-- **Attach points:** `sys_enter` and `sys_exit` for all syscalls
-- **BPF maps:** ring buffer for events, hash map for policy state
-- **Policy enforcement:** Can drop or modify syscalls based on
-  policy
-- **Audit trail:** All events logged to ring buffer for offline
-  analysis
+- **Attach points:** tracepoints on `sys_enter`/`sys_exit` for the
+  syscalls it watches
+- **BPF maps:** ring buffer for events
+- **Audit trail:** All events are written to the ring buffer for
+  offline analysis and anomaly detection
 
 ## Firecracker MicroVM
 
@@ -117,8 +117,9 @@ An attacker attempts to ptrace the gateway or another process.
 An attacker attempts to access files outside the agent's allowed
 scope.
 
-**Defense:** AppArmor restricts file access. The eBPF interceptor
-can detect and block unauthorized file access.
+**Defense:** AppArmor restricts file access. The eBPF monitor can
+detect unauthorized file access attempts for audit, but blocking is
+enforced by AppArmor/seccomp, not eBPF.
 
 ### 5. Network Egress to Internal Services
 

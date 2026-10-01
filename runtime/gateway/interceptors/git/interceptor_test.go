@@ -106,8 +106,8 @@ func TestInterceptor_normaliseAction_CheckoutMain(t *testing.T) {
 func TestInterceptor_Execute_Allow(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := models.DecisionResponse{
-			DecisionID: "dec_git_allow",
-			Decision:   models.DecisionAllow,
+			DecisionID:  "dec_git_allow",
+			Decision:    models.DecisionAllow,
 			ReasonCodes: []models.ReasonCode{models.ReasonAllowed},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -126,8 +126,8 @@ func TestInterceptor_Execute_Allow(t *testing.T) {
 func TestInterceptor_Execute_Deny(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := models.DecisionResponse{
-			DecisionID: "dec_git_deny",
-			Decision:   models.DecisionDeny,
+			DecisionID:  "dec_git_deny",
+			Decision:    models.DecisionDeny,
 			ReasonCodes: []models.ReasonCode{models.ReasonActionNotAllowed},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -207,12 +207,31 @@ func TestResolveGitActionType(t *testing.T) {
 	}
 }
 
-func TestContains(t *testing.T) {
-	if !contains([]string{"--force", "origin"}, "--force") {
-		t.Error("expected --force to be found")
+func TestIsForcePush(t *testing.T) {
+	forced := [][]string{
+		{"--force", "origin"},
+		{"-f", "origin"},
+		{"--force-with-lease", "origin"},
+		{"--force-if-includes", "origin"},
+		{"--force=lease", "origin"},
+		{"-uf", "origin"},
+		{"-fu", "origin"},
 	}
-	if contains([]string{"origin", "main"}, "--force") {
-		t.Error("expected --force not to be found")
+	for _, args := range forced {
+		if !isForcePush(args) {
+			t.Errorf("isForcePush(%v) = false, want true", args)
+		}
+	}
+	notForced := [][]string{
+		{"origin", "main"},
+		{"-u", "origin"},
+		{"--follow-tags", "origin"},
+		{"-v", "--tags"},
+	}
+	for _, args := range notForced {
+		if isForcePush(args) {
+			t.Errorf("isForcePush(%v) = true, want false", args)
+		}
 	}
 }
 

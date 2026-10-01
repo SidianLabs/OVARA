@@ -2,19 +2,20 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
-	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/api"
+	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/capabilities"
 	"ovara.runtime.gateway/internal/config"
 	"ovara.runtime.gateway/internal/continuation"
-	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/enrollment"
+	"ovara.runtime.gateway/internal/evaluator"
 	"ovara.runtime.gateway/internal/events"
 	"ovara.runtime.gateway/internal/execution"
 	"ovara.runtime.gateway/internal/integrity"
@@ -27,22 +28,22 @@ import (
 )
 
 type Handler struct {
-	evaluator          *evaluator.Evaluator
-	logger             *logging.DecisionLogger
-	config             *config.Config
-	receiptsStore      receipts.Store
-	receiptSigner      *receipt.Signer
-	decisionCache      *decisionCache
-	enrollmentSvc      enrollment.Service
-	approvalSvc        *approval.Service
-	eventStore         events.Store
-	continuationStore  continuation.Store
-	executionStore     execution.Store
-	orchestrator       *continuation.Orchestrator
-	integrityChecker   *integrity.Checker
-	shieldStats        func() (restricted, total int)
-	maintenanceMode    bool
-	capabilitiesStore  capabilities.Store
+	evaluator         *evaluator.Evaluator
+	logger            *logging.DecisionLogger
+	config            *config.Config
+	receiptsStore     receipts.Store
+	receiptSigner     *receipt.Signer
+	decisionCache     *decisionCache
+	enrollmentSvc     enrollment.Service
+	approvalSvc       *approval.Service
+	eventStore        events.Store
+	continuationStore continuation.Store
+	executionStore    execution.Store
+	orchestrator      *continuation.Orchestrator
+	integrityChecker  *integrity.Checker
+	shieldStats       func() (restricted, total int)
+	maintenanceMode   bool
+	capabilitiesStore capabilities.Store
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -119,10 +120,14 @@ type approvalRequest struct {
 const (
 	defaultMaxCacheSize = 10000
 	defaultCacheTTL     = 10 * time.Minute
+	// maxRuntimeBodyBytes caps request bodies on the runtime check endpoints.
+	maxRuntimeBodyBytes = 10 << 20 // 10 MiB
+	// maxBatchCheckRequests caps the number of requests per batch-check call.
+	maxBatchCheckRequests = 500
 )
 
 type decisionCache struct {
-	mu       sync.RWMutex
+	mu        sync.RWMutex
 	decisions map[string]*decisionEntry
 	maxSize   int
 	ttl       time.Duration
@@ -247,7 +252,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRuntimeBodyBytes))
 	if err != nil {
 		if span != nil {
 			observe.AddSpanEvent(span, "request.read_failed", map[string]string{"error": err.Error()})
@@ -306,13 +311,13 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 				WithDecisionID(resp.DecisionID).
 				WithReceiptID(resp.ReceiptStub.ReceiptID).
 				WithPayload(map[string]any{
-					"action_type":  string(req.ActionType),
-					"resource":      req.Resource,
-					"decision":      string(resp.Decision),
-					"trust_score":   resp.TrustScore,
-					"trust_level":   resp.TrustLevel,
+					"action_type":       string(req.ActionType),
+					"resource":          req.Resource,
+					"decision":          string(resp.Decision),
+					"trust_score":       resp.TrustScore,
+					"trust_level":       resp.TrustLevel,
 					"requires_approval": resp.RequiresApproval,
-					"latency_ms":    latencyMs,
+					"latency_ms":        latencyMs,
 				})
 			h.eventStore.Append(evt)
 
@@ -322,7 +327,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 				WithDecisionID(resp.DecisionID).
 				WithReceiptID(resp.ReceiptStub.ReceiptID).
 				WithPayload(map[string]any{
-					"action_type":   string(req.ActionType),
+					"action_type":    string(req.ActionType),
 					"resource":       req.Resource,
 					"decision":       string(resp.Decision),
 					"policy_version": resp.ReceiptStub.PolicyVersion,
@@ -350,7 +355,7 @@ func (h *Handler) handleBatchCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRuntimeBodyBytes))
 	if err != nil {
 		api.JSONBadRequest(w, "failed to read request body")
 		return
@@ -368,14 +373,18 @@ func (h *Handler) handleBatchCheck(w http.ResponseWriter, r *http.Request) {
 	if reqBody.Requests == nil {
 		reqBody.Requests = []models.ActionRequest{}
 	}
+	if len(reqBody.Requests) > maxBatchCheckRequests {
+		api.JSONBadRequest(w, fmt.Sprintf("requests exceeds maximum batch size of %d", maxBatchCheckRequests))
+		return
+	}
 
 	decisions := make([]*models.DecisionResponse, 0, len(reqBody.Requests))
 	for i := range reqBody.Requests {
-		req :=&reqBody.Requests[i]
+		req := &reqBody.Requests[i]
 		resp, err := h.evaluator.Evaluate(req)
 		if err != nil {
 			resp = &models.DecisionResponse{
-				Decision: models.DecisionDeny,
+				Decision:    models.DecisionDeny,
 				ReasonCodes: []models.ReasonCode{models.ReasonDeny},
 			}
 		}
@@ -389,16 +398,16 @@ func (h *Handler) handleBatchCheck(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.ActionRequest) *models.Receipt {
 	receipt := &models.Receipt{
-		ReceiptID:    resp.ReceiptStub.ReceiptID,
-		DecisionID:   resp.DecisionID,
-		ActionDigest: resp.ReceiptStub.ActionDigest,
-		ActionType:   resp.ReceiptStub.ActionType,
-		Resource:     resp.ReceiptStub.Resource,
-		Decision:     string(resp.Decision),
+		ReceiptID:     resp.ReceiptStub.ReceiptID,
+		DecisionID:    resp.DecisionID,
+		ActionDigest:  resp.ReceiptStub.ActionDigest,
+		ActionType:    resp.ReceiptStub.ActionType,
+		Resource:      resp.ReceiptStub.Resource,
+		Decision:      string(resp.Decision),
 		PolicyVersion: resp.ReceiptStub.PolicyVersion,
-		TrustScore:   resp.ReceiptStub.TrustContextScore,
-		TrustLevel:   resp.TrustLevel,
-		IssuedAt:     resp.ReceiptStub.IssuedAt,
+		TrustScore:    resp.ReceiptStub.TrustContextScore,
+		TrustLevel:    resp.TrustLevel,
+		IssuedAt:      resp.ReceiptStub.IssuedAt,
 	}
 	if req.AgentIdentity != nil {
 		receipt.AgentID = req.AgentIdentity.SubjectID
@@ -512,15 +521,15 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := map[string]any{
-		"gateway_version":       h.config.GatewayVersion,
-		"policy_version":        policyVersion,
-		"policy_source":         policySource,
-		"policy_refresh_secs":   h.config.PolicyRefreshInterval,
-		"storage_mode":          storageMode,
-		"decision_cache_count":  cacheCount,
-		"decision_cache_max":    cacheMax,
-		"receipt_count":         receiptCount,
-		"enrollment_file":       h.config.EnrollmentFile,
+		"gateway_version":      h.config.GatewayVersion,
+		"policy_version":       policyVersion,
+		"policy_source":        policySource,
+		"policy_refresh_secs":  h.config.PolicyRefreshInterval,
+		"storage_mode":         storageMode,
+		"decision_cache_count": cacheCount,
+		"decision_cache_max":   cacheMax,
+		"receipt_count":        receiptCount,
+		"enrollment_file":      h.config.EnrollmentFile,
 	}
 
 	if h.config.PolicyRefreshInterval > 0 {
@@ -531,6 +540,10 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 
 	if h.enrollmentSvc != nil {
 		identity := h.enrollmentSvc.GetIdentity()
+		if identity == nil {
+			api.JSONError(w, http.StatusServiceUnavailable, "enrollment identity not initialized")
+			return
+		}
 		enrollStatus := h.enrollmentSvc.GetStatus()
 		status["gateway_id"] = identity.ID
 		status["gateway_name"] = identity.Name
@@ -635,11 +648,11 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		contStats := map[string]any{
-			"count":       len(all),
-			"by_state":    stateCounts,
-			"executable":  executableCount,
-			"retryable":   retryableCount,
-			"executing":   executingCount,
+			"count":      len(all),
+			"by_state":   stateCounts,
+			"executable": executableCount,
+			"retryable":  retryableCount,
+			"executing":  executingCount,
 		}
 		if executableCount > 0 {
 			contStats["oldest_executable_at"] = oldestExecutable
@@ -669,7 +682,7 @@ func (h *Handler) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		status["queue_paused"] = h.orchestrator.IsPaused()
 		queued, running := h.orchestrator.QueueStats()
 		status["queue_stats"] = map[string]int{
-			"queued":   queued,
+			"queued":  queued,
 			"running": running,
 		}
 		executing := h.orchestrator.ExecutingCount()
@@ -772,10 +785,10 @@ func (h *Handler) addSLABreaches(status map[string]any) {
 	}
 
 	status["sla"] = map[string]any{
-		"approvals_breaching":    approvalBreachCount,
-		"retryable_breaching":    retryableBreachCount,
-		"executing_breaching":    executingBreachCount,
-		"approval_threshold_min": approvalThreshold,
+		"approvals_breaching":     approvalBreachCount,
+		"retryable_breaching":     retryableBreachCount,
+		"executing_breaching":     executingBreachCount,
+		"approval_threshold_min":  approvalThreshold,
 		"retryable_threshold_min": retryableThreshold,
 		"executing_threshold_min": executingThreshold,
 	}
@@ -812,11 +825,11 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		eventCount := h.eventStore.Count()
 		if fb, ok := h.eventStore.(*events.FileBackedStore); ok {
 			eventStats = map[string]any{
-				"count":            fb.CurrentCount(),
-				"storage_mode":     "file_backed",
-				"retention_days":   fb.RetentionDays(),
-				"max_records":      fb.MaxRecords(),
-				"file_path":       fb.FilePath(),
+				"count":          fb.CurrentCount(),
+				"storage_mode":   "file_backed",
+				"retention_days": fb.RetentionDays(),
+				"max_records":    fb.MaxRecords(),
+				"file_path":      fb.FilePath(),
 			}
 			if size, err := fb.FileSizeBytes(); err == nil {
 				eventStats["file_size_bytes"] = size
@@ -834,12 +847,12 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		if fb, ok := h.continuationStore.(*continuation.FileBackedStore); ok {
 			contStats = map[string]any{
-				"count":            len(allConts),
-				"storage_mode":     "file_backed",
-				"retention_days":   fb.RetentionDays(),
-				"max_records":      fb.MaxRecords(),
-				"file_path":       fb.FilePath(),
-				"by_state":        stateCounts,
+				"count":          len(allConts),
+				"storage_mode":   "file_backed",
+				"retention_days": fb.RetentionDays(),
+				"max_records":    fb.MaxRecords(),
+				"file_path":      fb.FilePath(),
+				"by_state":       stateCounts,
 			}
 			if size, err := fb.FileSizeBytes(); err == nil {
 				contStats["file_size_bytes"] = size
@@ -852,11 +865,11 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if h.executionStore != nil {
 		total, succeeded, failed, running, timedOut := h.executionStore.Stats()
 		execStats = map[string]any{
-			"total":      total,
-			"succeeded":  succeeded,
-			"failed":     failed,
-			"running":    running,
-			"timed_out":  timedOut,
+			"total":     total,
+			"succeeded": succeeded,
+			"failed":    failed,
+			"running":   running,
+			"timed_out": timedOut,
 		}
 		if fb, ok := h.executionStore.(*execution.FileBackedStore); ok {
 			execStats["storage_mode"] = "file_backed"
@@ -872,9 +885,14 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	gatewayName := ""
 	enrollmentState := "local"
 	if h.enrollmentSvc != nil {
-		gatewayID = h.enrollmentSvc.GetIdentity().ID
-		gatewayName = h.enrollmentSvc.GetIdentity().Name
-		enrollmentState = string(h.enrollmentSvc.GetIdentity().EnrollmentState)
+		identity := h.enrollmentSvc.GetIdentity()
+		if identity == nil {
+			api.JSONError(w, http.StatusServiceUnavailable, "enrollment identity not initialized")
+			return
+		}
+		gatewayID = identity.ID
+		gatewayName = identity.Name
+		enrollmentState = string(identity.EnrollmentState)
 	}
 
 	cacheCount, cacheMax := h.decisionCache.Stats()
@@ -901,22 +919,22 @@ func (h *Handler) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"snapshot_at":           time.Now().UTC(),
+		"snapshot_at":          time.Now().UTC(),
 		"gateway_id":           gatewayID,
 		"gateway_name":         gatewayName,
 		"enrollment_state":     enrollmentState,
-		"policy_version":      h.evaluator.PolicyVersion(),
+		"policy_version":       h.evaluator.PolicyVersion(),
 		"decision_cache_count": cacheCount,
 		"decision_cache_max":   cacheMax,
-		"total_decisions":     snap.TotalDecisions,
-		"retention_config":    retentionConfig,
-		"events":              eventStats,
-		"continuations":       contStats,
-		"executions":          execStats,
+		"total_decisions":      snap.TotalDecisions,
+		"retention_config":     retentionConfig,
+		"events":               eventStats,
+		"continuations":        contStats,
+		"executions":           execStats,
 		"metrics": map[string]any{
 			"decision_counts": snap.DecisionCounts,
-			"action_counts":  snap.ActionCounts,
-			"avg_latency_ms": snap.AvgLatencyMs,
+			"action_counts":   snap.ActionCounts,
+			"avg_latency_ms":  snap.AvgLatencyMs,
 		},
 	})
 }
@@ -940,17 +958,17 @@ func (h *Handler) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := map[string]any{
-		"decision_counts":   snap.DecisionCounts,
-		"action_counts":      snap.ActionCounts,
-		"total_decisions":    snap.TotalDecisions,
-		"avg_latency_ms":     snap.AvgLatencyMs,
-		"last_latency_ms":    snap.LastLatencyMs,
-		"last_decision_at":   snap.LastDecisionAt,
-		"approval_counts":    snap.ApprovalCounts,
-		"heartbeat_count":    snap.HeartbeatCount,
-		"last_heartbeat_at":  snap.LastHeartbeatAt,
-		"policy_version":      policyVersion,
-		"policy_source":       policySource,
+		"decision_counts":      snap.DecisionCounts,
+		"action_counts":        snap.ActionCounts,
+		"total_decisions":      snap.TotalDecisions,
+		"avg_latency_ms":       snap.AvgLatencyMs,
+		"last_latency_ms":      snap.LastLatencyMs,
+		"last_decision_at":     snap.LastDecisionAt,
+		"approval_counts":      snap.ApprovalCounts,
+		"heartbeat_count":      snap.HeartbeatCount,
+		"last_heartbeat_at":    snap.LastHeartbeatAt,
+		"policy_version":       policyVersion,
+		"policy_source":        policySource,
 		"policy_reload_status": snap.PolicyReloadStatus,
 		"policy_reload_last":   snap.PolicyReloadLastAt,
 		"policy_reload_err":    snap.PolicyReloadErrMsg,
@@ -1056,11 +1074,11 @@ func (h *Handler) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		"exported_at":        time.Now().UTC(),
 		"gateway_id":         gatewayID,
 		"time_range_since":   since,
-		"time_range_until":  until,
-		"event_count":       len(exportedEvents),
-		"execution_count":   len(exportedExecs),
+		"time_range_until":   until,
+		"event_count":        len(exportedEvents),
+		"execution_count":    len(exportedExecs),
 		"continuation_count": len(exportedConts),
-		"event_types":         eventTypeCounts,
+		"event_types":        eventTypeCounts,
 		"execution_stats": map[string]int{
 			"total": execTotal, "succeeded": execSucceeded,
 			"failed": execFailed, "running": execRunning, "timed_out": execTimedOut,
@@ -1078,13 +1096,13 @@ func (h *Handler) StartCacheCleanup(interval time.Duration) {
 }
 
 type TraceResponse struct {
-	Decision     *models.DecisionResponse `json:"decision,omitempty"`
-	Receipt      *models.Receipt          `json:"receipt,omitempty"`
+	Decision      *models.DecisionResponse     `json:"decision,omitempty"`
+	Receipt       *models.Receipt              `json:"receipt,omitempty"`
 	Continuations []*continuation.Continuation `json:"continuations,omitempty"`
-	Approvals    []*approval.ApprovalRequest  `json:"approvals,omitempty"`
-	Executions   []*execution.Execution        `json:"executions,omitempty"`
-	Events       []*events.Event               `json:"events,omitempty"`
-	Capabilities  []*capabilities.TrackedLease  `json:"capabilities,omitempty"`
+	Approvals     []*approval.ApprovalRequest  `json:"approvals,omitempty"`
+	Executions    []*execution.Execution       `json:"executions,omitempty"`
+	Events        []*events.Event              `json:"events,omitempty"`
+	Capabilities  []*capabilities.TrackedLease `json:"capabilities,omitempty"`
 }
 
 func (h *Handler) handleTrace(w http.ResponseWriter, r *http.Request) {
@@ -1120,8 +1138,9 @@ func (h *Handler) handleTrace(w http.ResponseWriter, r *http.Request) {
 		h.decisionCache.mu.RUnlock()
 
 		if h.receiptsStore != nil {
-			if rcp, err := h.receiptsStore.Get(decisionID); err == nil {
-				receipt = rcp
+			// Receipts are keyed by receipt_id, not decision_id; look up by decision.
+			if rcps := h.receiptsStore.ListByDecision(decisionID); len(rcps) > 0 {
+				receipt = rcps[0]
 			}
 		}
 
@@ -1239,14 +1258,14 @@ func (h *Handler) handleTrace(w http.ResponseWriter, r *http.Request) {
 }
 
 type SummaryResponse struct {
-	Approvals      ApprovalSummary      `json:"approvals"`
-	Executions     ExecutionSummary     `json:"executions"`
-	Capabilities   CapabilitySummary    `json:"capabilities"`
-	DecisionCache  int                 `json:"decision_cache_size"`
+	Approvals     ApprovalSummary   `json:"approvals"`
+	Executions    ExecutionSummary  `json:"executions"`
+	Capabilities  CapabilitySummary `json:"capabilities"`
+	DecisionCache int               `json:"decision_cache_size"`
 }
 
 type ApprovalSummary struct {
-	Pending   int `json:"pending"`
+	Pending  int `json:"pending"`
 	Approved int `json:"approved"`
 	Denied   int `json:"denied"`
 	Total    int `json:"total"`
@@ -1261,9 +1280,9 @@ type ExecutionSummary struct {
 }
 
 type CapabilitySummary struct {
-	Active   int `json:"active"`
-	Revoked  int `json:"revoked"`
-	Total    int `json:"total"`
+	Active  int `json:"active"`
+	Revoked int `json:"revoked"`
+	Total   int `json:"total"`
 }
 
 func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
@@ -1326,35 +1345,35 @@ func (h *Handler) handleSummary(w http.ResponseWriter, r *http.Request) {
 
 // RequiredActionFieldsResponse describes the schema of an action request.
 type RequiredActionFieldsResponse struct {
-	ActionType     ActionTypeField            `json:"action_type"`
-	Environment    ActionTypeField            `json:"environment"`
-	Resource       ActionTypeField            `json:"resource"`
-	Nonce          ActionTypeField            `json:"nonce"`
-	IssuedAt       ActionTypeField            `json:"issued_at"`
-	AgentIdentity  OptionalFieldGroup         `json:"agent_identity"`
-	CapabilityLease OptionalFieldGroup        `json:"capability_lease"`
-	TrustMetadata  OptionalFieldGroup         `json:"trust_metadata"`
-	Metadata       OptionalFieldGroup         `json:"metadata"`
-	SupportedActionTypes   []string            `json:"supported_action_types"`
-	SupportedEnvironments  []string            `json:"supported_environments"`
+	ActionType            ActionTypeField    `json:"action_type"`
+	Environment           ActionTypeField    `json:"environment"`
+	Resource              ActionTypeField    `json:"resource"`
+	Nonce                 ActionTypeField    `json:"nonce"`
+	IssuedAt              ActionTypeField    `json:"issued_at"`
+	AgentIdentity         OptionalFieldGroup `json:"agent_identity"`
+	CapabilityLease       OptionalFieldGroup `json:"capability_lease"`
+	TrustMetadata         OptionalFieldGroup `json:"trust_metadata"`
+	Metadata              OptionalFieldGroup `json:"metadata"`
+	SupportedActionTypes  []string           `json:"supported_action_types"`
+	SupportedEnvironments []string           `json:"supported_environments"`
 }
 
 // ActionTypeField describes a required string field with allowed values.
 type ActionTypeField struct {
-	Required    bool     `json:"required"`
-	Type        string   `json:"type"`
-	Description string   `json:"description"`
+	Required      bool     `json:"required"`
+	Type          string   `json:"type"`
+	Description   string   `json:"description"`
 	AllowedValues []string `json:"allowed_values,omitempty"`
-	Example     string   `json:"example,omitempty"`
+	Example       string   `json:"example,omitempty"`
 }
 
 // OptionalFieldGroup describes an optional JSON object field.
 type OptionalFieldGroup struct {
-	Required    bool                   `json:"required"`
-	Type        string                 `json:"type"`
-	Description string                 `json:"description"`
+	Required    bool                       `json:"required"`
+	Type        string                     `json:"type"`
+	Description string                     `json:"description"`
 	Fields      map[string]ActionTypeField `json:"fields,omitempty"`
-	Example     map[string]interface{} `json:"example,omitempty"`
+	Example     map[string]interface{}     `json:"example,omitempty"`
 }
 
 // handleRequiredActionFields returns the schema for /v1/runtime/check requests.

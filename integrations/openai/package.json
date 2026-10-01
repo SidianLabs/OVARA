@@ -6,8 +6,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "cd ../langchain && npx vitest run --config ../openai/vitest.config.cjs",
-    "test:watch": "cd ../langchain && npx vitest --config ../openai/vitest.config.cjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": { "@ovara/sdk": "*", "openai": "^4.70.0" },

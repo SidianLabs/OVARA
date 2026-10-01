@@ -39,6 +39,10 @@ func (i *Issuer) IssueLease(issuerID string, issuerKey ed25519.PrivateKey, subje
 	if !issuer.IsActive() {
 		return nil, fmt.Errorf("issuer identity is not active: %s", issuerID)
 	}
+	if len(issuerKey) != ed25519.PrivateKeySize ||
+		!issuerKey.Public().(ed25519.PublicKey).Equal(ed25519.PublicKey(issuer.PublicKey)) {
+		return nil, fmt.Errorf("issuer key does not match registered public key for: %s", issuerID)
+	}
 
 	lease, err := crypto.IssueCapabilityLease(issuer, issuerKey, subject, allowedActions, resourceScope, ttlMinutes, delegationDepth)
 	if err != nil {
@@ -52,11 +56,9 @@ func (i *Issuer) IssueLease(issuerID string, issuerKey ed25519.PrivateKey, subje
 }
 
 func (i *Issuer) RevokeLease(leaseID string) error {
-	lease, ok := i.leaseStore.Get(leaseID)
-	if !ok {
+	if err := i.leaseStore.Revoke(leaseID); err != nil {
 		return fmt.Errorf("lease not found: %s", leaseID)
 	}
-	lease.Expiry = lease.IssuedAt
 	return nil
 }
 

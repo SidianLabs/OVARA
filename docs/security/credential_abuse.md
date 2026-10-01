@@ -28,7 +28,8 @@ or memory dumps.
 - Store tokens in secrets managers, not in config files
 - Use short-lived tokens where possible
 - Rotate tokens at least every 90 days
-- Use TLS for all network communication to prevent network sniffing
+- Terminate TLS in front of the gateway (reverse proxy/load balancer)
+  — the gateway binary serves plain HTTP — to prevent network sniffing
 - Monitor for anomalous token usage (e.g., from unexpected IPs)
 
 ### 3. Token Replay

@@ -12,8 +12,9 @@ If any of these are not defended, Ovara is not a viable product.
 ### 1. Prompt Injection → Privilege Escalation
 - **Risk:** Critical
 - **Likelihood:** High
-- **Defense:** Policy enforcement on every action, no privilege
-  escalation possible from the agent's runtime
+- **Defense:** Policy enforcement on every action routed through the
+  gateway (its own executors or the client-side interceptors); the
+  agent gains no privilege beyond what a decision allows
 - **Tested by:** Phase 67 trust-aware security tests
 
 ### 2. Capability Abuse
@@ -50,14 +51,21 @@ These threats are important but not as common as P0.
 ### 6. Delegation Chain Forgery
 - **Risk:** High
 - **Likelihood:** Low
-- **Defense:** SHA-256 hash lineage verification, ed25519 signatures
+- **Defense:** Lease signatures verified against `trusted_issuers`;
+  keyless SHA-256 chain hash detects corrupted chains (integrity only,
+  not proof of authority)
 - **Tested by:** `identity/internal/crypto/delegation_test.go`
 
 ### 7. Recursive Execution (Gateway Bypass)
 - **Risk:** High
-- **Likelihood:** Low
-- **Defense:** All execution surfaces routed through gateway,
-  AppArmor prevents bypass
+- **Likelihood:** Medium
+- **Defense:** Gateway-executed actions are non-bypassable; AppArmor
+  confines the gateway process so the agent cannot tamper with it.
+  Caveat: client-side interceptors are cooperative — an agent that
+  does not call the interceptor is not intercepted, and subprocesses
+  it spawns are not governed. See
+  [executor_proxy.md](../architecture/executor_proxy.md) for the V2
+  non-bypassable design.
 - **Tested by:** Shell interceptor tests, AppArmor profile validation
 
 ## P2 — Nice to Defend in V1

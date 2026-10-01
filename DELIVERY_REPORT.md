@@ -27,7 +27,7 @@ final deep-hardening.
 ### Core Gateway (`runtime/gateway/`)
 - **30 packages**, 152 Go files, 866+ test functions
 - HTTP API with 30+ endpoints across 9 route groups
-- 11 execution surfaces: `shell`, `exec`, `git.push`, `git.pull`, `git.fetch`,
+- 12 execution surfaces: `shell`, `exec`, `git.push`, `git.pull`, `git.fetch`,
   `git.checkout`, `github.push`, `github.pr`, `github.merge`,
   `github.delete_branch`, `ci.trigger`, plus `shell.sandboxed` (opt-in)
 - Policy engine: allow/deny/escalate with **trust-dependent rules**
@@ -41,8 +41,8 @@ final deep-hardening.
 - Orchestrator with race-safe atomic claiming, **panic recovery**,
   **stuck-executing sweep**
 - File-backed persistence with configurable retention for all stores
-- OpenTelemetry-compatible tracing instrumentation
-- OTLP + NATS telemetry pipeline with ClickHouse schema
+- OpenTelemetry-compatible tracing instrumentation *(code present, not wired in server.go)*
+- OTLP + NATS telemetry pipeline with ClickHouse schema *(not wired — see `observability/README.md`)*
 
 ### Machine Identity (`identity/`)
 - **8 Go files**, 66+ test cases
@@ -118,7 +118,7 @@ final deep-hardening.
 
 ### Infrastructure (`infrastructure/`)
 - **Terraform** K8s manifests: control plane (2-replica), gateway (HPA 3-20),
-  PostgreSQL, multi-region (us-east-1, us-west-2, eu-west-1, ap-southeast-1)
+  PostgreSQL; multi-region layout scaffolded (regions.tf locals unused, modules commented out)
 - **Docker Compose** full stack
 - **Dockerfiles** for all 11 services
 
@@ -192,24 +192,24 @@ Python SDK:         70/70 tests passing (pytest)
 | `/v1/approval/create` | POST | Create approval request |
 | `/v1/approval/{id}/approve` | POST | Approve escalation |
 | `/v1/approval/{id}/deny` | POST | Deny escalation |
-| `/v1/approval/list` | GET | List approvals |
-| `/v1/continuations/list` | GET | List continuations |
+| `/v1/approvals` | GET | List approvals |
+| `/v1/continuations` | GET | List continuations |
 | `/v1/continuations/{id}` | GET | Get continuation |
 | `/v1/continuations/retry` | POST | Retry failed |
 | `/v1/continuations/cancel` | POST | Cancel |
 | `/v1/continuations/recover-executing` | POST | Recover stuck |
 | `/v1/executions/{id}` | GET | Get execution |
-| `/v1/executions/list` | GET | List executions |
+| `/v1/executions` | GET | List executions |
 | `/v1/receipts/{id}` | GET | Get receipt |
-| `/v1/receipts/list` | GET | List receipts |
+| `/v1/receipts` | GET | List receipts |
 | `/v1/policy/simulate` | POST | Simulate policy |
-| `/v1/policy/compare` | POST | Compare policies |
+| `/v1/policy/diff` | POST | Diff policies |
 | `/v1/shield/status` | GET | Shield status |
 | `/v1/shield/restrict/{id}` | POST | Restrict agent |
 | `/v1/shield/unrestrict/{id}` | POST | Unrestrict agent |
 | `/v1/trust/context` | GET | Agent trust context |
-| `/v1/admin/orchestrator/pause` | POST | Pause orchestrator |
-| `/v1/admin/orchestrator/resume` | POST | Resume orchestrator |
+| `/v1/continuations/queue/pause` | POST | Pause continuation queue |
+| `/v1/continuations/queue/resume` | POST | Resume continuation queue |
 
 ---
 
@@ -217,15 +217,17 @@ Python SDK:         70/70 tests passing (pytest)
 
 | Operation | Latency |
 |-----------|---------|
-| Policy-only decision | 5,374 ns |
-| Decision with identity | 6,126 ns |
-| Decision with anomaly | 6,210 ns |
-| Full identity+lease decision | 7,669 ns |
-| Evaluator.Evaluate (no HTTP) | 1,271 ns |
-| HMAC-SHA256 sign | 598 ns |
-| HMAC-SHA256 verify | 614 ns |
-| Decision cache put | 38 ns |
-| Decision cache get | 39 ns |
+| Policy-only decision (httptest, in-process) | ~9.7 µs |
+| Decision with identity | ~10.7 µs |
+| Decision with trust anomaly | ~10.7 µs |
+| Full identity+lease decision | ~12.9 µs |
+| Evaluator.Evaluate (no HTTP) | ~2.7 µs |
+| HMAC-SHA256 sign | ~620 ns |
+| HMAC-SHA256 verify | ~650 ns |
+| Decision cache put | ~39 ns |
+| Decision cache get | ~40 ns |
+
+Throughput: ~115,000 decisions/sec on loopback (50-way concurrency, keep-alive). See `docs/BENCHMARKS.md`.
 
 ---
 
@@ -292,7 +294,7 @@ Python SDK:         70/70 tests passing (pytest)
 
 | Criterion | Status |
 |-----------|--------|
-| 11 execution surfaces | ✅ |
+| 12 execution surfaces | ✅ |
 | Policy engine with allow/deny/escalate | ✅ |
 | Trust-dependent policy rules | ✅ |
 | Cryptographic receipt signing (HMAC-SHA256, sig_v1) | ✅ |
@@ -323,11 +325,11 @@ Python SDK:         70/70 tests passing (pytest)
 | Migration tool | ✅ |
 | CLI | ✅ |
 | Benchmark tool | ✅ |
-| OpenTelemetry tracing | ✅ |
-| NATS + ClickHouse telemetry | ✅ |
-| Prometheus alerts | ✅ |
+| OpenTelemetry tracing | 🚧 code present, not wired |
+| NATS + ClickHouse telemetry | 🚧 pipeline code + schema, not wired |
+| Prometheus alerts | 🚧 rules shipped, no `ovara_*` metrics exported |
 | Grafana dashboards | ✅ |
-| Terraform K8s manifests (multi-region) | ✅ |
+| Terraform K8s manifests | ✅ (multi-region scaffolded, not wired) |
 | Docker Compose full stack | ✅ |
 | AppArmor, eBPF, Seccomp, Firecracker | ✅ |
 | CI/CD (Go, TS, Docker) | ✅ |

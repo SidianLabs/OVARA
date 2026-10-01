@@ -1,17 +1,20 @@
 package drift
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 type DriftWindowEntry struct {
-	IsRisky  bool   `json:"is_risky"`
-	Action   string `json:"action"`
+	IsRisky   bool   `json:"is_risky"`
+	Action    string `json:"action"`
 	Timestamp int64  `json:"timestamp"`
 }
 
 type DriftState struct {
-	Window    int                            `json:"window"`
-	Threshold float64                        `json:"threshold"`
-	Agents    map[string]DriftAgentState     `json:"agents"`
+	Window    int                        `json:"window"`
+	Threshold float64                    `json:"threshold"`
+	Agents    map[string]DriftAgentState `json:"agents"`
 }
 
 type DriftAgentState struct {
@@ -28,7 +31,9 @@ type DriftResult struct {
 }
 
 type actionEntry struct {
-	isRisky bool
+	isRisky   bool
+	action    string
+	timestamp int64
 }
 
 type agentState struct {
@@ -75,7 +80,7 @@ func (d *DriftDetector) RecordAction(agentID string, actionType string, isRisky 
 	defer d.mu.Unlock()
 
 	s := d.getOrCreate(agentID)
-	s.actions[s.head] = actionEntry{isRisky: isRisky}
+	s.actions[s.head] = actionEntry{isRisky: isRisky, action: actionType, timestamp: time.Now().UTC().UnixNano()}
 	s.head = (s.head + 1) % d.window
 	if s.count < d.window {
 		s.count++
@@ -127,9 +132,9 @@ func (d *DriftDetector) ExportState() DriftState {
 		actions := make([]DriftWindowEntry, len(s.actions))
 		for i, a := range s.actions {
 			actions[i] = DriftWindowEntry{
-				IsRisky:  a.isRisky,
-				Action:   "",
-				Timestamp: 0,
+				IsRisky:   a.isRisky,
+				Action:    a.action,
+				Timestamp: a.timestamp,
 			}
 		}
 		state.Agents[id] = DriftAgentState{
@@ -147,20 +152,47 @@ func (d *DriftDetector) ImportState(state DriftState) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	d.window = state.Window
-	d.threshold = state.Threshold
+	// Clamp to the same bounds as NewDriftDetector: an imported Window of 0
+	// would cause a division-by-zero panic in RecordAction.
+	if state.Window < 1 {
+		d.window = 10
+	} else {
+		d.window = state.Window
+	}
+	if state.Threshold < 0 || state.Threshold > 1 {
+		d.threshold = 0.5
+	} else {
+		d.threshold = state.Threshold
+	}
 	d.agents = make(map[string]*agentState, len(state.Agents))
 
 	for id, as := range state.Agents {
-		actions := make([]actionEntry, len(as.Actions))
+		// The ring buffer must be at least window-sized or RecordAction will
+		// index out of bounds.
+		n := len(as.Actions)
+		if n < d.window {
+			n = d.window
+		}
+		actions := make([]actionEntry, n)
 		for i, a := range as.Actions {
-			actions[i] = actionEntry{isRisky: a.IsRisky}
+			if i >= n {
+				break
+			}
+			actions[i] = actionEntry{isRisky: a.IsRisky, action: a.Action, timestamp: a.Timestamp}
+		}
+		head := as.Head
+		if head < 0 || head >= d.window {
+			head = 0
+		}
+		count := as.Count
+		if count < 0 || count > d.window {
+			count = d.window
 		}
 		d.agents[id] = &agentState{
 			actions: actions,
-			head:    as.Head,
+			head:    head,
 			size:    as.Size,
-			count:   as.Count,
+			count:   count,
 		}
 	}
 }

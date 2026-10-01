@@ -2,6 +2,7 @@ package observe
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"ovara.runtime.gateway/internal/events"
@@ -28,6 +29,7 @@ type MetricsBridge struct {
 	gatewayID  string
 	interval   time.Duration
 	stopCh     chan struct{}
+	stopOnce   sync.Once
 }
 
 func NewMetricsBridge(m MetricsSnapshotter, p *TelemetryPipeline, gatewayID string, interval time.Duration) *MetricsBridge {
@@ -59,7 +61,8 @@ func (b *MetricsBridge) Start() {
 }
 
 func (b *MetricsBridge) Stop() {
-	close(b.stopCh)
+	// Guard against double-close: a second Stop must not panic.
+	b.stopOnce.Do(func() { close(b.stopCh) })
 }
 
 func (b *MetricsBridge) emitSnapshot() {

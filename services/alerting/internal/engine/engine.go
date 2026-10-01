@@ -32,11 +32,30 @@ type Engine struct {
 }
 
 func New(s store.Store) *Engine {
-	return &Engine{
+	e := &Engine{
 		store:     s,
 		dedupe:    make(map[string]time.Time),
 		dedupeTTL: 5 * time.Minute,
 		nowFunc:   time.Now,
+	}
+	go e.sweepDedupe()
+	return e
+}
+
+// sweepDedupe periodically drops dedupe entries older than dedupeTTL so the
+// map does not grow unboundedly.
+func (e *Engine) sweepDedupe() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		e.mu.Lock()
+		now := e.nowFunc()
+		for key, lastSeen := range e.dedupe {
+			if now.Sub(lastSeen) >= e.dedupeTTL {
+				delete(e.dedupe, key)
+			}
+		}
+		e.mu.Unlock()
 	}
 }
 
@@ -47,7 +66,7 @@ func generateID() string {
 }
 
 func dedupeKey(a *models.Alert) string {
-	return fmt.Sprintf("%s:%s:%s:%s", a.Type, a.AgentID, a.GatewayID, a.Resource)
+	return fmt.Sprintf("%s:%s:%s:%s:%s", a.Type, a.AgentID, a.GatewayID, a.OrganizationID, a.Resource)
 }
 
 func (e *Engine) ProcessEvent(ev Event) (*models.Alert, error) {
@@ -131,7 +150,9 @@ func (e *Engine) EvaluateRules(ev Event) []*models.Alert {
 			State:          models.AlertStateNew,
 		}
 
-		key := dedupeKey(alert)
+		// Rule alerts must not share the triggering event's dedupe key —
+		// include the rule ID so each rule dedupes independently.
+		key := "rule:" + rule.ID + ":" + dedupeKey(alert)
 		e.mu.Lock()
 		if lastSeen, ok := e.dedupe[key]; ok {
 			if e.nowFunc().Sub(lastSeen) < e.dedupeTTL {

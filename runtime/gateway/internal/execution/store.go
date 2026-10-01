@@ -70,15 +70,15 @@ func (e *Execution) MarkStarted() {
 func (e *Execution) MarkSucceeded(exitCode int, stdout, stderr string) {
 	e.State = StateSucceeded
 	e.ExitCode = exitCode
-	e.Stdout = stdout
-	e.Stderr = stderr
+	e.Stdout = Redact(stdout)
+	e.Stderr = Redact(stderr)
 	now := time.Now().UTC()
 	e.FinishedAt = &now
 }
 
 func (e *Execution) MarkFailed(errMsg string, exitCode int) {
 	e.State = StateFailed
-	e.Error = errMsg
+	e.Error = Redact(errMsg)
 	e.ExitCode = exitCode
 	now := time.Now().UTC()
 	e.FinishedAt = &now
@@ -263,10 +263,10 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 			exitCode = exitErr.ExitCode()
 		}
 		if execCtx.Err() == context.DeadlineExceeded {
-			e.Error = fmt.Sprintf("shell: command timed out after %v", timeout)
+			e.Error = Redact(fmt.Sprintf("shell: command timed out after %v", timeout))
 			e.MarkTimedOut()
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = se.StdoutLimitBytes
@@ -274,8 +274,8 @@ func (se *ShellExecutor) Execute(ctx context.Context, e *Execution) error {
 			return err
 		}
 		e.MarkFailed(stderrBuf.buf.String(), exitCode)
-		e.Stdout = stdoutBuf.buf.String()
-		e.Stderr = stderrBuf.buf.String()
+		e.Stdout = Redact(stdoutBuf.buf.String())
+		e.Stderr = Redact(stderrBuf.buf.String())
 		e.StdoutTruncated = stdoutBuf.truncated
 		e.StderrTruncated = stderrBuf.truncated
 		e.StdoutLimitBytes = se.StdoutLimitBytes
@@ -473,8 +473,8 @@ func (de *DirectExecutor) Execute(ctx context.Context, e *Execution) error {
 		} else if strings.Contains(err.Error(), "executable file not found") || strings.Contains(err.Error(), "no such file or directory") {
 			exitCode = 127
 			e.MarkFailed("exec: binary not found: "+binary, exitCode)
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = de.StdoutLimitBytes
@@ -482,10 +482,10 @@ func (de *DirectExecutor) Execute(ctx context.Context, e *Execution) error {
 			return nil
 		}
 		if execCtx.Err() == context.DeadlineExceeded {
-			e.Error = fmt.Sprintf("exec: command timed out after %v", timeout)
+			e.Error = Redact(fmt.Sprintf("exec: command timed out after %v", timeout))
 			e.MarkTimedOut()
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = de.StdoutLimitBytes
@@ -493,8 +493,8 @@ func (de *DirectExecutor) Execute(ctx context.Context, e *Execution) error {
 			return err
 		}
 		e.MarkFailed(stderrBuf.buf.String(), exitCode)
-		e.Stdout = stdoutBuf.buf.String()
-		e.Stderr = stderrBuf.buf.String()
+		e.Stdout = Redact(stdoutBuf.buf.String())
+		e.Stderr = Redact(stderrBuf.buf.String())
 		e.StdoutTruncated = stdoutBuf.truncated
 		e.StderrTruncated = stderrBuf.truncated
 		e.StdoutLimitBytes = de.StdoutLimitBytes
@@ -636,29 +636,36 @@ func (ge *GitExecutor) Execute(ctx context.Context, e *Execution) error {
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Reject branch names that look like flags so user input can never be
+	// interpreted as a git option, and use "--" to end option parsing.
+	if strings.HasPrefix(gitRes.Branch, "-") {
+		e.MarkFailed("git: invalid branch name (must not start with '-')", 1)
+		return fmt.Errorf("invalid branch name: %s", gitRes.Branch)
+	}
+
 	var args []string
 	switch e.ActionType {
 	case "git.push":
 		args = []string{"push"}
 		if gitRes.Branch != "" {
-			args = append(args, "origin", gitRes.Branch)
+			args = append(args, "--", "origin", gitRes.Branch)
 		}
 	case "git.pull":
 		args = []string{"pull"}
 		if gitRes.Branch != "" {
-			args = append(args, gitRes.Branch)
+			args = append(args, "--", gitRes.Branch)
 		}
 	case "git.fetch":
 		args = []string{"fetch"}
 		if gitRes.Branch != "" {
-			args = append(args, gitRes.Branch)
+			args = append(args, "--", gitRes.Branch)
 		}
 	case "git.checkout":
 		if gitRes.Branch == "" {
 			e.MarkFailed("git checkout: branch is required", 1)
 			return fmt.Errorf("branch is required for git checkout")
 		}
-		args = []string{"checkout", gitRes.Branch}
+		args = []string{"checkout", gitRes.Branch, "--"}
 	default:
 		e.MarkFailed("unsupported git action type: "+e.ActionType, 1)
 		return fmt.Errorf("unsupported git action type: %s", e.ActionType)
@@ -680,8 +687,8 @@ func (ge *GitExecutor) Execute(ctx context.Context, e *Execution) error {
 		} else if strings.Contains(err.Error(), "executable file not found") || strings.Contains(err.Error(), "no such file or directory") {
 			exitCode = 127
 			e.MarkFailed("git: binary not found in PATH", exitCode)
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = ge.StdoutLimitBytes
@@ -689,10 +696,10 @@ func (ge *GitExecutor) Execute(ctx context.Context, e *Execution) error {
 			return nil
 		}
 		if execCtx.Err() == context.DeadlineExceeded {
-			e.Error = fmt.Sprintf("git: command timed out after %v", timeout)
+			e.Error = Redact(fmt.Sprintf("git: command timed out after %v", timeout))
 			e.MarkTimedOut()
-			e.Stdout = stdoutBuf.buf.String()
-			e.Stderr = stderrBuf.buf.String()
+			e.Stdout = Redact(stdoutBuf.buf.String())
+			e.Stderr = Redact(stderrBuf.buf.String())
 			e.StdoutTruncated = stdoutBuf.truncated
 			e.StderrTruncated = stderrBuf.truncated
 			e.StdoutLimitBytes = ge.StdoutLimitBytes
@@ -700,8 +707,8 @@ func (ge *GitExecutor) Execute(ctx context.Context, e *Execution) error {
 			return err
 		}
 		e.MarkFailed(stderrBuf.buf.String(), exitCode)
-		e.Stdout = stdoutBuf.buf.String()
-		e.Stderr = stderrBuf.buf.String()
+		e.Stdout = Redact(stdoutBuf.buf.String())
+		e.Stderr = Redact(stderrBuf.buf.String())
 		e.StdoutTruncated = stdoutBuf.truncated
 		e.StderrTruncated = stderrBuf.truncated
 		e.StdoutLimitBytes = ge.StdoutLimitBytes
@@ -728,6 +735,24 @@ type Store interface {
 	Stats() (total, succeeded, failed, running, timedOut int)
 }
 
+// snapshot returns a copy of the execution so callers never share the stored
+// object (which executor goroutines may otherwise race on while mutating
+// stdout/stderr).
+func (e *Execution) snapshot() *Execution {
+	cp := *e
+	return &cp
+}
+
+// sanitized returns a copy of e with Stdout/Stderr/Error scrubbed for common
+// secret patterns. Stored records must never carry raw secrets.
+func (e *Execution) sanitized() *Execution {
+	cp := *e
+	cp.Stdout = Redact(cp.Stdout)
+	cp.Stderr = Redact(cp.Stderr)
+	cp.Error = Redact(cp.Error)
+	return &cp
+}
+
 type InMemoryStore struct {
 	mu        sync.RWMutex
 	executions map[string]*Execution
@@ -745,7 +770,7 @@ func (s *InMemoryStore) Create(e *Execution) error {
 	if _, exists := s.executions[e.ExecutionID]; exists {
 		return fmt.Errorf("execution already exists: %s", e.ExecutionID)
 	}
-	s.executions[e.ExecutionID] = e
+	s.executions[e.ExecutionID] = e.sanitized()
 	return nil
 }
 
@@ -753,7 +778,10 @@ func (s *InMemoryStore) Get(id string) (*Execution, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e, ok := s.executions[id]
-	return e, ok
+	if !ok {
+		return nil, false
+	}
+	return e.snapshot(), true
 }
 
 func (s *InMemoryStore) Update(e *Execution) error {
@@ -762,7 +790,7 @@ func (s *InMemoryStore) Update(e *Execution) error {
 	if _, exists := s.executions[e.ExecutionID]; !exists {
 		return fmt.Errorf("execution not found: %s", e.ExecutionID)
 	}
-	s.executions[e.ExecutionID] = e
+	s.executions[e.ExecutionID] = e.sanitized()
 	return nil
 }
 
@@ -772,7 +800,7 @@ func (s *InMemoryStore) ListByContinuation(continuationID string) []*Execution {
 	var result []*Execution
 	for _, e := range s.executions {
 		if e.ContinuationID == continuationID {
-			result = append(result, e)
+			result = append(result, e.snapshot())
 		}
 	}
 	return result
@@ -784,7 +812,7 @@ func (s *InMemoryStore) ListByDecision(decisionID string) []*Execution {
 	var result []*Execution
 	for _, e := range s.executions {
 		if e.DecisionID == decisionID {
-			result = append(result, e)
+			result = append(result, e.snapshot())
 		}
 	}
 	return result
@@ -795,7 +823,7 @@ func (s *InMemoryStore) ListAll() []*Execution {
 	defer s.mu.RUnlock()
 	var result []*Execution
 	for _, e := range s.executions {
-		result = append(result, e)
+		result = append(result, e.snapshot())
 	}
 	return result
 }
@@ -806,7 +834,7 @@ func (s *InMemoryStore) ListByState(state State) []*Execution {
 	var result []*Execution
 	for _, e := range s.executions {
 		if e.State == state {
-			result = append(result, e)
+			result = append(result, e.snapshot())
 		}
 	}
 	return result

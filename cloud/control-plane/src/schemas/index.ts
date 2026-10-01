@@ -10,21 +10,34 @@ export const createTenantSchema = z.object({
 });
 
 export const createOrganizationSchema = z.object({
-  tenantId: uuid(),
+  // Accepted for backwards compatibility but ignored: the tenant is always
+  // derived from the authenticated organization's tenantId.
+  tenantId: uuid().optional(),
   name: z.string().min(3).max(255).regex(/^[a-z0-9-]+$/),
   displayName: z.string().min(1).max(255),
 });
 
+export const updateTenantSchema = z.object({
+  name: z.string().min(3).max(64).regex(/^[a-z0-9-]+$/).optional(),
+  displayName: z.string().min(1).max(255).optional(),
+  plan: z.enum(["free", "pro", "enterprise"]).optional(),
+});
+
+export const updateOrganizationSchema = z.object({
+  name: z.string().min(3).max(255).regex(/^[a-z0-9-]+$/).optional(),
+  displayName: z.string().min(1).max(255).optional(),
+});
+
 export const enrollGatewaySchema = z.object({
-  organizationId: uuid(),
   name: z.string().min(3).max(255),
   environment: z.string().min(1).max(50).default("local"),
   region: z.string().min(1).max(50).default("us-east-1"),
   publicKey: z.string().min(1),
+  endpointUrl: z.string().url().optional(),
+  allowInsecure: z.boolean().default(false),
 });
 
 export const createPolicySchema = z.object({
-  organizationId: uuid(),
   name: z.string().min(3).max(255),
   rules: z.array(z.object({
     id: z.string(),
@@ -42,7 +55,9 @@ export const publishPolicySchema = z.object({
 
 export const publishToGatewaysSchema = z.object({
   policyId: uuid(),
-  organizationId: uuid(),
+  // Optional for backwards compatibility; when present it must match the
+  // authenticated organization.
+  organizationId: uuid().optional(),
 });
 
 export const publishToGatewaySchema = z.object({
@@ -50,14 +65,12 @@ export const publishToGatewaySchema = z.object({
 });
 
 export const createApiKeySchema = z.object({
-  organizationId: uuid(),
   name: z.string().min(3).max(255),
   scopes: z.array(z.string()).min(1),
   expiresAt: timestamp().optional(),
 });
 
 export const createRevocationSchema = z.object({
-  organizationId: uuid(),
   leaseId: z.string().min(1),
   reason: z.string().optional(),
 });
@@ -68,7 +81,9 @@ export const paginationSchema = z.object({
 });
 
 export type CreateTenant = z.infer<typeof createTenantSchema>;
+export type UpdateTenant = z.infer<typeof updateTenantSchema>;
 export type CreateOrganization = z.infer<typeof createOrganizationSchema>;
+export type UpdateOrganization = z.infer<typeof updateOrganizationSchema>;
 export type EnrollGateway = z.infer<typeof enrollGatewaySchema>;
 export type CreatePolicy = z.infer<typeof createPolicySchema>;
 export type PublishPolicy = z.infer<typeof publishPolicySchema>;
