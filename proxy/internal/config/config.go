@@ -31,6 +31,11 @@ type Config struct {
 	CAKeyFile  string `json:"ca_key_file"`
 
 	ReceiptKeyFile string `json:"receipt_key_file"` // ed25519 private key (hex) for receipt signing
+	// RequestKeyFile holds the hex ed25519 key that signs every
+	// evaluation request (edsig_v2). When set, the proxy evaluates via
+	// the core /v2 pipeline (signed requests, write-ahead audit);
+	// unset falls back to /v1 unsigned requests (transition only).
+	RequestKeyFile string `json:"request_key_file"`
 	ReceiptsFile   string `json:"receipts_file"`    // JSONL append-only receipt chain
 	PubKeyFile     string `json:"pubkey_file"`      // where to write the receipt verify pubkey
 

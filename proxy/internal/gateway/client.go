@@ -5,6 +5,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"ovara.runtime.gateway/core/action"
+	"ovara.runtime.gateway/core/decide"
 )
 
 type Client struct {
@@ -22,6 +26,7 @@ type Client struct {
 	subject    string
 	resolveOnce sync.Once
 	hc         *http.Client
+	reqKey     ed25519.PrivateKey // set → signed /v2 requests
 }
 
 // subjectID mirrors the gateway's credential-derived principal
@@ -96,8 +101,22 @@ func nonce() string {
 	return hex.EncodeToString(b)
 }
 
+// SetRequestKey installs the ed25519 request-signing key (hex). When
+// set, Check uses the signed /v2 pipeline.
+func (c *Client) SetRequestKey(hexKey string) error {
+	k, err := hex.DecodeString(hexKey)
+	if err != nil || len(k) != ed25519.PrivateKeySize {
+		return fmt.Errorf("request_key_file: invalid hex ed25519 private key")
+	}
+	c.reqKey = ed25519.PrivateKey(k)
+	return nil
+}
+
 // Check evaluates an HTTP egress action. resource is "METHOD scheme://host/path".
 func (c *Client) Check(ctx context.Context, method, url string) (*Decision, error) {
+	if c.reqKey != nil {
+		return c.checkV2(ctx, method, url)
+	}
 	body, _ := json.Marshal(map[string]any{
 		"action_type": "http.request",
 		"resource":    fmt.Sprintf("%s %s", method, url),
@@ -188,4 +207,55 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, out a
 		return fmt.Errorf("gateway returned %d", resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// checkV2 evaluates through the core pipeline: the proxy canonicalizes
+// locally and signs, so the signature covers the exact canonical
+// action the engine evaluates (no display/eval divergence).
+func (c *Client) checkV2(ctx context.Context, method, url string) (*Decision, error) {
+	a, err := action.Canonicalize("http.request", method+" "+url)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize: %w", err)
+	}
+	req := decide.Request{
+		Action:   a,
+		Nonce:    nonce(),
+		IssuedAt: time.Now().UTC(),
+		ActorID:  c.resolvedSubject(),
+	}
+	req.Signature = "edsig_v2:" + hex.EncodeToString(
+		ed25519.Sign(c.reqKey, []byte(req.RequestCanonical())))
+	body, _ := json.Marshal(req)
+	hreq, err := http.NewRequestWithContext(ctx, "POST",
+		c.baseURL+"/v2/runtime/check", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		hreq.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.hc.Do(hreq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gateway returned %d", resp.StatusCode)
+	}
+	var v2 struct {
+		Outcome     string `json:"outcome"`
+		ReasonClass string `json:"reason_class"`
+		ActionHash  string `json:"action_hash"`
+		PolicyID    string `json:"policy_id"`
+		AuditSeq    uint64 `json:"audit_seq"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&v2); err != nil {
+		return nil, err
+	}
+	return &Decision{
+		Decision:         v2.Outcome,
+		ReasonCodes:      []string{v2.ReasonClass},
+		RequiresApproval: v2.Outcome == "escalate",
+	}, nil
 }

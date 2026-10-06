@@ -280,6 +280,16 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
+	if cfg.RequestKeyFile != "" {
+		kb, err := os.ReadFile(cfg.RequestKeyFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("request_key_file: %w", err)
+		}
+		if err := gw.SetRequestKey(strings.TrimSpace(string(kb))); err != nil {
+			return nil, nil, err
+		}
+		log.Printf("request signing enabled (edsig_v2 → /v2 pipeline)")
+	}
 	srv := proxy.New(rootCA, gw, creds.Load(cfg.Credentials), chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
 	if cfg.GitGate != nil {
