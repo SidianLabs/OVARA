@@ -58,3 +58,19 @@ order: 3A scripted T0/T1 corpus → 3B white-box T2 → 3C adaptive →
 3D multi-agent → 3E eval-awareness. Runtime modifications now follow
 the bypass protocol (record, preserve failing scenario, regression,
 re-run class). Merge still held until sandbox/Phase-3 results.
+
+## 2026-10-06 — Phase-3 review #2 adopted (post-3A)
+Review validated 3A as apparatus-validation and set next ordering:
+B-baseline first (done — workspace/research/phase3/analysis/
+baseline_abc.md), stage-aware outcome recording (added `stage` to
+experiment records + `Result.Stage` in core/decide), prompt-only A
+floor without LLM spend (done), corpus frozen at 103 until baselines
+inform research-question-driven additions, then T2 white-box attacker
+variants (T2-A source hidden / T2-B source / T2-C source+attempts),
+T3 adaptive with denial-reason-as-feedback (measure info-leakage of
+agent-visible reasons), T4 delegation-depth authority laundering,
+cross-model substitution for the capability-control frontier, and an
+Enforcement Completeness table (Declared→Parsed→Verified→Enforced→
+Ground-truth-tested) to prevent another P3A-05 dead-field class.
+Freeze posture: more aggressive — no runtime changes unless an
+adversarial result demands one.

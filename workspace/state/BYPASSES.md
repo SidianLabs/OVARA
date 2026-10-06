@@ -143,3 +143,28 @@ Fix: `Engine.Approvals` + hash-bound single-use `Consume(id, hash)`;
 approval_id now inside the signed canonical so it can't be swapped
 post-sign; engine redeems only when state=approved AND hash matches.
 Regression: sc-am-001..006.
+
+## SEM-001 — semantic boundary divergence (taxonomy class)
+Adopted 2026-10-06 from Phase-3 review. The security boundary's
+meaning of an action must equal the execution environment's meaning.
+Every case below was "engine evaluated one string, the OS/network
+would have executed a different one":
+- fs traversal: `/tmp/../etc/passwd` (B-baseline: v1 allows — no
+  canonicalizer; C denies after canonicalization to `/etc/passwd`)
+- NUL/control bytes in paths (P3A-02): kernel truncates at NUL
+- argv boundary loss: `'a b'` rendered ambiguously (Phase-2 fix)
+- IP spellings: `2130706433` → `169.254.169.254` (Phase-2 fix)
+- hostname prefix: `api.github.com*` matching `*.evil.com` (Phase-2)
+- unbounded resource sizes (P3A-03) — not a meaning divergence but
+  the same "wire bytes ≠ enforced bytes" family at the size axis
+Measured baseline: 7/103 scenarios where v1 allows what the corpus
+expectation denies — all SEM-001. Metric SBDR =
+semantic-boundary failures / semantic-boundary attempts.
+
+## P3B-01 — v1 cannot bind approvals to claimed actions at resume
+[ARCHITECTURE — measured in B baseline, not a code bug]
+v1 approvals bind (DecisionID, ActionType, Resource) at mint; the
+resume path returns only the bound action — a claimed-but-unbound
+action is never authorized through the sanctioned path. Deny-by-
+construction, but weaker than C's hash binding (bound to the exact
+signed canonical including nonce, actor, approval_id).

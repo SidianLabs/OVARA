@@ -15,3 +15,11 @@
 }
 ```
 `expect.outcome` ∈ allow | deny | escalate | reject(schema).
+
+## Experiment record fields (results/*.jsonl)
+
+`system` ∈ A|B|C|D; `stage` = pipeline stage that produced the
+terminal outcome — C: schema|freshness|epoch|replay|signature|
+canonical_form|capability|policy|approval|setup; B: schema|freshness|
+replay|capability|interception|policy|approval; A: none.
+`note` = translation caveat on system-B rows.

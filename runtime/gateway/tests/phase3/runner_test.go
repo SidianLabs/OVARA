@@ -26,9 +26,9 @@ import (
 	"ovara.runtime.gateway/core/policy"
 )
 
-var scenariosDir = filepath.Join("..", "..", "..", "workspace",
+var scenariosDir = filepath.Join("..", "..", "..", "..", "workspace",
 	"research", "phase3", "scenarios")
-var resultsDir = filepath.Join("..", "..", "..", "workspace",
+var resultsDir = filepath.Join("..", "..", "..", "..", "workspace",
 	"research", "phase3", "results")
 
 // ---- scenario schema (see scenarios/FORMAT.md) ----
@@ -52,15 +52,7 @@ type Scenario struct {
 		Caveats  []capability.Caveat `json:"caveats"`
 		Delegate bool                `json:"delegate"`
 		// Attenuate chains another block onto this token.
-		Attenuate []struct {
-			Scope    capability.Scope    `json:"scope"`
-			Caveats  []capability.Caveat `json:"caveats"`
-			Delegate bool                `json:"delegate"`
-			Subject  string              `json:"subject"`
-			// SignWith: "issuer" (honest chain) or "evil" (forged
-			// delegation — authority laundering attempt).
-			SignWith string `json:"sign_with"`
-		} `json:"attenuate"`
+		Attenuate []AttenuateSpec `json:"attenuate"`
 	} `json:"tokens"`
 
 	Request struct {
@@ -100,6 +92,17 @@ type Scenario struct {
 	} `json:"expect"`
 }
 
+// AttenuateSpec is one delegation hop appended to a token.
+type AttenuateSpec struct {
+	Scope    capability.Scope    `json:"scope"`
+	Caveats  []capability.Caveat `json:"caveats"`
+	Delegate bool                `json:"delegate"`
+	Subject  string              `json:"subject"`
+	// SignWith: "issuer" (honest chain) or "evil" (forged
+	// delegation — authority laundering attempt).
+	SignWith string `json:"sign_with"`
+}
+
 // experiment record per the Phase-3 schema
 type record struct {
 	ExperimentID  string `json:"experiment_id"`
@@ -112,8 +115,10 @@ type record struct {
 	ScenarioClass string `json:"scenario_class"`
 	Outcome       string `json:"outcome"` // observed engine outcome
 	Expected      string `json:"expected"`
+	Stage         string `json:"stage"` // pipeline stage that produced the outcome
 	Pass          bool   `json:"pass"`
-	FailureClass  string `json:"failure_class"` // set on mismatch
+	Note          string `json:"note,omitempty"` // translation caveats (system B)
+	FailureClass  string `json:"failure_class"`  // set on mismatch
 	At            string `json:"time"`
 }
 
@@ -221,6 +226,7 @@ func runScenario(t *testing.T, sc Scenario, raw []byte) record {
 			subjKey(ts.Subject), ts.Scope, ts.Caveats, ts.Delegate)
 		if err != nil {
 			rec.FailureClass = "experimental_infrastructure"
+			rec.Stage = "setup"
 			rec.Outcome = "setup_error"
 			rec.Pass = false
 			return rec
@@ -234,6 +240,7 @@ func runScenario(t *testing.T, sc Scenario, raw []byte) record {
 				at.Scope, at.Caveats, at.Delegate)
 			if err != nil {
 				rec.FailureClass = "attenuate_rejected"
+				rec.Stage = "setup"
 				rec.Outcome = "setup_reject"
 				rec.Pass = sc.Expect.Outcome == "setup_reject"
 				if !rec.Pass {
@@ -326,6 +333,7 @@ func runScenario(t *testing.T, sc Scenario, raw []byte) record {
 		res = eng.Evaluate(req) // second send must deny
 	}
 	rec.Outcome = outcomeName(res.Outcome)
+	rec.Stage = res.Stage
 	rec.Pass = rec.Outcome == sc.Expect.Outcome
 	if sc.Expect.Reason != "" && rec.Pass {
 		// reason substring check

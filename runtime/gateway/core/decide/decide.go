@@ -77,6 +77,10 @@ type Result struct {
 	PolicyID    string  `json:"policy_id"`
 	ActionHash  string  `json:"action_hash"`
 	ApprovalID  string  `json:"approval_id,omitempty"`
+	// Stage is the pipeline stage that produced the terminal
+	// outcome — lets experiments distinguish "denied by architecture"
+	// from "denied by policy" (stage-aware comparison vs v1).
+	Stage string `json:"stage"`
 }
 
 // ApprovalStore binds approvals to action hashes (single-use,
@@ -112,10 +116,12 @@ func NewEngine(p *policy.Policy, issuers, actorKeys map[string]ed25519.PublicKey
 // capability → policy.
 func (e *Engine) Evaluate(req *Request) Result {
 	ah := actionHash(req.Action)
+	stage := "policy"
 	fail := func(cls, op string) Result {
 		return Result{Outcome: OutcomeDeny, ReasonClass: cls,
-			OpReason: op, ActionHash: ah, PolicyID: e.Pol.ID()}
+			OpReason: op, ActionHash: ah, PolicyID: e.Pol.ID(), Stage: stage}
 	}
+	stage = "schema"
 	if req.Action.Type == "" || req.Nonce == "" || req.ActorID == "" {
 		return fail("action_not_allowed", "missing required fields")
 	}
@@ -141,6 +147,7 @@ func (e *Engine) Evaluate(req *Request) Result {
 	if e.CurrentEpoch() < req.MinEpoch {
 		return fail("action_not_allowed", "min_epoch beyond current epoch")
 	}
+	stage = "replay"
 	if e.Replay != nil {
 		seen, err := e.Replay.Seen(req.Nonce)
 		if err != nil {
@@ -160,6 +167,7 @@ func (e *Engine) Evaluate(req *Request) Result {
 		e.mu.Unlock()
 	}
 
+	stage = "signature"
 	pub, ok := e.ActorKeys[req.ActorID]
 	if !ok {
 		return fail("action_not_allowed", "actor has no registered signing key")
@@ -167,6 +175,7 @@ func (e *Engine) Evaluate(req *Request) Result {
 	if err := req.VerifySignature(pub); err != nil {
 		return fail("action_not_allowed", err.Error())
 	}
+	stage = "capability"
 	if req.Token != nil {
 		// signers = trusted issuers + enrolled actor keys (by pubID);
 		// delegation blocks are signed by holder keys.
@@ -193,9 +202,11 @@ func (e *Engine) Evaluate(req *Request) Result {
 			return fail("capability_missing", "token scope does not cover action")
 		}
 	}
+	stage = "policy"
 	pd := policy.Eval(e.Pol, req.Action, req.ActorID)
 	out := Result{ReasonClass: pd.ReasonClass, OpReason: fmt.Sprintf(
-		"matched %v", pd.MatchedIDs), ActionHash: ah, PolicyID: pd.PolicyID}
+		"matched %v", pd.MatchedIDs), ActionHash: ah, PolicyID: pd.PolicyID,
+		Stage: stage}
 	switch pd.Outcome {
 	case policy.Allow:
 		out.Outcome = OutcomeAllow
