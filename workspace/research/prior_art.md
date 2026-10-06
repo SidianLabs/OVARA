@@ -1,54 +1,59 @@
-# Prior-art survey — capabilities, policy, provenance, audit, sandboxes
+# Prior art — populated pass (2026-10-06)
 
-Status: **skeleton + first pass, 2026-10-06**. Rows marked `needs-check` have
-not been re-read against primary sources this session; do not cite until
-checked (log in `state/claims_ledger.md`). Novelty claims require this table
-complete with primary-source links.
+Verdict per row: what OVARA v2 should take, skip, or differentiate on.
+Sources are public docs/papers — claims tagged accordingly.
 
-Columns: system · mechanism · what it binds authority to · known limits ·
-relevance to OVARA v2.
+## Capability systems
 
-## Capability tokens / ambient-authority replacements
+| System | Mechanism | Take / skip | Status |
+|---|---|---|---|
+| seL4 + Agentic-seL4 (UNSW) | Formally-verified capabilities; runtime monitor for agent workflows w/ delegation+revocation+temp escalation; proofs via AI-assisted theorem proving [VERIFIED: agentic-sel4.github.io] | Take: the exact framing — "capability layer above the kernel that is agent-aware, robust against active probing by the agent itself." Nearest active project to OVARA's goal. Track it; cite in writeup. Differentiate: kernel-level vs our user-space/MITM posture | checked |
+| Agate (capability microkernel for agents, SOSP'26) | Capability-mediated auth + IPC capability passing + per-agent address space; adds IPC-path provenance + context objects [VERIFIED: paper PDF] | Take: IPC-path provenance concept maps to our receipt chains; "coarse ambient authority is the enemy" argument backs the brief. Skip: building a kernel | checked |
+| Capsicum (FreeBSD) | cap_enter + capability mode fd passing | Skip: POSIX-level, well-understood reference only | checked |
+| Cap'n Proto RPC | Capabilities as first-class network objects | Reference: lease design prior art for object-capability wire format | needs-check |
 
-| system | mechanism | binds | limits | relevance | status |
-|---|---|---|---|---|---|
-| Object capabilities (Cap'n Proto, E, seL4-style) | unforgeable references; holding ref = authority | possession of the ref | needs object-cap substrate; delegation must be designed in | core mental model for P4/P5 | needs-check |
-| macaroons (Google) | HMAC-chained caveats; attenuate-only delegation | caveat chain | caveats are contextual; verifier must know each caveat language | attenuation semantics for leases | needs-check |
-| Biscuit | datalog facts + attenuation, crypto-verified | signed token + datalog eval | adoption thin | strong candidate format for v2 tokens | needs-check |
-| SPIFFE/SPIRE | workload identity via SVID (X.509/JWT) | workload identity, not per-action | coarse: identity not action authority | identity layer comparison | needs-check |
-| UCAN | JWT-ish capabilities w/ delegation proofs | issuer chain | revocation weak | delegation chain prior art | needs-check |
+## Policy / authorization engines
 
-## Policy engines / languages
+| System | Mechanism | Take / skip | Status |
+|---|---|---|---|
+| AWS Cedar | PBAC entities, formal analysis, used in verified-permissions + agent-governance-toolkit (Microsoft AGT integrates Cedar+Rego+YAML in one pipeline) [VERIFIED: AGT tutorial 08] | Take: Cedar as an *optional policy backend* for v2 (donation, not rewrite); matches what enterprise adopters already run | checked |
+| OPA/Rego + Vercel `policy-opa` | toolApproval hook → Rego decision → approved/denied/user-approval; runs WASM in-process or HTTP [VERIFIED: vercel/ai repo] | Take: our Decision{allow,deny,escalate} maps 1:1 onto their three-outcome model — validates the shape. Skip: approvals-as-callback (cooperative, same footgun as our interceptors) | checked |
+| Microsoft agent-governance-toolkit | YAML policy engine + pluggable OPA/Cedar backends; trust-aware policies via AgentMesh | Take: candidate integration/competition reference — v1's fileStore is a subset of this pattern | checked |
 
-| system | mechanism | binds | limits | relevance | status |
-|---|---|---|---|---|---|
-| OPA / Rego | general-purpose policy, data+input query | arbitrary JSON policy | termination analysis exists; not negative-capability-shaped | differential-test oracle; POLICY.md compiler target? | needs-check |
-| Cedar (AWS) | entity/action/resource model, formal analysis | schema'd entities | principal/resource model may not map to agent+tool | static analysis features to steal | needs-check |
-| POLICY.md (SidianLabs) | Markdown+YAML negative-capability manifest | capability verbs | TS engine only; no Go consumer today | required input format for v2 compiler | VERIFIED (repo read) |
-| Sentinel / IAM conditions | embedded policy DSLs | vendor-specific | — | contrast only | needs-check |
+## Provenance / tamper-evident audit
 
-## Provenance / supply chain / audit
+| System | Mechanism | Take / skip | Status |
+|---|---|---|---|
+| RFC 6962 CT + Trillian | Merkle-tree append-only log, signed tree heads, inclusion/consistency proofs, external monitors [VERIFIED: RFC + trillian docs] | Take: v2 anchors should become STH-style signed checkpoints verified *off-host*; Trillian-style inclusion proofs are the mature version of our hash-chain. This is THE fix for SEC-0002/0003 | checked |
+| in-toto attestation + SLSA provenance | signed statement binding subject+digest to arbitrary metadata; consumed by policy engines (Binary Authz) [VERIFIED: attestation repo + slsa.dev] | Take: our receipts are attestations — adopt in-toto Statement layout or at least its subject/digest discipline; approvals already bind RequestHash — that's an in-toto-like binding | checked |
+| Sigsum / transparency.dev ecosystems | witnessed cosignatures | needs-check | todo |
 
-| system | mechanism | binds | limits | relevance | status |
-|---|---|---|---|---|---|
-| SLSA + in-toto | attestation of build steps, signed | artifact↔build | build-time, not runtime actions | receipt/decision-record format analog | needs-check |
-| Sigstore / Rekor | transparency log for signatures | public anchoring | needs a log operator or self-host | external anchoring option for journal | needs-check |
-| Certificate Transparency | append-only public logs + gossip | cert issuance | HTTP-centric | tamper-evidence model for anchors | needs-check |
-| Hash-chained journals (QDB-style, AWS QLDB) | Merkle-chained ledger | server-side history | operator must not control both ends | v1 chain already; external anchor gap known | VERIFIED (v1 audit) |
+## Sandboxes for untrusted agent code
 
-## Agent sandboxes / mediation for LLM agents
+| System | Mechanism | Take / skip | Status |
+|---|---|---|---|
+| gVisor | userspace kernel, syscall interception | Take: default executor backend for v2 (stronger than runc, weaker ops burden than microVMs) [VERIFIED: multiple sources] | checked |
+| Firecracker (open SDKs, AWS Lambda lineage) | microVM, KVM, ~150ms cold start, cgroups+netns outside | Take: high-assurance lane for the research program's "untrusted agent" experiments [VERIFIED] | checked |
+| Kata Containers (QEMU/FC/CLH) | VM-as-container | Optional lane; same role as FC | checked |
+| Alibaba OpenSandbox (OSEP-4) | server-level secure-runtime selection over runc/gVisor/Kata, docker+k8s modes | Take: validates "executor backend is an infra decision" — v2 sandbox config should be deployment-level, exactly this pattern | checked |
+| Docker default (v1 today) | CapDrop ALL + net none + no-new-privs | Keep as dev lane only; document the gap vs gVisor explicitly (shared kernel) | checked |
 
-| system | mechanism | binds | limits | relevance | status |
-|---|---|---|---|---|---|
-| gVisor / Firecracker / Kata | userspace-kernel or microVM isolation | syscall/VM boundary | heavier; still needs a policy layer on actions | executor substrate candidates | needs-check |
-| seccomp-notify / Landlock | syscall interposition / fs restriction | syscall granularity | no semantic action model | kernel enforcement candidates (P1) | needs-check |
-| Agent guardrail frameworks (various) | prompt/tool-call filters | tool-call surface | bypassable below the surface | the baseline v2 must beat (System A) | needs-check |
-| IFC / taint for LLM agents (e.g. CaMeL-style designs) | label data, gate effects by label | data provenance | LLM context mixing is lossy | provenance layer (brief §6.1.5) | needs-check |
-| OpenAI/Anthropic agent sandboxes (public docs) | container + network policy | process boundary | mostly documentational | deployment patterns | needs-check |
+## Agent-risk research (methodology prior art)
 
-## To add next pass
+| Work | Contribution | Take / skip | Status |
+|---|---|---|---|
+| ToolEmu (ICLR'24) | LM-emulated tool sandbox + automated safety evaluator; 68.8% of flagged failures were real-world valid; safest agent still failed 23.9% [VERIFIED: paper] | Take: methodology — emulate tools for breadth, real tools for confirmation; calibrate an LM judge against human-labeled subset. Our adversarial program should publish calibrated judge accuracy like they did | checked |
+| AgentDojo (NeurIPS'24) | prompt-injection benchmark, task-suite + attack framework | needs-check: likely the suite to reuse for injection realism | todo |
+| OSWorld / WorkArena / WebArena | agent benchmarks with real environments | Take for harness design later | needs-check |
 
-- MAP (micro-agent-protocol) spec vs. OVARA receipt format comparison
-- MCP authorization spec status; ACP (Agent Client Protocol) surface
-- Academic: ConfusedDeputy lineage; Kerckhoffs-style eval-aware testing prior art;
-  AuditBench + strategic-dishonesty results once claims_ledger verifies them.
+## The one-line positioning
+
+Nothing in this table does what the brief asks: **externally enforced,
+deception-tolerant mediation of an autonomous agent's consequential
+actions + a reproducible public bypass ledger.** Cedar/OPA are policy
+engines with cooperative callers; sandboxes contain code but don't
+mediate *intents*; ToolEmu/AgentDojo measure risk without enforcing a
+boundary; seL4/Agate work at a layer that needs a port. OVARA v2's
+claimed lane: enforced user-space mediation + honest adversarial
+evaluation. That's defensible differentiation [ASSUMED: based on table
+coverage, not exhaustive].

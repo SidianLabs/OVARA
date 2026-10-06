@@ -17,7 +17,7 @@ done / blocked(reason).
 - [ ] P0-05 verifier — Re-verify each BYPASSES.md "fixed?" row against current
   code (SEC-0005, SEC-0010, REC-A8, agent_token default in `ovara init`).
   AC: rows get corrected status + file:line evidence.
-- [ ] P0-06 writer — `research/prior_art.md`: capability security (object
+- [x] P0-06 writer — `research/prior_art.md`: capability security (object
   caps, macaroons, biscuits), SPIFFE/SPIRE, OPA/Rego, Cedar, SLSA/in-toto,
   Sigstore/Rekor, CT, IFC-for-LLM-agents, agent sandboxes/guardrails.
   AC: table with per-system columns (mechanism, what it binds, what it
@@ -29,7 +29,7 @@ done / blocked(reason).
 - [x] P0-08 builder — v1 behavioral corpus: recorded request/response pairs
   from the evaluator for differential testing (drive evaluator in-process
   on macOS — no sandbox needed). AC: corpus dir + README in research/.
-- [ ] P0-09 writer — go/no-go document for the rewrite: scope, rationale
+- [x] P0-09 writer — go/no-go document for the rewrite: scope, rationale
   (audit §11 + bypass ledger), retained components list. AC: operator
   sign-off requested via HUMAN_ATTENTION.
 - [ ] P0-10 builder — Sandbox lane decision: install colima/docker on this

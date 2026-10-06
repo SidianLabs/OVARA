@@ -10,3 +10,4 @@
 {"ts":"2026-10-06T13:45Z","actor":"agent","action":"corpus","detail":"ovara init+run on loopback; collect.py 45-row matrix -> v1_baseline.jsonl; findings: escalate-all posture, identity_mismatch binding, open action_type vocab","evidence":"research/corpus/"}
 {"ts":"2026-10-06T13:50Z","actor":"agent","action":"bypass_verify","detail":"SEC-0019 -> PARTIALLY-MITIGATED-VERIFIED via auth/principal.go + corpus 400s; audit-F5/F6 added","evidence":"BYPASSES.md"}
 {"ts":"2026-10-06T14:05Z","actor":"agent","action":"verify_pass","detail":"re-verified all 21 SEC findings vs current code: 8 fixed-verified, 5 partial, 8 confirmed-live/static","evidence":"state/BYPASSES.md"}
+{"ts":"2026-10-06T14:30Z","actor":"agent","action":"docs","detail":"prior_art.md populated (web-verified); go_no_go.md drafted w/ GO recommendation + conditions C1-C4","evidence":"research/prior_art.md, docs/go_no_go.md"}
