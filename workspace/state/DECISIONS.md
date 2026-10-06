@@ -29,3 +29,8 @@ Format: date · decision · options considered · choice · reason · reversal c
   carries an evidence tag `[VERIFIED: path:line]` / `[ASSUMED]` / `[UNKNOWN]`
   per brief §2.2.11. Bypass classes observed only statically are labeled
   `status: static-suspect`, not "confirmed", until reproduced in a sandbox.
+
+## D6 (2026-10-06, operator)
+- C1 resolved→FAILED: operator chose "install colima"; install succeeded but VM can't run — machine is a VirtualMac guest without hv_support. Container lane re-punted to Linux session (see A1).
+- C3 resolved: operator approved v2 scope in docs/go_no_go.md as written.
+- Phase-boundary mode: still open (A3); proceeding continuously unless operator says stop.
