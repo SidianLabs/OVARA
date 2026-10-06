@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"ovara.dev/v2/action"
+	"ovara.runtime.gateway/core/action"
 )
 
 func keys() (ed25519.PublicKey, ed25519.PrivateKey) {

@@ -4,7 +4,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"ovara.dev/v2/action"
+	"ovara.runtime.gateway/core/action"
 )
 
 var testPolicy = &Policy{

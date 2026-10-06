@@ -76,6 +76,9 @@ func (f FileSink) Put(cp Checkpoint) error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
+		return err
+	}
 	name := filepath.Join(f.Dir, fmt.Sprintf("checkpoint_%d_%d.json", cp.TreeSize, cp.Epoch))
 	return os.WriteFile(name, b, 0o644)
 }

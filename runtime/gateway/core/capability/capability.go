@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"ovara.dev/v2/action"
+	"ovara.runtime.gateway/core/action"
 )
 
 // Scope bounds what a token authorizes. All fields conjunctive.

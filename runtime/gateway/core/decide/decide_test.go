@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"ovara.dev/v2/action"
-	"ovara.dev/v2/capability"
-	"ovara.dev/v2/policy"
+	"ovara.runtime.gateway/core/action"
+	"ovara.runtime.gateway/core/capability"
+	"ovara.runtime.gateway/core/policy"
 )
 
 type fx struct {
