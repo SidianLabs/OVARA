@@ -10,3 +10,10 @@
 - blocked: LLM tiers (no NVIDIA_API_KEY on this host), sandbox classes
   (no container runtime possible on this Mac — VirtualMac guest)
 - scenario target: 100+ across the 25 classes; host-runnable subset first
+
+- B baseline (v1 evaluator live-run of the corpus): next task — needs
+  v1 policy translation per scenario + honest divergence semantics
+  (C rejects at signature stage what B evaluates at policy stage;
+  record outcome per stage).
+- A baseline (prompt-only) + T2+ LLM tiers: blocked on NVIDIA_API_KEY
+  (HUMAN_ATTENTION A5).
