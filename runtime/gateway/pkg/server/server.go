@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -20,6 +21,9 @@ import (
 	"syscall"
 	"time"
 
+	"ovara.runtime.gateway/core/audit"
+	coredecide "ovara.runtime.gateway/core/decide"
+	corepolicy "ovara.runtime.gateway/core/policy"
 	"ovara.runtime.gateway/internal/anchor"
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/auth"
@@ -39,8 +43,8 @@ import (
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipt"
-	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/receipts"
+	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/replay"
 	"ovara.runtime.gateway/internal/revocation"
 	"ovara.runtime.gateway/internal/sandbox"
@@ -396,6 +400,69 @@ func Run(configPath string) error {
 
 	h := handlers.New(eval, decisionLogger, cfg, receiptsStore)
 	h.SetEnrollment(enrollmentSvc)
+
+	// Core runtime surface (/v2/*): redesigned pipeline — signed
+	// requests, closed action vocabulary, attenuable capabilities,
+	// total-order policy, write-ahead audit with Merkle anchors.
+	// Fail-closed: enabled without a complete config refuses startup.
+	if cfg.CoreEnabled {
+		if cfg.CoreAuditKey == "" || cfg.CoreAuditFile == "" {
+			return fmt.Errorf("core_enabled requires core_audit_key and core_audit_file")
+		}
+		keyBytes, err := hex.DecodeString(cfg.CoreAuditKey)
+		if err != nil || len(keyBytes) != ed25519.PrivateKeySize {
+			return fmt.Errorf("core_audit_key: invalid hex ed25519 private key")
+		}
+		var sink audit.AnchorSink
+		if cfg.CoreAnchorDir != "" {
+			sink = audit.FileSink{Dir: cfg.CoreAnchorDir}
+		}
+		coreLog, err := audit.Open(cfg.CoreAuditFile,
+			ed25519.PrivateKey(keyBytes), sink, 100)
+		if err != nil {
+			return fmt.Errorf("core audit log: %v", err)
+		}
+		corePol := &corepolicy.Policy{Version: "unset", Default: corepolicy.Deny}
+		if cfg.CorePolicyFile != "" {
+			b, err := os.ReadFile(cfg.CorePolicyFile)
+			if err != nil {
+				return fmt.Errorf("core_policy_file: %v", err)
+			}
+			if err := json.Unmarshal(b, corePol); err != nil {
+				return fmt.Errorf("core_policy_file: %v", err)
+			}
+		}
+		actorKeys := map[string]ed25519.PublicKey{}
+		for actor, hx := range cfg.CoreActorKeys {
+			k, err := hex.DecodeString(hx)
+			if err != nil || len(k) != ed25519.PublicKeySize {
+				return fmt.Errorf("core_actor_keys[%s]: invalid hex pubkey", actor)
+			}
+			actorKeys[actor] = ed25519.PublicKey(k)
+		}
+		issuerKeys := map[string]ed25519.PublicKey{}
+		for iss, hx := range cfg.CoreIssuerKeys {
+			k, err := hex.DecodeString(hx)
+			if err != nil || len(k) != ed25519.PublicKeySize {
+				return fmt.Errorf("core_issuer_keys[%s]: invalid hex pubkey", iss)
+			}
+			issuerKeys[iss] = ed25519.PublicKey(k)
+		}
+		epochFn := func() uint64 { return 0 }
+		if revChecker != nil {
+			epochFn = func() uint64 {
+				ep, err := revChecker.Epoch()
+				if err != nil {
+					return 0
+				}
+				return ep
+			}
+		}
+		coreEngine := coredecide.NewEngine(corePol, issuerKeys, actorKeys, epochFn)
+		h.SetCore(coreEngine, coreLog)
+		log.Printf("core runtime enabled (policy=%s, audit=%s, anchors=%s, actors=%d)",
+			corePol.ID(), cfg.CoreAuditFile, cfg.CoreAnchorDir, len(actorKeys))
+	}
 
 	policyHandler := handlers.NewPolicyHandler(eval, policyStore)
 	policyHandler.SetEventStore(eventStore)

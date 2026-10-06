@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"ovara.runtime.gateway/core/audit"
+	"ovara.runtime.gateway/core/decide"
 	"ovara.runtime.gateway/internal/api"
 	"ovara.runtime.gateway/internal/approval"
 	"ovara.runtime.gateway/internal/auth"
@@ -47,6 +49,8 @@ type Handler struct {
 	shieldStats       func() (restricted, total int)
 	maintenanceMode   bool
 	capabilitiesStore capabilities.Store
+	coreEngine        *decide.Engine
+	coreLog           *audit.Log
 }
 
 func New(e *evaluator.Evaluator, l *logging.DecisionLogger, cfg *config.Config, rs receipts.Store) *Handler {
@@ -262,6 +266,7 @@ func (h *Handler) LookupDecision(id string) (*models.ActionRequest, *models.Deci
 
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runtime/check", h.handleCheck)
+	mux.HandleFunc("POST /v2/runtime/check", h.handleCoreCheck)
 	mux.HandleFunc("POST /v1/runtime/batch-check", h.handleBatchCheck)
 	mux.HandleFunc("GET /v1/runtime/decision/{id}", h.handleGetDecision)
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)

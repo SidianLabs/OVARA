@@ -46,6 +46,10 @@ func agentAllowed(method, path string) bool {
 	switch {
 	case method == http.MethodPost && path == "/v1/runtime/check":
 		return true
+	// Core runtime surface: the signed-request decision endpoint is
+	// the agent's exact call set by design.
+	case method == http.MethodPost && path == "/v2/runtime/check":
+		return true
 	case method == http.MethodPost && path == "/v1/runtime/batch-check":
 		return true
 	case method == http.MethodPost && path == "/v1/approval/create":
