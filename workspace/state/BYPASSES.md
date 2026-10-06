@@ -13,27 +13,27 @@ each against current code before relying on it in results.
 
 | id | class | description | source | affected | status |
 |----|-------|-------------|--------|----------|--------|
-| SEC-0001 | evidence | compressed/encoded responses bypass credential scrub | repo finding | proxy | fixed? verify scrub still only exact-match plaintext |
-| SEC-0002 | evidence | `verify` accepts self-asserted sibling pubkey; whole-chain rewrite undetectable | repo finding | tools/cli | confirmed-unfixed (ROADMAP P1) |
-| SEC-0003 | evidence | tail truncation undetected; anchors unsigned/unauth/co-located | repo finding | proxy receipts | confirmed-unfixed |
-| SEC-0004 | authz | leases optional; identity fully self-asserted | repo finding | gateway | confirmed-unfixed (schema-level) |
-| SEC-0005 | authz | `resource` field dropped on production load paths → dead resource matching | repo finding | policy loader | status? verify against current loader |
-| SEC-0006 | state | position-blind idempotency: stale ACCEPTs shadowed by new DROP | repo finding | revocation | confirmed? re-check |
-| SEC-0007 | containment | netns mode shares host procfs/fs/IPC/unix sockets; /proc cred leak | repo finding | boundary script | confirmed-partial (procfs visibility live-verified) |
-| SEC-0008 | authn | unauthenticated credentialed proxy on 0.0.0.0 | repo finding | proxy | FIXED-VERIFIED: ovara init mints agent_token (cmd/ovara/main.go:123,143); config refuses 0.0.0.0 bind w/o token (proxy/internal/config/config.go:113) |
-| SEC-0009 | evidence | response trailers forwarded unscrubbed | repo finding | proxy | fixed (trailer scrub at proxy.go:566-574) |
-| SEC-0010 | authz | resource matcher raw substring glob (host/path/userinfo/case bypass) | repo finding | policy | FIXED-VERIFIED: CanonicalResource rejects userinfo/malformed, host-label boundary (policy/store.go:164-227) |
-| SEC-0011 | evidence | unsigned fields/ambiguous canonicalization/in-mem nonces | repo finding | receipts | partially open (sig_v1 coverage, nonces) |
-| SEC-0012 | mediation | non-proxied execution paths bypass receipting | repo finding | boundary | confirmed — structural (cooperative interceptors) |
-| SEC-0013 | containment | host FORWARD, docker IPv6, reused nets not controlled by script | repo finding | boundary script | confirmed — deployment posture gap |
-| SEC-0014 | approval | approvals not bound to exact request (no body/param hash) | repo finding | approval | confirmed-unfixed (ROADMAP P1: request-hash binding) |
-| SEC-0015 | egress | resolver path open by design; no deny-by-default DNS shipped | repo finding | boundary | confirmed residual (DNS tunneling channel) |
-| SEC-0016 | injection | self-minted approval → sh -c on gateway host | repo finding | approval+exec | FIXED P0.5 (provenance gate) — keep as regression |
-| SEC-0017 | config | shipped defaults open: 0.0.0.0, no auth, missing config fails open | repo finding | server config | confirmed-unfixed (P3b ROADMAP) |
-| SEC-0018 | authn | flat single bearer token = gateway root; no requester/approver split | repo finding | server auth | confirmed-unfixed |
+| SEC-0001 | evidence | compressed/encoded responses bypass credential scrub | repo finding | CONFIRMED (static re-verify 10-06): proxy reads resp.Body raw; explicit Accept-Encoding means Go won't decompress → scrub sees compressed bytes. proxy.go:559-562 | fixed? verify scrub still only exact-match plaintext |
+| SEC-0002 | evidence | `verify` accepts self-asserted sibling pubkey; whole-chain rewrite undetectable | repo finding | PARTIALLY-MITIGATED: -pubkey flag exists, but silent sibling-pubkey fallback remains (main.go:81-88, no provenance warning) | confirmed-unfixed (ROADMAP P1) |
+| SEC-0003 | evidence | tail truncation undetected; anchors unsigned/unauth/co-located | repo finding | CONFIRMED (re-verify): tail truncation still yields valid:true; anchors still unsigned/co-located | confirmed-unfixed |
+| SEC-0004 | authz | leases optional; identity fully self-asserted | repo finding | PARTIALLY-MITIGATED-VERIFIED: edge binds subject_id→credential principal (400 identity_mismatch); leases remain optional; in-process identity validator still advisory | confirmed-unfixed (schema-level) |
+| SEC-0005 | authz | `resource` field dropped on production load paths → dead resource matching | repo finding | FIXED-VERIFIED (file status + MatchResource canonical now consumed) | status? verify against current loader |
+| SEC-0006 | state | position-blind idempotency: stale ACCEPTs shadowed by new DROP | repo finding | CONFIRMED-STATIC: position-blind -C existence checks unchanged (script 178-184,253,262-264); not runnable on this host | confirmed? re-check |
+| SEC-0007 | containment | netns mode shares host procfs/fs/IPC/unix sockets; /proc cred leak | repo finding | CONFIRMED-STATIC: netns mode unchanged; procfs/fs sharing inherent to design | confirmed-partial (procfs visibility live-verified) |
+| SEC-0008 | authn | unauthenticated credentialed proxy on 0.0.0.0 | repo finding | FIXED-VERIFIED (audit): agentToken auth on :9443 | FIXED-VERIFIED: ovara init mints agent_token (cmd/ovara/main.go:123,143); config refuses 0.0.0.0 bind w/o token (proxy/internal/config/config.go:113) |
+| SEC-0009 | evidence | response trailers forwarded unscrubbed | repo finding | FIXED-VERIFIED: trailers now scrubbed per-secret before TrailerPrefix forward (proxy.go:564-573) | fixed (trailer scrub at proxy.go:566-574) |
+| SEC-0010 | authz | resource matcher raw substring glob (host/path/userinfo/case bypass) | repo finding | FIXED-VERIFIED (audit): canonical resource matcher, userinfo/malformed rejected | FIXED-VERIFIED: CanonicalResource rejects userinfo/malformed, host-label boundary (policy/store.go:164-227) |
+| SEC-0011 | evidence | unsigned fields/ambiguous canonicalization/in-mem nonces | repo finding | PARTIALLY-FIXED: approval_id now in canonical() (chain.go:32-35); anchor signing still absent; canonicalization ambiguities elsewhere unverified | partially open (sig_v1 coverage, nonces) |
+| SEC-0012 | mediation | non-proxied execution paths bypass receipting | repo finding | PARTIALLY-MITIGATED-VERIFIED: check-path decisions now hash-chained+signed in receipts store (observed live in corpus env receipts.json, agent_id=credential principal); residual: paths outside check/proxy | confirmed — structural (cooperative interceptors) |
+| SEC-0013 | containment | host FORWARD, docker IPv6, reused nets not controlled by script | repo finding | CONFIRMED-STATIC: boundary script unchanged (FORWARD/IPv6/reused-network gaps inherent) | confirmed — deployment posture gap |
+| SEC-0014 | approval | approvals not bound to exact request (no body/param hash) | repo finding | FIXED-VERIFIED: approval.RequestHash = receipt ActionDigest (approval.go:165); provenance gate at continuation claim | confirmed-unfixed (ROADMAP P1: request-hash binding) |
+| SEC-0015 | egress | resolver path open by design; no deny-by-default DNS shipped | repo finding | CONFIRMED-BY-DESIGN: DNS resolver path still open (documented residual) | confirmed residual (DNS tunneling channel) |
+| SEC-0016 | injection | self-minted approval → sh -c on gateway host | repo finding | FIXED-VERIFIED: approvals now require provenance+operator role; host executors disabled by default | FIXED P0.5 (provenance gate) — keep as regression |
+| SEC-0017 | config | shipped defaults open: 0.0.0.0, no auth, missing config fails open | repo finding | FIXED-VERIFIED: init config = auth_enabled:true, listen 127.0.0.1, fail_closed:true (observed in generated config.json) | confirmed-unfixed (P3b ROADMAP) |
+| SEC-0018 | authn | flat single bearer token = gateway root; no requester/approver split | repo finding | FIXED-VERIFIED: operator/agent token classes; operator-only default on unlisted routes (middleware.go:42-43) | confirmed-unfixed |
 | SEC-0019 | authz | self-asserted identity → cross-agent trust poisoning, restriction evasion | repo finding | evaluator | PARTIALLY-MITIGATED-VERIFIED: HTTP edge binds subject_id to credential-derived principal ag_<sha256[:16]> (auth/principal.go:19-26, handlers/runtime.go:1529; corpus 400 identity_mismatch). Residual: token==identity; unsigned requests below auth layer |
-| SEC-0020 | injection | policy takeover via candidate load/promote; admin can destroy audit | repo finding | policy+admin | confirmed-unfixed (watch-reload A5 adjacent) |
-| SEC-0021 | replay | nonce cache global, non-persistent, moot vs unsigned requests | repo finding | evaluator | confirmed — cosmetic until requests signed |
+| SEC-0020 | injection | policy takeover via candidate load/promote; admin can destroy audit | repo finding | FIXED-VERIFIED: policy/admin routes behind operator role via role-gated middleware | confirmed-unfixed (watch-reload A5 adjacent) |
+| SEC-0021 | replay | nonce cache global, non-persistent, moot vs unsigned requests | repo finding | PARTIALLY-FIXED: durable replay store wired when replay_file set (init sets it; server.go:322-331); in-mem fallback + unsigned-request mootness remain | confirmed — cosmetic until requests signed |
 | REC-A2/P1b | authn | proxy listener auth optional → open credentialed relay | repo recon doc | proxy | partially fixed (token exists) — verify default |
 | REC-A6 | tcb | CA key + receipt key + creds + gw token in one process | repo recon doc | proxy | accepted-risk documented |
 | REC-A8/N7 | resource | no request/concurrency limits → self-DoS, escalate-flood | repo recon doc | proxy+gateway | confirmed-unfixed |

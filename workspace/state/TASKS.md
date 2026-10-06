@@ -10,9 +10,9 @@ done / blocked(reason).
 - [x] P0-02 builder — `docs/v1_audit.md`: modules, 14 action types,
   interception, receipts, policy, sandbox, tests, deps, MAP/POLICY.md status.
   AC: every claim evidence-tagged; test results recorded. Evidence: file.
-- [ ] P0-03 builder — SDK test suites: `sdk/typescript` vitest, `sdk/python`
+- [x] P0-03 builder — SDK test suites: `sdk/typescript` vitest, `sdk/python`
   pytest. AC: results in daily report; failures logged verbatim.
-- [ ] P0-04 builder — `ovara demo` + `ovara doctor` run on host; capture output.
+- [x] P0-04 builder — `ovara demo` + `ovara doctor` run on host; capture output.
   AC: demo output stored under workspace/state/logs/ or daily report.
 - [ ] P0-05 verifier — Re-verify each BYPASSES.md "fixed?" row against current
   code (SEC-0005, SEC-0010, REC-A8, agent_token default in `ovara init`).
@@ -26,7 +26,7 @@ done / blocked(reason).
   static classification of brief §7.3.3 bypass classes against v1 code.
   AC: per class status (blocked/detected-only/undetected/static-suspect)
   with file evidence; dynamic claims explicitly deferred.
-- [ ] P0-08 builder — v1 behavioral corpus: recorded request/response pairs
+- [x] P0-08 builder — v1 behavioral corpus: recorded request/response pairs
   from the evaluator for differential testing (drive evaluator in-process
   on macOS — no sandbox needed). AC: corpus dir + README in research/.
 - [ ] P0-09 writer — go/no-go document for the rewrite: scope, rationale
