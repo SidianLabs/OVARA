@@ -31,7 +31,7 @@ each against current code before relying on it in results.
 | SEC-0016 | injection | self-minted approval → sh -c on gateway host | repo finding | approval+exec | FIXED P0.5 (provenance gate) — keep as regression |
 | SEC-0017 | config | shipped defaults open: 0.0.0.0, no auth, missing config fails open | repo finding | server config | confirmed-unfixed (P3b ROADMAP) |
 | SEC-0018 | authn | flat single bearer token = gateway root; no requester/approver split | repo finding | server auth | confirmed-unfixed |
-| SEC-0019 | authz | self-asserted identity → cross-agent trust poisoning, restriction evasion | repo finding | evaluator | confirmed-unfixed |
+| SEC-0019 | authz | self-asserted identity → cross-agent trust poisoning, restriction evasion | repo finding | evaluator | PARTIALLY-MITIGATED-VERIFIED: HTTP edge binds subject_id to credential-derived principal ag_<sha256[:16]> (auth/principal.go:19-26, handlers/runtime.go:1529; corpus 400 identity_mismatch). Residual: token==identity; unsigned requests below auth layer |
 | SEC-0020 | injection | policy takeover via candidate load/promote; admin can destroy audit | repo finding | policy+admin | confirmed-unfixed (watch-reload A5 adjacent) |
 | SEC-0021 | replay | nonce cache global, non-persistent, moot vs unsigned requests | repo finding | evaluator | confirmed — cosmetic until requests signed |
 | REC-A2/P1b | authn | proxy listener auth optional → open credentialed relay | repo recon doc | proxy | partially fixed (token exists) — verify default |
@@ -45,6 +45,8 @@ each against current code before relying on it in results.
 | audit-F2 | mediation | `shell.Interceptor.WithResource` lets caller label command with arbitrary resource | this audit | interceptors/shell | confirmed by code reading — cooperative-layer footgun |
 | audit-F3 | mediation | shell/git interceptors are library calls; any direct exec bypasses (python -c, make, subshell) | this audit | interceptors | confirmed — structural, brief's P1 gap |
 | audit-F4 | authz | ActionRequest unsigned: nonce replay protection cosmetic until requests carry signatures | this audit + SEC-0021 | evaluator | confirmed |
+| audit-F5 | authz | action_type is an open string — no closed vocabulary at schema edge (e.g. http.request evaluates though not in the 14-type enum) | corpus | evaluator | confirmed (v1_baseline rows) |
+| audit-F6 | posture | fresh install escalates EVERY action: seeded agent = trust none → restricted → containment_active dominates even policy allows | corpus | trust/evaluator | confirmed (35/45 rows escalate) — safe posture, but means policy-allow paths are unreachable until trust builds |
 
 ## Forward ledger (v2+) — empty; populate as found.
 

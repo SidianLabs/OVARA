@@ -7,3 +7,5 @@
 {"ts":"2026-10-06T13:15Z","actor":"agent","action":"demo_run","detail":"ovara demo: chokepoint + fail-closed + valid receipt chain; ovara doctor: correctly FAILs posture without config","evidence":"session transcript"}
 {"ts":"2026-10-06T13:20Z","actor":"agent","action":"bypass_verify","detail":"SEC-0008 FIXED-VERIFIED (init mints agent_token; 0.0.0.0+no-token refuses start); SEC-0010 FIXED-VERIFIED (CanonicalResource)","evidence":"BYPASSES.md"}
 {"ts":"2026-10-06T13:20Z","actor":"agent","action":"doc","detail":"prior_art.md skeleton with verification status per row","evidence":"research/prior_art.md"}
+{"ts":"2026-10-06T13:45Z","actor":"agent","action":"corpus","detail":"ovara init+run on loopback; collect.py 45-row matrix -> v1_baseline.jsonl; findings: escalate-all posture, identity_mismatch binding, open action_type vocab","evidence":"research/corpus/"}
+{"ts":"2026-10-06T13:50Z","actor":"agent","action":"bypass_verify","detail":"SEC-0019 -> PARTIALLY-MITIGATED-VERIFIED via auth/principal.go + corpus 400s; audit-F5/F6 added","evidence":"BYPASSES.md"}
