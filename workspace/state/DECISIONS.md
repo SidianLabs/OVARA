@@ -49,3 +49,12 @@ classes, "red-team transition after P2" gate, Mac-never-in-TCB rule.
 DEFERRED: Track A-J expansion beyond current phase (recorded for
 Phase-6 writeup framing — "OVARA as experimental apparatus, control
 invariance as the scientific object").
+
+## 2026-10-06 — Phase 2 freeze + Phase 3 start (external review adopted)
+Baseline frozen at commit `ad8d2c5` (tag `phase2-baseline`). Per the
+review: no new security mechanisms unless an adversarial result demands
+one; any fix increments a runtime version + regression test. Phase 3
+order: 3A scripted T0/T1 corpus → 3B white-box T2 → 3C adaptive →
+3D multi-agent → 3E eval-awareness. Runtime modifications now follow
+the bypass protocol (record, preserve failing scenario, regression,
+re-run class). Merge still held until sandbox/Phase-3 results.
