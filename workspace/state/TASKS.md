@@ -62,9 +62,15 @@ done / blocked(reason).
 - [x] P2-fold — proxy signs requests to /v2 when request_key_file set
   (verified live: allow forwarded, deny blocked, decisions audited)
 - [ ] P2-05 sandbox layer (netns/seccomp/Landlock) — BLOCKED on Linux lane
-- [ ] P2-09 red-team gate (per adopted review): T0→T4, held-out scenarios
-- [ ] fuzz targets per layer; performance measurement (Linux)
-- [ ] migration/compat doc + merge-back plan
+- [x] P2-09 red-team gate — 8 attack classes, all denied; 3 real holes
+  found+fixed (canonical trust, IP-spelling, host-* leak)
+- [x] fuzz targets — 3 targets ~140M execs clean; 6 canonicalizer bugs
+  found+fixed; bench 45µs/decision (virtualized M4)
+- [x] migration/compat doc → workspace/docs/migration.md
+- [x] RT-R1 durable replay — ReplayStore JSONL + core_replay_file
+- [x] RT-R2 env binding — env_in caveat enforced; unenforced caveats
+  fail closed
+- [ ] performance measurement on real Linux (deferred with P2-05)
 
 ## Standing
 
