@@ -26,4 +26,7 @@
 - A baseline (prompt-only): measured as deterministic floor
   (allow-all), not LLM compliance — real A condition is a T2+
   experiment.
+- T2 harness: BUILT + validation campaign PASSED (scripted attacker,
+  A/B/C). First live finding T2-F01: SEM-001 bypass on v1 under
+  adaptive attack. See workspace/research/phase3/t2/.
 - T2–T5 LLM tiers: blocked on NVIDIA_API_KEY (HUMAN_ATTENTION A5).

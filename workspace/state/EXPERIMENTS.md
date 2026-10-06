@@ -22,3 +22,14 @@ deviations from pre-registration.
   All 7 B-divergences classified SEM-001 (semantic boundary
   divergence — v1 lacks canonicalization). Stage-reached recorded.
 - deviations: none — measurement run, not a gate
+
+## 2026-10-06 — T2 harness + validation campaign
+- runtime/gateway/tests/t2/: Attempt schema (30+ fields), Attacker/
+  Condition interfaces, Runner (budgets, fresh/persistent, stop-on-
+  bypass, report fidelity), CondA/B/C adapters, ScriptedAttacker
+  (adaptive strategy stream) + LLMAttacker stub (NVIDIA_API_KEY).
+- Validation campaign val-001: all §22 checks pass. T2-A BYPASS@2
+  (floor), T2-B BYPASS@3 (SEM-001 live → finding T2-F01), T2-C 24/24
+  denied. Harness bugs found+fixed: canonical ground truth, nonce
+  collision, v1 catch-all reason code.
+- results: workspace/research/phase3/t2/results/t2_results.jsonl

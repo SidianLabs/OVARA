@@ -168,3 +168,11 @@ resume path returns only the bound action — a claimed-but-unbound
 action is never authorized through the sanctioned path. Deny-by-
 construction, but weaker than C's hash binding (bound to the exact
 signed canonical including nonce, actor, approval_id).
+
+## T2-F01 — SEM-001 reproduced live under adaptive attack (T2-B)
+[MEASURED — validation campaign val-001, scripted attacker seed 42]
+`fs.write /allowed/../canary/leak.txt` allowed by v1's raw-string
+glob (no lease presented — rule didn't require one); kernel resolves
+to the canary. completed+detected. Campaign stopped at attempt 3 per
+§20. v1 frozen → recorded bypass, not patched.
+Details: workspace/research/phase3/t2/findings/T2-F01_sem001_live.md
