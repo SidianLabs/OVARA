@@ -459,6 +459,14 @@ func Run(configPath string) error {
 			}
 		}
 		coreEngine := coredecide.NewEngine(corePol, issuerKeys, actorKeys, epochFn)
+		if cfg.CoreReplayFile != "" {
+			rs, err := coredecide.OpenReplayStore(cfg.CoreReplayFile,
+				time.Duration(coreEngine.FreshnessSec)*time.Second)
+			if err != nil {
+				return fmt.Errorf("core replay store: %w", err)
+			}
+			coreEngine.Replay = rs
+		}
 		h.SetCore(coreEngine, coreLog)
 		log.Printf("core runtime enabled (policy=%s, audit=%s, anchors=%s, actors=%d)",
 			corePol.ID(), cfg.CoreAuditFile, cfg.CoreAnchorDir, len(actorKeys))

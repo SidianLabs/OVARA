@@ -71,6 +71,10 @@ type Config struct {
 	CoreAnchorDir  string            `json:"core_anchor_dir"`
 	CorePolicyFile string            `json:"core_policy_file"` // JSON policy for the core engine
 	CoreAuditKey   string            `json:"core_audit_key"`   // hex ed25519 private key
+	// CoreReplayFile makes the engine's nonce replay guard durable
+	// (JSONL append). Without it the guard is in-memory — a restart
+	// inside the freshness window re-admits a replay (RT-R1).
+	CoreReplayFile string            `json:"core_replay_file"`
 	CoreActorKeys  map[string]string `json:"core_actor_keys"`  // actor_id → hex ed25519 pubkey
 	CoreIssuerKeys map[string]string `json:"core_issuer_keys"` // issuer_id → hex ed25519 pubkey
 	ReplayMaxBytes int64             `json:"replay_max_bytes"`

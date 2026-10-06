@@ -90,8 +90,9 @@ type Engine struct {
 	ActorKeys    map[string]ed25519.PublicKey // actor -> request-signing key
 	CurrentEpoch func() uint64
 	FreshnessSec int
+	Replay       *ReplayStore // durable replay guard; nil → in-memory
 	mu           sync.Mutex
-	seenNonces   map[string]time.Time // replay guard (durable impl later)
+	seenNonces   map[string]time.Time
 	now          func() time.Time
 }
 
@@ -135,13 +136,24 @@ func (e *Engine) Evaluate(req *Request) Result {
 	if e.CurrentEpoch() < req.MinEpoch {
 		return fail("action_not_allowed", "min_epoch beyond current epoch")
 	}
-	e.mu.Lock()
-	if _, seen := e.seenNonces[req.Nonce]; seen {
+	if e.Replay != nil {
+		seen, err := e.Replay.Seen(req.Nonce)
+		if err != nil {
+			return fail("action_not_allowed",
+				"replay store write failed — fail closed")
+		}
+		if seen {
+			return fail("action_not_allowed", "nonce replay")
+		}
+	} else {
+		e.mu.Lock()
+		if _, seen := e.seenNonces[req.Nonce]; seen {
+			e.mu.Unlock()
+			return fail("action_not_allowed", "nonce replay")
+		}
+		e.seenNonces[req.Nonce] = now
 		e.mu.Unlock()
-		return fail("action_not_allowed", "nonce replay")
 	}
-	e.seenNonces[req.Nonce] = now
-	e.mu.Unlock()
 
 	pub, ok := e.ActorKeys[req.ActorID]
 	if !ok {

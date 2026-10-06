@@ -80,10 +80,10 @@ Adversarial vectors against the real engine — all denied [VERIFIED]:
   `api.github.com.evil.com` (differential pass). Fixed earlier [VERIFIED].
 
 ### Residuals (declared, not yet closed)
-- **RT-R1 replay-across-restart**: `seenNonces` is in-memory — a restart
-  inside the 60s freshness window re-admits a replayed request (sig
-  still valid). Needs durable nonce store (v1 replay_file exists; wire
-  engine to it). Window-bound; low severity, real residual.
+- ~~RT-R1 replay-across-restart~~ — CLOSED: `ReplayStore` JSONL +
+  `core_replay_file` config; write-ahead (nonce recorded before
+  decision), corrupt tail refuses to open. Verified by
+  TestReplayAcrossRestart + TestReplayStoreCorruptFailsClosed.
 - **RT-R2 env self-assertion**: `action.Env` is signed but
   self-asserted — an agent can label a prod action `dev` to evade
   env-keyed rules. For proxy-originated calls env comes from config
