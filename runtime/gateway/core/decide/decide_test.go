@@ -77,7 +77,7 @@ func TestEscalateWithoutCapability(t *testing.T) {
 
 func TestAllowWithValidCapability(t *testing.T) {
 	f := fixture(t)
-	tok, err := capability.Issue(f.issuerKey, "cap1", 1, capability.Scope{
+	tok, err := capability.Issue(f.issuerKey, "cap1", 1, f.agentPub, capability.Scope{
 		ActionTypes: []string{"shell.exec"}, Resources: []string{"*"},
 		Envs: []string{"dev"}}, nil, false)
 	if err != nil {

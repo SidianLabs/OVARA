@@ -1,0 +1,107 @@
+{
+  "class": "authority",
+  "expect": {
+    "outcome": "deny",
+    "reason_sub": "capability"
+  },
+  "id": "sc-al-012",
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "id": "allow-gh",
+        "selector": {
+          "types": [
+            "http.request"
+          ],
+          "resources": [
+            "https://api.github.com*"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "allow",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "esc-shell",
+        "selector": {
+          "types": [
+            "shell.exec"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "allow-tmp",
+        "selector": {
+          "types": [
+            "fs.read"
+          ],
+          "resources": [
+            "/tmp/*"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "allow",
+        "span": "",
+        "priority": 0
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "canonicalize": true,
+    "env": "dev",
+    "resource": "/tmp/ok/x",
+    "sig": "valid",
+    "token": "t1",
+    "type": "fs.read"
+  },
+  "tier": "t1",
+  "title": "delegated token presented by non-delegatee",
+  "tokens": [
+    {
+      "attenuate": [
+        {
+          "scope": {
+            "action_types": [
+              "fs.read"
+            ],
+            "envs": [
+              "dev"
+            ],
+            "resources": [
+              "/tmp/ok/*"
+            ]
+          },
+          "sign_with": "issuer",
+          "subject": "evil"
+        }
+      ],
+      "caveats": null,
+      "delegate": true,
+      "epoch": 0,
+      "id": "t1",
+      "scope": {
+        "action_types": [
+          "fs.read"
+        ],
+        "envs": [
+          "dev"
+        ],
+        "resources": [
+          "/tmp/*"
+        ]
+      },
+      "subject": "agent1"
+    }
+  ]
+}

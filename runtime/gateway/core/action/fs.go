@@ -20,6 +20,14 @@ func canonPath(raw string) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("action: empty path")
 	}
+	if len(raw) > 4096 { // PATH_MAX — unbounded resources bloat audit
+		return "", fmt.Errorf("action: path over 4096 bytes")
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < 0x20 || raw[i] == 0x7f {
+			return "", fmt.Errorf("action: control byte in path")
+		}
+	}
 	if strings.HasPrefix(raw, "~") || strings.Contains(raw, "$") {
 		return "", fmt.Errorf("action: unexpanded env/home in path %q — must be concrete", raw)
 	}

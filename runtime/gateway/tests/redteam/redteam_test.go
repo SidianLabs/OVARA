@@ -194,7 +194,7 @@ func TestCapabilityAttacks(t *testing.T) {
 		Resources: []string{"*"}, Envs: []string{"dev"}}
 	a.Env = action.EnvDev
 
-	wrongIssuer, err := capability.Issue(evilKey, "t1", 7, scope, nil, false)
+	wrongIssuer, err := capability.Issue(evilKey, "t1", 7, agentPub, scope, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestCapabilityAttacks(t *testing.T) {
 	resign(req, agentKey)
 	mustDeny(t, "forged issuer", eng.Evaluate(req))
 
-	expired, err := capability.Issue(issuerKey, "t2", 7, scope,
+	expired, err := capability.Issue(issuerKey, "t2", 7, agentPub, scope,
 		[]capability.Caveat{{Kind: "expires_before",
 			Value: now.Add(-time.Hour).Format(time.RFC3339)}}, false)
 	if err != nil {
@@ -215,7 +215,7 @@ func TestCapabilityAttacks(t *testing.T) {
 	resign(req, agentKey)
 	mustDeny(t, "expired token", eng.Evaluate(req))
 
-	stale, err := capability.Issue(issuerKey, "t3", 3, scope, nil, false)
+	stale, err := capability.Issue(issuerKey, "t3", 3, agentPub, scope, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,13 +226,13 @@ func TestCapabilityAttacks(t *testing.T) {
 
 	// attenuate a token wider than its parent — Issue must refuse,
 	// and if it somehow didn't, the engine must still deny
-	parent, err := capability.Issue(issuerKey, "t4", 7,
+	parent, err := capability.Issue(issuerKey, "t4", 7, agentPub,
 		capability.Scope{ActionTypes: []string{"fs.read"},
 			Resources: []string{"/a/*"}, Envs: []string{"dev"}}, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := capability.Attenuate(parent, agentKey,
+	child, err := capability.Attenuate(parent, agentKey, agentPub,
 		capability.Scope{ActionTypes: []string{"fs.read", "fs.delete"},
 			Resources: []string{"*"}, Envs: []string{"dev"}}, nil, false)
 	if err == nil && child != nil {
@@ -268,7 +268,7 @@ func TestFreshnessEdges(t *testing.T) {
 func TestEscalateNotBuyable(t *testing.T) {
 	eng := engine()
 	a := canon(t, "shell.exec", "echo hi")
-	tok, err := capability.Issue(issuerKey, "esc-cap", 7,
+	tok, err := capability.Issue(issuerKey, "esc-cap", 7, agentPub,
 		capability.Scope{ActionTypes: []string{"shell.exec"},
 			Resources: []string{"*"}, Envs: []string{"dev"}}, nil, false)
 	if err != nil {

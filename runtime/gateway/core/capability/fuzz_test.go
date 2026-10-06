@@ -12,7 +12,7 @@ import (
 // fails verification must not produce a scope.
 func FuzzVerify(f *testing.F) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	good, _ := Issue(priv, "f", 0, Scope{
+	good, _ := Issue(priv, "f", 0, holderPub, Scope{
 		ActionTypes: []string{"fs.read"}, Resources: []string{"/a*"},
 		Envs: []string{"dev"}}, nil, false)
 	gj, _ := json.Marshal(good)

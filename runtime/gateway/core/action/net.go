@@ -21,6 +21,14 @@ func canonNet(raw string) (string, error) {
 	if raw == "" {
 		return "", fmt.Errorf("action: empty net resource")
 	}
+	if len(raw) > 8192 {
+		return "", fmt.Errorf("action: net resource over 8192 bytes")
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < 0x20 || raw[i] == 0x7f {
+			return "", fmt.Errorf("action: control byte in net resource")
+		}
+	}
 	// strip a leading METHOD token (v1 corpus used "GET https://...")
 	if i := strings.IndexByte(raw, ' '); i > 0 {
 		maybe := raw[:i]

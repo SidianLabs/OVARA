@@ -20,6 +20,9 @@ import (
 // globs, here-docs. Flagged actions stay evaluatable but policy can
 // escalate on ParseFlag (and corpus records keep the flag).
 func canonShell(raw string) (string, bool, error) {
+	if len(raw) > 131072 {
+		return "", false, fmt.Errorf("action: shell resource over 128KiB")
+	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", false, fmt.Errorf("action: empty command")

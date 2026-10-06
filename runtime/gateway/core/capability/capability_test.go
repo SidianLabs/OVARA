@@ -8,6 +8,8 @@ import (
 	"ovara.runtime.gateway/core/action"
 )
 
+var holderPub, holderKey, _ = ed25519.GenerateKey(nil)
+
 func keys() (ed25519.PublicKey, ed25519.PrivateKey) {
 	p, k, _ := ed25519.GenerateKey(nil)
 	return p, k
@@ -24,11 +26,11 @@ func baseScope() Scope {
 
 func TestIssueVerifyCovers(t *testing.T) {
 	pub, key := keys()
-	tok, err := Issue(key, "t1", 1, baseScope(), nil, true)
+	tok, err := Issue(key, "t1", 1, holderPub, baseScope(), nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eff, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub}, 1)
+	eff, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub, PubID(holderPub): holderPub}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,34 +46,34 @@ func TestIssueVerifyCovers(t *testing.T) {
 
 func TestAttenuationMonotone(t *testing.T) {
 	pub, key := keys()
-	tok, _ := Issue(key, "t1", 1, baseScope(), nil, true)
+	tok, _ := Issue(key, "t1", 1, holderPub, baseScope(), nil, true)
 	// narrow to only shell.exec — OK
 	narrow := Scope{ActionTypes: []string{"shell.exec"}, Resources: []string{"*"},
 		Envs: []string{"dev"}, RatePerMin: 30}
-	child, err := Attenuate(tok, key, narrow, nil, false)
+	child, err := Attenuate(tok, holderKey, holderPub, narrow, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Verify(child, map[string]ed25519.PublicKey{PubID(pub): pub}, 1); err != nil {
+	if _, err := Verify(child, map[string]ed25519.PublicKey{PubID(pub): pub, PubID(holderPub): holderPub}, 1); err != nil {
 		t.Fatal(err)
 	}
 	// widen env — must fail (P4)
 	wide := Scope{ActionTypes: []string{"shell.exec"}, Resources: []string{"*"},
 		Envs: []string{"dev", "production"}}
-	if _, err := Attenuate(tok, key, wide, nil, true); err == nil {
+	if _, err := Attenuate(tok, holderKey, holderPub, wide, nil, true); err == nil {
 		t.Fatal("widening must fail")
 	}
 	// terminal child can't delegate further (P5)
 	grand := Scope{ActionTypes: []string{"shell.exec"}, Resources: []string{"*"}, Envs: []string{"dev"}}
-	if _, err := Attenuate(child, key, grand, nil, true); err == nil {
+	if _, err := Attenuate(child, holderKey, holderPub, grand, nil, true); err == nil {
 		t.Fatal("terminal block delegated")
 	}
 }
 
 func TestRevocationEpoch(t *testing.T) {
 	pub, key := keys()
-	tok, _ := Issue(key, "t1", 1, baseScope(), nil, true)
-	if _, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub}, 2); err == nil {
+	tok, _ := Issue(key, "t1", 1, holderPub, baseScope(), nil, true)
+	if _, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub, PubID(holderPub): holderPub}, 2); err == nil {
 		t.Fatal("stale-epoch token must fail verify")
 	}
 }
@@ -79,9 +81,9 @@ func TestRevocationEpoch(t *testing.T) {
 func TestExpiryCaveat(t *testing.T) {
 	pub, key := keys()
 	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	tok, _ := Issue(key, "t1", 1, baseScope(),
+	tok, _ := Issue(key, "t1", 1, holderPub, baseScope(),
 		[]Caveat{{Kind: "expires_before", Value: past}}, true)
-	if _, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub}, 1); err == nil {
+	if _, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub, PubID(holderPub): holderPub}, 1); err == nil {
 		t.Fatal("expired token must fail")
 	}
 	// widening expiry in child must fail
@@ -95,7 +97,7 @@ func TestExpiryCaveat(t *testing.T) {
 
 func TestUntrustedIssuerRejected(t *testing.T) {
 	_, key := keys()
-	tok, _ := Issue(key, "t1", 1, baseScope(), nil, true)
+	tok, _ := Issue(key, "t1", 1, holderPub, baseScope(), nil, true)
 	if _, err := Verify(tok, map[string]ed25519.PublicKey{}, 1); err == nil {
 		t.Fatal("untrusted issuer must fail")
 	}
@@ -104,10 +106,10 @@ func TestUntrustedIssuerRejected(t *testing.T) {
 func TestForgedAttenuation(t *testing.T) {
 	_, key := keys()
 	_, evil := keys()
-	tok, _ := Issue(key, "t1", 1, baseScope(), nil, true)
+	tok, _ := Issue(key, "t1", 1, holderPub, baseScope(), nil, true)
 	// evil signs a widening block — signature verifies but scope widens
 	wide := Scope{ActionTypes: []string{"*"}, Resources: []string{"*"}, Envs: []string{"*"}}
-	if _, err := Attenuate(tok, evil, wide, nil, true); err == nil {
+	if _, err := Attenuate(tok, evil, holderPub, wide, nil, true); err == nil {
 		t.Fatal("widening block accepted")
 	}
 }
@@ -115,14 +117,14 @@ func TestForgedAttenuation(t *testing.T) {
 // RT-R2: env_in caveat must actually bind the action env.
 func TestEnvInCaveatBinds(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	tok, err := Issue(priv, "i1", 0, Scope{
+	tok, err := Issue(priv, "i1", 0, holderPub, Scope{
 		ActionTypes: []string{"net.egress"}, Resources: []string{"*"},
 		Envs: []string{"*"}},
 		[]Caveat{{Kind: "env_in", Value: "dev"}}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sc, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub}, 0)
+	sc, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub, PubID(holderPub): holderPub}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,14 +142,14 @@ func TestEnvInCaveatBinds(t *testing.T) {
 // Unenforced caveat kinds must fail closed.
 func TestUnenforcedCaveatRejected(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
-	tok, err := Issue(priv, "i1", 0, Scope{
+	tok, err := Issue(priv, "i1", 0, holderPub, Scope{
 		ActionTypes: []string{"fs.read"}, Resources: []string{"*"},
 		Envs: []string{"*"}},
 		[]Caveat{{Kind: "taint_max", Value: "high"}}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub}, 0); err == nil {
+	if _, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub, PubID(holderPub): holderPub}, 0); err == nil {
 		t.Fatal("unenforced caveat kind must reject at verify")
 	}
 }

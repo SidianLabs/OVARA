@@ -89,3 +89,17 @@ Adversarial vectors against the real engine — all denied [VERIFIED]:
   env-keyed rules. For proxy-originated calls env comes from config
   (TCB). Direct /v2 calls need env bound via capability `env_in`
   caveat or endpoint-side binding. Open.
+
+## P3A-01 — bearer-token authority laundering [FIXED, regression in place]
+Found by: sc-fo-004 (Phase-3A corpus), 2026-10-06.
+Class: enforcement failure (spec §capability_token violated — "request_sig
+key must match the token's subject").
+Hole: capability tokens had no subject binding — Verify checked signature/
+scope/epoch but never bound the presenter. Any enrolled actor could
+present another actor's token (stolen/delegated-without-mandate).
+Fix (commit below): Block.Subject = pubID of holder key; Issue takes
+subject; Attenuate requires delegator==tail subject (chain of custody);
+Evaluate requires tail.Subject == PubID(actor key) else deny
+capability_missing/token_subject_mismatch. Verify's signer map now =
+issuers ∪ actor-keys-by-pubID so delegation blocks verify.
+Regression: sc-fo-004 + capability custody tests.

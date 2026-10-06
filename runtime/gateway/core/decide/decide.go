@@ -31,13 +31,13 @@ const (
 
 // Request is a signed action request (spec/capability_token.md §3).
 type Request struct {
-	Action    action.Action       `json:"action"`
-	Token     *capability.Token   `json:"token,omitempty"`
-	Nonce     string              `json:"nonce"`
-	IssuedAt  time.Time           `json:"issued_at"`
-	MinEpoch  uint64              `json:"min_epoch"`
-	ActorID   string              `json:"actor_id"` // filled by auth layer, never trusted from wire
-	Signature string              `json:"signature"`
+	Action    action.Action     `json:"action"`
+	Token     *capability.Token `json:"token,omitempty"`
+	Nonce     string            `json:"nonce"`
+	IssuedAt  time.Time         `json:"issued_at"`
+	MinEpoch  uint64            `json:"min_epoch"`
+	ActorID   string            `json:"actor_id"` // filled by auth layer, never trusted from wire
+	Signature string            `json:"signature"`
 }
 
 // RequestCanonical is the signed payload — nonce and issued_at are
@@ -67,12 +67,12 @@ func (r *Request) VerifySignature(pub ed25519.PublicKey) error {
 
 // Result wraps the outcome with the audit-grade record.
 type Result struct {
-	Outcome     Outcome          `json:"outcome"`
-	ReasonClass string           `json:"reason_class"` // agent-visible
-	OpReason    string           `json:"op_reason"`    // operator-visible
-	PolicyID    string           `json:"policy_id"`
-	ActionHash  string           `json:"action_hash"`
-	ApprovalID  string           `json:"approval_id,omitempty"`
+	Outcome     Outcome `json:"outcome"`
+	ReasonClass string  `json:"reason_class"` // agent-visible
+	OpReason    string  `json:"op_reason"`    // operator-visible
+	PolicyID    string  `json:"policy_id"`
+	ActionHash  string  `json:"action_hash"`
+	ApprovalID  string  `json:"approval_id,omitempty"`
 }
 
 // ApprovalStore binds approvals to action hashes (single-use,
@@ -163,9 +163,26 @@ func (e *Engine) Evaluate(req *Request) Result {
 		return fail("action_not_allowed", err.Error())
 	}
 	if req.Token != nil {
-		eff, err := capability.Verify(req.Token, e.Issuers, e.CurrentEpoch())
+		// signers = trusted issuers + enrolled actor keys (by pubID);
+		// delegation blocks are signed by holder keys.
+		signers := map[string]ed25519.PublicKey{}
+		for k, v := range e.Issuers {
+			signers[k] = v
+		}
+		for _, v := range e.ActorKeys {
+			signers[capability.PubID(v)] = v
+		}
+		eff, err := capability.Verify(req.Token, signers, e.CurrentEpoch())
 		if err != nil {
 			return fail("capability_missing", err.Error())
+		}
+		// subject binding (spec §capability: request signer must be the
+		// token's tail subject — bearer-token reuse between actors is
+		// authority laundering).
+		tail := req.Token.Blocks[len(req.Token.Blocks)-1]
+		if tail.Subject != capability.PubID(pub) {
+			return fail("capability_missing",
+				"token subject mismatch — presented by non-holder")
 		}
 		if !eff.Covers(req.Action) {
 			return fail("capability_missing", "token scope does not cover action")

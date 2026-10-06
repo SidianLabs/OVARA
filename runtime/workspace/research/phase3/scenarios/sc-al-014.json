@@ -1,0 +1,95 @@
+{
+  "class": "authority",
+  "expect": {
+    "outcome": "deny",
+    "reason_sub": ""
+  },
+  "id": "sc-al-014",
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "id": "allow-gh",
+        "selector": {
+          "types": [
+            "http.request"
+          ],
+          "resources": [
+            "https://api.github.com*"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "allow",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "esc-shell",
+        "selector": {
+          "types": [
+            "shell.exec"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "allow-tmp",
+        "selector": {
+          "types": [
+            "fs.read"
+          ],
+          "resources": [
+            "/tmp/*"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "allow",
+        "span": "",
+        "priority": 0
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "canonicalize": true,
+    "env": "dev",
+    "resource": "/tmp/x",
+    "sig": "valid",
+    "token": "t1",
+    "type": "fs.read"
+  },
+  "tier": "t1",
+  "title": "unenforced caveat kind rejects (taint_max)",
+  "tokens": [
+    {
+      "caveats": [
+        {
+          "kind": "taint_max",
+          "value": "high"
+        }
+      ],
+      "delegate": false,
+      "epoch": 0,
+      "id": "t1",
+      "scope": {
+        "action_types": [
+          "fs.read"
+        ],
+        "envs": [
+          "dev"
+        ],
+        "resources": [
+          "/tmp/*"
+        ]
+      },
+      "subject": "agent1"
+    }
+  ]
+}

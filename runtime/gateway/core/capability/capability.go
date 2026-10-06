@@ -37,10 +37,17 @@ type Caveat struct {
 // trusted issuer); each appended block can only narrow scope/expiry —
 // attenuation-only is enforced at Verify (P4).
 type Block struct {
-	Scope    Scope    `json:"scope"`
-	Caveats  []Caveat `json:"caveats,omitempty"`
-	Issuer   string   `json:"issuer"`   // principal id that added this block
-	Delegate bool     `json:"delegate"` // whether holder may append further blocks
+	Scope   Scope    `json:"scope"`
+	Caveats []Caveat `json:"caveats,omitempty"`
+	// Issuer is the pubID of the key that signed this block; Subject
+	// is the pubID of the key that may PRESENT the token from this
+	// block onward. Block 0's issuer is a trusted issuer and its
+	// subject is the token's holder; an attenuation's issuer is the
+	// previous block's subject (chain of custody — only the holder
+	// may delegate), and its subject is the delegatee.
+	Issuer   string `json:"issuer"`
+	Subject  string `json:"subject"`
+	Delegate bool   `json:"delegate"` // whether holder may append further blocks
 }
 
 // Token is a chain of blocks; signature covers everything before it.
@@ -72,8 +79,9 @@ func tokenCanonical(t *Token, upto int) string {
 		t.Epoch, strings.Join(parts, "."), prev)
 }
 
-// Issue mints a block-0 token signed by issuer.
-func Issue(issuer ed25519.PrivateKey, id string, epoch uint64, s Scope, cav []Caveat, delegate bool) (*Token, error) {
+// Issue mints a block-0 token signed by issuer, bound to subject
+// (the holder's pubkey id — only that key's actor may present it).
+func Issue(issuer ed25519.PrivateKey, id string, epoch uint64, subject ed25519.PublicKey, s Scope, cav []Caveat, delegate bool) (*Token, error) {
 	if len(s.ActionTypes) == 0 || len(s.Resources) == 0 || len(s.Envs) == 0 {
 		return nil, errors.New("capability: block-0 scope must be fully populated (empty = none is too surprising)")
 	}
@@ -83,21 +91,27 @@ func Issue(issuer ed25519.PrivateKey, id string, epoch uint64, s Scope, cav []Ca
 		}
 	}
 	t := &Token{ID: id, Issued: time.Now().UTC(), Epoch: epoch,
-		Blocks: []Block{{Scope: s, Caveats: cav, Issuer: pubID(issuer.Public().(ed25519.PublicKey)), Delegate: delegate}}}
+		Blocks: []Block{{Scope: s, Caveats: cav,
+			Issuer:   pubID(issuer.Public().(ed25519.PublicKey)),
+			Subject:  pubID(subject),
+			Delegate: delegate}}}
 	t.Sigs = []string{sign(issuer, tokenCanonical(t, 0))}
 	return t, nil
 }
 
-// Attenuate appends a narrowing block signed by the delegating key.
-// The caller must hold a key authorized to delegate — the registry
-// checks that delegator's identity is the last block's issuer subject.
-// Here we only check the structural invariant (P4): the new block's
-// scope must be a subset of the prior effective scope.
-func Attenuate(t *Token, delegator ed25519.PrivateKey, s Scope, cav []Caveat, delegate bool) (*Token, error) {
+// Attenuate appends a narrowing block signed by the delegating key,
+// handing the token to subject (the delegatee's pubkey). The
+// delegator must BE the current tail subject — only the holder of
+// record may delegate (chain of custody). Structural P4 subset
+// enforcement happens at Verify.
+func Attenuate(t *Token, delegator ed25519.PrivateKey, subject ed25519.PublicKey, s Scope, cav []Caveat, delegate bool) (*Token, error) {
 	if len(t.Blocks) == 0 {
 		return nil, errors.New("capability: empty token")
 	}
 	last := t.Blocks[len(t.Blocks)-1]
+	if pubID(delegator.Public().(ed25519.PublicKey)) != last.Subject {
+		return nil, errors.New("capability: delegator is not the token holder (chain-of-custody violation)")
+	}
 	if !last.Delegate {
 		return nil, errors.New("capability: terminal block — cannot delegate (P5)")
 	}
@@ -110,7 +124,10 @@ func Attenuate(t *Token, delegator ed25519.PrivateKey, s Scope, cav []Caveat, de
 		return nil, errors.New("capability: expiry cannot widen (P4)")
 	}
 	nt := *t
-	nb := Block{Scope: s, Caveats: cav, Issuer: pubID(delegator.Public().(ed25519.PublicKey)), Delegate: delegate}
+	nb := Block{Scope: s, Caveats: cav,
+		Issuer:   pubID(delegator.Public().(ed25519.PublicKey)),
+		Subject:  pubID(subject),
+		Delegate: delegate}
 	nt.Blocks = append(append([]Block{}, t.Blocks...), nb)
 	nt.Sigs = append(append([]string{}, t.Sigs...),
 		sign(delegator, tokenCanonical(&nt, len(nt.Blocks)-1)))
@@ -120,7 +137,10 @@ func Attenuate(t *Token, delegator ed25519.PrivateKey, s Scope, cav []Caveat, de
 // Verify checks signatures end-to-end and returns the effective scope.
 // epoch must be ≥ token.Epoch (revocation dominance hook — caller
 // also checks min_epoch on the action).
-func Verify(t *Token, issuers map[string]ed25519.PublicKey, currentEpoch uint64) (Scope, error) {
+// signers covers every key trusted to sign a block: issuer keys AND
+// holder keys (delegation blocks are signed by the previous subject).
+// Callers pass ActorKeys-by-pubID alongside issuer keys.
+func Verify(t *Token, signers map[string]ed25519.PublicKey, currentEpoch uint64) (Scope, error) {
 	if len(t.Blocks) == 0 || len(t.Sigs) != len(t.Blocks) {
 		return Scope{}, errors.New("capability: malformed token")
 	}
@@ -128,7 +148,7 @@ func Verify(t *Token, issuers map[string]ed25519.PublicKey, currentEpoch uint64)
 		return Scope{}, errors.New("capability: token epoch stale (revoked)")
 	}
 	for i, b := range t.Blocks {
-		pub, ok := issuers[b.Issuer]
+		pub, ok := signers[b.Issuer]
 		if !ok {
 			return Scope{}, fmt.Errorf("capability: untrusted issuer %q at block %d", b.Issuer, i)
 		}
@@ -138,6 +158,9 @@ func Verify(t *Token, issuers map[string]ed25519.PublicKey, currentEpoch uint64)
 		if i > 0 {
 			if !t.Blocks[i-1].Delegate {
 				return Scope{}, errors.New("capability: delegation beyond terminal block")
+			}
+			if b.Issuer != t.Blocks[i-1].Subject {
+				return Scope{}, fmt.Errorf("capability: block %d signed by non-holder (custody violation)", i)
 			}
 			eff := effectiveScope(t.Blocks[:i])
 			if !subsetOf(b.Scope, eff) {
