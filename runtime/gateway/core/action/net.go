@@ -76,6 +76,14 @@ func validHost(host string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return true
 	}
+	// Numeric-ish hosts that aren't literal IPs are ambiguous spellings
+	// (decimal-int, hex, octal, short dotted) — DNS resolves them via
+	// inet_aton semantics, e.g. "2130706433" == 169.254.169.254. The
+	// canonical form only permits literal IPs; anything else numeric is
+	// a deny-bypass vector against IP-keyed rules.
+	if looksNumericish(host) {
+		return false
+	}
 	if len(host) > 253 || host == "localhost" {
 		return host == "localhost" // localhost is a valid literal host
 	}
@@ -117,4 +125,19 @@ func cleanURLPath(p string) string {
 		}
 	}
 	return "/" + strings.Join(stack, "/")
+}
+
+func looksNumericish(host string) bool {
+	sawDigit := false
+	for _, c := range host {
+		switch {
+		case c >= '0' && c <= '9':
+			sawDigit = true
+		case c == '.' || c == 'x' || c == 'X' ||
+			(c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'):
+		default:
+			return false
+		}
+	}
+	return sawDigit
 }

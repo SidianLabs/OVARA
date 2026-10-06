@@ -45,6 +45,11 @@ func fixture(t *testing.T) *fx {
 
 func (f *fx) signed(t *testing.T, a action.Action, tok *capability.Token) *Request {
 	t.Helper()
+	// correct client behavior: canonicalize, then sign the canonical form
+	if ca, err := action.Canonicalize(string(a.Type), a.Resource); err == nil {
+		ca.Env = a.Env
+		a = ca
+	}
 	r := &Request{Action: a, Token: tok, Nonce: "n" + a.Resource,
 		IssuedAt: time.Now().UTC(), ActorID: "agent1"}
 	sig := ed25519.Sign(f.agentKey, []byte(r.RequestCanonical()))

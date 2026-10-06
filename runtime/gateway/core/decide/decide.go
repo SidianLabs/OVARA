@@ -113,6 +113,20 @@ func (e *Engine) Evaluate(req *Request) Result {
 	if req.Action.Type == "" || req.Nonce == "" || req.ActorID == "" {
 		return fail("action_not_allowed", "missing required fields")
 	}
+	// The signature binds the wire action — it must already be the
+	// canonical form (the signer canonicalizes first, per spec §3). A
+	// non-canonical wire form would let an agent smuggle spellings the
+	// policy never sees (userinfo, un-normalized hosts) while auditing
+	// the raw form — dishonest provenance. Re-canonicalizing here and
+	// requiring equality keeps evaluation, signature, and audit on the
+	// same action.
+	canonical, err := action.Canonicalize(string(req.Action.Type), req.Action.Resource)
+	if err != nil || canonical.Type != req.Action.Type ||
+		canonical.Resource != req.Action.Resource ||
+		canonical.ParseFlag != req.Action.ParseFlag {
+		return fail("action_not_allowed",
+			"action is not in canonical form (sign the canonicalized action)")
+	}
 	now := e.now().UTC()
 	if req.IssuedAt.After(now.Add(60*time.Second)) ||
 		req.IssuedAt.Before(now.Add(-time.Duration(e.FreshnessSec)*time.Second)) {

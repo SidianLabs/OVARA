@@ -52,3 +52,40 @@ each against current code before relying on it in results.
 
 | id | class | description | discovered-by | affected | status | fix | regression |
 |----|-------|-------------|---------------|----------|--------|-----|------------|
+
+## Redesign red-team pass (feat/ovara-redesign, runtime/gateway/tests/redteam)
+
+Adversarial vectors against the real engine — all denied [VERIFIED]:
+
+| Vector | Result |
+|---|---|
+| Wrong key / wrong scheme / empty sig / sig-over-other-action / unregistered actor | deny |
+| Nonce replay (same request AND same nonce on different action) | deny |
+| Non-canonical smuggling (case, port padding, trailing dot, userinfo, dot-segments) | deny at canonical check |
+| IP-spelling evasion (decimal 2130706433, hex, octal, short-dotted → 169.254.169.254) | deny |
+| Forged issuer / expired / epoch-stale capability tokens | deny |
+| Wider-than-parent attenuation | refused at Attenuate + deny |
+| issued_at outside ±60s window | deny |
+| Valid capability does NOT convert escalate→allow | escalate stands |
+
+### Found by this pass (fixed same commit)
+- **canonical-form trust hole**: engine evaluated whatever Action the
+  caller signed — userinfo/non-normalized resources could reach policy
+  + audit verbatim. Fix: Evaluate now requires wire action ==
+  Canonicalize(type, resource) [VERIFIED closed].
+- **decimal/hex/octal IP spellings passed canonNet**: `2130706433` et al.
+  resolve to 169.254.169.254 via inet_aton but evaded IP-keyed deny
+  rules. Fix: non-literal numeric hosts rejected [VERIFIED closed].
+- **matchPatterns host-suffix leak**: `api.github.com*` matched
+  `api.github.com.evil.com` (differential pass). Fixed earlier [VERIFIED].
+
+### Residuals (declared, not yet closed)
+- **RT-R1 replay-across-restart**: `seenNonces` is in-memory — a restart
+  inside the 60s freshness window re-admits a replayed request (sig
+  still valid). Needs durable nonce store (v1 replay_file exists; wire
+  engine to it). Window-bound; low severity, real residual.
+- **RT-R2 env self-assertion**: `action.Env` is signed but
+  self-asserted — an agent can label a prod action `dev` to evade
+  env-keyed rules. For proxy-originated calls env comes from config
+  (TCB). Direct /v2 calls need env bound via capability `env_in`
+  caveat or endpoint-side binding. Open.
