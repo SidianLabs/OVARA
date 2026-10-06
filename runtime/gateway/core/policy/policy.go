@@ -15,10 +15,10 @@ import (
 type Effect string
 
 const (
-	Allow       Effect = "allow"
-	Deny        Effect = "deny"
-	Escalate    Effect = "escalate"
-	RequireCap  Effect = "require_capability"
+	Allow      Effect = "allow"
+	Deny       Effect = "deny"
+	Escalate   Effect = "escalate"
+	RequireCap Effect = "require_capability"
 )
 
 type Selector struct {
@@ -150,8 +150,32 @@ func matchPatterns(pats []string, res string) bool {
 		if p == "*" || p == res {
 			return true
 		}
-		if strings.HasSuffix(p, "*") && strings.HasPrefix(res, strings.TrimSuffix(p, "*")) {
-			return true
+		if strings.HasSuffix(p, "*") {
+			pre := strings.TrimSuffix(p, "*")
+			// Host-anchored wildcard: when the star follows a bare
+			// host (scheme://host*), the wildcard means "this host,
+			// any path" — a bare string prefix would let
+			// api.github.com* match api.github.com.evil.com
+			// (SEC-0010 suffix-append). Require exact host equality.
+			if i := strings.Index(pre, "://"); i >= 0 &&
+				!strings.Contains(pre[i+3:], "/") {
+				pScheme, pHost := pre[:i], pre[i+3:]
+				rScheme, rRest := res, res
+				if j := strings.Index(res, "://"); j >= 0 {
+					rScheme, rRest = res[:j], res[j+3:]
+				}
+				rHost := rRest
+				if k := strings.IndexAny(rHost, "/:"); k >= 0 {
+					rHost = rHost[:k]
+				}
+				if pScheme == rScheme && rHost == pHost {
+					return true
+				}
+				continue
+			}
+			if strings.HasPrefix(res, pre) {
+				return true
+			}
 		}
 		// host-label-boundary suffix match on the HOST portion only:
 		// "https://*.github.com" matches "https://api.github.com/x" but
