@@ -36,16 +36,35 @@ done / blocked(reason).
   Mac (needs operator OK for cask install) OR pin sandboxed work to a
   future Linux session. Blocks all dynamic adversarial work. (A1)
 
-## Phase 1 (not started; exits on spec set v0.9 + prereg)
+## Phase 1 (done; spec set v0.9 + prereg committed)
 
-- [ ] P1-01 — Formal threat model doc (P1-P13 formalized, TCB enumeration,
-  assumptions list) → spec/threat_model.md
-- [ ] P1-02 — Specs: action model + canonicalization; capability token
-  format; policy IR + POLICY.md compiler semantics; decision record;
-  audit log format; approval + revocation protocols; self-test design.
-- [ ] P1-03 — Interception mechanism study w/ measured prototypes
-  (needs A1 resolved for Linux mechanisms).
-- [ ] P1-04 — Pre-register hypotheses + scenario schema → research/prereg/.
+- [x] P1-01 — spec/threat_model.md (P1-P13, TCB, assumptions; §7 added per
+  external review: 4 control layers, control-independence, TCB-surface metric)
+- [x] P1-02 — spec/: action_model, capability_token, policy_ir, decision
+  semantics, audit_log, approval_protocol, revocation, selftest
+- [x] P1-03 — docs/mechanism_study.md (netns+proxy, seccomp-notify, Landlock,
+  docker→gVisor→Firecracker lanes; measured prototypes deferred to Linux)
+- [x] P1-04 — research/preregistration.md H1-H8 (+H9-H12 from external review)
+
+## Phase 2 — redesign inside OVARA (branch feat/ovara-redesign)
+
+- [x] core/audit — write-ahead chain + signed Merkle checkpoints + off-host sink
+- [x] core/action — closed 26-type vocab; host-boundary canonical net form;
+  userinfo rejected; parse-based shell canonicalization
+- [x] core/capability — stdlib-Ed25519 attenuable tokens (subset, epoch, expiry)
+- [x] core/policy — total-order eval + shadow analysis + naive ref interpreter
+- [x] core/decide — signed-request pipeline (freshness→epoch→replay→sig→cap→policy)
+- [x] core/selftest — 8 checks w/ expected-failure negatives; boot refuses on fail
+- [x] HTTP surface — POST /v2/runtime/check (agent-scope), write-ahead audit
+  before response; core_enabled/core_* config fails closed at startup
+- [x] P2-08 differential — v1 corpus 45/45 vs annotated core outcomes
+  (runtime/gateway/tests/differential; found+fixed host-* suffix leak)
+- [x] P2-fold — proxy signs requests to /v2 when request_key_file set
+  (verified live: allow forwarded, deny blocked, decisions audited)
+- [ ] P2-05 sandbox layer (netns/seccomp/Landlock) — BLOCKED on Linux lane
+- [ ] P2-09 red-team gate (per adopted review): T0→T4, held-out scenarios
+- [ ] fuzz targets per layer; performance measurement (Linux)
+- [ ] migration/compat doc + merge-back plan
 
 ## Standing
 
