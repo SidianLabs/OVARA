@@ -111,3 +111,43 @@ func TestForgedAttenuation(t *testing.T) {
 		t.Fatal("widening block accepted")
 	}
 }
+
+// RT-R2: env_in caveat must actually bind the action env.
+func TestEnvInCaveatBinds(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	tok, err := Issue(priv, "i1", 0, Scope{
+		ActionTypes: []string{"net.egress"}, Resources: []string{"*"},
+		Envs: []string{"*"}},
+		[]Caveat{{Kind: "env_in", Value: "dev"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := action.Canonicalize("net.egress", "https://api.github.com/x")
+	a.Env = "prod"
+	if sc.Covers(a) {
+		t.Fatal("env_in:dev must not cover env=prod")
+	}
+	a.Env = "dev"
+	if !sc.Covers(a) {
+		t.Fatal("env_in:dev must cover env=dev")
+	}
+}
+
+// Unenforced caveat kinds must fail closed.
+func TestUnenforcedCaveatRejected(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	tok, err := Issue(priv, "i1", 0, Scope{
+		ActionTypes: []string{"fs.read"}, Resources: []string{"*"},
+		Envs: []string{"*"}},
+		[]Caveat{{Kind: "taint_max", Value: "high"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Verify(tok, map[string]ed25519.PublicKey{PubID(pub): pub}, 0); err == nil {
+		t.Fatal("unenforced caveat kind must reject at verify")
+	}
+}

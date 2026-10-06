@@ -39,16 +39,16 @@ type Caveat struct {
 type Block struct {
 	Scope    Scope    `json:"scope"`
 	Caveats  []Caveat `json:"caveats,omitempty"`
-	Issuer   string   `json:"issuer"`  // principal id that added this block
+	Issuer   string   `json:"issuer"`   // principal id that added this block
 	Delegate bool     `json:"delegate"` // whether holder may append further blocks
 }
 
 // Token is a chain of blocks; signature covers everything before it.
 type Token struct {
-	ID     string   `json:"id"`
+	ID     string    `json:"id"`
 	Issued time.Time `json:"issued"`
-	Epoch  uint64   `json:"epoch"`
-	Blocks []Block  `json:"blocks"`
+	Epoch  uint64    `json:"epoch"`
+	Blocks []Block   `json:"blocks"`
 	// Sigs[i] signs canonical(blocks[0..i]) chained with Sigs[i-1].
 	Sigs []string `json:"sigs"`
 }
@@ -183,12 +183,25 @@ func (s Scope) Covers(a action.Action) bool {
 }
 
 func effectiveScope(blocks []Block) Scope {
-	// Intersection of all block scopes.
-	eff := blocks[0].Scope
+	// Intersection of all block scopes, each narrowed by its own
+	// env_in caveat (RT-R2: env binding must be enforced, not just
+	// declared).
+	eff := caveatNarrow(blocks[0])
 	for _, b := range blocks[1:] {
-		eff = intersect(eff, b.Scope)
+		eff = intersect(eff, caveatNarrow(b))
 	}
 	return eff
+}
+
+// caveatNarrow applies env_in to the block's env grant.
+func caveatNarrow(b Block) Scope {
+	s := b.Scope
+	for _, c := range b.Caveats {
+		if c.Kind == "env_in" && c.Value != "" {
+			s.Envs = intersectSet(s.Envs, strings.Split(c.Value, ","))
+		}
+	}
+	return s
 }
 
 func intersect(a, b Scope) Scope {
@@ -279,7 +292,8 @@ func checkCaveats(blocks []Block) error {
 	now := time.Now().UTC()
 	for _, b := range blocks {
 		for _, c := range b.Caveats {
-			if c.Kind == "expires_before" {
+			switch c.Kind {
+			case "expires_before":
 				exp, err := time.Parse(time.RFC3339, c.Value)
 				if err != nil {
 					return fmt.Errorf("capability: bad expiry caveat %q", c.Value)
@@ -287,6 +301,13 @@ func checkCaveats(blocks []Block) error {
 				if now.After(exp) {
 					return errors.New("capability: expired")
 				}
+			case "env_in": // enforced in effectiveScope via caveatNarrow
+			default:
+				// A caveat the verifier can't enforce must fail
+				// closed — silent acceptance is how capability
+				// restrictions get bypassed (e.g. taint_max is
+				// reserved but not yet implemented).
+				return fmt.Errorf("capability: unenforced caveat kind %q", c.Kind)
 			}
 		}
 	}
