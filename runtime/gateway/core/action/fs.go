@@ -30,5 +30,10 @@ func canonPath(raw string) (string, error) {
 	if strings.Contains(clean, "..") {
 		return "", fmt.Errorf("action: traversal survived clean in %q", raw)
 	}
+	if !isCanonicalForm(clean) {
+		// leading/trailing whitespace can't survive re-canonicalization
+		// (input is trimmed) — a non-idempotent form is not canonical
+		return "", fmt.Errorf("action: path %q not canonicalizable", raw)
+	}
 	return clean, nil
 }

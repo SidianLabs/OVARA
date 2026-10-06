@@ -47,15 +47,29 @@ func canonNet(raw string) (string, error) {
 	}
 	port := u.Port()
 	scheme := strings.ToLower(u.Scheme)
-	out := scheme + "://" + host
+	out := scheme + "://"
+	if strings.Contains(host, ":") {
+		out += "[" + host + "]" // IPv6 literal needs brackets to re-parse
+	} else {
+		out += host
+	}
 	if port != "" && port != defaultPort(scheme) {
 		out += ":" + port
 	}
 	// path: keep the raw path prefix shape for prefix matching —
-	// canonicalize by cleaning ../ and duplicate slashes.
+	// canonicalize by cleaning ../ and duplicate slashes. Decoded
+	// control bytes (%00, %0a…) can't survive re-parse — reject.
+	for i := 0; i < len(u.Path); i++ {
+		if u.Path[i] < 0x20 || u.Path[i] == 0x7f {
+			return "", fmt.Errorf("action: control byte in path %q", u.Path)
+		}
+	}
 	p := cleanURLPath(u.Path)
 	if p != "/" {
 		out += p
+	}
+	if !isCanonicalForm(out) {
+		return "", fmt.Errorf("action: net resource %q not canonicalizable", raw)
 	}
 	return out, nil
 }

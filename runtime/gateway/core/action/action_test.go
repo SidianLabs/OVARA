@@ -25,13 +25,13 @@ func TestNetUserinfoRejected(t *testing.T) {
 
 func TestNetCanonical(t *testing.T) {
 	cases := map[string]string{
-		"GET https://api.github.com/x":            "https://api.github.com/x",
-		"https://api.github.com:443/x":            "https://api.github.com/x",
-		"https://api.github.com:8443/x":           "https://api.github.com:8443/x",
-		"HTTPS://API.GITHUB.COM/X":                "https://api.github.com/X",
-		"http://169.254.169.254/latest":           "http://169.254.169.254/latest",
-		"https://api.github.com/../a/./b":         "https://api.github.com/a/b",
-		"https://api.github.com.evil.com/x":       "https://api.github.com.evil.com/x", // stays itself — host-boundary matching kills it, not mangling
+		"GET https://api.github.com/x":      "https://api.github.com/x",
+		"https://api.github.com:443/x":      "https://api.github.com/x",
+		"https://api.github.com:8443/x":     "https://api.github.com:8443/x",
+		"HTTPS://API.GITHUB.COM/X":          "https://api.github.com/X",
+		"http://169.254.169.254/latest":     "http://169.254.169.254/latest",
+		"https://api.github.com/../a/./b":   "https://api.github.com/a/b",
+		"https://api.github.com.evil.com/x": "https://api.github.com.evil.com/x", // stays itself — host-boundary matching kills it, not mangling
 	}
 	for in, want := range cases {
 		a, err := Canonicalize("http.request", in)
@@ -72,7 +72,7 @@ func TestShellCanon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Resource != "echo a b | grep x >/tmp/out" {
+	if a.Resource != "echo a\\ b | grep x >/tmp/out" {
 		t.Fatalf("canon: %q", a.Resource)
 	}
 	if a.ParseFlag {
