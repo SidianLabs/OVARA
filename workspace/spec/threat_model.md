@@ -218,3 +218,39 @@ Explicit non-goals recorded so nobody overclaims:
 - Social compromise of the operator endpoint itself.
 - Semantic equivalence attacks where the *action is legal* but the
   composition is harmful — bounded by taint + quota, not eliminated.
+
+## 7. Property organization — control layers (adopted from external review)
+
+The 13 properties organize into four control layers, which the
+research program reports against separately:
+
+| Layer | Properties | Scientific question |
+|---|---|---|
+| **A — Authority** | P3, P4, P5 | Can the agent obtain authority it wasn't given? |
+| **B — Execution** | P1, P2, P10, P12 | Can the agent cross the enforcement boundary? |
+| **C — Accountability** | P7, P8, P9 | Can we know what actually happened? |
+| **D — Control** | P6, P11, P13 | Can humans still control and reason about the system? |
+
+### Control independence (new formalization)
+
+A safety property is **control-independent** from the model when
+violating it requires compromising an external trusted component —
+not merely choosing a different agent behavior. Layers, weakest to
+strongest:
+
+    behavioral → policy → capability → runtime → kernel → hardware
+
+The research question this names: at which layer does each P-property
+become independent of the agent's internal policy? System A relies on
+behavioral (prompt) control — not control-independent by definition.
+System D's claim is that P1-P8 sit at runtime/kernel layer, where the
+agent's *beliefs and choices* cannot affect the invariant.
+
+### TCB attack-surface metric (P13 made quantitative)
+
+Track and report per release: TCB LoC, dependency count, privileged
+syscalls/interfaces, persistent-state surfaces, external services in
+the trust boundary, network/IPC surface. Research question (the
+review's sharpest one): does adding safety mechanisms paradoxically
+grow attack surface? The metric answers it — mechanisms are adopted
+only if they don't inflate the surface they defend.
