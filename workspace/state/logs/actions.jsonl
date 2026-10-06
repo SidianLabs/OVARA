@@ -1,0 +1,9 @@
+{"ts":"2026-10-06T12:46Z","actor":"agent","action":"session_start","detail":"master brief received via attachment; read fully; program kickoff","evidence":"workspace/MASTER_BRIEF.md"}
+{"ts":"2026-10-06T12:46Z","actor":"agent","action":"env_check","detail":"macOS host; no docker/colima/podman/nerdctl; go,node,python3,brew present; /workspace absent; repos/: OVARA,astrosakhi","evidence":"state/HUMAN_ATTENTION.md#A1"}
+{"ts":"2026-10-06T12:47Z","actor":"agent","action":"mirror_clone","detail":"cloned micro-agent-protocol, POLICY.md, dash, sidian (depth 1) into workspace/repos/","evidence":"workspace/repos/"}
+{"ts":"2026-10-06T12:47Z","actor":"agent","action":"workspace_init","detail":"branch feat/agent-control-program; state files, config/allowlist.txt draft, CONTROL skeleton (operator-owned)","evidence":"git log workspace/"}
+{"ts":"2026-10-06T13:15Z","actor":"agent","action":"audit","detail":"v1 audit written: modules, 14 action types, interception (enforced egress / cooperative interceptors / audit-only eBPF), evaluator pipeline, evidence layer, SEC registers","evidence":"workspace/docs/v1_audit.md"}
+{"ts":"2026-10-06T13:15Z","actor":"agent","action":"test_run","detail":"go test -race all 12 modules: PASS; vitest sdk/typescript 31/31 PASS; pytest sdk/python 77/77 PASS (python3.12 venv)","evidence":"state/daily/2026-10-06.md#2"}
+{"ts":"2026-10-06T13:15Z","actor":"agent","action":"demo_run","detail":"ovara demo: chokepoint + fail-closed + valid receipt chain; ovara doctor: correctly FAILs posture without config","evidence":"session transcript"}
+{"ts":"2026-10-06T13:20Z","actor":"agent","action":"bypass_verify","detail":"SEC-0008 FIXED-VERIFIED (init mints agent_token; 0.0.0.0+no-token refuses start); SEC-0010 FIXED-VERIFIED (CanonicalResource)","evidence":"BYPASSES.md"}
+{"ts":"2026-10-06T13:20Z","actor":"agent","action":"doc","detail":"prior_art.md skeleton with verification status per row","evidence":"research/prior_art.md"}

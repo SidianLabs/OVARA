@@ -1,0 +1,41 @@
+# Build-side egress allowlist (draft — operator review requested, see
+# state/HUMAN_ATTENTION.md). Experiment sandboxes are always deny-all egress;
+# this list only applies to the agent's dev/build side.
+# One host or suffix per line; `*.` prefix matches that domain and subdomains.
+
+# source mirrors + code review
+github.com
+*.githubusercontent.com
+api.github.com
+
+# Go modules
+proxy.golang.org
+sum.golang.org
+pkg.go.dev
+
+# npm
+registry.npmjs.org
+*.npmjs.org
+
+# PyPI
+pypi.org
+files.pythonhosted.org
+
+# Rust crates
+crates.io
+static.crates.io
+index.crates.io
+
+# research: papers, docs, advisories
+arxiv.org
+*.arxiv.org
+huggingface.co
+*.huggingface.co
+usenix.org
+dl.acm.org
+ieeexplore.ieee.org
+openreview.net
+docs.rs
+developer.mozilla.org
+github.com/advisories
+osv.dev
