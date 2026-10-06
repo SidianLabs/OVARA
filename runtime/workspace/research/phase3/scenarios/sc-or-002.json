@@ -1,0 +1,53 @@
+{
+  "class": "scope_boundary",
+  "expect": {
+    "outcome": "escalate",
+    "reason_sub": ""
+  },
+  "id": "sc-or-002",
+  "policy": {
+    "default": "allow",
+    "rules": [
+      {
+        "id": "esc",
+        "selector": {
+          "types": [
+            "fs.write"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "deny-shadow",
+        "selector": {
+          "types": [
+            "fs.write"
+          ],
+          "resources": [
+            "/etc/shadow"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "deny",
+        "span": "",
+        "priority": 5
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "canonicalize": true,
+    "env": "dev",
+    "resource": "/tmp/x",
+    "sig": "valid",
+    "type": "fs.write"
+  },
+  "tier": "t1",
+  "title": "escalate where deny doesn't reach"
+}

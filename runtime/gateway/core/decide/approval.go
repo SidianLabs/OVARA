@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -49,8 +50,31 @@ func (s *MemApprovalStore) Create(id, actionHash, policyID string) *Approval {
 
 // opPayload is what the operator signs — binding approval id to the
 // action hash so a stolen token can't redirect the grant.
-func (a *Approval) opPayload() string {
+func (a *Approval) OpPayload() string {
 	return "appr|" + a.ID + "|" + a.ActionHash
+}
+
+// Consume is the engine-side redemption: an approved approval bound
+// to this action hash is burned (single-use). Anything else errors.
+func (s *MemApprovalStore) Consume(approvalID, actionHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.approvals[approvalID]
+	if !ok {
+		return errors.New("approval: unknown id")
+	}
+	if s.now().After(a.Expires) {
+		a.State = "expired"
+		return errors.New("approval: expired")
+	}
+	if a.ActionHash != actionHash {
+		return errors.New("approval: bound to different action")
+	}
+	if a.State != "approved" {
+		return fmt.Errorf("approval: state %q (not approved)", a.State)
+	}
+	a.State = "consumed"
+	return nil
 }
 
 // Resolve satisfies the ApprovalStore interface: verifies the
@@ -71,7 +95,7 @@ func (s *MemApprovalStore) Resolve(approvalID string, approve bool, opSigHex str
 		return "", errors.New("approval: already resolved (single-use)")
 	}
 	sig, err := hex.DecodeString(opSigHex)
-	if err != nil || !ed25519.Verify(s.operatorPK, []byte(a.opPayload()), sig) {
+	if err != nil || !ed25519.Verify(s.operatorPK, []byte(a.OpPayload()), sig) {
 		return "", errors.New("approval: operator signature invalid")
 	}
 	if approve {
@@ -81,22 +105,6 @@ func (s *MemApprovalStore) Resolve(approvalID string, approve bool, opSigHex str
 		return "", errors.New("approval: denied by operator")
 	}
 	return a.ActionHash, nil
-}
-
-// Consume marks an approved approval as used — the second Consume or
-// Resolve-after-consume fails (single-use).
-func (s *MemApprovalStore) Consume(approvalID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	a, ok := s.approvals[approvalID]
-	if !ok {
-		return errors.New("approval: unknown id")
-	}
-	if a.State != "approved" {
-		return errors.New("approval: not in approved state")
-	}
-	a.State = "consumed"
-	return nil
 }
 
 // CheckApproved returns whether an approved (not yet consumed)

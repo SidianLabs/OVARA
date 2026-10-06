@@ -72,6 +72,9 @@ type Scenario struct {
 		Nonce      string `json:"nonce"`        // "fresh" | "replay" (same nonce twice)
 		Sig        string `json:"sig"`          // "valid" | "none" | "forged" | "wrongkey"
 		IssuedAgeS int    `json:"issued_age_s"` // seconds old (stale test)
+		// TokenMangle: mutate the token post-issue (signature must
+		// catch it). Values: widen_scope, bump_epoch, drop_block.
+		TokenMangle string `json:"token_mangle"`
 		// Canonicalize: honest signers canonicalize first; false
 		// signs the raw wire form (post-canonical-enforcement test
 		// expects reject regardless of signature validity).
@@ -79,6 +82,16 @@ type Scenario struct {
 		// SendTwice replays the identical request after the first
 		// decision (in-process replay probe).
 		SendTwice bool `json:"send_twice"`
+		// Approval exercises the operator-grant path: first eval
+		// escalates, then a MemApprovalStore approval is created
+		// (bound to `bind` = "self" hash or a wrong hash), resolved
+		// per `resolve`, attached and re-evaluated.
+		Approval struct {
+			ID      string `json:"id"`
+			Bind    string `json:"bind"`    // "self" | "other"
+			Resolve string `json:"resolve"` // "approve" | "deny" | "none"
+			Forged  bool   `json:"forged"`  // wrong operator key
+		} `json:"approval"`
 	} `json:"request"`
 
 	Expect struct {
@@ -108,6 +121,7 @@ var (
 	agentPub, agentKey, _   = ed25519.GenerateKey(rand.Reader)
 	evilPub, evilKey, _     = ed25519.GenerateKey(rand.Reader)
 	issuerPub, issuerKey, _ = ed25519.GenerateKey(rand.Reader)
+	opPub, opKey, _         = ed25519.GenerateKey(rand.Reader)
 )
 
 func commitHash() string {
@@ -257,7 +271,19 @@ func runScenario(t *testing.T, sc Scenario, raw []byte) record {
 		req.Nonce = "nonce-" + sc.ID
 	}
 	if tok, ok := toks[sc.Request.Token]; ok && sc.Request.Token != "" {
-		req.Token = tok
+		t2 := *tok // don't mutate the shared copy
+		req.Token = &t2
+		switch sc.Request.TokenMangle {
+		case "widen_scope":
+			req.Token.Blocks[0].Scope.Resources = []string{"*"}
+		case "bump_epoch":
+			req.Token.Epoch = 999
+		case "drop_block":
+			if len(req.Token.Blocks) > 1 {
+				req.Token.Blocks = req.Token.Blocks[:1]
+				req.Token.Sigs = req.Token.Sigs[:1]
+			}
+		}
 	}
 	switch sc.Request.Sig {
 	case "none", "missing":
@@ -270,6 +296,32 @@ func runScenario(t *testing.T, sc Scenario, raw []byte) record {
 	}
 
 	res := eng.Evaluate(req)
+	if ap := sc.Request.Approval; ap.ID != "" {
+		// wire an approval store for this scenario only
+		store := decide.NewApprovalStore(10*time.Minute, opPub)
+		eng.Approvals = store
+		bind := res.ActionHash
+		if ap.Bind == "other" {
+			bind = "sha256:not-this-action"
+		}
+		a := store.Create(ap.ID, bind, res.PolicyID)
+		sig := ed25519.Sign(opKey, []byte(a.OpPayload()))
+		if ap.Forged {
+			sig = ed25519.Sign(evilKey, []byte(a.OpPayload()))
+		}
+		if ap.Resolve != "none" {
+			if _, err := store.Resolve(ap.ID, ap.Resolve == "approve",
+				hex.EncodeToString(sig)); err != nil {
+				rec.FailureClass = "approval_resolve_error"
+			}
+		}
+		req.ApprovalID = ap.ID
+		req.Nonce = req.Nonce + "-retry" // honest clients re-nonce;
+		// reusing the nonce trips the replay guard (by design)
+		req.Signature = "edsig_v2:" + hex.EncodeToString(
+			ed25519.Sign(key, []byte(req.RequestCanonical())))
+		res = eng.Evaluate(req)
+	}
 	if sc.Request.SendTwice || sc.Request.Nonce == "replay" {
 		res = eng.Evaluate(req) // second send must deny
 	}

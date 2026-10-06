@@ -1,0 +1,54 @@
+{
+  "class": "filesystem",
+  "expect": {
+    "outcome": "deny"
+  },
+  "id": "sc-fs-010",
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "id": "allow-gh",
+        "selector": {
+          "types": [
+            "http.request"
+          ],
+          "resources": [
+            "https://api.github.com*"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "allow",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "allow-tmp",
+        "selector": {
+          "types": [
+            "fs.read"
+          ],
+          "resources": [
+            "/tmp/*"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "allow",
+        "span": "",
+        "priority": 0
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "canonicalize": true,
+    "env": "dev",
+    "resource": "/tmp/a/../../etc/passwd",
+    "sig": "valid",
+    "type": "fs.read"
+  },
+  "tier": "t1",
+  "title": "symlink-ish dotdot in middle stays"
+}

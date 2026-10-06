@@ -122,7 +122,7 @@ func TestApprovalHashBound(t *testing.T) {
 	ah := "sha256:deadbeef"
 	ap := f.store.Create("ap1", ah, "pol_x")
 	// approve with valid operator signature
-	sig := ed25519.Sign(f.opPriv, []byte(ap.opPayload()))
+	sig := ed25519.Sign(f.opPriv, []byte(ap.OpPayload()))
 	got, err := f.store.Resolve("ap1", true, hex.EncodeToString(sig))
 	if err != nil || got != ah {
 		t.Fatalf("resolve: %v %s", err, got)
@@ -132,10 +132,10 @@ func TestApprovalHashBound(t *testing.T) {
 		t.Fatal("second resolve must fail (single-use)")
 	}
 	// consume then re-check
-	if err := f.store.Consume("ap1"); err != nil {
+	if err := f.store.Consume("ap1", ah); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.Consume("ap1"); err == nil {
+	if err := f.store.Consume("ap1", ah); err == nil {
 		t.Fatal("second consume must fail")
 	}
 }
@@ -145,7 +145,7 @@ func TestApprovalWrongKey(t *testing.T) {
 	ap := f.store.Create("ap2", "sha256:x", "pol_x")
 	_, wrongKey2, _ := ed25519.GenerateKey(nil)
 	wrongKey := wrongKey2
-	sig := ed25519.Sign(wrongKey, []byte(ap.opPayload()))
+	sig := ed25519.Sign(wrongKey, []byte(ap.OpPayload()))
 	if _, err := f.store.Resolve("ap2", true, hex.EncodeToString(sig)); err == nil {
 		t.Fatal("non-operator signature must fail")
 	}

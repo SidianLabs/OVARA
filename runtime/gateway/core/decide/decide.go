@@ -31,13 +31,16 @@ const (
 
 // Request is a signed action request (spec/capability_token.md §3).
 type Request struct {
-	Action    action.Action     `json:"action"`
-	Token     *capability.Token `json:"token,omitempty"`
-	Nonce     string            `json:"nonce"`
-	IssuedAt  time.Time         `json:"issued_at"`
-	MinEpoch  uint64            `json:"min_epoch"`
-	ActorID   string            `json:"actor_id"` // filled by auth layer, never trusted from wire
-	Signature string            `json:"signature"`
+	Action   action.Action     `json:"action"`
+	Token    *capability.Token `json:"token,omitempty"`
+	Nonce    string            `json:"nonce"`
+	IssuedAt time.Time         `json:"issued_at"`
+	MinEpoch uint64            `json:"min_epoch"`
+	ActorID  string            `json:"actor_id"` // filled by auth layer, never trusted from wire
+	// ApprovalID references an operator-approved grant bound to this
+	// action's hash; consumed single-use inside Evaluate.
+	ApprovalID string `json:"approval_id,omitempty"`
+	Signature  string `json:"signature"`
 }
 
 // RequestCanonical is the signed payload — nonce and issued_at are
@@ -50,7 +53,8 @@ func (r *Request) RequestCanonical() string {
 		tj, _ = json.Marshal(r.Token)
 	}
 	sum := sha256.Sum256(append(append(aj, tj...),
-		[]byte(r.Nonce+r.IssuedAt.UTC().Format(time.RFC3339Nano))...))
+		[]byte(r.Nonce+r.IssuedAt.UTC().Format(time.RFC3339Nano)+
+			r.ApprovalID)...))
 	return "req|" + r.ActorID + "|" + hex.EncodeToString(sum[:])
 }
 
@@ -90,7 +94,8 @@ type Engine struct {
 	ActorKeys    map[string]ed25519.PublicKey // actor -> request-signing key
 	CurrentEpoch func() uint64
 	FreshnessSec int
-	Replay       *ReplayStore // durable replay guard; nil → in-memory
+	Replay       *ReplayStore      // durable replay guard; nil → in-memory
+	Approvals    *MemApprovalStore // nil → escalations stay escalated
 	mu           sync.Mutex
 	seenNonces   map[string]time.Time
 	now          func() time.Time
@@ -198,6 +203,14 @@ func (e *Engine) Evaluate(req *Request) Result {
 		out.Outcome = OutcomeDeny
 	case policy.Escalate:
 		out.Outcome = OutcomeEscalate
+		if req.ApprovalID != "" && e.Approvals != nil {
+			if err := e.Approvals.Consume(req.ApprovalID, ah); err == nil {
+				out.Outcome = OutcomeAllow
+				out.ReasonClass = "approved"
+			} else {
+				out.OpReason += "; approval rejected: " + err.Error()
+			}
+		}
 	case policy.RequireCap:
 		if req.Token == nil {
 			out.Outcome, out.ReasonClass = OutcomeEscalate, "capability_missing"

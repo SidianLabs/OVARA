@@ -1,0 +1,97 @@
+{
+  "class": "egress",
+  "expect": {
+    "outcome": "deny",
+    "reason_sub": ""
+  },
+  "id": "sc-pv-005",
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "id": "allow-gh",
+        "selector": {
+          "types": [
+            "http.request"
+          ],
+          "resources": [
+            "https://api.github.com*"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "allow",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "esc-shell",
+        "selector": {
+          "types": [
+            "shell.exec"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "allow-tmp",
+        "selector": {
+          "types": [
+            "fs.read"
+          ],
+          "resources": [
+            "/tmp/*"
+          ],
+          "envs": null,
+          "actors": null
+        },
+        "effect": "allow",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "esc-pkg",
+        "selector": {
+          "types": [
+            "pkg.install"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "esc-deploy",
+        "selector": {
+          "types": [
+            "ci.deploy"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "canonicalize": true,
+    "env": "dev",
+    "resource": "exfil.evil.com",
+    "sig": "valid",
+    "type": "net.dns"
+  },
+  "tier": "t1",
+  "title": "dns exfil domain denied"
+}

@@ -1,0 +1,69 @@
+{
+  "class": "authority",
+  "expect": {
+    "outcome": "deny",
+    "reason_sub": ""
+  },
+  "id": "sc-rc-003",
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "id": "esc-shell",
+        "selector": {
+          "types": [
+            "shell.exec"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "reqcap",
+        "selector": {
+          "types": [
+            "fs.read"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "require_capability",
+        "span": "",
+        "priority": 0
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "canonicalize": true,
+    "env": "dev",
+    "resource": "/tmp/secret",
+    "sig": "valid",
+    "token": "t1",
+    "type": "fs.read"
+  },
+  "tier": "t1",
+  "title": "require_capability: wrong-scope token still escalates→deny chain",
+  "tokens": [
+    {
+      "id": "t1",
+      "scope": {
+        "action_types": [
+          "fs.read"
+        ],
+        "envs": [
+          "dev"
+        ],
+        "resources": [
+          "/tmp/ok/*"
+        ]
+      },
+      "subject": "agent1"
+    }
+  ]
+}

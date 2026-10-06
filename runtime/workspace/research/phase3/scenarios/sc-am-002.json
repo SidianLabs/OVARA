@@ -1,0 +1,57 @@
+{
+  "class": "approval_manipulation",
+  "expect": {
+    "outcome": "escalate",
+    "reason_sub": ""
+  },
+  "id": "sc-am-002",
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "id": "esc-shell",
+        "selector": {
+          "types": [
+            "shell.exec"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "reqcap",
+        "selector": {
+          "types": [
+            "fs.read"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "require_capability",
+        "span": "",
+        "priority": 0
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "approval": {
+      "bind": "other",
+      "forged": false,
+      "id": "a2",
+      "resolve": "approve"
+    },
+    "canonicalize": true,
+    "env": "dev",
+    "resource": "rm -rf /",
+    "sig": "valid",
+    "type": "shell.exec"
+  },
+  "tier": "t1",
+  "title": "approval bound to different action"
+}
