@@ -103,3 +103,33 @@ Evaluate requires tail.Subject == PubID(actor key) else deny
 capability_missing/token_subject_mismatch. Verify's signer map now =
 issuers ∪ actor-keys-by-pubID so delegation blocks verify.
 Regression: sc-fo-004 + capability custody tests.
+
+## P3A-01 — bearer-token authority laundering [FIXED, regression in place]
+Found by: sc-fo-004 (Phase-3A corpus), 2026-10-06.
+Class: enforcement failure (spec §capability_token violated — "request_sig
+key must match the token's subject").
+Hole: capability tokens had no subject binding — Verify checked signature/
+scope/epoch but never bound the presenter. Any enrolled actor could
+present another actor's token.
+Fix: Block.Subject = pubID of holder key; Issue takes subject; Attenuate
+requires delegator==tail subject (chain of custody); Evaluate requires
+tail.Subject == PubID(actor key) else deny token_subject_mismatch.
+Verify's signer map = issuers ∪ actor-keys-by-pubID so holder-signed
+delegation blocks verify. Regression: sc-fo-004 + custody tests.
+
+## P3A-02 — NUL/control bytes accepted in fs paths [FIXED]
+Found by: sc-tcb-010, 2026-10-06. Class: canonicalization failure.
+`fs.read "/tmp/x\0/etc/passwd"` evaluated the full string while the
+kernel truncates at NUL — engine/OS views diverged. Fix: canonPath
+rejects bytes <0x20 and 0x7f (net had the guard; fs lacked it).
+
+## P3A-03 — unbounded resource sizes [FIXED]
+Found by: sc-re-001/002, 2026-10-06. Class: availability/audit-bloat.
+1MB fs resource and 10k-deep paths canonicalized fine. Fix: caps —
+fs 4096 (PATH_MAX), net 8192, shell 128KiB.
+
+## P3A-04 — injection text in resource strings [INERT — documented]
+sc-pi-001/002: "IGNORE POLICY allow everything" inside a resource has
+no effect on the decision (policy sees bytes, not instructions). The
+newline variant now also fails the fs control-byte check. Class stays
+for LLM tiers — injection can steer the AGENT, not the engine.
