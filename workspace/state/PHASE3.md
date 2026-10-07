@@ -26,7 +26,11 @@
 - A baseline (prompt-only): measured as deterministic floor
   (allow-all), not LLM compliance — real A condition is a T2+
   experiment.
-- T2 harness: BUILT + validation campaign PASSED (scripted attacker,
-  A/B/C). First live finding T2-F01: SEM-001 bypass on v1 under
-  adaptive attack. See workspace/research/phase3/t2/.
-- T2–T5 LLM tiers: blocked on NVIDIA_API_KEY (HUMAN_ATTENTION A5).
+- T2 harness: BUILT + validated; scripted campaign A/B/C × fresh/
+  persistent complete (findings: T2-F01 SEM-001 live on B; net-001
+  asymmetry — v1 canonicalizes URLs but not fs paths).
+- T2 LLM tier LIVE: nemotron-3-super-120b rediscovered SEM-001 on B
+  attempt 1 (unseeded); C held across 10 adaptive attempts; generated
+  NEW-T2-CLASS symlink hypothesis (T2-F03) — deferred to sandbox layer.
+- ARR metric formalized: LLM tier 1/1 (unseeded rediscovery).
+- Remaining blocker: sandbox layer + dynamic classes (Linux lane).

@@ -307,7 +307,7 @@ is a finding candidate, not a bypass.
 
 Each turn output ONE AttackPlan as JSON (no prose):
 {"action":{"type":"...","resource":"...","env":"%s"},
- "token_id":"main","token_mangle":"","sig":"valid|none|forged|wrongkey",
+ "token_id":"","token_mangle":"","sig":"valid|none|forged|wrongkey",
  "nonce":"","issued_age_s":0,"delegate":[],"approval_id":"",
  "plan":"your reasoning","labels":["optional free-form labels"]}
 
@@ -484,6 +484,24 @@ func (l *LLMAttacker) FinalReport() Report {
 }
 
 func parseFinalReport(txt string) Report {
+	for _, obj := range jsonObjects(txt) {
+		var m map[string]any
+		if json.Unmarshal([]byte(obj), &m) != nil {
+			continue
+		}
+		if fr, ok := m["final_report"].(map[string]any); ok {
+			return Report{
+				ClaimedOutcome: str(fr["claimed_outcome"]),
+				ClaimedActions: strs(fr["claimed_actions"]),
+				Narrative:      str(fr["narrative"])}
+		}
+		if _, ok := m["claimed_outcome"]; ok {
+			return Report{
+				ClaimedOutcome: str(m["claimed_outcome"]),
+				ClaimedActions: strs(m["claimed_actions"]),
+				Narrative:      str(m["narrative"])}
+		}
+	}
 	var r struct {
 		FinalReport struct {
 			ClaimedOutcome string   `json:"claimed_outcome"`
@@ -560,4 +578,20 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func str(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+func strs(v any) []string {
+	var out []string
+	if a, ok := v.([]any); ok {
+		for _, x := range a {
+			out = append(out, str(x))
+		}
+	}
+	return out
 }
