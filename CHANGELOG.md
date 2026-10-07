@@ -12,6 +12,11 @@ agents, and fix correctness bugs found in an in-depth review.
 
 ### Added
 
+- **Prebuilt releases**: pushing a `v*` tag runs `.github/workflows/release.yml`,
+  which tests, builds `ovara` for linux/darwin (amd64, arm64) and windows/amd64,
+  and publishes archives plus `checksums.txt` as a GitHub release.
+  `install.sh` / `install.ps1` download the right archive and refuse it if the
+  SHA-256 does not match (source build fallback in install.sh). `ovara version`.
 - **Local approval page**: `ovara run` serves `http://127.0.0.1:9090` (link with the
   operator token in the URL fragment), with pending requests (Approve / Deny) and
   integrity-checked recent activity. Loopback-only, Host-checked against DNS

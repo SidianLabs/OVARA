@@ -36,6 +36,9 @@ import (
 	"ovara.runtime.gateway/pkg/server"
 )
 
+// version is stamped by release builds: -ldflags "-X main.version=v0.10.0".
+var version = "dev"
+
 func main() {
 	log.SetFlags(0)
 	if len(os.Args) < 2 {
@@ -44,6 +47,9 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "version", "-version", "--version":
+		fmt.Println("ovara", version)
+		return
 	case "init":
 		err = cmdInit(os.Args[2:])
 	case "run":
@@ -78,6 +84,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: ovara <command>
 
+  version               print the ovara version
   init [dir] [-force]   generate a working gateway+proxy deployment
   run [-dir .]          start the gateway and the executor proxy
   demo                  self-contained end-to-end demo (no network, no root)

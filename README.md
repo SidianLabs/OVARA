@@ -27,11 +27,20 @@ written to a signed, tamper-evident receipt log you can verify later.
 
 ## See it in 30 seconds
 
+Install (downloads a prebuilt binary and verifies its SHA-256 checksum):
+
 ```bash
-git clone https://github.com/SidianLabs/OVARA.git
-cd OVARA/proxy
-go build -o ovara ./cmd/ovara      # needs Go 1.25+, works on Linux, macOS and Windows
-./ovara demo                       # no setup, no network, no root
+curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.sh | sh    # Linux / macOS
+```
+
+```powershell
+irm https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.ps1 | iex       # Windows
+```
+
+Or build it yourself with Go 1.25+: `cd proxy && go build -o ovara ./cmd/ovara`.
+
+```bash
+ovara demo                         # no setup, no network, no root
 ```
 
 The demo plays out a tiny story: the agent **reads** something (allowed), tries to
@@ -41,10 +50,10 @@ The demo plays out a tiny story: the agent **reads** something (allowed), tries 
 ## Use it for real
 
 ```bash
-./ovara init mydir                 # writes keys, config, and a sensible default policy
+ovara init mydir                 # writes keys, config, and a sensible default policy
 export GITHUB_TOKEN=...            # the REAL keys go in Ovara's environment, not the agent's
 export ANTHROPIC_API_KEY=...
-./ovara run -dir mydir             # starts the gateway and the proxy
+ovara run -dir mydir             # starts the gateway and the proxy
 ```
 
 `ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a
@@ -55,7 +64,7 @@ served to your own machine, and only someone holding the link's token can approv
 Prefer the terminal? Answer from a **second terminal** instead:
 
 ```bash
-./ovara watch -dir mydir
+ovara watch -dir mydir
 ```
 
 ```
@@ -69,8 +78,8 @@ Prefer the terminal? Answer from a **second terminal** instead:
 Then start your agent from a shell that routes it through Ovara:
 
 ```bash
-eval "$(./ovara env -dir mydir)"                 # bash / zsh
-./ovara env -dir mydir -shell powershell | iex   # PowerShell
+eval "$(ovara env -dir mydir)"                 # bash / zsh
+ovara env -dir mydir -shell powershell | iex   # PowerShell
 claude                                           # or any agent: it now runs through Ovara
 ```
 
@@ -88,7 +97,7 @@ gets a timeout and can simply retry.
 ### What did my agent do?
 
 ```bash
-./ovara log -dir mydir
+ovara log -dir mydir
 ```
 
 ```
@@ -121,8 +130,8 @@ matched is escalated. Edit the file; changes are picked up without a restart.
 Not sure what a rule will do? Ask:
 
 ```bash
-./ovara policy -dir mydir        # all rules, grouped: blocked / allowed / ask me first
-./ovara policy test "POST https://github.com/acme/app.git/git-receive-pack refs/heads/main" -dir mydir
+ovara policy -dir mydir        # all rules, grouped: blocked / allowed / ask me first
+ovara policy test "POST https://github.com/acme/app.git/git-receive-pack refs/heads/main" -dir mydir
 ```
 
 ```
