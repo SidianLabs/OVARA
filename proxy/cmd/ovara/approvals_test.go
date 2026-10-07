@@ -22,6 +22,10 @@ func TestDescribe(t *testing.T) {
 		"POST https://github.com/org/repo.git/git-receive-pack":                      "push code on github.com/org/repo",
 		"POST https://github.com/o/r.git/git-receive-pack refs/heads/a,refs/tags/v1": "push to refs/heads/a, refs/tags/v1 on github.com/o/r",
 		"weird": "weird",
+		"GET https://example.com:443/":                                        "read https://example.com/",
+		"POST https://httpbin.org:443/post":                                   "send data to https://httpbin.org/post",
+		"GET http://localhost:8080/x":                                         "read http://localhost:8080/x",
+		"POST https://github.com:443/o/r.git/git-receive-pack refs/heads/dev": "push to refs/heads/dev on github.com/o/r",
 	}
 	for in, want := range cases {
 		if got := describe(in); got != want {

@@ -61,13 +61,19 @@ In a **second terminal**, answer what the agent asks to do:
   [a]pprove  [d]eny  [s]kip >
 ```
 
-Then point your agent at the proxy and have it trust Ovara's certificate (Ovara
-generates one so it can see inside HTTPS requests):
+Then start your agent from a shell that routes it through Ovara:
 
 ```bash
-export HTTPS_PROXY=http://localhost:9443
-export SSL_CERT_FILE=mydir/var/ca.pem
+eval "$(./ovara env -dir mydir)"                 # bash / zsh
+./ovara env -dir mydir -shell powershell | iex   # PowerShell
+claude                                           # or any agent: it now runs through Ovara
 ```
+
+`ovara env` sets the proxy address (including the agent's proxy token) and
+points every common certificate setting (Node, Python, curl, git, OpenSSL) at
+Ovara's certificate, so Ovara can see inside HTTPS. It also sets placeholder
+values for `GITHUB_TOKEN`, `ANTHROPIC_API_KEY` and the rest, so tools that won't
+start without a key still start. Ovara swaps in the real key on the way out.
 
 Prefer not to sit at a terminal? `ovara approvals` lists what is waiting, and
 `ovara approve <id>` / `ovara deny <id>` answer one request. A paused request

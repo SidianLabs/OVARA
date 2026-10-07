@@ -14,6 +14,10 @@ agents, and fix correctness bugs found in an in-depth review.
 
 - **`ovara watch`, `ovara approvals`, `ovara approve <id>`, `ovara deny <id>`**:
   answer an agent's paused requests from the terminal, in plain English.
+- **`ovara env`**: prints the agent environment for bash / PowerShell / cmd: proxy
+  URL with the agent token, Ovara's CA for Node / Python / curl / git / OpenSSL,
+  and placeholder API keys. (The old instructions omitted the agent token, so
+  every request got a 407.)
 - **`ovara log`**: what the agent did, one line per request (allowed / approved /
   blocked / timed out), with an offline integrity check of the receipt chain.
 - `ovara watch` and `ovara approvals` skip requests the agent already stopped

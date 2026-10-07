@@ -153,6 +153,7 @@ func describe(resource string) string {
 		return resource
 	}
 	target, extra, _ := strings.Cut(rest, " ")
+	target = dropDefaultPort(target)
 	if strings.Contains(target, "git-receive-pack") {
 		repo := strings.TrimPrefix(strings.TrimPrefix(target, "https://"), "http://")
 		repo, _, _ = strings.Cut(repo, "/git-receive-pack")
@@ -174,6 +175,26 @@ func describe(resource string) string {
 		return "DELETE " + target
 	}
 	return method + " " + target
+}
+
+// dropDefaultPort removes ":443" from https and ":80" from http URLs —
+// the proxy records them explicitly, but to a person they are noise.
+func dropDefaultPort(u string) string {
+	for scheme, port := range map[string]string{"https://": ":443", "http://": ":80"} {
+		if !strings.HasPrefix(u, scheme) {
+			continue
+		}
+		rest := u[len(scheme):]
+		host, path, hasPath := strings.Cut(rest, "/")
+		if strings.HasSuffix(host, port) {
+			host = strings.TrimSuffix(host, port)
+		}
+		if hasPath {
+			return scheme + host + "/" + path
+		}
+		return scheme + host
+	}
+	return u
 }
 
 // whoAmI labels the human resolving an approval (display suffix only —

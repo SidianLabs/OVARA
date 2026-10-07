@@ -54,6 +54,8 @@ func main() {
 		err = cmdDoctor(os.Args[2:])
 	case "log":
 		err = cmdLog(os.Args[2:])
+	case "env":
+		err = cmdEnv(os.Args[2:])
 	case "watch":
 		err = cmdWatch(os.Args[2:])
 	case "approvals":
@@ -77,6 +79,7 @@ func usage() {
   init [dir] [-force]   generate a working gateway+proxy deployment
   run [-dir .]          start the gateway and the executor proxy
   demo                  self-contained end-to-end demo (no network, no root)
+  env [-dir .]          print the environment to run your agent through Ovara
   watch [-dir .]        answer approval requests live: approve / deny each one
   approvals [-dir .]    list agent requests waiting for approval
   log [-dir .] [-n 50]  what the agent did (allowed/approved/blocked), integrity-checked
@@ -111,9 +114,9 @@ func cmdInit(args []string) error {
 	fmt.Printf("       ovara run -dir %s\n", dir)
 	fmt.Println("  3. in a second terminal, answer what the agent asks to do:")
 	fmt.Printf("       ovara watch -dir %s\n", dir)
-	fmt.Println("  4. point your agent at the proxy and trust the generated CA:")
-	fmt.Println("       export HTTPS_PROXY=http://localhost:9443")
-	fmt.Printf("       export SSL_CERT_FILE=%s\n", filepath.Join(dir, "var", "ca.pem"))
+	fmt.Println("  4. start your agent in a shell set up to go through Ovara:")
+	fmt.Printf("       eval \"$(ovara env -dir %s)\"                 # bash / zsh\n", dir)
+	fmt.Printf("       ovara env -dir %s -shell powershell | iex    # PowerShell\n", dir)
 	fmt.Println()
 	fmt.Println("not sure what this does? run:  ovara demo")
 	return nil
