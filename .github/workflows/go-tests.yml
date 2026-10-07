@@ -62,24 +62,34 @@ jobs:
 
   # The `ovara` binary is what users actually run, on their own laptops.
   # Prove it builds and its tests (including the end-to-end demo) pass on
-  # Windows and macOS, not only Linux.
+  # Windows and macOS, not only Linux. The gateway it embeds runs its own
+  # suite on Windows too (file locking, journals, executors).
   proxy-cross-platform:
-    name: proxy (${{ matrix.os }})
+    name: ${{ matrix.module }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
+        module: [proxy, runtime/gateway]
+        exclude:
+          - os: macos-latest
+            module: runtime/gateway
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      # The gateway's shell executor runs `sh -c`; Git for Windows ships sh.
+      - name: Put Git sh on PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH "$env:ProgramFiles\Git\bin"
       - name: Build
-        working-directory: proxy
+        working-directory: ${{ matrix.module }}
         run: go build ./...
       - name: Test
-        working-directory: proxy
+        working-directory: ${{ matrix.module }}
         run: go test -count=1 ./...
 
   python-sdk:
