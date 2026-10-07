@@ -56,6 +56,8 @@ func main() {
 		err = cmdLog(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
+	case "policy":
+		err = cmdPolicy(os.Args[2:])
 	case "watch":
 		err = cmdWatch(os.Args[2:])
 	case "approvals":
@@ -80,6 +82,8 @@ func usage() {
   run [-dir .]          start the gateway and the executor proxy
   demo                  self-contained end-to-end demo (no network, no root)
   env [-dir .]          print the environment to run your agent through Ovara
+  policy [-dir .]       explain the rules in plain English
+  policy test "<METHOD URL>"  what would happen if the agent did this (dry run)
   watch [-dir .]        answer approval requests live: approve / deny each one
   approvals [-dir .]    list agent requests waiting for approval
   log [-dir .] [-n 50]  what the agent did (allowed/approved/blocked), integrity-checked

@@ -113,6 +113,22 @@ The default policy `ovara init` writes is short and readable:
 than one rule matches, **deny beats allow, and allow beats escalate**. Anything not
 matched is escalated. Edit the file; changes are picked up without a restart.
 
+Not sure what a rule will do? Ask:
+
+```bash
+./ovara policy -dir mydir        # all rules, grouped: blocked / allowed / ask me first
+./ovara policy test "POST https://github.com/acme/app.git/git-receive-pack refs/heads/main" -dir mydir
+```
+
+```
+push to refs/heads/main on github.com/acme/app
+  → ASK ME FIRST: it would pause until you approve
+  because of the rule: Writes need approval (git push, PRs, deploys, messages)
+```
+
+`policy test` is a dry run against the live policy: nothing is sent and no
+approval is opened.
+
 ## How strong is the protection?
 
 Be clear about what you are buying:

@@ -143,6 +143,8 @@ type SimResult struct {
 	TrustLevel        models.TrustLevel
 	PolicyVersion     string
 	Passed            bool
+	// MatchedRule names the rule that decided (see RuleOutcome.Rule).
+	MatchedRule string `json:"MatchedRule,omitempty"`
 }
 
 type BatchSimResult struct {
@@ -562,6 +564,21 @@ type RuleOutcome struct {
 	// LeaseRequired is set when the matched rule carries require_lease:
 	// an allow outcome without a valid lease escalates instead.
 	LeaseRequired bool
+	// Rule names the deciding rule for people (its description, else its
+	// resource pattern); empty when no rule matched (default escalate).
+	Rule string
+}
+
+// ruleLabel is how a rule is named to a person: its description when
+// the operator wrote one, else its resource pattern.
+func ruleLabel(r policy.Rule) string {
+	if r.Description != "" {
+		return r.Description
+	}
+	if r.Resource != "" {
+		return r.Resource
+	}
+	return r.ActionType + " / " + r.Environment
 }
 
 func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
@@ -573,39 +590,39 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 	for _, r := range actionRules {
 		if res(r) && r.Deny && (r.Environment == "*" || r.Environment == string(req.Environment)) {
 			if req.Environment == models.EnvironmentProduction {
-				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
+				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied, Rule: ruleLabel(r)}
 			}
-			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny}
+			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: ruleLabel(r)}
 		}
 	}
 	for _, r := range envRules {
 		if res(r) && r.Deny && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
 			if req.Environment == models.EnvironmentProduction {
-				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
+				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied, Rule: ruleLabel(r)}
 			}
-			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny}
+			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: ruleLabel(r)}
 		}
 	}
 
 	for _, r := range actionRules {
 		if res(r) && r.Allow && (r.Environment == "*" || r.Environment == string(req.Environment)) {
-			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease}
+			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
 		}
 	}
 	for _, r := range envRules {
 		if res(r) && r.Allow && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
-			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease}
+			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
 		}
 	}
 
 	for _, r := range actionRules {
 		if res(r) && r.Escalate && (r.Environment == "*" || r.Environment == string(req.Environment)) {
-			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
+			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(r)}
 		}
 	}
 	for _, r := range envRules {
 		if res(r) && r.Escalate && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
-			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
+			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(r)}
 		}
 	}
 
@@ -697,6 +714,7 @@ func (e *Evaluator) Simulate(req *models.ActionRequest, candidateStore *policy.S
 		TrustScore:       trustResult.Score,
 		TrustLevel:       trustResult.Level,
 		PolicyVersion:    candidateStore.Version(),
+		MatchedRule:      outcome.Rule,
 		Passed:           true,
 	}, nil
 }

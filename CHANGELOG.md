@@ -18,6 +18,10 @@ agents, and fix correctness bugs found in an in-depth review.
   URL with the agent token, Ovara's CA for Node / Python / curl / git / OpenSSL,
   and placeholder API keys. (The old instructions omitted the agent token, so
   every request got a 407.)
+- **`ovara policy`** explains the rules in plain English (blocked / allowed /
+  ask me first), and **`ovara policy test "<METHOD URL>"`** dry-runs a request
+  against the live policy and names the rule that decided. The gateway's
+  `/v1/policy/simulate` now returns `MatchedRule`.
 - **`ovara log`**: what the agent did, one line per request (allowed / approved /
   blocked / timed out), with an offline integrity check of the receipt chain.
 - Default policy allows `git clone`/`fetch`/`pull` (a POST to `git-upload-pack`
