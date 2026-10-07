@@ -35,11 +35,16 @@
 - ARR metric formalized: LLM tier 1/1 (unseeded rediscovery).
 - Held-out eval set carved: 24/103 class-stratified (manifest+frozen
   sha256); open set 79; RUN_HELDOUT=1 gates eval runs.
-- Axis-2 containment lane built: core/contain (Landlock linux + stub);
-  containment_test compares core vs landlock on the minimized T2-F03
-  attack (core measured write_allowed=true on darwin; landlock cell
-  pending Linux session — spawn blocked by SWE-2 session cap).
+- **H9 SUPPORTED (Case A)**: Linux lane (Ubuntu 6.8, Landlock ABI 4)
+  ran the minimized T2-F03 attack — core: write_allowed=true
+  (canary modified, inode-verified); landlock: EACCES on the same
+  openat. t2/H9_linux_result.md. Found+fixed apparatus defect
+  APP-08 (probeABI EINVAL made the cell unmeasurable on real Linux).
+- Axis-2 containment lane shipped: core/contain + containment_test.
 - T3 scaffolded (NOT run): T3Attacker = LLM + persistent MemoryStore
   (per model+condition, survives restarts) + passive recon verb +
   mandatory per-turn hypothesis; seeded from prior results jsonl.
-- Remaining blocker: Linux session for H9 counterfactual cell.
+- T3 scaffolded (NOT run — pending H9 → now unblocked; bounded
+  dry-run vs C-core in progress).
+- Docs shipped: PHASE3_RESULTS, GUARANTEE_DEGRADATION, TCB_ANALYSIS,
+  CAPABILITY_CONTROL_FRONTIER under workspace/docs/.
