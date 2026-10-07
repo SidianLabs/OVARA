@@ -2,7 +2,7 @@ package main
 
 // `ovara log` answers "what did my agent do?" from the signed receipt
 // chain: one plain line per request, then an offline integrity check of
-// the whole chain.
+// the whole chain. The same data feeds the browser page (ui.go).
 
 import (
 	"bufio"
@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/receipts"
@@ -66,14 +67,33 @@ func outcome(r receipts.Receipt) string {
 	return r.Decision
 }
 
-func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
+// activityEntry is one receipt, described for a person.
+type activityEntry struct {
+	When    time.Time `json:"when"`
+	Outcome string    `json:"outcome"`
+	What    string    `json:"what"`
+}
+
+// activity is the receipt chain as people see it.
+type activity struct {
+	Entries []activityEntry `json:"entries"` // the last n, oldest first
+	Total   int             `json:"total"`   // receipts in the chain
+	Counts  map[string]int  `json:"counts"`  // per outcome, over Entries
+	Checked bool            `json:"checked"` // integrity was verified
+	Valid   bool            `json:"valid"`   // ...and the chain is intact
+	Problem string          `json:"problem"` // why it is not, if not
+}
+
+var outcomeOrder = []string{"allowed", "approved", "BLOCKED", "not approved", "timed out", "no token", "error"}
+
+func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
+	act := &activity{Counts: map[string]int{}}
 	f, err := os.Open(receiptsFile)
 	if os.IsNotExist(err) {
-		fmt.Fprintln(w, "no activity yet — nothing has gone through the proxy.")
-		return nil
+		return act, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 
@@ -92,47 +112,72 @@ func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
 		all = append(all, r)
 	}
 	if err := sc.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	if len(all) == 0 {
-		fmt.Fprintln(w, "no activity yet — nothing has gone through the proxy.")
-		return nil
-	}
+	act.Total = len(all)
 	shown := all
 	if n > 0 && len(all) > n {
 		shown = all[len(all)-n:]
-		fmt.Fprintf(w, "(showing the last %d of %d — use -n 0 for all)\n", n, len(all))
 	}
-	counts := map[string]int{}
-	fmt.Fprintf(w, "%-19s  %-12s  %s\n", "WHEN", "OUTCOME", "WHAT THE AGENT DID")
 	for _, r := range shown {
 		o := outcome(r)
-		counts[o]++
-		what := describe(r.Method + " " + r.URL)
-		fmt.Fprintf(w, "%-19s  %-12s  %s\n", r.Timestamp.Local().Format("2006-01-02 15:04:05"), o, what)
+		act.Counts[o]++
+		act.Entries = append(act.Entries, activityEntry{When: r.Timestamp, Outcome: o, What: describe(r.Method + " " + r.URL)})
 	}
-	var parts []string
-	for _, k := range []string{"allowed", "approved", "BLOCKED", "not approved", "timed out", "no token", "error"} {
-		if counts[k] > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", counts[k], k))
-		}
+	if len(all) == 0 {
+		return act, nil
 	}
-	fmt.Fprintf(w, "\n%s\n", strings.Join(parts, ", "))
 
 	pubHex, err := os.ReadFile(pubFile)
 	if err != nil {
-		fmt.Fprintf(w, "integrity: not checked (cannot read %s)\n", pubFile)
-		return nil
+		act.Problem = "cannot read the public key " + pubFile
+		return act, nil
 	}
 	pub, err := hex.DecodeString(strings.TrimSpace(string(pubHex)))
 	if err != nil || len(pub) != ed25519.PublicKeySize {
-		return fmt.Errorf("integrity: %s is not a valid public key", pubFile)
+		act.Problem = pubFile + " is not a valid public key"
+		return act, nil
 	}
 	res := receipts.VerifyFile(receiptsFile, ed25519.PublicKey(pub))
+	act.Checked = true
+	act.Valid = res.Valid
 	if !res.Valid {
-		fmt.Fprintf(w, "integrity: ✗ TAMPERED — receipt chain breaks at entry %d (%s)\n", res.FailAt, res.Reason)
-		return fmt.Errorf("receipt chain failed verification")
+		act.Problem = fmt.Sprintf("receipt chain breaks at entry %d (%s)", res.FailAt, res.Reason)
 	}
-	fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken — this log has not been edited\n", res.Total)
+	return act, nil
+}
+
+func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
+	act, err := loadActivity(receiptsFile, pubFile, n)
+	if err != nil {
+		return err
+	}
+	if act.Total == 0 {
+		fmt.Fprintln(w, "no activity yet — nothing has gone through the proxy.")
+		return nil
+	}
+	if len(act.Entries) < act.Total {
+		fmt.Fprintf(w, "(showing the last %d of %d — use -n 0 for all)\n", len(act.Entries), act.Total)
+	}
+	fmt.Fprintf(w, "%-19s  %-12s  %s\n", "WHEN", "OUTCOME", "WHAT THE AGENT DID")
+	for _, e := range act.Entries {
+		fmt.Fprintf(w, "%-19s  %-12s  %s\n", e.When.Local().Format("2006-01-02 15:04:05"), e.Outcome, e.What)
+	}
+	var parts []string
+	for _, k := range outcomeOrder {
+		if act.Counts[k] > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", act.Counts[k], k))
+		}
+	}
+	fmt.Fprintf(w, "\n%s\n", strings.Join(parts, ", "))
+	switch {
+	case !act.Checked:
+		fmt.Fprintf(w, "integrity: not checked (%s)\n", act.Problem)
+	case !act.Valid:
+		fmt.Fprintf(w, "integrity: ✗ TAMPERED — %s\n", act.Problem)
+		return fmt.Errorf("receipt chain failed verification")
+	default:
+		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken — this log has not been edited\n", act.Total)
+	}
 	return nil
 }

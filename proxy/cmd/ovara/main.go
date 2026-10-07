@@ -116,7 +116,8 @@ func cmdInit(args []string) error {
 	fmt.Println("       export GITHUB_TOKEN=... ANTHROPIC_API_KEY=... OPENAI_API_KEY=...")
 	fmt.Println("  2. start it:")
 	fmt.Printf("       ovara run -dir %s\n", dir)
-	fmt.Println("  3. in a second terminal, answer what the agent asks to do:")
+	fmt.Println("  3. answer what the agent asks to do: open the approval-page link `ovara run`")
+	fmt.Println("     prints, or in a second terminal:")
 	fmt.Printf("       ovara watch -dir %s\n", dir)
 	fmt.Println("  4. start your agent in a shell set up to go through Ovara:")
 	fmt.Printf("       eval \"$(ovara env -dir %s)\"                 # bash / zsh\n", dir)
@@ -356,6 +357,7 @@ func cmdRun(args []string) error {
 	dir := fs.String("dir", ".", "deployment directory from ovara init")
 	boundary := fs.String("boundary", "", "set up an egress boundary before starting: netns or docker (requires root)")
 	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
+	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
 	fs.Parse(args)
 	if err := os.Chdir(*dir); err != nil {
 		return err
@@ -385,8 +387,39 @@ func cmdRun(args []string) error {
 	log.Printf("ovara executor proxy on %s (env=%s fail_open=%v)", cfg.ListenAddr, cfg.Environment, cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
-	log.Printf("risky requests pause until you answer them — run `ovara watch` in another terminal")
+	if url, err := startUI(*uiAddr, cfg); err != nil {
+		log.Printf("approval page not started: %v", err)
+	} else if url != "" {
+		log.Printf("approve in your browser: %s", url)
+	}
+	log.Printf("risky requests pause until you answer them (browser page above, or `ovara watch`)")
 	return http.ListenAndServe(cfg.ListenAddr, srv)
+}
+
+// startUI serves the local approval page and returns the link to open
+// (with the operator token in the fragment), or "" when disabled.
+func startUI(addr string, cfg *config.Config) (string, error) {
+	if addr == "" || addr == "off" {
+		return "", nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", fmt.Errorf("-ui %q: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return "", fmt.Errorf("-ui must be a loopback address (127.0.0.1:PORT), got %q", addr)
+	}
+	admin, err := newAdminClient(".")
+	if err != nil {
+		return "", err
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return "", err
+	}
+	ui := &uiServer{admin: admin, receiptsFile: cfg.ReceiptsFile, pubFile: cfg.PubKeyFile}
+	go http.Serve(ln, ui.handler())
+	return "http://" + ln.Addr().String() + "/#t=" + admin.token, nil
 }
 
 // setupBoundary runs the embedded egress-boundary script so the agent

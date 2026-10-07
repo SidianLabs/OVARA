@@ -47,7 +47,12 @@ export ANTHROPIC_API_KEY=...
 ./ovara run -dir mydir             # starts the gateway and the proxy
 ```
 
-In a **second terminal**, answer what the agent asks to do:
+`ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a
+**local approval page**: whatever the agent is waiting on, with Approve and Deny
+buttons, plus a live, integrity-checked history of what it did. The page is only
+served to your own machine, and only someone holding the link's token can approve.
+
+Prefer the terminal? Answer from a **second terminal** instead:
 
 ```bash
 ./ovara watch -dir mydir

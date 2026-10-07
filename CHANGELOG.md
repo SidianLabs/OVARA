@@ -12,6 +12,11 @@ agents, and fix correctness bugs found in an in-depth review.
 
 ### Added
 
+- **Local approval page**: `ovara run` serves `http://127.0.0.1:9090` (link with the
+  operator token in the URL fragment), with pending requests (Approve / Deny) and
+  integrity-checked recent activity. Loopback-only, Host-checked against DNS
+  rebinding, token in a header (no cookies, so no CSRF), not frameable.
+  `-ui off` disables it.
 - **`ovara watch`, `ovara approvals`, `ovara approve <id>`, `ovara deny <id>`**:
   answer an agent's paused requests from the terminal, in plain English.
 - **`ovara env`**: prints the agent environment for bash / PowerShell / cmd: proxy
