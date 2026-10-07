@@ -231,11 +231,11 @@ func (s *FileBackedStore) Update(c *Continuation) error {
 		return fmt.Errorf("failed to marshal continuation: %w", err)
 	}
 
-	if _, err := s.file.Write(append(data, '\n')); err != nil {
+	// appendLocked handles both modes: a signed journal envelope in signed
+	// mode, a raw JSON line in legacy mode. Writing to s.file directly
+	// would hit a nil file in signed mode and fail every update.
+	if err := s.appendLocked(c.ContinuationID, data); err != nil {
 		return fmt.Errorf("failed to write continuation update: %w", err)
-	}
-	if err := s.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync continuation file: %w", err)
 	}
 
 	s.continuations[c.ContinuationID] = c

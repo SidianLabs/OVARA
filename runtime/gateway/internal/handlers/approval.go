@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"ovara.runtime.gateway/internal/api"
@@ -36,6 +37,10 @@ type ApprovalHandler struct {
 	// revocation is the P2.3.4 shared boundary — consulted at resume so
 	// an approval cannot ride authority revoked after it was granted.
 	revocation revocation.Checker
+	// createMu makes "one approval per decision" atomic: the existing-
+	// approval check and the create must not interleave across requests,
+	// or two concurrent creates mint two approvals and two continuations.
+	createMu sync.Mutex
 }
 
 func NewApprovalHandler(s *approval.Service) *ApprovalHandler {
@@ -139,6 +144,9 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// Pending/approved → return the existing one; denied → 409 (a denied
 	// decision must not mint a second bite — re-submit for a fresh
 	// decision instead: approval-fatigue defense).
+	// The lock spans check → approval create → continuation create.
+	h.createMu.Lock()
+	defer h.createMu.Unlock()
 	for _, existing := range h.service.ListByDecision(req.DecisionID) {
 		switch existing.Status {
 		case approval.StatusPending, approval.StatusApproved:
@@ -226,7 +234,10 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.continuationStore != nil {
-		_ = h.continuationStore.Create(cnt)
+		if err := h.continuationStore.Create(cnt); err != nil {
+			api.JSONInternalError(w, "approval created but its continuation could not be persisted: "+err.Error())
+			return
+		}
 	}
 
 	if h.eventStore != nil {
