@@ -50,6 +50,11 @@ agents, and fix correctness bugs found in an in-depth review.
   server), `identity/` (unused, incompatible lease format), `telemetry/`,
   `services/analytics`, `packages/`, four scaffold integrations, `infrastructure/`,
   `observability/`. All are recoverable from git history.
+- The cloud control plane (`cloud/control-plane`), admin dashboard
+  (`apps/admin-dashboard`) and `enterprise/` (SSO, compliance). They could not
+  start from their image or talk to the gateway (incompatible rule format, no
+  enrollment wiring) and had multi-tenant security holes. See
+  `docs/decisions/cloud-control-plane.md`; recoverable from git history.
 
 ### Fixed
 

@@ -16,8 +16,6 @@ jobs:
       - name: Build ovara (gateway + proxy) image
         # Build context is the repo root: the binary embeds the gateway module.
         run: docker build -f proxy/Dockerfile -t ovara/ovara:latest .
-      - name: Build Control Plane
-        run: docker build -t ovara/control-plane:latest cloud/control-plane
 
   security-scan:
     runs-on: ubuntu-latest

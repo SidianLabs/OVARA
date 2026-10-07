@@ -1,6 +1,6 @@
 # Decision: what to do with the cloud control plane and dashboard
 
-Status: **proposed** (2026-10-07). Deciders: maintainers.
+Status: **accepted: Option A** (2026-10-07). Deciders: maintainers.
 
 ## Context
 
@@ -114,4 +114,9 @@ fleet management becomes a goal, design it from the gateway's existing
 
 ## Decision
 
-_Pending — to be filled in when the maintainers choose._
+**Option A, accepted 2026-10-07.** `cloud/control-plane`, `apps/admin-dashboard`
+and `enterprise/` were removed, along with their Makefile, CI (`ts-tests.yml`,
+`docker.yml`, `lint.yml` `tslint` job), README and CONTRIBUTING references.
+The gateway-side `PUT /v1/policy` endpoint and the unused
+`internal/enrollment/cloud_client.go` stay. They are the contract a future
+fleet service would build on.

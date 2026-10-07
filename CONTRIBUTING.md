@@ -113,9 +113,6 @@ ovara/
 ├── tools/               # Operator tools (CLI, migration, benchmarks)
 │
 │   Experimental — not connected to the gateway yet:
-├── apps/                # Admin dashboard
-├── cloud/               # Hosted control plane
-├── enterprise/          # SSO, compliance
 ├── integrations/        # MCP and OpenAI integrations
 ├── policy/              # Policy adapters and compiler
 ├── services/            # Standalone services (approval, alerting, ...)

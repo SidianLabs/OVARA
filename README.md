@@ -20,8 +20,8 @@ so the agent never holds a key it could leak. Every allow, pause and block is
 written to a signed, tamper-evident receipt log you can verify later.
 
 > **Status: early (v0.9, pre-release).** The core described on this page works and
-> is tested. The surrounding products (cloud control plane, dashboard, most
-> framework integrations) are experimental, see [What's solid and what isn't](#whats-solid-and-what-isnt).
+> is tested. Most framework integrations
+> are experimental, see [What's solid and what isn't](#whats-solid-and-what-isnt).
 
 ---
 
@@ -167,7 +167,8 @@ forgeries still verify. Hardware-backed key protection (KMS/HSM) is not built ye
 | Proxy and the `ovara` command (`init`, `run`, `watch`, `demo`, `doctor`) | [`proxy`](proxy) | **Works.** Runs on Linux, macOS and Windows |
 | Enforced network boundary | [`proxy/scripts`](proxy/scripts) | Linux only |
 | TypeScript and Python SDKs | [`sdk`](sdk) | Working clients for the gateway API, not yet published to npm/PyPI |
-| Cloud control plane, dashboard, SSO, compliance, MCP/OpenAI integrations, standalone services | `cloud`, `apps`, `enterprise`, `integrations`, `services`, `policy` | **Experimental.** Partly built and not connected to the gateway yet; do not rely on them |
+| MCP/OpenAI integrations, standalone services, policy compiler | `integrations`, `services`, `policy` | **Experimental.** Partly built and not connected to the gateway yet; do not rely on them |
+| Cloud control plane, admin dashboard, SSO, compliance | — | **Removed.** They could not talk to the gateway; see [`docs/decisions/cloud-control-plane.md`](docs/decisions/cloud-control-plane.md) |
 
 ## Where to go next
 
