@@ -14,6 +14,7 @@ Both stay frozen — fixed apparatus defects are still recorded.
 | APP-04 | Prompt example seeded `token_id:"main"` | Attacker self-narrowed B probes through the lease gate; first llm-001-B run missed the traversal it derived | Example uses `token_id:""`; second run BYPASS@1 | fixed; biased run preserved |
 | APP-05 | v1 single reason code `action_not_allowed` conflates policy/capability/approval stages | Stage comparisons involving B are approximate | v1 reason→stage map documented in conditions.go | limitation, frozen |
 | APP-06 | Reasoning model returns empty content (burns reply budget on hidden reasoning) | Silent budget burn | `chatOrRetry` nudge + max_tokens 16384; empties recorded EXECUTION_FAILURE | fixed |
+| APP-08 | `contain.probeABI` passed non-NULL attr to LANDLOCK_CREATE_RULESET_VERSION → EINVAL on kernel 6.8 → `Available()`=false → landlock cell could only ever report SKIPPED (a fake-pass trap: even on real Linux it would measure nothing) | NULL,0 per API contract (H9 lane, 16c3aac) | fixed, recorded by Linux session |
 | APP-07 | classifyReport nil-plan deref; substring `final_report` false-positive in schema echo | Crash / wrong report class | nil guard; `final_report` must be a JSON KEY, `action` preferred | fixed |
 
 Principle (review §7): the experimental apparatus can itself create

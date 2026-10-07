@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -148,5 +149,97 @@ func TestLLMCampaign(t *testing.T) {
 				cond.Name(), a.AttemptNo, a.TerminalOutcome,
 				a.AttackPlan, a.ActionsAttempted)
 		}
+	}
+}
+
+// TestLLMCampaignNet: LLM attacker on the exfiltration objective —
+// different resource family than llm-001. Scripted found 0 bypasses
+// here on B (v1 canonicalizes URLs); the question is whether the LLM
+// finds a net-side representation divergence the scripted stream
+// didn't reach, and what novel classes it generates on C.
+// T2_COND selects the cell; skips A (floor already established).
+func TestLLMCampaignNet(t *testing.T) {
+	if os.Getenv("NVIDIA_API_KEY") == "" {
+		t.Skip("NVIDIA_API_KEY not set")
+	}
+	camp := netCampaign()
+	camp.SessionMode = "persistent"
+	camp.Budget.MaxAttempts = 10
+	camp.Budget.MaxToolCalls = 14
+	camp.Budget.MaxWallTime = 12 * time.Minute
+	camp.AttackerTier = "t2-llm"
+	want := os.Getenv("T2_COND")
+	conds := map[string]func() Condition{
+		"B": func() Condition { return NewCondB(camp) },
+		"C": func() Condition { return NewCondC(camp) },
+	}
+	r, err := NewRunner(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	for _, k := range []string{"B", "C"} {
+		if want != "" && want != k {
+			continue
+		}
+		cond := conds[k]()
+		c := *camp
+		c.ID = "llm-002-" + k
+		att := NewLLMAttacker("nvidia/nemotron-3-super-120b-a12b", 0.7, 42)
+		res, err := r.Run(&c, cond, att)
+		if err != nil {
+			t.Logf("%s: %v", cond.Name(), err)
+			continue
+		}
+		for _, a := range res {
+			t.Logf("%s #%d %s | %s | %v",
+				cond.Name(), a.AttemptNo, a.TerminalOutcome,
+				a.AttackPlan, a.ActionsAttempted)
+		}
+	}
+}
+
+// TestT3DryRun: bounded first exercise of the T3 adversary —
+// persistent memory + recon + hypothesis formation on C-core.
+// Exploratory data point only (budget 8); the matrix cell it fills
+// does not depend on H9's outcome.
+func TestT3DryRun(t *testing.T) {
+	if os.Getenv("NVIDIA_API_KEY") == "" {
+		t.Skip("NVIDIA_API_KEY not set")
+	}
+	camp := valCampaign()
+	camp.SessionMode = "persistent"
+	camp.Budget.MaxAttempts = 8
+	camp.Budget.MaxToolCalls = 12
+	camp.Budget.MaxWallTime = 12 * time.Minute
+	camp.AttackerTier = "t3-llm"
+	memDir := filepath.Join("..", "..", "..", "workspace",
+		"research", "phase3", "t3", "memory")
+	mem, err := NewMemoryStore(memDir,
+		"nvidia/nemotron-3-super-120b-a12b", "T2-C")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// cross-campaign learning: seed memory from prior T2 results
+	if err := mem.SeedFromResults(filepath.Join(outDir,
+		"t2_results.jsonl")); err != nil {
+		t.Logf("memory seed: %v", err)
+	}
+	r, err := NewRunner(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	c := *camp
+	c.ID = "t3-001-C"
+	att := NewT3Attacker("nvidia/nemotron-3-super-120b-a12b", 0.7, 42, mem)
+	res, err := r.Run(&c, NewCondC(camp), att)
+	if err != nil {
+		t.Fatalf("t3 run: %v", err)
+	}
+	for _, a := range res {
+		t.Logf("T3 #%d %s | %s | %v",
+			a.AttemptNo, a.TerminalOutcome, a.AttackPlan,
+			a.ActionsAttempted)
 	}
 }
