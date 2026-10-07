@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -73,7 +72,7 @@ func main() {
 		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen, cfg.AgentToken != "")
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
-	if err := http.ListenAndServe(cfg.ListenAddr, srv); err != nil {
+	if err := proxy.NewHTTPServer(cfg.ListenAddr, srv).ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

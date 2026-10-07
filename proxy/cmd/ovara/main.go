@@ -206,7 +206,9 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	}
 
 	proxyCfg := &config.Config{
-		ListenAddr:     ":9443",
+		// Loopback only: an agent on this machine reaches it; the rest of
+		// the network cannot. Use --boundary (or edit this) to expose it.
+		ListenAddr:     "127.0.0.1:9443",
 		GatewayURL:     "http://localhost:" + gatewayPort,
 		GatewayToken:   agentToken,
 		AgentToken:     proxyToken,
@@ -400,7 +402,18 @@ func cmdRun(args []string) error {
 		log.Printf("approve in your browser: %s", url)
 	}
 	log.Printf("risky requests pause until you answer them (browser page above, or `ovara watch`)")
-	return http.ListenAndServe(cfg.ListenAddr, srv)
+	listenAddr := cfg.ListenAddr
+	if *boundary != "" {
+		// The agent sits in a separate namespace/network and reaches the
+		// proxy over the boundary link, not over loopback.
+		if host, port, err := net.SplitHostPort(listenAddr); err == nil && isLoopbackHost(host) {
+			listenAddr = net.JoinHostPort("0.0.0.0", port)
+			log.Printf("--boundary %s: listening on %s so the isolated agent can reach the proxy", *boundary, listenAddr)
+		}
+	} else if host, _, err := net.SplitHostPort(listenAddr); err == nil && !isLoopbackHost(host) {
+		log.Printf("WARNING: proxy listens on %s, reachable from the network. Anyone holding the proxy token can use it; set listen_addr to 127.0.0.1:PORT unless you meant this", listenAddr)
+	}
+	return proxy.NewHTTPServer(listenAddr, srv).ListenAndServe()
 }
 
 // startUI serves the local approval page and returns the link to open
@@ -553,9 +566,7 @@ func cmdDemo() error {
 	// Demo-only extra rule so we can show a block without touching the
 	// network: anything with "leak" in the URL is denied. The real default
 	// policy blocks known data-dump sites instead.
-	if err := addDemoDenyRule(filepath.Join(dir, "policy.json")); err != nil {
-		return err
-	}
+	// (Applied below, once the demo upstream's address is known.)
 	if err := os.Chdir(dir); err != nil {
 		return err
 	}
@@ -572,6 +583,9 @@ func cmdDemo() error {
 		fmt.Fprintf(w, `{"ok":true,"method":%q,"path":%q}`, r.Method, r.URL.Path)
 	}))
 	defer upstream.Close()
+	if err := addDemoDenyRule(filepath.Join(dir, "policy.json"), upstream.Listener.Addr().String()); err != nil {
+		return err
+	}
 
 	go func() {
 		if err := server.Run("config.json"); err != nil {
@@ -702,7 +716,7 @@ func agentCall(c *http.Client, method, target string) (int, string) {
 }
 
 // addDemoDenyRule prepends a deny rule for URLs containing "leak".
-func addDemoDenyRule(policyPath string) error {
+func addDemoDenyRule(policyPath, upstreamAddr string) error {
 	raw, err := os.ReadFile(policyPath)
 	if err != nil {
 		return err
@@ -716,7 +730,13 @@ func addDemoDenyRule(policyPath string) error {
 		"action_type": "http.request", "environment": "*", "resource": "POST *leak*",
 		"deny": true, "description": "Demo only: block anything that looks like leaking data",
 	}
-	pol["rules"] = append([]any{deny}, rules...)
+	// The demo's "read" goes to its own loopback upstream, which (rightly)
+	// is not on the trusted-host list of the real default policy.
+	read := map[string]any{
+		"action_type": "http.request", "environment": "*", "resource": "GET http://" + upstreamAddr + "/*",
+		"allow": true, "description": "Demo only: reading the demo upstream is allowed",
+	}
+	pol["rules"] = append([]any{deny, read}, rules...)
 	out, err := json.MarshalIndent(pol, "", "  ")
 	if err != nil {
 		return err
@@ -776,14 +796,25 @@ func defaultPolicyRules() []map[string]any {
 		r[effect] = true
 		return r
 	}
-	return []map[string]any{
-		// Reading is free — package installs, docs, API reads.
-		rule("GET *", "allow", "Reading is allowed (docs, package installs, API reads)"),
-		rule("HEAD *", "allow", "Reading is allowed"),
-		// git clone/fetch/pull speak smart-HTTP with a POST to
-		// git-upload-pack; it only reads. (Pushes go to git-receive-pack
-		// and still need approval below.)
-		rule("POST *git-upload-pack", "allow", "git clone/fetch/pull is reading"),
+	rules := []map[string]any{}
+	// Reading is free, but only from places an agent legitimately needs:
+	// package registries, code hosts and documentation. A blanket "GET *"
+	// would let an agent send data to ANY server it controls (the path and
+	// query of a GET carry data just as well as a POST body), so a host that
+	// is not listed here pauses for approval like everything else.
+	for _, h := range trustedReadHosts {
+		rules = append(rules,
+			rule("GET https://"+h+"/*", "allow", "Reading from "+h+" is allowed"),
+			rule("HEAD https://"+h+"/*", "allow", "Reading from "+h+" is allowed"),
+		)
+	}
+	// git clone/fetch/pull speak smart-HTTP with a POST to git-upload-pack;
+	// it only reads. The host is part of the rule: a bare "*git-upload-pack"
+	// would match a POST to ANY server whose path ends that way.
+	for _, h := range trustedGitHosts {
+		rules = append(rules, rule("POST https://"+h+"/*git-upload-pack", "allow", "git clone/fetch/pull from "+h+" is reading"))
+	}
+	rules = append(rules,
 		// The agent must be able to talk to its own model provider.
 		rule("POST https://api.anthropic.com/*", "allow", "The agent may call the Anthropic API"),
 		rule("POST https://api.openai.com/*", "allow", "The agent may call the OpenAI API"),
@@ -799,7 +830,37 @@ func defaultPolicyRules() []map[string]any {
 		rule("PUT *", "escalate", "Writes need approval"),
 		rule("PATCH *", "escalate", "Writes need approval"),
 		rule("DELETE *", "escalate", "Deletes need approval"),
-		// Anything we did not think of: ask.
+		// Anything we did not think of, including reads from a host that is
+		// not on the trusted list: ask.
 		rule("", "escalate", "Catch-all: anything unrecognised requires approval"),
+	)
+	return rules
+}
+
+// isLoopbackHost reports whether a listen host is loopback-only. An empty
+// host (":9443") means every interface, so it is not.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
 	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// trustedGitHosts may be cloned/fetched from without approval.
+var trustedGitHosts = []string{"github.com", "gitlab.com", "bitbucket.org"}
+
+// trustedReadHosts may be read from without approval: package registries,
+// code hosts, and documentation. Add your own hosts in policy.json.
+var trustedReadHosts = []string{
+	// code hosts
+	"github.com", "api.github.com", "raw.githubusercontent.com",
+	"codeload.github.com", "objects.githubusercontent.com", "gitlab.com", "bitbucket.org",
+	// package registries
+	"pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com",
+	"proxy.golang.org", "sum.golang.org", "index.crates.io", "static.crates.io", "crates.io",
+	"rubygems.org", "repo.maven.apache.org", "repo1.maven.org", "pkg.go.dev",
+	// documentation
+	"docs.python.org", "go.dev", "developer.mozilla.org", "nodejs.org",
+	"docs.anthropic.com", "platform.openai.com", "docs.github.com",
 }

@@ -26,11 +26,32 @@ func TestExplainPolicy_DefaultPolicyGrouped(t *testing.T) {
 	if !strings.Contains(blocked, "pastebin.com") {
 		t.Errorf("pastebin not under BLOCKED:\n%s", s)
 	}
-	if !strings.Contains(allowed, "GET *") || !strings.Contains(allowed, "git-upload-pack") {
+	if !strings.Contains(allowed, "GET https://pypi.org/*") || !strings.Contains(allowed, "git-upload-pack") {
 		t.Errorf("reads/fetch not under ALLOWED:\n%s", s)
 	}
 	if !strings.Contains(ask, "POST *") || !strings.Contains(ask, "anything") {
 		t.Errorf("writes/catch-all not under ASK ME FIRST:\n%s", s)
+	}
+}
+
+// The default policy must never allow a request to an arbitrary host
+// without approval: a host-less allow rule is an exfiltration channel
+// (the path and query of a read carry data just like a POST body).
+func TestDefaultPolicyHasNoHostlessAllow(t *testing.T) {
+	for _, r := range defaultPolicyRules() {
+		if r["allow"] != true {
+			continue
+		}
+		res, _ := r["resource"].(string)
+		_, target, _ := strings.Cut(res, " ")
+		if !strings.HasPrefix(target, "https://") {
+			t.Errorf("allow rule %q is not pinned to an https host", res)
+			continue
+		}
+		host, _, _ := strings.Cut(strings.TrimPrefix(target, "https://"), "/")
+		if host == "" || strings.Contains(host, "*") {
+			t.Errorf("allow rule %q does not name a single host", res)
+		}
 	}
 }
 

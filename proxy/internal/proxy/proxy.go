@@ -43,7 +43,13 @@ type Server struct {
 	gitGate         bool
 	sensitiveHosts  []string
 	agentToken      string // if set, proxy clients must authenticate
+	unauthLimiter   *rateLimiter
+	escalateSem     chan struct{} // caps requests parked awaiting approval
 }
+
+// maxPendingEscalations bounds how many requests may be held waiting for a
+// human at once; beyond it new escalations are refused rather than queued.
+const maxPendingEscalations = 64
 
 func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts.Chain, failOpen bool) *Server {
 	s := &Server{
@@ -55,7 +61,9 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 		publicEgress:   true,
 		connectPort443: true,
 		escalatePoll:   2 * time.Second,
-		dialer:         &net.Dialer{Timeout: 10 * time.Second},
+		unauthLimiter:  newRateLimiter(20, 1),
+		escalateSem:    make(chan struct{}, maxPendingEscalations),
+		dialer:        &net.Dialer{Timeout: 10 * time.Second},
 		transport: &http.Transport{
 			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 			MaxIdleConns:          100,
@@ -129,7 +137,9 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func matchHostGlob(globs []string, host string) bool {
+	host = normalizeHost(host)
 	for _, g := range globs {
+		g = normalizeHost(g)
 		if g == host {
 			return true
 		}
@@ -208,6 +218,18 @@ func (s *Server) checkDestination(ctx context.Context, host string) error {
 	return err
 }
 
+// checkLiteralDestination refuses non-public IP literals without doing any
+// DNS lookup. Host names pass; they are validated at dial time.
+func (s *Server) checkLiteralDestination(host string) error {
+	if !s.publicEgress {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && !isPublicIP(ip) {
+		return fmt.Errorf("non-public address %s", ip)
+	}
+	return nil
+}
+
 // dialChecked is the transport's dial path: resolve ourselves, reject
 // non-public answers, and dial the checked IP. Residual risk: an attacker
 // who controls DNS *and* rotates records faster than our resolve→dial
@@ -272,7 +294,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Client authentication FIRST — before CONNECT/receipt/policy anything.
 	// An unauthenticated request must not even reach the policy engine.
 	if !s.authorized(r) {
-		s.recordDenied(r.Method+" UNAUTH", r.Host)
+		// Rate-limited: probes leave evidence, but anyone who can reach the
+		// port must not be able to grow the receipt log without bound.
+		if s.unauthLimiter == nil || s.unauthLimiter.allow() {
+			s.recordDenied(r.Method+" UNAUTH", r.Host)
+		}
 		w.Header().Set("Proxy-Authenticate", `Basic realm="ovara"`)
 		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 		return
@@ -292,7 +318,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// CONNECT authority without a port is TLS by convention.
 		hostname, port = r.Host, "443"
 	}
-	hostname = strings.ToLower(hostname)
+	hostname = normalizeHost(hostname)
 	// CONNECT is for HTTPS tunneling only — an arbitrary port would turn
 	// this into a generic TCP relay (SSH, redis, ...) past the boundary.
 	// Tunnel-layer rejects are receipted too: a probing agent must leave
@@ -302,7 +328,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "CONNECT limited to port 443", http.StatusForbidden)
 		return
 	}
-	if err := s.checkDestination(r.Context(), hostname); err != nil {
+	// Only IP literals are checked here. A host NAME is deliberately not
+	// resolved before policy has seen a request for it: a lookup of
+	// "<stolen-data>.attacker.example" would leak the data through the
+	// resolver even if policy then denies it. Names are resolved (and the
+	// answers checked) at dial time, after the policy decision.
+	if err := s.checkLiteralDestination(hostname); err != nil {
 		log.Printf("connect: destination %s rejected: %v", hostname, err)
 		s.recordDenied("CONNECT", r.Host)
 		http.Error(w, "destination not allowed", http.StatusForbidden)
@@ -335,11 +366,15 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		NextProtos:   []string{"http/1.1"},
 		MinVersion:   tls.VersionTLS12,
 	})
+	// A client that never completes the handshake must not hold the
+	// connection (and a goroutine) open forever.
+	_ = client.SetDeadline(time.Now().Add(30 * time.Second))
 	if err := tlsConn.Handshake(); err != nil {
 		log.Printf("mitm: handshake with client for %s: %v", hostname, err)
 		client.Close()
 		return
 	}
+	_ = client.SetDeadline(time.Time{})
 	// Serve HTTP inside the TLS tunnel. One CONNECT = one host; keep-alive
 	// handled by the one-shot server. done fires on conn EOF/close so the
 	// pending Accept (and this goroutine) exit instead of leaking.
@@ -458,6 +493,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		d.Decision = "escalate"
 		d.ReasonCodes = append(d.ReasonCodes, "sensitive_host")
 	}
+	// A "read" that carries a body or a huge query string can move data out
+	// even though policy allowed the verb; the query is hidden from policy
+	// (it can hold secrets), so shape is the only signal we have.
+	if d.Decision == "allow" && !failedOpen {
+		if why := readCarriesData(r); why != "" {
+			d.Decision = "escalate"
+			d.ReasonCodes = append(d.ReasonCodes, why)
+		}
+	}
 	decision = d.Decision
 
 	writeJSON := func(code int, v any) {
@@ -498,7 +542,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// SSRF guard: the policy decision says nothing about WHERE this goes —
 	// refuse loopback/private/link-local/metadata destinations outright.
-	host := r.URL.Hostname()
+	host := normalizeHost(r.URL.Hostname())
 	if err := s.checkDestination(r.Context(), host); err != nil {
 		log.Printf("destination %s rejected: %v", host, err)
 		decision = "deny"
@@ -517,12 +561,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if headers := creds.Match(s.bindings, host); headers != nil {
 			for k, v := range headers {
 				r.Header.Set(k, v)
-				if v != "" {
-					injected = append(injected, []byte(v))
-				}
+				injected = append(injected, secretTargets(k, v)...)
 			}
 		}
 	}
+	stripMethodOverride(r.Header)
 	if len(injected) > 0 {
 		// The response is scrubbed for reflected credentials, which only
 		// works on the whole, plain body. An agent-chosen Accept-Encoding
@@ -588,7 +631,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if len(injected) > 0 {
 		body = newScrubReader(resp.Body, injected)
 	}
-	io.Copy(w, body)
+	copyFlush(w, body)
 	// resp.Trailer values populate after body read; forward them properly.
 	// Scrub here too — a reflector can echo injected credentials in
 	// trailers just as well as in headers or the body.
@@ -607,6 +650,18 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 // client disconnects. Returns the outcome and the approval_id ("" if the
 // gateway could not register one).
 func (s *Server) awaitEscalation(ctx context.Context, d *gateway.Decision, method, url string) (string, string) {
+	// Bound the number of requests parked on a human: an agent that opens
+	// hundreds of escalating requests must not exhaust goroutines, sockets
+	// or the approval queue. Over the cap the request is refused.
+	if s.escalateSem != nil {
+		select {
+		case s.escalateSem <- struct{}{}:
+			defer func() { <-s.escalateSem }()
+		default:
+			log.Printf("escalate: %d approvals already pending; refusing %s", cap(s.escalateSem), url)
+			return "denied", ""
+		}
+	}
 	approvalID := d.ApprovalID
 	if approvalID == "" {
 		id, err := s.gw.CreateApproval(ctx, d, method, url)

@@ -130,10 +130,9 @@ func auditDeployment(dir string) []check {
 		{"gateway_key_file", "gateway signing key"},
 		{"identity_registry_file", "identity registry"},
 		{"replay_file", "replay journal"},
-		{"continuation_file", "continuations"},
-		{"approval_file", "approvals"},
+		{"continuations_file", "continuations"},
+		{"approvals_file", "approvals"},
 		{"execution_file", "executions"},
-		{"anchor_file", "anchor checkpoints"},
 	}
 	var missing []string
 	for _, d := range durable {
@@ -145,6 +144,17 @@ func auditDeployment(dir string) []check {
 		out = append(out, check{"durable state", "PASS", "all authority stores file-backed"})
 	} else {
 		out = append(out, check{"durable state", "WARN", fmt.Sprintf("memory-mode: %s — restart loses this trust state", strings.Join(missing, ", "))})
+	}
+	// An anchor keeps a copy of the log's head somewhere the agent's user
+	// cannot write. Without one, anyone who can write this directory can
+	// roll the log back or rewrite it, and nothing here would notice.
+	if str("gateway_anchor_url") == "" {
+		out = append(out, check{"anchor", "WARN", "no off-host anchor (gateway_anchor_url): a user who can write this directory can rewrite the log undetected"})
+	} else {
+		out = append(out, check{"anchor", "PASS", "log head is anchored at " + str("gateway_anchor_url")})
+	}
+	if b("fail_open") || b("unsafe_no_agent_auth") {
+		out = append(out, check{"unsafe flags", "FAIL", "fail_open / unsafe_no_agent_auth is set: requests can bypass the checkpoint"})
 	}
 	if b("journal_signing_required") {
 		out = append(out, check{"journal signing", "PASS", "journal_signing_required=true"})

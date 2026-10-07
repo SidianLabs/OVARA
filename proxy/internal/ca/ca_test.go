@@ -126,3 +126,30 @@ func TestPersistenceRoundTrip(t *testing.T) {
 		t.Fatalf("post-reload leaf verify: %v", err)
 	}
 }
+
+// A CA that exists but cannot be loaded must be an error, never silently
+// replaced: replacing it breaks every trust-store installation and
+// overwrites key material.
+func TestLoadOrCreateRefusesToReplaceUnusableCA(t *testing.T) {
+	_, certFile, keyFile := newCA(t)
+	origKey, _ := os.ReadFile(keyFile)
+
+	if err := os.WriteFile(certFile, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOrCreate(certFile, keyFile); err == nil {
+		t.Fatal("a corrupt CA certificate must be an error, not regenerated")
+	}
+	if got, _ := os.ReadFile(keyFile); string(got) != string(origKey) {
+		t.Fatal("the existing CA key was overwritten")
+	}
+
+	// Certificate gone but key present: refuse rather than clobber the key.
+	os.Remove(certFile)
+	if _, err := LoadOrCreate(certFile, keyFile); err == nil {
+		t.Fatal("missing cert with an existing key must not generate a new CA over the key")
+	}
+	if got, _ := os.ReadFile(keyFile); string(got) != string(origKey) {
+		t.Fatal("the existing CA key was overwritten")
+	}
+}
