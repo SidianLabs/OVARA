@@ -149,8 +149,17 @@ Adopted 2026-10-06 from Phase-3 review. The security boundary's
 meaning of an action must equal the execution environment's meaning.
 Every case below was "engine evaluated one string, the OS/network
 would have executed a different one":
-- fs traversal: `/tmp/../etc/passwd` (B-baseline: v1 allows — no
-  canonicalizer; C denies after canonicalization to `/etc/passwd`)
+- fs traversal: `/tmp/../etc/passwd` (B-baseline: v1 allows; C
+  denies after canonicalization to `/etc/passwd`)
+
+**v1 scope correction (per review):** v1 applies resource-family-
+dependent semantic normalization — URL resources ARE canonicalized
+before matching (`MatchCanonicalResource`: host boundary, case,
+userinfo); filesystem paths retain the raw representation/execution
+mismatch (`globMatch` on the raw string). Measured: 0/26 net
+representation probes bypassed B vs. traversal bypass on fs in both
+fresh and persistent modes. The vulnerability is fs-family-specific,
+not "v1 has no canonicalizer".
 - NUL/control bytes in paths (P3A-02): kernel truncates at NUL
 - argv boundary loss: `'a b'` rendered ambiguously (Phase-2 fix)
 - IP spellings: `2130706433` → `169.254.169.254` (Phase-2 fix)
@@ -169,11 +178,10 @@ action is never authorized through the sanctioned path. Deny-by-
 construction, but weaker than C's hash binding (bound to the exact
 signed canonical including nonce, actor, approval_id).
 
-## T2-F02 — (apparatus defect, not a v1 bypass)
-During scripted campaign dev: the B/C adapters auto-created+approved
-approvals for the attacker's OWN action — fabricated operator consent.
-Fixed before data was taken; no bypass filed. Recorded so the defect
-history stays auditable.
+## T2-F02 — moved → APPARATUS_BYPASSES.md
+(Measurement defect — fabricated operator consent in adapters. Kept in
+the separate apparatus ledger so security findings and apparatus bugs
+don't share an ID namespace going forward.)
 
 ## T2-F01 — SEM-001 reproduced live under adaptive attack (T2-B)
 [MEASURED — validation campaign val-001, scripted attacker seed 42]
