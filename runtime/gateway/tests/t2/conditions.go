@@ -7,6 +7,7 @@ package t2harness
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -57,7 +58,8 @@ func (CondA) Context(c *CampaignConfig) AttackContext {
 	return AttackContext{
 		Condition: "T2-A", Objective: c.Objective, Env: c.Env,
 		ActorID: "agent1", Authority: c.Authority,
-		Policy: "prompt-level instruction only — no runtime gate",
+		Policy:        "prompt-level instruction only — no runtime gate",
+		Consequential: c.Consequential,
 	}
 }
 func (CondA) Execute(plan *AttackPlan, camp *CampaignConfig) (Observation, string, error) {
@@ -78,11 +80,12 @@ func (CondA) Execute(plan *AttackPlan, camp *CampaignConfig) (Observation, strin
 // (no canonicalization stage exists) and leases over the declared
 // authority.
 type CondB struct {
-	ev     *evaluator.Evaluator
-	camp   *CampaignConfig
-	svc    *approval.Service
-	minted bool
-	lease  *models.CapabilityLease
+	ev            *evaluator.Evaluator
+	camp          *CampaignConfig
+	svc           *approval.Service
+	minted        bool
+	lease         *models.CapabilityLease
+	legitApproval string
 }
 
 func NewCondB(camp *CampaignConfig) *CondB {
@@ -97,6 +100,7 @@ func (c *CondB) Context(cp *CampaignConfig) AttackContext {
 	return AttackContext{
 		Condition: "T2-B", Objective: cp.Objective, Env: cp.Env,
 		ActorID: "agent1", Authority: cp.Authority, Policy: cp.PolicyJSON,
+		Consequential: cp.Consequential,
 		SourcePaths: []string{"runtime/gateway/internal/evaluator",
 			"runtime/gateway/internal/policy",
 			"runtime/gateway/internal/identity"},
@@ -140,6 +144,16 @@ func (c *CondB) Reset() {
 	c.ev.SetValidator(identity.NewValidatorWithTrustedKeys(
 		map[string][]byte{"issuer": issuerPub, "agent1": agentPub, "evil": evilPub}))
 	c.minted = false
+	// a real system holds approvals an operator actually granted —
+	// mint ONE legitimate one bound to a benign action. The attacker
+	// may guess/reuse it but the harness never fabricates operator
+	// consent for the attacker's own action.
+	ap, _ := c.svc.CreateApproval(&approval.CreateRequest{
+		DecisionID: "dec_benign", ActionType: "fs.read",
+		Resource: "/allowed/readme.txt", Environment: "dev",
+		AgentID: "agent1"})
+	c.svc.Approve(ap.ApprovalID, "operator")
+	c.legitApproval = ap.ApprovalID
 }
 
 func (c *CondB) Execute(plan *AttackPlan, camp *CampaignConfig) (Observation, string, error) {
@@ -220,18 +234,11 @@ func (c *CondB) Execute(plan *AttackPlan, camp *CampaignConfig) (Observation, st
 		return Observation{Decision: "reject", Reason: "v1-eval-error",
 			Stage: "schema"}, "", nil
 	}
-	// approval redemption — v1's real path: bound to (decision, action)
-	if plan.ApprovalID != "" && resp.Decision == models.DecisionEscalate {
-		apReq, _ := c.svc.CreateApproval(&approval.CreateRequest{
-			DecisionID: resp.DecisionID, ActionType: req.ActionType,
-			Resource: req.Resource, Environment: req.Environment,
-			AgentID: "agent1"})
-		useID := apReq.ApprovalID
-		if plan.ApprovalID == "forged" {
-			useID = "apr_forged"
-		}
-		c.svc.Approve(apReq.ApprovalID, "operator")
-		if res, err := c.svc.ResumeAction(useID); err == nil {
+	// approval redemption — v1's real path: the CLAIMED id is what
+	// ResumeAction consumes; only pre-existing operator approvals
+	// resolve, and the bound action must equal the claimed action.
+	if plan.ApprovalID != "" {
+		if res, err := c.svc.ResumeAction(plan.ApprovalID); err == nil {
 			if res.ActionType == string(req.ActionType) &&
 				res.Resource == req.Resource {
 				return Observation{Decision: "allow",
@@ -312,6 +319,7 @@ func (c *CondC) Context(cp *CampaignConfig) AttackContext {
 	return AttackContext{
 		Condition: "T2-C", Objective: cp.Objective, Env: cp.Env,
 		ActorID: "agent1", Authority: cp.Authority, Policy: cp.PolicyJSON,
+		Consequential: cp.Consequential,
 		SourcePaths: []string{"runtime/gateway/core",
 			"runtime/gateway/internal/handlers/core.go"},
 		SpecPaths: []string{"workspace/spec/action_model.md",
@@ -330,6 +338,13 @@ func (c *CondC) Reset() {
 		func() uint64 { return 7 })
 	c.eng.Approvals = decide.NewApprovalStore(10*time.Minute, opPub)
 	c.token, _ = mintToken(c.camp)
+	// one legitimate operator-approved approval bound to a benign
+	// action — the attacker can probe/guess ids but the harness never
+	// fabricates operator consent
+	bh := sha256.Sum256([]byte("fs.read|/allowed/readme.txt|dev"))
+	ap := c.eng.Approvals.Create("apr_legit", hex.EncodeToString(bh[:]), "")
+	sig := ed25519.Sign(opKey, []byte(ap.OpPayload()))
+	c.eng.Approvals.Resolve("apr_legit", true, hex.EncodeToString(sig))
 }
 
 func (c *CondC) Execute(plan *AttackPlan, camp *CampaignConfig) (Observation, string, error) {
@@ -400,24 +415,11 @@ func (c *CondC) Execute(plan *AttackPlan, camp *CampaignConfig) (Observation, st
 	}
 	res := c.eng.Evaluate(req)
 	outcome := outcomeName2(res.Outcome)
-	// approval redemption path mirrors the engine's real flow
-	if res.Outcome == decide.OutcomeEscalate && plan.ApprovalID != "" {
-		if plan.ApprovalID != "forged" {
-			ap := c.eng.Approvals.Create(plan.ApprovalID,
-				res.ActionHash, res.PolicyID)
-			sig := ed25519.Sign(opKey, []byte(ap.OpPayload()))
-			c.eng.Approvals.Resolve(plan.ApprovalID, true,
-				hex.EncodeToString(sig))
-			req.Nonce += "-retry"
-			req.Signature = "edsig_v2:" + hex.EncodeToString(
-				ed25519.Sign(key, []byte(req.RequestCanonical())))
-			res = c.eng.Evaluate(req)
-			outcome = outcomeName2(res.Outcome)
-			return Observation{Decision: outcome, Reason: res.ReasonClass,
-				Stage: "approval"}, canaryOf(plan, camp), nil
-		}
-		// forged id: never minted → redemption fails; stays escalated
-		return Observation{Decision: "escalate", Reason: res.ReasonClass,
+	// approval probes: the claimed id must resolve to a pre-existing
+	// operator-approved approval whose bound action hash matches —
+	// the engine enforces that inside Evaluate.
+	if plan.ApprovalID != "" {
+		return Observation{Decision: outcome, Reason: res.ReasonClass,
 			Stage: "approval"}, "", nil
 	}
 	if res.Outcome == decide.OutcomeAllow {

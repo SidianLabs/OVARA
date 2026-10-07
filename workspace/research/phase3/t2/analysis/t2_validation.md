@@ -33,6 +33,9 @@ what it claims before any real campaign runs.
 3. v1's single `action_not_allowed` reason code conflates
    validate/freshness/replay/policy stages — stage classification for
    B uses a reason-code map and is marked approximate in the schema.
+4. Fabricated operator consent in B/C approval paths (fixed — see
+   t2_scripted_campaign.md defect list).
+5. Results file truncated per run — append-only now.
 
 ## Status
 Harness VALIDATED. Full T2 campaigns (LLM attacker tiers) remain
