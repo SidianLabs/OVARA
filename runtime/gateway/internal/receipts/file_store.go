@@ -140,6 +140,17 @@ func (s *FileBackedStore) SetTipsSink(fn func(seq uint64, hash string) error) {
 	s.tipsSink = fn
 }
 
+// Close releases the signed journal's file handle. Legacy mode holds
+// no open file between writes, so Close is a no-op there.
+func (s *FileBackedStore) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.journal != nil {
+		return s.journal.Close()
+	}
+	return nil
+}
+
 // JournalTip exposes the journal's committed (seq, tip hash).
 // Zero values in legacy mode.
 func (s *FileBackedStore) JournalTip() (uint64, string) {

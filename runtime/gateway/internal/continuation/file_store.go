@@ -452,6 +452,9 @@ func (s *FileBackedStore) FilePath() string {
 }
 
 func (s *FileBackedStore) Close() error {
+	if s.journal != nil {
+		return s.journal.Close()
+	}
 	if s.file != nil {
 		return s.file.Close()
 	}
