@@ -545,8 +545,14 @@ func ParseGitResource(resource string) (*GitResource, error) {
 	if rest == "" {
 		return nil, fmt.Errorf("git resource is empty (no repository specified after 'git:' prefix)")
 	}
+	// A Windows drive ("C:\repo", "C:/repo") belongs to the repo path,
+	// not the repo:branch separator. VolumeName is always "" on Unix.
+	drive := ""
+	if vol := filepath.VolumeName(rest); len(vol) == 2 && len(rest) > 2 && os.IsPathSeparator(rest[2]) {
+		drive, rest = vol, rest[2:]
+	}
 	parts := strings.SplitN(rest, ":", 2)
-	repo := parts[0]
+	repo := drive + parts[0]
 	if repo == "" {
 		return nil, fmt.Errorf("git repository is empty")
 	}
