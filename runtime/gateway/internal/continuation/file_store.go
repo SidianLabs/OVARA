@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -198,14 +199,30 @@ func (s *FileBackedStore) JournalTip() (uint64, string) {
 }
 
 // persistLocked appends the continuation record and fsyncs. Callers must
-// hold s.mu. Write errors are logged but do not roll back the in-memory
-// transition already applied under the lock.
-func (s *FileBackedStore) persistLocked(c *Continuation) {
+// hold s.mu. The error is returned so state transitions that gate a
+// side-effect (claim, retry, cancel, recover) can roll back and refuse
+// rather than proceed on a transition that never reached the disk.
+func (s *FileBackedStore) persistLocked(c *Continuation) error {
 	data, err := json.Marshal(c)
 	if err != nil {
-		return
+		return err
 	}
-	_ = s.appendLocked(c.ContinuationID, data)
+	return s.appendLocked(c.ContinuationID, data)
+}
+
+// transitionLocked applies mutate to the stored continuation and persists
+// it. If the write fails the in-memory state is restored and false is
+// returned, so a caller never acts on (e.g. executes) a claim that a crash
+// would forget. Callers must hold s.mu.
+func (s *FileBackedStore) transitionLocked(c *Continuation, mutate func()) bool {
+	prior := c.snapshot()
+	mutate()
+	if err := s.persistLocked(c); err != nil {
+		log.Printf("continuation %s: transition to %s not persisted, rolled back: %v", c.ContinuationID, c.State, err)
+		s.continuations[c.ContinuationID] = prior
+		return false
+	}
+	return true
 }
 
 func (s *FileBackedStore) Get(id string) (*Continuation, bool) {
@@ -325,8 +342,12 @@ func (s *FileBackedStore) ClaimForExecution(id string) (*Continuation, bool) {
 		return nil, false
 	}
 	if isClaimable(c) {
-		markExecuting(c)
-		s.persistLocked(c)
+		// The claim must be durable BEFORE the action runs: if it is not,
+		// a crash after the side-effect would let the restart claim and
+		// run it again (a second git push, a second deploy).
+		if !s.transitionLocked(c, func() { markExecuting(c) }) {
+			return nil, false
+		}
 		return c.snapshot(), true
 	}
 	return nil, false
@@ -342,8 +363,9 @@ func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
 		return nil, false
 	}
 	if c.State == StateResumed && !c.IsExpired() {
-		markExecuting(c)
-		s.persistLocked(c)
+		if !s.transitionLocked(c, func() { markExecuting(c) }) {
+			return nil, false
+		}
 		return c.snapshot(), true
 	}
 	return nil, false
@@ -363,9 +385,8 @@ func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) 
 	if c.State != StateExecuting {
 		return nil, false
 	}
-	c.State = StateExecuted
-	if data, err := json.Marshal(c); err == nil {
-		_ = s.appendLocked(c.ContinuationID, data)
+	if !s.transitionLocked(c, func() { c.State = StateExecuted }) {
+		return nil, false
 	}
 	return c.snapshot(), true
 }
@@ -399,16 +420,16 @@ func (s *FileBackedStore) RetryForExecution(id string) (*Continuation, bool) {
 	if !c.retryEligible() {
 		return nil, false
 	}
-	c.State = StateResumed
-	c.RetryCount++
-	now := time.Now().UTC()
-	c.ResumedAt = &now
-
-	// Persist the retry transition inline (cannot call Update: it re-locks s.mu).
-	// A best-effort write keeps the incremented RetryCount durable across restarts;
-	// the in-memory transition has already been applied under the lock.
-	if data, err := json.Marshal(c); err == nil {
-		_ = s.appendLocked(c.ContinuationID, data)
+	// Persist inline (cannot call Update: it re-locks s.mu). A retry that
+	// is not durable is refused: the incremented RetryCount is what bounds
+	// how often an action may be re-run.
+	if !s.transitionLocked(c, func() {
+		c.State = StateResumed
+		c.RetryCount++
+		now := time.Now().UTC()
+		c.ResumedAt = &now
+	}) {
+		return nil, false
 	}
 	return c.snapshot(), true
 }
@@ -426,9 +447,8 @@ func (s *FileBackedStore) CancelForOperation(id string) (*Continuation, bool) {
 	if !c.CanCancel() {
 		return nil, false
 	}
-	c.MarkCancelled()
-	if data, err := json.Marshal(c); err == nil {
-		_ = s.appendLocked(c.ContinuationID, data)
+	if !s.transitionLocked(c, func() { c.MarkCancelled() }) {
+		return nil, false
 	}
 	return c.snapshot(), true
 }

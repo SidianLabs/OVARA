@@ -206,8 +206,7 @@ func Run(configPath string) error {
 	if cfg.EventsFile != "" {
 		store, err := events.NewFileBackedStoreWithRetention(cfg.EventsFile, cfg.EventsMaxSize, cfg.EventsRetentionDays, cfg.EventsMaxRecords, bind("events"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed event store: %v, using in-memory", err)
-			eventStore = events.NewInMemoryStore(10000)
+			return failClosedStore("event", cfg.EventsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("events"))
 			postOpenRatchet("events", store.JournalTip)
@@ -298,8 +297,7 @@ func Run(configPath string) error {
 		}
 		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, maxAge, bind("receipts"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed receipt store: %v, falling back to in-memory", err)
-			receiptsStore = receipts.NewInMemoryStore()
+			return failClosedStore("receipt", cfg.ReceiptsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("receipts"))
 			postOpenRatchet("receipts", store.JournalTip)
@@ -364,8 +362,7 @@ func Run(configPath string) error {
 	if cfg.ApprovalsFile != "" {
 		store, err := approval.NewFileBackedStore(cfg.ApprovalsFile, bind("approval"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed approval store: %v, falling back to in-memory", err)
-			approvalStore = approval.NewInMemoryStore()
+			return failClosedStore("approval", cfg.ApprovalsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("approval"))
 			postOpenRatchet("approval", store.JournalTip)
@@ -381,8 +378,7 @@ func Run(configPath string) error {
 	if cfg.ContinuationsFile != "" {
 		store, err := continuation.NewFileBackedStoreWithRetention(cfg.ContinuationsFile, cfg.ContinuationsMaxSize, cfg.ContinuationRetentionDays, cfg.ContinuationMaxRecords, bind("continuation"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed continuation store: %v, using in-memory", err)
-			continuationStore = continuation.NewInMemoryStore()
+			return failClosedStore("continuation", cfg.ContinuationsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("continuation"))
 			postOpenRatchet("continuation", store.JournalTip)
@@ -417,8 +413,7 @@ func Run(configPath string) error {
 	if cfg.CapabilitiesFile != "" {
 		store, err := capabilities.NewFileBackedStore(cfg.CapabilitiesFile, cfg.CapabilitiesMaxSize, 0, bind("capabilities"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed capabilities store: %v, falling back to in-memory", err)
-			capabilitiesStore = capabilities.NewInMemoryStore()
+			return failClosedStore("capabilities", cfg.CapabilitiesFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("capabilities"))
 			postOpenRatchet("capabilities", store.JournalTip)
@@ -434,7 +429,7 @@ func Run(configPath string) error {
 	if cfg.CapabilitiesHistoryFile != "" {
 		store, err := capabilities.NewFileBackedHistoryStore(cfg.CapabilitiesHistoryFile, 50000)
 		if err != nil {
-			log.Printf("warning: failed to create file-backed history store: %v, using in-memory", err)
+			return failClosedStore("capability history", cfg.CapabilitiesHistoryFile, err)
 		} else {
 			capabilitiesHistoryStore = store
 			log.Printf("capability history persisted to %s", cfg.CapabilitiesHistoryFile)
@@ -540,8 +535,7 @@ func Run(configPath string) error {
 			bind("execution"),
 		)
 		if err != nil {
-			log.Printf("warning: failed to create file-backed execution store: %v, using in-memory", err)
-			execStore = execution.NewInMemoryStore()
+			return failClosedStore("execution", cfg.ExecutionFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("execution"))
 			postOpenRatchet("execution", store.JournalTip)
@@ -830,6 +824,16 @@ type gatewayTrust struct {
 // is fatal in durable mode; there is no silent fallback and no silent
 // re-identity (a new gw_id is never generated here — enrollment owns
 // the ID).
+// failClosedStore is the startup error for a configured, persistent store
+// that cannot be opened. It used to log a warning and continue with an
+// empty in-memory store, which turns "the journal was tampered with, rolled
+// back or corrupted" into silent data loss plus a gateway that happily
+// serves with no approvals, continuations or receipts. Refusing to start
+// leaves the evidence in place for the operator.
+func failClosedStore(name, path string, err error) error {
+	return fmt.Errorf("%s store %s cannot be opened: %w (refusing to start with an empty in-memory store; inspect or move the file aside deliberately)", name, path, err)
+}
+
 func initGatewayTrust(cfg *config.Config, svc enrollment.Service) (*gatewayTrust, error) {
 	durable := cfg.GatewayRegistryFile != ""
 	id := svc.GetIdentity()
