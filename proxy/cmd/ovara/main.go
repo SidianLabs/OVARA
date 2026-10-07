@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"flag"
+	"hash/crc32"
 	"fmt"
 	"io"
 	"log"
@@ -51,6 +52,14 @@ func main() {
 		err = cmdDemo()
 	case "doctor":
 		err = cmdDoctor(os.Args[2:])
+	case "watch":
+		err = cmdWatch(os.Args[2:])
+	case "approvals":
+		err = cmdApprovals(os.Args[2:])
+	case "approve":
+		err = cmdResolve(true, os.Args[2:])
+	case "deny":
+		err = cmdResolve(false, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -66,6 +75,10 @@ func usage() {
   init [dir] [-force]   generate a working gateway+proxy deployment
   run [-dir .]          start the gateway and the executor proxy
   demo                  self-contained end-to-end demo (no network, no root)
+  watch [-dir .]        answer approval requests live: approve / deny each one
+  approvals [-dir .]    list agent requests waiting for approval
+  approve <id>          let a waiting request through
+  deny <id>             block a waiting request
   doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
 }
 
@@ -85,12 +98,21 @@ func cmdInit(args []string) error {
 	}
 	fmt.Printf("initialized ovara deployment in %s\n\n", dir)
 	fmt.Printf("operator token (gateway-root — keep it scarce; also in config.json):\n  %s\n\n", token)
+	fmt.Println("What you got: a policy (policy.json) where reading is free, changes need")
+	fmt.Println("your approval, and known data-dump sites are blocked. Edit it any time.")
+	fmt.Println()
 	fmt.Println("next steps:")
-	fmt.Println("  1. export secrets for the credential bindings, e.g.:")
-	fmt.Println("       export GITHUB_TOKEN=... OPENAI_API_KEY=... ANTHROPIC_API_KEY=... SLACK_TOKEN=...")
-	fmt.Println("  2. run it:")
+	fmt.Println("  1. give Ovara the real API keys (the agent never sees them):")
+	fmt.Println("       export GITHUB_TOKEN=... ANTHROPIC_API_KEY=... OPENAI_API_KEY=...")
+	fmt.Println("  2. start it:")
 	fmt.Printf("       ovara run -dir %s\n", dir)
-	fmt.Println("  3. point your agent at the proxy and trust var/ca.pem")
+	fmt.Println("  3. in a second terminal, answer what the agent asks to do:")
+	fmt.Printf("       ovara watch -dir %s\n", dir)
+	fmt.Println("  4. point your agent at the proxy and trust the generated CA:")
+	fmt.Println("       export HTTPS_PROXY=http://localhost:9443")
+	fmt.Printf("       export SSL_CERT_FILE=%s\n", filepath.Join(dir, "var", "ca.pem"))
+	fmt.Println()
+	fmt.Println("not sure what this does? run:  ovara demo")
 	return nil
 }
 
@@ -162,12 +184,7 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 
 	policy := map[string]any{
 		"version": "v1-init",
-		"rules": []map[string]any{
-			{"action_type": "http.request", "environment": "dev", "allow": true,
-				"description": "Dev HTTP egress is allowed — the proxy still receipts every transit"},
-			{"action_type": "*", "environment": "*", "escalate": true,
-				"description": "Catch-all: anything else requires approval"},
-		},
+		"rules":   defaultPolicyRules(),
 	}
 
 	proxyCfg := &config.Config{
@@ -343,6 +360,7 @@ func cmdRun(args []string) error {
 	log.Printf("ovara executor proxy on %s (env=%s fail_open=%v)", cfg.ListenAddr, cfg.Environment, cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
+	log.Printf("risky requests pause until you answer them — run `ovara watch` in another terminal")
 	return http.ListenAndServe(cfg.ListenAddr, srv)
 }
 
@@ -372,6 +390,16 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 		return fmt.Errorf("proxy listen_addr %q: %w", cfg.ListenAddr, err)
 	}
 	args := []string{f.Name(), mode, "--proxy-port", proxyPort}
+	ns := name
+	if ns == "" {
+		ns = "agent0"
+	}
+	subnetIdx := boundarySubnetIdx(ns)
+	if mode == "netns" {
+		// Chosen here (not left to the script's own hash) so the command we
+		// print below names the address the script really configures.
+		args = append(args, "--subnet-idx", strconv.Itoa(subnetIdx))
+	}
 	if name != "" {
 		if mode == "netns" {
 			args = append(args, "--name", name)
@@ -401,22 +429,28 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 	if err := cmd.Run(); err != nil {
 		return err
 	}
-	ns := name
-	if ns == "" {
-		ns = "agent0"
-	}
 	if mode == "netns" {
 		userinfo := ""
 		if cfg.AgentToken != "" {
 			userinfo = "agent:" + cfg.AgentToken + "@"
 		}
-		log.Printf("boundary up — run your agent inside it:")
-		log.Printf("  sudo ip netns exec %s env HTTPS_PROXY=http://%s10.200.0.1:%s SSL_CERT_FILE=%s/var/ca.pem <agent>", ns, userinfo, proxyPort, mustGetwd())
+		log.Printf("boundary up — run your agent inside it, as YOUR user (root in the boundary could remove the firewall):")
+		log.Printf("  sudo ip netns exec %s sudo -u \"$USER\" env HTTPS_PROXY=http://%s%s:%s SSL_CERT_FILE=%s/var/ca.pem <agent>", ns, userinfo, boundaryProxyIP(subnetIdx), proxyPort, mustGetwd())
 	} else {
 		log.Printf("boundary network ready — launch the agent per the docker recipe above")
 	}
 	return nil
 }
+
+// boundarySubnetIdx maps a namespace name to a stable third octet (1..250)
+// for the 10.200.N.0/24 boundary subnet, so two boundaries never collide.
+func boundarySubnetIdx(name string) int {
+	return int(crc32.ChecksumIEEE([]byte(name)))%250 + 1
+}
+
+// boundaryProxyIP is the host-side address the agent namespace reaches the
+// proxy on (the script puts the host at .1 of the subnet).
+func boundaryProxyIP(idx int) string { return "10.200." + strconv.Itoa(idx) + ".1" }
 
 func mustGetwd() string {
 	d, err := os.Getwd()
@@ -429,6 +463,11 @@ func mustGetwd() string {
 // --- demo ------------------------------------------------------------------
 
 func cmdDemo() error {
+	// The gateway and proxy log through the std logger; the demo narrates
+	// instead, so silence it (set OVARA_DEMO_VERBOSE=1 to see everything).
+	if os.Getenv("OVARA_DEMO_VERBOSE") == "" {
+		log.SetOutput(io.Discard)
+	}
 	dir, err := os.MkdirTemp("", "ovara-demo-")
 	if err != nil {
 		return err
@@ -446,6 +485,12 @@ func cmdDemo() error {
 	if _, err := deploy(dir, gwPort, true); err != nil {
 		return err
 	}
+	// Demo-only extra rule so we can show a block without touching the
+	// network: anything with "leak" in the URL is denied. The real default
+	// policy blocks known data-dump sites instead.
+	if err := addDemoDenyRule(filepath.Join(dir, "policy.json")); err != nil {
+		return err
+	}
 	if err := os.Chdir(dir); err != nil {
 		return err
 	}
@@ -454,11 +499,12 @@ func cmdDemo() error {
 		return err
 	}
 	cfg.GatewayURL = "http://127.0.0.1:" + gwPort
+	cfg.EscalatePollSec = 1
 
 	// Local "upstream" the agent wants to reach.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"path":%q,"via":"ovara demo upstream"}`, r.URL.Path)
+		fmt.Fprintf(w, `{"ok":true,"method":%q,"path":%q}`, r.Method, r.URL.Path)
 	}))
 	defer upstream.Close()
 
@@ -467,7 +513,7 @@ func cmdDemo() error {
 			log.Printf("gateway: %v", err)
 		}
 	}()
-	if err := waitForGateway(cfg.GatewayURL, 10*time.Second); err != nil {
+	if err := waitForGateway(cfg.GatewayURL, 15*time.Second); err != nil {
 		return err
 	}
 
@@ -485,70 +531,146 @@ func cmdDemo() error {
 	go http.Serve(proxyLn, srv)
 	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
 	if cfg.AgentToken != "" {
-		// Client auth: the demo agent authenticates exactly like a real
-		// one — credentials in the proxy URL.
 		proxyURL.User = url.UserPassword("agent", cfg.AgentToken)
 	}
-
-	// Client trusts the generated CA (needed for CONNECT+MITM hosts) and
-	// egresses only via the proxy.
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM(rootCA.CertPEM())
-	client := &http.Client{Transport: &http.Transport{
+	agent := &http.Client{Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
 		TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 	}}
 
-	target := upstream.URL + "/v1/models"
-	fmt.Printf("→ agent request: GET %s (via proxy %s, plain-HTTP path)\n", target, proxyURL.Host)
-	resp, err := client.Get(target)
-	if err != nil {
-		return fmt.Errorf("proxied request: %w", err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	fmt.Printf("← upstream response: %s %s\n", resp.Status, strings.TrimSpace(string(body)))
-	printLastReceipt(cfg.ReceiptsFile)
-
-	// Deny path: a second proxy instance whose gateway is unreachable runs
-	// fail-closed — the deny is receipted exactly like the allow.
-	deadGW := gateway.New("http://127.0.0.1:1", cfg.GatewayToken, cfg.Environment)
-	chain2, err := receipts.LoadOrCreate(cfg.ReceiptsFile, cfg.ReceiptKeyFile, cfg.PubKeyFile)
+	admin, err := newAdminClient(".")
 	if err != nil {
 		return err
 	}
-	denySrv := proxy.New(rootCA, deadGW, nil, chain2, false)
-	denyLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	go http.Serve(denyLn, denySrv)
-	denyURL, _ := url.Parse("http://" + denyLn.Addr().String())
-	denyClient := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(denyURL)}}
 
-	fmt.Printf("\n→ agent request with gateway unreachable (fail-closed): GET %s\n", target)
-	resp2, err := denyClient.Get(target)
-	if err != nil {
-		return fmt.Errorf("deny request: %w", err)
-	}
-	body2, _ := io.ReadAll(resp2.Body)
-	resp2.Body.Close()
-	fmt.Printf("← proxy decision: %s %s\n", resp2.Status, strings.TrimSpace(string(body2)))
-	printLastReceipt(cfg.ReceiptsFile)
+	say := func(format string, a ...any) { fmt.Printf(format+"\n", a...) }
+	say("")
+	say("Ovara demo — an AI agent, a checkpoint it cannot bypass, and you.")
+	say("Everything below is local: no network, no real credentials.")
+	say("")
+	say("The agent's only way out is through Ovara. Ovara checks every request")
+	say("against policy.json: reading is free, changing things needs a human,")
+	say("and known data-dump sites are blocked.")
 
-	// Verify the receipt chain offline.
+	// 1 — a read.
+	say("\n━━ 1. The agent reads something")
+	say("   agent → GET %s/v1/models", upstream.URL)
+	code, _ := agentCall(agent, "GET", upstream.URL+"/v1/models")
+	say("   ✓ ALLOWED (HTTP %d) — policy: \"reading is allowed\"", code)
+
+	// 2 — a write: pauses for a human.
+	say("\n━━ 2. The agent tries to change something (think: git push, merge a PR, deploy)")
+	say("   agent → POST %s/v1/deploy", upstream.URL)
+	say("   ⏸  PAUSED — Ovara is holding the request until a human decides")
+	humanDone := make(chan struct{})
+	go func() {
+		defer close(humanDone)
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			list, err := admin.pending()
+			if err == nil && len(list) > 0 {
+				a := list[0]
+				say("   📩 you would see this (in `ovara watch`): the agent wants to: %s", describe(a.Resource))
+				time.Sleep(1500 * time.Millisecond)
+				if err := admin.resolve(a.ApprovalID, true, "demo-human", ""); err != nil {
+					say("   (demo could not approve: %v)", err)
+				} else {
+					say("   👍 you approve it")
+				}
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+	code, _ = agentCall(agent, "POST", upstream.URL+"/v1/deploy")
+	<-humanDone
+	if code != http.StatusOK {
+		return fmt.Errorf("demo: approved request returned HTTP %d, want 200", code)
+	}
+	say("   ✓ went through after approval (HTTP %d)", code)
+
+	// 3 — a leak attempt: blocked outright.
+	say("\n━━ 3. The agent tries to send data somewhere it shouldn't")
+	say("   agent → POST %s/leak/secrets", upstream.URL)
+	code, _ = agentCall(agent, "POST", upstream.URL+"/leak/secrets")
+	if code == http.StatusOK {
+		return fmt.Errorf("demo: leak request was NOT blocked")
+	}
+	say("   ✗ BLOCKED (HTTP %d) — no human needed, policy says no", code)
+
+	// 4 — evidence.
+	say("\n━━ 4. Evidence: every decision left a signed receipt")
 	pubBytes, err := hex.DecodeString(strings.TrimSpace(mustRead(cfg.PubKeyFile)))
 	if err != nil {
 		return err
 	}
+	printReceipts(cfg.ReceiptsFile)
 	res := receipts.VerifyFile(cfg.ReceiptsFile, ed25519.PublicKey(pubBytes))
-	fmt.Printf("\nreceipt chain: %d receipts, valid=%v\n", res.Total, res.Valid)
 	if !res.Valid {
-		return fmt.Errorf("chain verification failed at %d: %s", res.FailAt, res.Reason)
+		return fmt.Errorf("receipt chain failed verification at %d: %s", res.FailAt, res.Reason)
 	}
-	fmt.Println("✓ request executed through the chokepoint and receipted — chain valid")
-	fmt.Println("  (this exercises the plain-HTTP proxy path; CONNECT+MITM is covered by internal/proxy tests)")
+	say("   chain of %d receipts verified offline: valid ✓ (tampering with any one would break it)", res.Total)
+
+	say("\nThat is the whole idea. To use it for real:")
+	say("   ovara init mydir && ovara run -dir mydir     # start it")
+	say("   ovara watch -dir mydir                       # answer approval requests")
+	say("")
 	return nil
+}
+
+// agentCall makes one proxied request and returns the HTTP status.
+func agentCall(c *http.Client, method, target string) (int, string) {
+	req, err := http.NewRequest(method, target, nil)
+	if err != nil {
+		return 0, err.Error()
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return 0, err.Error()
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, strings.TrimSpace(string(b))
+}
+
+// addDemoDenyRule prepends a deny rule for URLs containing "leak".
+func addDemoDenyRule(policyPath string) error {
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		return err
+	}
+	var pol map[string]any
+	if err := json.Unmarshal(raw, &pol); err != nil {
+		return err
+	}
+	rules, _ := pol["rules"].([]any)
+	deny := map[string]any{
+		"action_type": "http.request", "environment": "*", "resource": "POST *leak*",
+		"deny": true, "description": "Demo only: block anything that looks like leaking data",
+	}
+	pol["rules"] = append([]any{deny}, rules...)
+	out, err := json.MarshalIndent(pol, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(policyPath, append(out, '\n'), 0o644)
+}
+
+// printReceipts lists one line per receipt in the chain.
+func printReceipts(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var r receipts.Receipt
+		if json.Unmarshal([]byte(line), &r) != nil {
+			continue
+		}
+		fmt.Printf("   • %-5s %-7s %s\n", strings.ToUpper(r.Decision), r.Method, r.URL)
+	}
 }
 
 func mustRead(path string) string {
@@ -571,4 +693,43 @@ func printLastReceipt(path string) {
 		return
 	}
 	fmt.Printf("  receipt %s: %s %s → %s (%d)\n", r.ReceiptID, r.Method, r.URL, r.Decision, r.Status)
+}
+
+// defaultPolicyRules is what `ovara init` writes to policy.json. The idea,
+// in one line: reading is free, writing needs a human, and a few known
+// data-dump sites are blocked outright. The gateway decides deny > allow >
+// escalate, so a more specific allow below also overrides the "writes
+// need approval" rules. Edit policy.json freely; changes are picked up
+// without a restart.
+func defaultPolicyRules() []map[string]any {
+	rule := func(resource, effect, desc string) map[string]any {
+		r := map[string]any{"action_type": "http.request", "environment": "*", "description": desc}
+		if resource != "" {
+			r["resource"] = resource
+		}
+		r[effect] = true
+		return r
+	}
+	return []map[string]any{
+		// Reading is free — package installs, docs, API reads.
+		rule("GET *", "allow", "Reading is allowed (docs, package installs, API reads)"),
+		rule("HEAD *", "allow", "Reading is allowed"),
+		// The agent must be able to talk to its own model provider.
+		rule("POST https://api.anthropic.com/*", "allow", "The agent may call the Anthropic API"),
+		rule("POST https://api.openai.com/*", "allow", "The agent may call the OpenAI API"),
+		// Known places where stolen data typically gets dumped.
+		rule("*://pastebin.com/*", "deny", "Blocked: paste site commonly used to leak data"),
+		rule("*://transfer.sh/*", "deny", "Blocked: anonymous file drop"),
+		rule("*://webhook.site/*", "deny", "Blocked: request-capture site commonly used to leak data"),
+		rule("*://*.requestbin.com/*", "deny", "Blocked: request-capture site commonly used to leak data"),
+		// Anything that changes something out in the world needs a human.
+		// This covers git push, opening/merging PRs, deleting branches,
+		// triggering deploys and posting messages.
+		rule("POST *", "escalate", "Writes need approval (git push, PRs, deploys, messages)"),
+		rule("PUT *", "escalate", "Writes need approval"),
+		rule("PATCH *", "escalate", "Writes need approval"),
+		rule("DELETE *", "escalate", "Deletes need approval"),
+		// Anything we did not think of: ask.
+		rule("", "escalate", "Catch-all: anything unrecognised requires approval"),
+	}
 }
