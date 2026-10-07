@@ -440,6 +440,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	failedOpen := false
 	d, err := s.gw.Check(r.Context(), r.Method, url)
 	if err != nil {
 		log.Printf("gateway check failed for %s: %v", url, err)
@@ -450,6 +451,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		d = &gateway.Decision{Decision: "allow"}
+		failedOpen = true
 	}
 	// Pivot-risk hosts always require approval, regardless of policy allow.
 	if d.Decision == "allow" && matchHostGlob(s.sensitiveHosts, r.URL.Hostname()) {
@@ -508,8 +510,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Inject real credentials for this host — https only. A plaintext http
 	// request to a credentialed host is still evaluated and receipted, but
 	// nothing is injected: secrets must never transit in cleartext.
+	// Fail-open lets traffic through without a policy decision; it must
+	// never also hand that traffic the real credentials.
 	var injected [][]byte
-	if r.URL.Scheme == "https" {
+	if r.URL.Scheme == "https" && !failedOpen {
 		if headers := creds.Match(s.bindings, host); headers != nil {
 			for k, v := range headers {
 				r.Header.Set(k, v)
@@ -518,6 +522,17 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+	if len(injected) > 0 {
+		// The response is scrubbed for reflected credentials, which only
+		// works on the whole, plain body. An agent-chosen Accept-Encoding
+		// would get gzip/br bytes the scrubber cannot see into, and Range
+		// would return fragments of a secret that never match it whole.
+		// With Accept-Encoding unset the transport still negotiates gzip
+		// upstream and decompresses before we read (SEC-0001).
+		r.Header.Del("Accept-Encoding")
+		r.Header.Del("Range")
+		r.Header.Del("If-Range")
 	}
 	r.RequestURI = ""
 	// Reconcile the wire Host header with the enforced destination: in the
@@ -542,6 +557,19 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 	status = resp.StatusCode
 	stripHopHeaders(resp.Header)
+	if len(injected) > 0 {
+		if ce := resp.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
+			// Upstream encoded the body although we did not ask for it:
+			// it cannot be scrubbed, so it is not delivered.
+			decision = "deny"
+			log.Printf("upstream %s sent Content-Encoding %q on a credentialed response; refusing (cannot scrub)", url, ce)
+			http.Error(w, "upstream sent an encoded response that cannot be checked for leaked credentials", http.StatusBadGateway)
+			status = http.StatusBadGateway
+			return
+		}
+		// Redaction changes the body length.
+		resp.Header.Del("Content-Length")
+	}
 	// Reflector-class exfil: a bound host that echoes request data
 	// (httpbin /headers, debug endpoints, request-bin services) would hand
 	// the injected credentials straight back to the agent. Scrub the exact

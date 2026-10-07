@@ -2,7 +2,7 @@
 
 **Severity:** MEDIUM
 **Component:** proxy/internal/proxy/proxy.go pipeBody + scrubReader path
-**Status:** CONFIRMED LIVE (exotic-reflector test)
+**Status:** FIXED — trailers are scrubbed (`proxy/internal/proxy/proxy.go`, trailer forwarding)
 
 ## Evidence
 `pipeBody` drains `res.Trailer` and forwards it via `Write` calls, but

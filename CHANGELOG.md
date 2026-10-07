@@ -43,6 +43,12 @@ agents, and fix correctness bugs found in an in-depth review.
 - **Duplicate approvals under concurrent requests** for one decision (two
   approvals, two continuations, the action running twice). Creation is now
   atomic, and a failed continuation write is reported instead of dropped.
+- **Credentials could leak to the agent (SEC-0001):** Range requests and
+  upstream-encoded bodies slipped past the reflected-credential scrubber. The
+  proxy now strips `Accept-Encoding`/`Range` on credentialed requests and refuses
+  bodies it cannot scrub.
+- **`fail_open` injected real credentials** into traffic that had no policy
+  decision. Fail-open traffic is now forwarded without credentials.
 - **Receipts signed by a revoked or destroyed gateway key after its
   revocation no longer verify** (`gwctl verify-receipt`, `/v1/receipts/verify`).
   Receipts from before the revocation still verify; backdating by a key holder
