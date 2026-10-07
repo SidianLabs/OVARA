@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"ovara.runtime.gateway/internal/appendfile"
 )
 
 const Version = 1
@@ -234,7 +236,7 @@ func Open(store, path, domainID string, signer *Signer, resolve ResolveFunc, flo
 				// torn tail: uncommitted partial write — truncate it.
 				// pos stays at the torn offset so j.off tracks the
 				// truncated size, not the pre-truncate read length.
-				if terr := f.Truncate(int64(pos)); terr != nil {
+				if terr := appendfile.Truncate(f, int64(pos)); terr != nil {
 					f.Close()
 					return nil, fmt.Errorf("record %s: truncate torn tail: %w", store, terr)
 				}
@@ -337,7 +339,7 @@ func (j *Journal) Absorb() error {
 		var env Envelope
 		if err := json.Unmarshal(line, &env); err != nil {
 			if nl < 0 {
-				if terr := j.f.Truncate(j.off + int64(pos)); terr != nil {
+				if terr := appendfile.Truncate(j.f, j.off+int64(pos)); terr != nil {
 					return fmt.Errorf("record %s: truncate torn tail: %w", j.store, terr)
 				}
 				j.off += int64(pos)

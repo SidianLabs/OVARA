@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"ovara.runtime.gateway/internal/appendfile"
 	"ovara.runtime.gateway/internal/flock"
 	"ovara.runtime.gateway/internal/fsperm"
 )
@@ -125,7 +126,7 @@ func (s *Store) absorb() error {
 		var lr lineRecord
 		if err := json.Unmarshal(line, &lr); err != nil {
 			if nl == int64(len(buf)) {
-				if err := s.f.Truncate(s.off + pos); err != nil {
+				if err := appendfile.Truncate(s.f, s.off+pos); err != nil {
 					return fmt.Errorf("anchor store: truncate torn tail: %w", err)
 				}
 				s.off += pos

@@ -38,6 +38,7 @@ import (
 	"sort"
 	"sync"
 	"ovara.runtime.gateway/internal/anchor"
+	"ovara.runtime.gateway/internal/appendfile"
 	"ovara.runtime.gateway/internal/flock"
 	"ovara.runtime.gateway/internal/fsperm"
 	"time"
@@ -261,7 +262,7 @@ func (r *Registry) absorb() error {
 		var probe seqChainProbe
 		if err := json.Unmarshal(line, &probe); err != nil {
 			if nl == int64(len(buf)) {
-				if err := r.f.Truncate(r.off + pos); err != nil {
+				if err := appendfile.Truncate(r.f, r.off+pos); err != nil {
 					return fmt.Errorf("gateway registry: truncate torn tail: %w", err)
 				}
 				r.off += pos
