@@ -93,6 +93,9 @@ func agentEnv(dir string, cfg *config.Config, host string) ([]envVar, []string, 
 		{"HTTP_PROXY", proxyURL, ""},
 		{"https_proxy", proxyURL, "some tools only read the lowercase names"},
 		{"http_proxy", proxyURL, ""},
+		// Verified: on Node 22 a plain fetch() went straight out, unseen
+		// by Ovara, unless this is set.
+		{"NODE_USE_ENV_PROXY", "1", "Node.js: make built-in fetch() honour the proxy (without it, it silently goes direct)"},
 	}
 	for _, v := range caVars {
 		vars = append(vars, envVar{v.name, ca, "trust Ovara's certificate: " + v.who})

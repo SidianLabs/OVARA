@@ -117,10 +117,13 @@ matched is escalated. Edit the file; changes are picked up without a restart.
 
 Be clear about what you are buying:
 
-- **Cooperative mode (what you get by just setting `HTTPS_PROXY`).** Ovara
-  controls every request that goes through it. A program that ignores the proxy
-  setting can still reach the internet directly, so this stops a well-meaning agent
-  from making mistakes. It does not stop a determined, hostile one.
+- **Cooperative mode (what you get with `ovara env`).** Ovara controls every
+  request that goes through it. A program that ignores the proxy setting can still
+  reach the internet directly. This happens by accident too: Node's built-in
+  `fetch()` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is set, which
+  `ovara env` does for you. So this mode stops a well-meaning agent from making
+  mistakes, but it does not stop a determined, hostile one. Check `ovara log` to
+  confirm your agent's traffic is actually showing up.
 - **Enforced mode (`ovara run --boundary netns` or `--boundary docker`, Linux, needs root).**
   The agent runs somewhere with **no route to the internet except through Ovara**,
   so there is nothing to ignore. This is the setup to use when you do not fully

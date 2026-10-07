@@ -36,6 +36,9 @@ func TestAgentEnv_FromInitDeployment(t *testing.T) {
 	if want := "http://agent:" + cfg.AgentToken + "@127.0.0.1:9443"; got["HTTPS_PROXY"] != want {
 		t.Fatalf("HTTPS_PROXY = %q, want %q", got["HTTPS_PROXY"], want)
 	}
+	if got["NODE_USE_ENV_PROXY"] != "1" {
+		t.Error("NODE_USE_ENV_PROXY=1 missing: Node fetch() would bypass the proxy")
+	}
 	ca := filepath.Join(dir, "var", "ca.pem")
 	for _, name := range []string{"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO"} {
 		if got[name] != ca {
