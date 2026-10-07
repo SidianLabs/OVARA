@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"unicode"
 	"time"
 )
 
@@ -16,10 +17,29 @@ import (
 // port. Without this "Internal.Example.com." would not
 // match the glob "internal.example.com" and would skip forced approval.
 func normalizeHost(host string) string {
+	// Normalize to a fixed point. One pass peels one layer (port, dots,
+	// brackets); hostile inputs like "[:]:0" have several, and two code
+	// paths that normalize a different number of times would disagree about
+	// whether the same host is "sensitive". Each pass never lengthens the
+	// string, so this terminates quickly.
+	for i := 0; i < 8; i++ {
+		n := normalizeHostOnce(host)
+		if n == host {
+			return n
+		}
+		host = n
+	}
+	return host
+}
+
+func normalizeHostOnce(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
+	// Every trailing dot and space, not just one: "a.com.." must reach the
+	// same canonical form as "a.com", and the result must be stable under
+	// repeated normalization (the fuzz test enforces both).
+	host = strings.TrimFunc(host, func(r rune) bool { return r == '.' || unicode.IsSpace(r) })
 	host = strings.ToLower(host)
 	if net.ParseIP(strings.Trim(host, "[]")) != nil {
 		return strings.Trim(host, "[]")

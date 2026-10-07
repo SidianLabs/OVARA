@@ -1,0 +1,39 @@
+name: Fuzz
+
+# Parsers and matchers that read agent- or disk-controlled input are fuzzed
+# on a schedule. Crashing inputs are uploaded; commit them under
+# testdata/fuzz/ so they run as ordinary regression tests from then on.
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { module: proxy,           pkg: ./internal/proxy,           target: FuzzParseRefUpdates }
+          - { module: proxy,           pkg: ./internal/proxy,           target: FuzzNormalizeHost }
+          - { module: runtime/gateway, pkg: ./internal/policy,          target: FuzzMatchCanonicalResource }
+          - { module: runtime/gateway, pkg: ./internal/record,          target: FuzzOpenNeverPanics }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Fuzz ${{ matrix.target }}
+        working-directory: ${{ matrix.module }}
+        run: go test -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=3m ${{ matrix.pkg }}
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: ${{ matrix.module }}/**/testdata/fuzz/${{ matrix.target }}/*
