@@ -20,6 +20,8 @@ agents, and fix correctness bugs found in an in-depth review.
   every request got a 407.)
 - **`ovara log`**: what the agent did, one line per request (allowed / approved /
   blocked / timed out), with an offline integrity check of the receipt chain.
+- Default policy allows `git clone`/`fetch`/`pull` (a POST to `git-upload-pack`
+  that only reads). Pushes still need approval. Verified with a real clone.
 - `ovara watch` and `ovara approvals` skip requests the agent already stopped
   waiting for, since approving them would do nothing.
 - **A useful default policy from `ovara init`**: reads allowed, writes (git push,

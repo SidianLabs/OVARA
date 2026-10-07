@@ -154,6 +154,22 @@ func describe(resource string) string {
 	}
 	target, extra, _ := strings.Cut(rest, " ")
 	target = dropDefaultPort(target)
+	if target == "UNAUTH" {
+		// The proxy records requests that arrive without the agent's proxy
+		// token as method "<METHOD> UNAUTH". Clients like git send their
+		// first attempt without credentials and retry after the challenge.
+		where := ""
+		if extra != "" {
+			where = " to " + dropDefaultPort(strings.TrimSuffix(extra, ":443"))
+		}
+		return "connect" + where + " without the agent's proxy token (refused; git and curl retry with it automatically)"
+	}
+	if repo, ok := gitRepo(target, "/git-upload-pack"); ok {
+		return "fetch code from " + repo
+	}
+	if repo, ok := gitRepo(target, "/info/refs"); ok {
+		return "look up branches of " + repo
+	}
 	if strings.Contains(target, "git-receive-pack") {
 		repo := strings.TrimPrefix(strings.TrimPrefix(target, "https://"), "http://")
 		repo, _, _ = strings.Cut(repo, "/git-receive-pack")
@@ -175,6 +191,17 @@ func describe(resource string) string {
 		return "DELETE " + target
 	}
 	return method + " " + target
+}
+
+// gitRepo extracts "host/org/repo" from a smart-HTTP git URL ending in
+// suffix ("https://github.com/o/r.git/git-upload-pack" → "github.com/o/r").
+func gitRepo(target, suffix string) (string, bool) {
+	if !strings.HasSuffix(target, suffix) {
+		return "", false
+	}
+	repo := strings.TrimSuffix(target, suffix)
+	repo = strings.TrimPrefix(strings.TrimPrefix(repo, "https://"), "http://")
+	return strings.TrimSuffix(repo, ".git"), true
 }
 
 // dropDefaultPort removes ":443" from https and ":80" from http URLs —

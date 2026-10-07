@@ -51,6 +51,9 @@ func outcome(r receipts.Receipt) string {
 		}
 		return "allowed"
 	case "deny":
+		if strings.HasSuffix(r.Method, " UNAUTH") {
+			return "no token"
+		}
 		return "BLOCKED"
 	case "escalate":
 		if r.Status == 504 {
@@ -109,7 +112,7 @@ func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
 		fmt.Fprintf(w, "%-19s  %-12s  %s\n", r.Timestamp.Local().Format("2006-01-02 15:04:05"), o, what)
 	}
 	var parts []string
-	for _, k := range []string{"allowed", "approved", "BLOCKED", "not approved", "timed out", "error"} {
+	for _, k := range []string{"allowed", "approved", "BLOCKED", "not approved", "timed out", "no token", "error"} {
 		if counts[k] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[k], k))
 		}

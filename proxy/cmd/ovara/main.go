@@ -721,6 +721,10 @@ func defaultPolicyRules() []map[string]any {
 		// Reading is free — package installs, docs, API reads.
 		rule("GET *", "allow", "Reading is allowed (docs, package installs, API reads)"),
 		rule("HEAD *", "allow", "Reading is allowed"),
+		// git clone/fetch/pull speak smart-HTTP with a POST to
+		// git-upload-pack; it only reads. (Pushes go to git-receive-pack
+		// and still need approval below.)
+		rule("POST *git-upload-pack", "allow", "git clone/fetch/pull is reading"),
 		// The agent must be able to talk to its own model provider.
 		rule("POST https://api.anthropic.com/*", "allow", "The agent may call the Anthropic API"),
 		rule("POST https://api.openai.com/*", "allow", "The agent may call the OpenAI API"),
