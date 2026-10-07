@@ -77,6 +77,7 @@ func TestGate_ClaimRevokeRace_RealRegistry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("store: %v", err)
 		}
+		t.Cleanup(func() { store.Close() })
 		exec := &spyExec{}
 		var denied, clean int32
 
@@ -139,6 +140,7 @@ func TestGate_RevokedBeforeClaim_ZeroExecutorCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
+	t.Cleanup(func() { store.Close() })
 	exec := &spyExec{}
 
 	queuedCnt(t, store, "c1", "lse-1", nil, nil)
@@ -175,6 +177,7 @@ func TestGate_MidHopPresentationRevokedAtClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
+	t.Cleanup(func() { store.Close() })
 	terminalKey := hopKey("mid", "n2")
 	hop0Key := hopKey("root", "n1")
 	// Recorded as the fixed implementation records: every hop key.
@@ -245,6 +248,7 @@ func TestGate_RevokeDuringExecution_NotRetroactive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
+	t.Cleanup(func() { store.Close() })
 	queuedCnt(t, store, "c1", "lse-run", nil, nil)
 
 	release := make(chan struct{})

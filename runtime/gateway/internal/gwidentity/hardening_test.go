@@ -115,6 +115,7 @@ func TestH4_IdempotentAndTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("idempotent + transition fold must load: %v", err)
 	}
+	defer r.Close()
 	gs, _ := r.GrantsFor("gw_a")
 	if gs[0].State != GrantConsumed {
 		t.Fatalf("want consumed, got %s", gs[0].State)
@@ -146,9 +147,11 @@ func TestH6_OpenExistingMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.Close()
-	if _, err := OpenExisting(p); err != nil {
+	r2, err := OpenExisting(p)
+	if err != nil {
 		t.Fatalf("OpenExisting on real registry: %v", err)
 	}
+	r2.Close()
 }
 
 // ---------- F3 documented boundary ----------
@@ -169,6 +172,7 @@ func TestH3_ReorderStillRegresses_Documented(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reordered file still parses (documented limit): %v", err)
 	}
+	defer r.Close()
 	gs, _ := r.GrantsFor("gw_a")
 	if gs[0].State != GrantAuthorized {
 		t.Fatalf("expected documented regression to authorized, got %s", gs[0].State)

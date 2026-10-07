@@ -24,6 +24,7 @@ func migSetup(t *testing.T) (*gwidentity.Registry, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { r.Close() })
 	keyFile := filepath.Join(dir, "gateway.key")
 	priv, err := gwidentity.LoadOrCreateKey(keyFile)
 	if err != nil {

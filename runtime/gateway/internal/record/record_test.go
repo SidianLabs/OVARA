@@ -109,6 +109,7 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer j.Close()
 	if len(seen) != 3 || seen[0] != "a" || seen[2] != "c" {
 		t.Fatalf("seen %v", seen)
 	}

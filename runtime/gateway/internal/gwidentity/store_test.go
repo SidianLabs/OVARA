@@ -391,6 +391,7 @@ func TestConcurrentMixedOps_NoCorruption(t *testing.T) {
 	// Every committed line must parse — concurrent flock+append must
 	// never interleave a partial record.
 	f, _ := os.Open(p)
+	defer f.Close()
 	dec := json.NewDecoder(f)
 	for dec.More() {
 		var rec KeyRecord
