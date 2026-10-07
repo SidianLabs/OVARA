@@ -97,7 +97,7 @@ func (c *Continuation) IsTerminal() bool {
 
 func NewContinuation(decisionID, actionType, resource string) *Continuation {
 	return &Continuation{
-		ContinuationID: "cnt_" + uuid.New().String()[:16],
+		ContinuationID: "cnt_" + uuid.New().String(),
 		DecisionID:     decisionID,
 		ActionType:     actionType,
 		Resource:       resource,

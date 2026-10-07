@@ -3,6 +3,7 @@ package evaluator
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -835,20 +836,39 @@ func (e *Evaluator) buildReceiptStub(req *models.ActionRequest, decision models.
 }
 
 func generateID() string {
-	return fmt.Sprintf("dec_%s", uuid.New().String()[:16])
+	// The whole UUID: a truncated one has ~60 random bits, and a colliding
+	// decision/receipt ID would overwrite a receipt in the map.
+	return "dec_" + uuid.New().String()
 }
 
+// actionDigest binds an approval to exactly the request that was evaluated.
+// Every field is length-prefixed (so "ab"+"c" and "a"+"bc" differ), the
+// environment and metadata are covered, and the full SHA-256 is kept: the
+// previous digest was an undelimited concatenation truncated to 64 bits.
 func actionDigest(req *models.ActionRequest) string {
 	h := sha256.New()
-	h.Write([]byte(string(req.ActionType)))
-	h.Write([]byte(req.Resource))
+	field := func(s string) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+		h.Write(n[:])
+		h.Write([]byte(s))
+	}
+	field("ovara-action-digest-v2")
+	field(string(req.ActionType))
+	field(req.Resource)
+	field(string(req.Environment))
 	if req.AgentIdentity != nil {
-		h.Write([]byte(req.AgentIdentity.SubjectID))
+		field(req.AgentIdentity.SubjectID)
+	} else {
+		field("")
 	}
 	if req.CapabilityLease != nil {
-		h.Write([]byte(req.CapabilityLease.LeaseID))
+		field(req.CapabilityLease.LeaseID)
+	} else {
+		field("")
 	}
-	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
+	field(string(req.Metadata))
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // trustLevelBelow returns true if actualLevel is below the named minimum.

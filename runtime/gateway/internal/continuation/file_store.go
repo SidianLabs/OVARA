@@ -656,7 +656,14 @@ func (s *FileBackedStore) Compact() error {
 func (s *FileBackedStore) compactSigned() error {
 	seq, tip := s.journal.Tip()
 	tmpPath := s.path + ".compact.tmp"
-	w, err := record.ResumeAt("continuation", tmpPath, s.journal.Domain(), s.journalSigner(), seq, tip)
+	domain, signer := s.journal.Domain(), s.journalSigner()
+	// A temp file left by a crashed or failed earlier compaction would be
+	// appended to (ResumeAt opens O_APPEND), producing a second marker behind
+	// stale lines that no longer opens. Always start from nothing.
+	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("compact: remove stale temp: %w", err)
+	}
+	w, err := record.ResumeAt("continuation", tmpPath, domain, signer, seq, tip)
 	if err != nil {
 		return fmt.Errorf("compact: %w", err)
 	}
@@ -698,16 +705,22 @@ func (s *FileBackedStore) compactSigned() error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("compact: close: %w", err)
 	}
+	// Windows refuses to rename over a file that is still open, so the live
+	// journal is closed first and reopened on whichever file survives.
+	_ = s.journal.Close()
 	if err := os.Rename(tmpPath, s.path); err != nil {
+		os.Remove(tmpPath)
+		if old, rerr := record.ResumeAt("continuation", s.path, domain, signer, seq, tip); rerr == nil {
+			s.journal = old
+		}
 		return fmt.Errorf("compact: rename: %w", err)
 	}
 	// Reopen the journal on the compacted file so the writer continues
 	// from the new physical tip (ResumeAt keeps logical seq/parent).
-	j, err := record.ResumeAt("continuation", s.path, s.journal.Domain(), s.journalSigner(), newSeq, newTip)
+	j, err := record.ResumeAt("continuation", s.path, domain, signer, newSeq, newTip)
 	if err != nil {
 		return fmt.Errorf("compact: reopen: %w", err)
 	}
-	_ = s.journal.Close()
 	s.journal = j
 	s.staleIDs = nil
 	if s.tipsSink != nil {

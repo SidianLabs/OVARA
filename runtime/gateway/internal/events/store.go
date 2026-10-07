@@ -74,7 +74,7 @@ var globalSeq int64
 
 func NewEvent(eventType string) *Event {
 	e := &Event{
-		EventID:      "evt_" + uuid.New().String()[:16],
+		EventID:      "evt_" + uuid.New().String(),
 		EventType:    eventType,
 		EventVersion: "1.0",
 		Timestamp:    time.Now().UTC(),

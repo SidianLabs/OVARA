@@ -50,7 +50,7 @@ type Execution struct {
 
 func NewExecution(continuationID, decisionID, approvalID, agentID, actionType, resource string, timeoutSec int) *Execution {
 	return &Execution{
-		ExecutionID:    "exe_" + uuid.New().String()[:16],
+		ExecutionID:    "exe_" + uuid.New().String(),
 		ContinuationID: continuationID,
 		DecisionID:     decisionID,
 		ApprovalID:     approvalID,

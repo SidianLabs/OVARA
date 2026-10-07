@@ -795,7 +795,16 @@ func Run(configPath string) error {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- http.ListenAndServe(addr, wrappedMux)
+		// Bounded header/idle time so a client that connects and stalls
+		// cannot pin sockets. No WriteTimeout: approvals are long-polled.
+		hs := &http.Server{
+			Addr:              addr,
+			Handler:           wrappedMux,
+			ReadHeaderTimeout: 15 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    64 << 10,
+		}
+		serveErr <- hs.ListenAndServe()
 	}()
 
 	select {
@@ -1068,6 +1077,12 @@ func reconcileAnchor(cfg *config.Config, reg *gwidentity.Registry, priv ed25519.
 			log.Printf("anchor: gateway_anchor_catchup=auto no longer auto-pushes (P2.3.3 remediation) — operator catch-up required")
 		}
 		log.Printf("anchor: unanchored tail (local seq %d > oracle %d) — degraded mode continuing WITHOUT anchoring; run gwctl anchor-catchup", seq, acp.Seq)
+			// Do not install the pusher: with it set, the very next
+			// mutation (even the startup tip ratchet) would commit a
+			// checkpoint at the local seq and make the unverified tail
+			// authoritative. Anchoring resumes after the operator's
+			// catch-up and a restart.
+			return nil
 	}
 	return reg.SetAnchor(pusher, signer)
 }

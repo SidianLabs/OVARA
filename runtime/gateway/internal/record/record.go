@@ -294,6 +294,18 @@ func Open(store, path, domainID string, signer *Signer, resolve ResolveFunc, flo
 	}
 	j.seq = seq
 	j.off = int64(pos)
+	// A final envelope that is complete and verifies, but lacks its trailing
+	// newline (crash between the record and the "\n"), is committed. It must
+	// be terminated now: otherwise the next Append lands on the same line,
+	// the two envelopes are one unparseable line, and the journal can never
+	// be opened again.
+	if pos == len(data) && data[len(data)-1] != '\n' {
+		if err := terminateLine(f); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("record %s: terminate final line: %w", store, err)
+		}
+		j.off++
+	}
 	if floor.Known && seq < floor.Seq {
 		f.Close()
 		return nil, fmt.Errorf("record %s: journal tip seq %d is below ledger floor %d — committed history truncated", store, seq, floor.Seq)
@@ -364,7 +376,21 @@ func (j *Journal) Absorb() error {
 		pos = end
 	}
 	j.off += int64(pos)
+	if len(buf) > 0 && pos == len(buf) && buf[len(buf)-1] != '\n' {
+		if err := terminateLine(j.f); err != nil {
+			return fmt.Errorf("record %s: terminate final line: %w", j.store, err)
+		}
+		j.off++
+	}
 	return nil
+}
+
+// terminateLine writes the missing newline after a complete final record.
+func terminateLine(f *os.File) error {
+	if _, err := f.Write([]byte{'\n'}); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func verifyEnvelope(env *Envelope, domainID string, wantSeq uint64, wantParent string, resolve ResolveFunc) error {
