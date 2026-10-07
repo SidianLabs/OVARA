@@ -70,7 +70,28 @@ export SSL_CERT_FILE=mydir/var/ca.pem
 ```
 
 Prefer not to sit at a terminal? `ovara approvals` lists what is waiting, and
-`ovara approve <id>` / `ovara deny <id>` answer one request.
+`ovara approve <id>` / `ovara deny <id>` answer one request. A paused request
+waits 60 seconds (`escalate_timeout_sec` in `proxy.json`); after that the agent
+gets a timeout and can simply retry.
+
+### What did my agent do?
+
+```bash
+./ovara log -dir mydir
+```
+
+```
+WHEN                 OUTCOME       WHAT THE AGENT DID
+2026-10-07 13:04:12  allowed       read https://pypi.org/simple/requests/
+2026-10-07 13:04:20  approved      push to refs/heads/main on github.com/acme/app
+2026-10-07 13:05:01  BLOCKED       send data to https://pastebin.com/api/api_post.php
+
+1 allowed, 1 approved, 1 BLOCKED
+integrity: ✓ all 3 receipts are signed and unbroken — this log has not been edited
+```
+
+Every line comes from a signed, hash-chained receipt, so if anyone edits the log
+afterwards (to hide something, say), `ovara log` reports it as tampered.
 
 ### Your rules live in `mydir/policy.json`
 

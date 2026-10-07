@@ -52,6 +52,8 @@ func main() {
 		err = cmdDemo()
 	case "doctor":
 		err = cmdDoctor(os.Args[2:])
+	case "log":
+		err = cmdLog(os.Args[2:])
 	case "watch":
 		err = cmdWatch(os.Args[2:])
 	case "approvals":
@@ -77,6 +79,7 @@ func usage() {
   demo                  self-contained end-to-end demo (no network, no root)
   watch [-dir .]        answer approval requests live: approve / deny each one
   approvals [-dir .]    list agent requests waiting for approval
+  log [-dir .] [-n 50]  what the agent did (allowed/approved/blocked), integrity-checked
   approve <id>          let a waiting request through
   deny <id>             block a waiting request
   doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
@@ -616,6 +619,7 @@ func cmdDemo() error {
 	say("\nThat is the whole idea. To use it for real:")
 	say("   ovara init mydir && ovara run -dir mydir     # start it")
 	say("   ovara watch -dir mydir                       # answer approval requests")
+	say("   ovara log -dir mydir                         # see what the agent did")
 	say("")
 	return nil
 }

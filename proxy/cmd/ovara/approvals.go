@@ -29,6 +29,31 @@ type adminClient struct {
 	base  string
 	token string
 	hc    *http.Client
+	// maxWait is how long the proxy holds a paused request before the
+	// agent gets a timeout. Approving after that changes nothing for the
+	// agent, so such approvals are treated as expired. Zero disables this.
+	maxWait time.Duration
+}
+
+// stale reports whether the agent has already stopped waiting for a.
+func (c *adminClient) stale(a pendingApproval) bool {
+	return c.maxWait > 0 && a.ActionType == "http.request" && !a.CreatedAt.IsZero() &&
+		time.Since(a.CreatedAt) > c.maxWait
+}
+
+// proxyWait reads the proxy's escalation window from proxy.json (the
+// proxy's own default is 60s).
+func proxyWait(dir string) time.Duration {
+	sec := 60
+	if raw, err := os.ReadFile(filepath.Join(dir, "proxy.json")); err == nil {
+		var p struct {
+			Sec int `json:"escalate_timeout_sec"`
+		}
+		if json.Unmarshal(raw, &p) == nil && p.Sec > 0 {
+			sec = p.Sec
+		}
+	}
+	return time.Duration(sec) * time.Second
 }
 
 type pendingApproval struct {
@@ -65,8 +90,9 @@ func newAdminClient(dir string) (*adminClient, error) {
 	}
 	return &adminClient{
 		base:  "http://" + host + ":" + cfg.Port,
-		token: cfg.Tokens[0],
-		hc:    &http.Client{Timeout: 10 * time.Second},
+		token:   cfg.Tokens[0],
+		hc:      &http.Client{Timeout: 10 * time.Second},
+		maxWait: proxyWait(dir),
 	}, nil
 }
 
@@ -199,8 +225,20 @@ func cmdApprovals(args []string) error {
 		fmt.Println("nothing waiting for approval.")
 		return nil
 	}
+	expired := 0
 	for _, a := range list {
+		if c.stale(a) {
+			expired++
+			continue
+		}
 		printApproval(os.Stdout, a)
+	}
+	if expired > 0 {
+		fmt.Printf("(%d older request(s) hidden: the agent already stopped waiting, so approving them would do nothing)\n", expired)
+	}
+	if expired == len(list) {
+		fmt.Println("nothing waiting for approval.")
+		return nil
 	}
 	fmt.Printf("\n%d waiting.  ovara approve <id>   or   ovara deny <id>   (or run `ovara watch`)\n", len(list))
 	return nil
@@ -273,6 +311,9 @@ func watchLoop(c *adminClient, in io.Reader, out io.Writer, every time.Duration,
 				continue
 			}
 			seen[a.ApprovalID] = true
+			if c.stale(a) {
+				continue // the agent gave up on this one already
+			}
 			fmt.Fprintln(out)
 			printApproval(out, a)
 			if !askAndResolve(c, a, rd, out) {

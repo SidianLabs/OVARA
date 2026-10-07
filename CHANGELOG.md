@@ -14,6 +14,10 @@ agents, and fix correctness bugs found in an in-depth review.
 
 - **`ovara watch`, `ovara approvals`, `ovara approve <id>`, `ovara deny <id>`**:
   answer an agent's paused requests from the terminal, in plain English.
+- **`ovara log`**: what the agent did, one line per request (allowed / approved /
+  blocked / timed out), with an offline integrity check of the receipt chain.
+- `ovara watch` and `ovara approvals` skip requests the agent already stopped
+  waiting for, since approving them would do nothing.
 - **A useful default policy from `ovara init`**: reads allowed, writes (git push,
   PRs, deploys, deletes) escalate for human approval, known data-dump sites denied.
 - **A narrated `ovara demo`** (allow, pause-and-approve, block, verified
