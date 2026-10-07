@@ -303,7 +303,13 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	srv := proxy.New(rootCA, gw, creds.Load(cfg.Credentials), chain, cfg.FailOpen)
+	bindings, skipped := creds.LoadReport(cfg.Credentials)
+	logSkippedBindings(skipped)
+	// Tell `ovara env` which keys are really injected (names only).
+	if err := writeActiveKeys(".", cfg.Credentials, skipped); err != nil {
+		log.Printf("could not record active keys for `ovara env`: %v", err)
+	}
+	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
 	if cfg.GitGate != nil {
 		srv.SetGitGate(*cfg.GitGate)
@@ -311,6 +317,15 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
 	srv.SetClientAuth(cfg.AgentToken)
 	return srv, rootCA, nil
+}
+
+// logSkippedBindings tells the operator which hosts get no injected key
+// because the key is not in Ovara's environment.
+func logSkippedBindings(skipped []creds.Skipped) {
+	for _, s := range skipped {
+		log.Printf("no key injected for %s: %s not set in Ovara's environment (requests there go out with whatever the agent sends)",
+			s.Host, strings.Join(s.Missing, ", "))
+	}
 }
 
 // waitForGateway polls /health until it answers or the window closes.

@@ -67,7 +67,6 @@ func TestLoadEnvExpansion(t *testing.T) {
 	b := Load([]Binding{
 		{Host: "x.com", Headers: map[string]string{
 			"Authorization": "Bearer ${CREDS_TEST_TOKEN}",
-			"X-Missing":     "${CREDS_TEST_UNSET}",
 			"X-Plain":       "literal",
 		}},
 	})
@@ -75,10 +74,30 @@ func TestLoadEnvExpansion(t *testing.T) {
 	if h["Authorization"] != "Bearer s3cr3t" {
 		t.Fatalf("env expansion failed: %q", h["Authorization"])
 	}
-	if h["X-Missing"] != "" {
-		t.Fatalf("unset var should expand to empty, got %q", h["X-Missing"])
-	}
+	// (A binding with an unset variable is dropped entirely: see
+	// TestLoadReport_DropsBindingsWithUnsetKeys.)
 	if h["X-Plain"] != "literal" {
 		t.Fatalf("literal changed: %q", h["X-Plain"])
+	}
+}
+
+// A binding whose key is not set must not be injected: it would replace
+// the agent's own working header with "Bearer " or an empty key.
+func TestLoadReport_DropsBindingsWithUnsetKeys(t *testing.T) {
+	t.Setenv("OVARA_TEST_SET", "real")
+	t.Setenv("OVARA_TEST_EMPTY", "")
+	got, skipped := LoadReport([]Binding{
+		{Host: "a.example", Headers: map[string]string{"Authorization": "Bearer ${OVARA_TEST_SET}"}},
+		{Host: "b.example", Headers: map[string]string{"Authorization": "Bearer ${OVARA_TEST_EMPTY}"}},
+		{Host: "c.example", Headers: map[string]string{"x-api-key": "${OVARA_TEST_UNSET_XYZ}", "v": "1"}},
+	})
+	if len(got) != 1 || got[0].Host != "a.example" || got[0].Headers["Authorization"] != "Bearer real" {
+		t.Fatalf("loaded = %+v", got)
+	}
+	if len(skipped) != 2 || skipped[0].Host != "b.example" || skipped[1].Missing[0] != "OVARA_TEST_UNSET_XYZ" {
+		t.Fatalf("skipped = %+v", skipped)
+	}
+	if Match(got, "c.example") != nil {
+		t.Fatal("binding with unset key must not match")
 	}
 }

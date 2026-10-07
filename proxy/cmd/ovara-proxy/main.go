@@ -57,7 +57,10 @@ func main() {
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	log.Printf("anchoring chain head to %s (every=%d url=%q)", anchorFile, max(anchorEvery, 1), os.Getenv("OVARA_ANCHOR_URL"))
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	bindings := creds.Load(cfg.Credentials)
+	bindings, skipped := creds.LoadReport(cfg.Credentials)
+	for _, s := range skipped {
+		log.Printf("credential binding for %s skipped: %v not set", s.Host, s.Missing)
+	}
 
 	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)

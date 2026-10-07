@@ -53,6 +53,11 @@ agents, and fix correctness bugs found in an in-depth review.
 - **Duplicate approvals under concurrent requests** for one decision (two
   approvals, two continuations, the action running twice). Creation is now
   atomic, and a failed continuation write is reported instead of dropped.
+- **A key not set in Ovara's environment broke the agent's own credentials**:
+  `${GITHUB_TOKEN}` expanded to nothing and the proxy overwrote the agent's working
+  header with `Bearer ` (or an empty `x-api-key`, breaking Claude Code subscription
+  logins). Such bindings are now skipped with a clear startup message, and `ovara env`
+  sets placeholders only for keys Ovara really injects.
 - **Credentials could leak to the agent (SEC-0001):** Range requests and
   upstream-encoded bodies slipped past the reflected-credential scrubber. The
   proxy now strips `Accept-Encoding`/`Range` on credentialed requests and refuses

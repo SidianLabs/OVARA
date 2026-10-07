@@ -10,6 +10,7 @@ package main
 //	ovara env -dir mydir -shell powershell | iex # PowerShell
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"strings"
 
 	"ovara.proxy/internal/config"
+	"ovara.proxy/internal/creds"
 )
 
 // caVars are the variables common runtimes read for extra trusted CAs.
@@ -96,10 +98,33 @@ func agentEnv(dir string, cfg *config.Config, host string) ([]envVar, []string, 
 		vars = append(vars, envVar{v.name, ca, "trust Ovara's certificate: " + v.who})
 	}
 
-	// Placeholders for every key referenced by a credential binding.
+	// Placeholders only for keys Ovara is actually injecting (recorded by
+	// `ovara run`). A placeholder for a key Ovara does not hold would
+	// break the agent: e.g. a fake ANTHROPIC_API_KEY switches Claude Code
+	// from a subscription login to API-key mode with a key that can't work.
+	keys, ok := readActiveKeys(dir)
+	if !ok {
+		notes = append(notes, "no placeholder API keys yet: start `ovara run` first, then re-run `ovara env` (it sets placeholders only for keys Ovara really injects).")
+	}
+	for i, k := range keys {
+		c := ""
+		if i == 0 {
+			c = "placeholders: the agent never holds the real keys, Ovara injects them"
+		}
+		vars = append(vars, envVar{k, keyPlaceholder, c})
+	}
+	return vars, notes, nil
+}
+
+// activeKeysFile records the NAMES (never values) of the environment
+// variables behind the credential bindings `ovara run` is injecting.
+const activeKeysFile = "var/active-keys.json"
+
+// bindingKeys returns the sorted variable names referenced by bindings.
+func bindingKeys(bindings []creds.Binding) []string {
 	seen := map[string]bool{}
 	var keys []string
-	for _, b := range cfg.Credentials {
+	for _, b := range bindings {
 		for _, val := range b.Headers {
 			for _, m := range bindingKeyRef.FindAllStringSubmatch(val, -1) {
 				if !seen[m[1]] {
@@ -110,14 +135,45 @@ func agentEnv(dir string, cfg *config.Config, host string) ([]envVar, []string, 
 		}
 	}
 	sort.Strings(keys)
-	for i, k := range keys {
-		c := ""
-		if i == 0 {
-			c = "placeholders: the agent never holds the real keys, Ovara injects them"
-		}
-		vars = append(vars, envVar{k, keyPlaceholder, c})
+	return keys
+}
+
+// writeActiveKeys is called by `ovara run` with the configured
+// (unexpanded) bindings and the ones LoadReport had to skip.
+func writeActiveKeys(dir string, configured []creds.Binding, skipped []creds.Skipped) error {
+	skip := map[string]bool{}
+	for _, s := range skipped {
+		skip[s.Host] = true
 	}
-	return vars, notes, nil
+	var active []creds.Binding
+	for _, b := range configured {
+		if !skip[b.Host] {
+			active = append(active, b)
+		}
+	}
+	names := bindingKeys(active)
+	if names == nil {
+		names = []string{}
+	}
+	b, err := json.Marshal(map[string]any{"keys": names})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(inDir(dir, activeKeysFile), b, 0o644)
+}
+
+func readActiveKeys(dir string) ([]string, bool) {
+	raw, err := os.ReadFile(inDir(dir, activeKeysFile))
+	if err != nil {
+		return nil, false
+	}
+	var f struct {
+		Keys []string `json:"keys"`
+	}
+	if json.Unmarshal(raw, &f) != nil {
+		return nil, false
+	}
+	return f.Keys, true
 }
 
 func writeEnv(w io.Writer, shell string, vars []envVar, notes []string) error {
