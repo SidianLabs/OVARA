@@ -103,8 +103,9 @@ Be clear about what you are buying:
 - **Plain HTTP and other protocols.** Credentials are only injected over HTTPS.
   Coverage of non-HTTP protocols is uneven.
 
-Honest limits: a stolen Ovara signing key lets an attacker forge receipts. Key
-protection (KMS/HSM) is not built yet. See [`SECURITY.md`](SECURITY.md) and
+Honest limits: whoever steals Ovara's signing key can forge receipts. Once you
+revoke the key, receipts dated after the revocation are rejected, but backdated
+forgeries still verify. Hardware-backed key protection (KMS/HSM) is not built yet. See [`SECURITY.md`](SECURITY.md) and
 [`docs/OVARA_2.1_SECURITY_DECISIONS.md`](docs/OVARA_2.1_SECURITY_DECISIONS.md).
 
 ## What's solid and what isn't

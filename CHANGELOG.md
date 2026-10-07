@@ -25,6 +25,13 @@ agents, and fix correctness bugs found in an in-depth review.
 - New README that explains what Ovara is and how strong each mode is; the long
   overview moved to `docs/overview-full.md`.
 
+### Removed
+
+- Disconnected, broken or unsafe modules: `trust/` (unauthenticated federation
+  server), `identity/` (unused, incompatible lease format), `telemetry/`,
+  `services/analytics`, `packages/`, four scaffold integrations, `infrastructure/`,
+  `observability/`. All are recoverable from git history.
+
 ### Fixed
 
 - **Signed-journal mode: every continuation update failed.** `FileBackedStore.Update`
@@ -36,6 +43,10 @@ agents, and fix correctness bugs found in an in-depth review.
 - **Duplicate approvals under concurrent requests** for one decision (two
   approvals, two continuations, the action running twice). Creation is now
   atomic, and a failed continuation write is reported instead of dropped.
+- **Receipts signed by a revoked or destroyed gateway key after its
+  revocation no longer verify** (`gwctl verify-receipt`, `/v1/receipts/verify`).
+  Receipts from before the revocation still verify; backdating by a key holder
+  remains the documented key-compromise limit.
 - `ovara run --boundary netns` printed a proxy address that did not match the
   one the script configured, and told you to run the agent as root. It now
   prints the right address and runs the agent as your user.
