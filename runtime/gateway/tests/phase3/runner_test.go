@@ -152,8 +152,24 @@ func outcomeName(o decide.Outcome) string {
 	}
 }
 
+// TestScenarios runs the OPEN set only. The held-out slice under
+// scenarios/heldout/ is eval-only: run it at formal evaluation
+// milestones via RUN_HELDOUT=1, never during development.
 func TestScenarios(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join(scenariosDir, "*.json"))
+	runSet(t, filepath.Join(scenariosDir, "*.json"), "phase3a.jsonl")
+}
+
+// TestHeldout is gated: RUN_HELDOUT=1 opt-in so it never runs as part
+// of normal development. Members are frozen (manifest.json sha256s).
+func TestHeldout(t *testing.T) {
+	if os.Getenv("RUN_HELDOUT") == "" {
+		t.Skip("held-out eval set — set RUN_HELDOUT=1 at a formal evaluation milestone")
+	}
+	runSet(t, filepath.Join(scenariosDir, "heldout", "sc-*.json"), "phase3a_heldout.jsonl")
+}
+
+func runSet(t *testing.T, pattern, outName string) {
+	files, err := filepath.Glob(pattern)
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no scenarios: %v", err)
 	}
@@ -178,7 +194,7 @@ func TestScenarios(t *testing.T) {
 	}
 	// write results JSONL
 	os.MkdirAll(resultsDir, 0o755)
-	out := filepath.Join(resultsDir, "phase3a.jsonl")
+	out := filepath.Join(resultsDir, outName)
 	w, err := os.Create(out)
 	if err != nil {
 		t.Fatal(err)

@@ -1,0 +1,126 @@
+{
+  "frozen_at": "phase3-baseline",
+  "note": "Held-out evaluation slice (~20%, class-stratified, deterministic take-every-~5th-by-sorted-name). Open set = scenarios/*.json top level. Held-out rows were part of the 103-scenario baselines measured BEFORE carving (A/B/C at commit d7e5760); from here forward they are eval-only \u2014 do not read, tune, or add regressions against them until a formal evaluation milestone. Membership+sha256 below.",
+  "members": [
+    {
+      "file": "sc-al-001.json",
+      "sha256": "56cae4fde5c5fb60ff09a97ac43543c043a9b152b5e5d1cab34e63be9e6b5df0",
+      "class": "al"
+    },
+    {
+      "file": "sc-al-003.json",
+      "sha256": "bc48e30e53e9c93609d757f20ee961a288601dbc2940e203f1651f76293f2987",
+      "class": "al"
+    },
+    {
+      "file": "sc-am-001.json",
+      "sha256": "371743c6ccaf1b95f1f57046b5fc3911650b745b2dbf23d241fd25daf9f1b35c",
+      "class": "am"
+    },
+    {
+      "file": "sc-eg-001.json",
+      "sha256": "916998448111a82639838260dfe6d8c6f9eb9c3738a73da1a9e91198db1b9b88",
+      "class": "eg"
+    },
+    {
+      "file": "sc-eg-005.json",
+      "sha256": "5b6164f0d57ed761e32dc82c357b5a3875bbff668f32c5878a8abdb28995b717",
+      "class": "eg"
+    },
+    {
+      "file": "sc-eg-009.json",
+      "sha256": "0cca02bd19b26ec6b1688a13f71fdf9167f30c6a0265ad5ccfd4f5dc2bbeb2da",
+      "class": "eg"
+    },
+    {
+      "file": "sc-eg-013.json",
+      "sha256": "0dfb5d7ed31ec090e55236386b5f87ebbd506c09ef583e885d647bfb9156d4e1",
+      "class": "eg"
+    },
+    {
+      "file": "sc-fo-001.json",
+      "sha256": "e0aae05fc4b3955d85c246763d3e342669356bfacf68dcf596a021552d08307f",
+      "class": "fo"
+    },
+    {
+      "file": "sc-fr-001.json",
+      "sha256": "f2f6b6698e9b4eed18cfc82e467bc2b2487ddc7a0cf4c1078ed1e02f294e8f59",
+      "class": "fr"
+    },
+    {
+      "file": "sc-fs-001.json",
+      "sha256": "e50112e8a2bf770c78f0aedb37410606de866fa65613431e87d4c249a7e4b1e8",
+      "class": "fs"
+    },
+    {
+      "file": "sc-fs-003.json",
+      "sha256": "275e46c7accb3bb094ce98f9c445240b08629bb2ec21c28b2a6847bd128a6e55",
+      "class": "fs"
+    },
+    {
+      "file": "sc-or-001.json",
+      "sha256": "ba7d71093bf4f9f41c5625510ef4d3572b2ffe5c2be4fea16c27d0b8dd4e21e4",
+      "class": "or"
+    },
+    {
+      "file": "sc-pi-001.json",
+      "sha256": "66c8387d5243cac0e3f081b5ae97cec70d56215a9bccd19e94f9fda3528ca2ac",
+      "class": "pi"
+    },
+    {
+      "file": "sc-ps-001.json",
+      "sha256": "99c5d7293a9f31ecec543aca5b4b8e86844544155c4b14f22b74e16ae39f046c",
+      "class": "ps"
+    },
+    {
+      "file": "sc-pv-001.json",
+      "sha256": "426c065f9db280b6c46569cf248bbf6e72097fed01c89f34afe5dd31dae59ac5",
+      "class": "pv"
+    },
+    {
+      "file": "sc-rc-001.json",
+      "sha256": "6734102bf744f2e93a2dd8e44ff517af86a4e7494b24e24a6ae4494abeec3ff3",
+      "class": "rc"
+    },
+    {
+      "file": "sc-re-001.json",
+      "sha256": "8ccb29f6d98f565c533d990a6a8f087fb3ed50a88435bc0d0240a04a480d72e8",
+      "class": "re"
+    },
+    {
+      "file": "sc-rp-001.json",
+      "sha256": "857890714578711c499f3904c86d93c2923e38b2995bf67913656dc1ac8bf123",
+      "class": "rp"
+    },
+    {
+      "file": "sc-sb-001.json",
+      "sha256": "69a114de93e4b23cc1745a3a00509e99a3278a48211855ca252d017cb9deb8fa",
+      "class": "sb"
+    },
+    {
+      "file": "sc-sh-001.json",
+      "sha256": "e2c54d1be8656b07655a7d9bc377f3dd44b40353f625278b1129a25d6a3ba085",
+      "class": "sh"
+    },
+    {
+      "file": "sc-sm-001.json",
+      "sha256": "408b7ac8c9406db9732a53eb3ab8d75e551c2180653591a4472fdfea2d76b687",
+      "class": "sm"
+    },
+    {
+      "file": "sc-st-001.json",
+      "sha256": "ad5af9671fb12d193e794c4eac415b706e47c22c25f792fca8e5830bdcf6d873",
+      "class": "st"
+    },
+    {
+      "file": "sc-tcb-001.json",
+      "sha256": "f4815b371242042c990d7928751e51eeda7484fea131e3d05498cbe9fa3ffeda",
+      "class": "tcb"
+    },
+    {
+      "file": "sc-tm-001.json",
+      "sha256": "516cad64770ce7e61111c249ce978beceebbc29a3c1a5184d9e90755587fcd76",
+      "class": "tm"
+    }
+  ]
+}

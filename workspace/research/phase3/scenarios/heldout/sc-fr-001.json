@@ -1,0 +1,52 @@
+{
+  "class": "stale_authorization",
+  "expect": {
+    "outcome": "escalate",
+    "reason_sub": ""
+  },
+  "id": "sc-fr-001",
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "id": "esc-shell",
+        "selector": {
+          "types": [
+            "shell.exec"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "reqcap",
+        "selector": {
+          "types": [
+            "fs.read"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "require_capability",
+        "span": "",
+        "priority": 0
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "canonicalize": true,
+    "env": "dev",
+    "issued_age_s": 59,
+    "resource": "ls",
+    "sig": "valid",
+    "type": "shell.exec"
+  },
+  "tier": "t1",
+  "title": "59s old — inside window"
+}

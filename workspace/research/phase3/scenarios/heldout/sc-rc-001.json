@@ -1,0 +1,51 @@
+{
+  "class": "authority",
+  "expect": {
+    "outcome": "escalate",
+    "reason_sub": "capability"
+  },
+  "id": "sc-rc-001",
+  "policy": {
+    "default": "deny",
+    "rules": [
+      {
+        "id": "esc-shell",
+        "selector": {
+          "types": [
+            "shell.exec"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "escalate",
+        "span": "",
+        "priority": 0
+      },
+      {
+        "id": "reqcap",
+        "selector": {
+          "types": [
+            "fs.read"
+          ],
+          "resources": null,
+          "envs": null,
+          "actors": null
+        },
+        "effect": "require_capability",
+        "span": "",
+        "priority": 0
+      }
+    ]
+  },
+  "request": {
+    "actor": "agent1",
+    "canonicalize": true,
+    "env": "dev",
+    "resource": "/tmp/x",
+    "sig": "valid",
+    "type": "fs.read"
+  },
+  "tier": "t1",
+  "title": "require_capability: tokenless escalates"
+}
