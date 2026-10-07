@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -21,7 +22,21 @@ func hPub() ed25519.PublicKey {
 
 // ---------- F1: registry file permissions are enforced ----------
 
+// skipModeBitsOnWindows skips tests of the owner-only (0600) mode check.
+// Windows has no group/other mode bits: os.FileMode reports 0666 for
+// ordinary files and Chmod only toggles read-only, so internal/fsperm
+// never treats a file as open to others there (access is governed by
+// the ACL inherited from the user profile). The check stays enforced,
+// and these tests stay live, on Unix.
+func skipModeBitsOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("owner-only mode bits are a Unix concept; see internal/fsperm")
+	}
+}
+
 func TestH1_FreshRegistry0600(t *testing.T) {
+	skipModeBitsOnWindows(t)
 	p := filepath.Join(t.TempDir(), "reg.jsonl")
 	r, err := Open(p)
 	if err != nil {
@@ -35,6 +50,7 @@ func TestH1_FreshRegistry0600(t *testing.T) {
 }
 
 func TestH1_ExistingPermMatrix(t *testing.T) {
+	skipModeBitsOnWindows(t)
 	for _, tc := range []struct {
 		mode os.FileMode
 		ok   bool
@@ -59,6 +75,7 @@ func TestH1_ExistingPermMatrix(t *testing.T) {
 // admission. With perms enforced, Open refuses before ever folding
 // the forged record — the exploit is dead at the door.
 func TestH1_ForgedGrantExploitDead(t *testing.T) {
+	skipModeBitsOnWindows(t)
 	p := filepath.Join(t.TempDir(), "reg.jsonl")
 	r, _ := Open(p)
 	r.Authorize("gw_a", nil, 0)

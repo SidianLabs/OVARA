@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -18,7 +19,7 @@ func TestKeyFile_Create0600AndReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0600 {
 		t.Fatalf("key file must be 0600, got %o", st.Mode().Perm())
 	}
 	priv2, err := LoadOrCreateKey(p)
@@ -34,6 +35,7 @@ func TestKeyFile_Create0600AndReload(t *testing.T) {
 }
 
 func TestKeyFile_UnsafePermissions_Refused(t *testing.T) {
+	skipModeBitsOnWindows(t)
 	p := filepath.Join(t.TempDir(), "gateway_key")
 	if _, err := LoadOrCreateKey(p); err != nil {
 		t.Fatal(err)
