@@ -1,12 +1,9 @@
-# Build context is the REPO ROOT: go.mod carries
-# `replace ovara.identity => ../../identity`, which must resolve inside
-# the image. Layout: /app/runtime/gateway + /app/identity.
+# Build context is the REPO ROOT (kept consistent with proxy/Dockerfile):
 #   docker build -f runtime/gateway/Dockerfile -t ovara/gateway .
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
-COPY identity/ identity/
 COPY runtime/gateway/ runtime/gateway/
 
 WORKDIR /app/runtime/gateway

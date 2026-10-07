@@ -23,7 +23,7 @@ jobs:
           - enterprise/compliance
           - sdk/typescript
           - integrations/mcp
-          - integrations/langchain
+          - integrations/openai
           - policy/compiler
     steps:
       - uses: actions/checkout@v4

@@ -1,4 +1,10 @@
-# Ovara
+# Ovara — full overview (reference)
+
+> This is the long-form overview that used to be the README. Start with the
+> [README](../README.md). Some components described here (`identity/`,
+> `trust/` federation, `telemetry/`, `infrastructure/`, `observability/`,
+> several integrations) were removed because they were not connected to the
+> gateway; they remain in git history.
 
 **Runtime trust infrastructure for autonomous systems.**
 

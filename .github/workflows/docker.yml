@@ -12,9 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Gateway Image
-        # Dockerfile expects the repo root as context (COPY identity/ +
-        # runtime/gateway/) — passing the subdir breaks the build.
         run: docker build -f runtime/gateway/Dockerfile -t ovara/gateway:latest .
+      - name: Build ovara (gateway + proxy) image
+        # Build context is the repo root: the binary embeds the gateway module.
+        run: docker build -f proxy/Dockerfile -t ovara/ovara:latest .
       - name: Build Control Plane
         run: docker build -t ovara/control-plane:latest cloud/control-plane
 
@@ -23,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: fs
           scan-ref: .

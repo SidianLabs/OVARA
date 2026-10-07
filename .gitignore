@@ -19,14 +19,15 @@ node_modules/
 *.tsbuildinfo
 next-env.d.ts
 runtime/gateway/server
+runtime/gateway/ovara-gateway
+/ovara
+/ovara.exe
 tools/cli/ovara.tools.cli
-trust/trust-cli
 sdk/python/**/__pycache__/
 __pycache__/
 
 .devin/
 .commandcode/
-trust/trust-server
 tools/benchmarks/benchmark
 dist/
 

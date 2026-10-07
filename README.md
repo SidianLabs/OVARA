@@ -115,7 +115,7 @@ protection (KMS/HSM) is not built yet. See [`SECURITY.md`](SECURITY.md) and
 | Proxy and the `ovara` command (`init`, `run`, `watch`, `demo`, `doctor`) | [`proxy`](proxy) | **Works.** Runs on Linux, macOS and Windows |
 | Enforced network boundary | [`proxy/scripts`](proxy/scripts) | Linux only |
 | TypeScript and Python SDKs | [`sdk`](sdk) | Working clients for the gateway API, not yet published to npm/PyPI |
-| Cloud control plane, dashboard, SSO, compliance, federation, most framework integrations | `cloud`, `apps`, `enterprise`, `trust`, `integrations` | **Experimental.** Partly built and not connected to the gateway yet; do not rely on them |
+| Cloud control plane, dashboard, SSO, compliance, MCP/OpenAI integrations, standalone services | `cloud`, `apps`, `enterprise`, `integrations`, `services`, `policy` | **Experimental.** Partly built and not connected to the gateway yet; do not rely on them |
 
 ## Where to go next
 

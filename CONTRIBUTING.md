@@ -104,25 +104,22 @@ code pass immediately and prove nothing.
 
 ```
 ovara/
-├── apps/                # End-user applications (admin dashboard)
-├── cloud/               # Hosted control plane
-├── docs/                # User-facing documentation
-├── enterprise/          # Enterprise add-ons (SSO, compliance)
-├── examples/            # Sample configs and demo scripts
-├── identity/            # Machine identity primitives (standalone Go module)
-├── infrastructure/      # Terraform, docker-compose
-├── integrations/        # Framework integrations (CrewAI, LangChain, etc.)
-├── observability/       # Grafana/Prometheus dashboards
-├── packages/            # Shared cross-language types
-├── policy/              # Policy adapters and compiler
-├── research/            # Research notes
-├── runtime/gateway/     # The main Go gateway
+├── proxy/               # THE PRODUCT: the `ovara` binary (proxy + CLI; embeds the gateway)
+├── runtime/gateway/     # The gateway: policy, approvals, receipts, revocation
 ├── sdk/                 # Client SDKs (TypeScript, Python)
-├── security/            # Security profiles (AppArmor, eBPF, Seccomp)
-├── services/            # Microservices (approval, alerting, observability, etc.)
-├── telemetry/           # Telemetry collector and schema
+├── docs/                # Documentation
+├── examples/            # Sample configs and demo scripts
+├── security/            # Security profiles (AppArmor, eBPF, Seccomp) and findings
 ├── tools/               # Operator tools (CLI, migration, benchmarks)
-└── trust/               # Federated trust graph and CLI
+│
+│   Experimental — not connected to the gateway yet:
+├── apps/                # Admin dashboard
+├── cloud/               # Hosted control plane
+├── enterprise/          # SSO, compliance
+├── integrations/        # MCP and OpenAI integrations
+├── policy/              # Policy adapters and compiler
+├── services/            # Standalone services (approval, alerting, ...)
+└── research/            # Research notes
 ```
 
 ## Branch and Commit Conventions
