@@ -36,11 +36,12 @@ const (
 type landlockBackend struct{}
 
 // probeABI returns the best Landlock ABI the kernel supports (0=none).
+// The VERSION query requires attr=NULL and size=0 per the API contract;
+// kernels that enforce it return EINVAL for the attr-carrying form,
+// which falsely reports Landlock as unavailable (H9 apparatus defect A1).
 func probeABI() int {
-	var attr unix.LandlockRulesetAttr
-	attr.Access_fs = allFSRights
 	r1, _, e1 := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET,
-		uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), versionFlag)
+		0, 0, versionFlag)
 	if e1 != 0 {
 		return 0
 	}

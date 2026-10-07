@@ -16,7 +16,7 @@ A prompt-only → B v1 → C-core (decision engine) → C+fs containment
 | T1 scripted (103 corpus) | 15/103 | 35/103 | 103/103 | — |
 | T1 scripted (adaptive, 2 obj) | bypass | bypass (fs only) | 0 | — |
 | T2 LLM (nemotron-120b, llm-001) | BYPASS@1 | BYPASS@1 (SEM-001) | 0/10 | — |
-| T2-F03 minimized symlink | n/a | n/a | write_allowed=true | pending Linux |
+| T2-F03 minimized symlink | n/a | n/a | write_allowed=true | write_allowed=false (Linux, ABI 4 — see t2/H9_linux_result.md) |
 
 ## Current research question (H9)
 

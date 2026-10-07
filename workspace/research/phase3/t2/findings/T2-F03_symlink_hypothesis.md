@@ -41,3 +41,12 @@ macOS: level=core → write_allowed=true (limitation confirmed live —
 first axis-2 data point). level=landlock → SKIPPED until a Linux
 session. The same code path runs both cells on Linux for the causal
 comparison.
+
+**Linux measurement (H9):** on Ubuntu 22.04 / kernel 6.8.0-1061-aws /
+Landlock ABI 4, level=core → write_allowed=true (matches macOS),
+level=landlock → write_allowed=false (`openat` through the symlink
+returned `EACCES`; canary content verified unmodified). H9 supported
+for this attack under the tested configuration. Full record:
+`../H9_linux_result.md` (includes apparatus defect A1: the committed
+ABI probe violated the `create_ruleset` version-query contract and was
+minimally repaired so the cell could be measured at all).
