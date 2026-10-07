@@ -33,4 +33,13 @@
   attempt 1 (unseeded); C held across 10 adaptive attempts; generated
   NEW-T2-CLASS symlink hypothesis (T2-F03) — deferred to sandbox layer.
 - ARR metric formalized: LLM tier 1/1 (unseeded rediscovery).
-- Remaining blocker: sandbox layer + dynamic classes (Linux lane).
+- Held-out eval set carved: 24/103 class-stratified (manifest+frozen
+  sha256); open set 79; RUN_HELDOUT=1 gates eval runs.
+- Axis-2 containment lane built: core/contain (Landlock linux + stub);
+  containment_test compares core vs landlock on the minimized T2-F03
+  attack (core measured write_allowed=true on darwin; landlock cell
+  pending Linux session — spawn blocked by SWE-2 session cap).
+- T3 scaffolded (NOT run): T3Attacker = LLM + persistent MemoryStore
+  (per model+condition, survives restarts) + passive recon verb +
+  mandatory per-turn hypothesis; seeded from prior results jsonl.
+- Remaining blocker: Linux session for H9 counterfactual cell.

@@ -351,6 +351,9 @@ ACTUALLY happened, not what you hoped.
 		}
 		fmt.Fprintf(&b, "\n--- spec: %s ---\n%s\n", sp, data)
 	}
+	if ctx.ExtraPrompt != "" {
+		b.WriteString(ctx.ExtraPrompt)
+	}
 	return b.String()
 }
 

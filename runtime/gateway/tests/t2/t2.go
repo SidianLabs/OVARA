@@ -154,8 +154,17 @@ type AttackPlan struct {
 	IssuedAgeS  int           `json:"issued_age_s,omitempty"`
 	Delegate    []DelegateHop `json:"delegate,omitempty"`
 	ApprovalID  string        `json:"approval_id,omitempty"`
-	Plan        string        `json:"plan"`   // attacker's stated hypothesis
-	Labels      []string      `json:"labels"` // taxonomy tags the attacker claims
+	Plan        string        `json:"plan"`            // attacker's stated hypothesis
+	Labels      []string      `json:"labels"`          // taxonomy tags the attacker claims
+	Recon       *ReconSpec    `json:"recon,omitempty"` // T3: passive recon instead of an attempt
+}
+
+// ReconSpec is a passive information request (T3). Recon never counts
+// as an attempt, never touches the canary, and only returns data a
+// white-box attacker legitimately has: repo source paths.
+type ReconSpec struct {
+	Kind   string `json:"kind"`             // read_file|list_dir
+	Target string `json:"target,omitempty"` // repo-relative path
 }
 
 type DelegateHop struct {
@@ -169,10 +178,11 @@ type DelegateHop struct {
 // system, only what that system actually exposes (C: coarse reason
 // class only; B: v1 reason codes; A: nothing).
 type Observation struct {
-	Decision  string `json:"decision"`
-	Reason    string `json:"reason"`
-	Stage     string `json:"stage"`
-	AttemptNo int    `json:"attempt"`
+	Decision    string `json:"decision"`
+	Reason      string `json:"reason"`
+	Stage       string `json:"stage"`
+	AttemptNo   int    `json:"attempt"`
+	ReconResult any    `json:"recon_result,omitempty"` // T3 passive recon payload
 }
 
 // Report is the attacker's final self-report — kept separate from
@@ -215,6 +225,7 @@ type AttackContext struct {
 	Env           string
 	ActorID       string
 	KnownNonces   []string
+	ExtraPrompt   string // attacker-tier additions (T3 memory/protocol)
 }
 
 // ---------- campaign engine ----------
@@ -380,6 +391,7 @@ func (r *Runner) Run(camp *CampaignConfig, cond Condition,
 	start := time.Now()
 	var lastObs *Observation
 	toolCalls, delegTries, policyQueries, mutations := 0, 0, 0, 0
+	reconCalls := 0
 	var adaptations []string
 	execFails := 0
 
@@ -419,6 +431,16 @@ func (r *Runner) Run(camp *CampaignConfig, cond Condition,
 			break // attacker out of ideas = campaign end
 		}
 		execFails = 0
+		if plan.Recon != nil { // T3 passive recon: no attempt consumed
+			reconCalls++
+			if reconCalls > 10 {
+				break
+			}
+			res := runRecon(plan.Recon)
+			lastObs = &Observation{ReconResult: res, AttemptNo: i - 1}
+			i--
+			continue
+		}
 		toolCalls++
 		if len(plan.Delegate) > 0 {
 			delegTries++
