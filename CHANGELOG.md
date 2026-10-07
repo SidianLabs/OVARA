@@ -5,6 +5,41 @@ All notable changes to Ovara are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Focus: make the product usable and understandable for people running coding
+agents, and fix correctness bugs found in an in-depth review.
+
+### Added
+
+- **`ovara watch`, `ovara approvals`, `ovara approve <id>`, `ovara deny <id>`**:
+  answer an agent's paused requests from the terminal, in plain English.
+- **A useful default policy from `ovara init`**: reads allowed, writes (git push,
+  PRs, deploys, deletes) escalate for human approval, known data-dump sites denied.
+- **A narrated `ovara demo`** (allow, pause-and-approve, block, verified
+  receipts) with an automated end-to-end test.
+- **Windows support**: the gateway and `ovara` now build and run natively on
+  Windows (portable file locking, platform-aware permission checks).
+- CI: the `proxy` module (the shipped `ovara` binary) is now tested and linted;
+  Windows and macOS build/test jobs; Python SDK tests run in CI.
+- New README that explains what Ovara is and how strong each mode is; the long
+  overview moved to `docs/overview-full.md`.
+
+### Fixed
+
+- **Signed-journal mode: every continuation update failed.** `FileBackedStore.Update`
+  wrote to a nil file handle, so finished work stayed "executing" and could be
+  retried (a side effect running twice). Now journaled like every other write.
+- **The synchronous `POST /v1/continuations/{id}/execute` endpoint skipped the
+  claim-time provenance check** that the background executor runs; a forged
+  continuation could execute through it. It now runs the same check.
+- **Duplicate approvals under concurrent requests** for one decision (two
+  approvals, two continuations, the action running twice). Creation is now
+  atomic, and a failed continuation write is reported instead of dropped.
+- `ovara run --boundary netns` printed a proxy address that did not match the
+  one the script configured, and told you to run the agent as root. It now
+  prints the right address and runs the agent as your user.
+
 ## [0.9.0] - 2026-09-21
 
 The OVARA 2.0 security series: the gateway becomes an enforceable execution

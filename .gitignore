@@ -29,3 +29,13 @@ __pycache__/
 trust/trust-server
 tools/benchmarks/benchmark
 dist/
+
+# Python
+*.egg-info/
+.venv/
+__pycache__/
+
+# Local deployment state / secrets (never commit)
+*.key
+*.pem
+.env

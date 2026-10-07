@@ -5,6 +5,7 @@ on:
     branches: [main, "phase-*"]
     paths:
       - "runtime/**"
+      - "proxy/**"
       - "identity/**"
       - "trust/**"
       - "services/**"
@@ -22,6 +23,7 @@ jobs:
       matrix:
         module:
           - runtime/gateway
+          - proxy
           - identity
           - trust
           - services/approval

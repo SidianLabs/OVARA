@@ -1,5 +1,11 @@
 # Ovara — Delivery Report
 
+> **Historical snapshot (June 2026) — not the current status.** This document
+> was written before the v1.0.0 tag was withdrawn (see CHANGELOG). Ovara is
+> pre-release (v0.9.x) and "production ready" claims below do not apply. For what
+> works today, read the [README](README.md).
+
+
 **Date:** 2026-06-12
 **Branch:** `phase-76-hardening` (plus follow-ups on `phase-77-structure-completion`, `phase-78-deep-hardening`, `phase-79-final-completion`)
 **Status:** DELIVERED — V1.0.0 Production Ready
