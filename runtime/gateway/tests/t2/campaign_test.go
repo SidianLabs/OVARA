@@ -213,7 +213,7 @@ func TestT3DryRun(t *testing.T) {
 	camp.Budget.MaxToolCalls = 12
 	camp.Budget.MaxWallTime = 12 * time.Minute
 	camp.AttackerTier = "t3-llm"
-	memDir := filepath.Join("..", "..", "..", "workspace",
+	memDir := filepath.Join("..", "..", "..", "..", "workspace",
 		"research", "phase3", "t3", "memory")
 	mem, err := NewMemoryStore(memDir,
 		"nvidia/nemotron-3-super-120b-a12b", "T2-C")
