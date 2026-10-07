@@ -21,7 +21,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
+	"ovara.runtime.gateway/internal/flock"
+	"ovara.runtime.gateway/internal/fsperm"
 )
 
 var (
@@ -74,17 +75,17 @@ func OpenStore(path string) (*Store, error) {
 		f.Close()
 		return nil, err
 	}
-	if st.Mode().Perm()&0077 != 0 {
+	if fsperm.OpenToOthers(st) {
 		f.Close()
 		return nil, fmt.Errorf("anchor store: %s has unsafe permissions %o — must be owner-only (0600)", path, st.Mode().Perm())
 	}
 	s := &Store{f: f, domains: map[string]*domainState{}}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(f); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("anchor store: lock: %w", err)
 	}
 	err = s.absorb()
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	flock.Unlock(f)
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -225,10 +226,10 @@ func introducedByLineage(d *domainState, domain, keyID string, newPub ed25519.Pu
 func (s *Store) mutate(fn func() (*lineRecord, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := syscall.Flock(int(s.f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(s.f); err != nil {
 		return fmt.Errorf("anchor store: lock: %w", err)
 	}
-	defer syscall.Flock(int(s.f.Fd()), syscall.LOCK_UN)
+	defer flock.Unlock(s.f)
 	if err := s.absorb(); err != nil {
 		return err
 	}
@@ -330,10 +331,10 @@ func (s *Store) Commit(domain string, cp *Checkpoint) error {
 func (s *Store) Latest(domain string) (*Checkpoint, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := syscall.Flock(int(s.f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(s.f); err != nil {
 		return nil, fmt.Errorf("anchor store: lock: %w", err)
 	}
-	defer syscall.Flock(int(s.f.Fd()), syscall.LOCK_UN)
+	defer flock.Unlock(s.f)
 	if err := s.absorb(); err != nil {
 		return nil, err
 	}

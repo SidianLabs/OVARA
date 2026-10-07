@@ -21,7 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
+	"ovara.runtime.gateway/internal/flock"
 	"time"
 
 	"ovara.runtime.gateway/internal/record"
@@ -123,12 +123,12 @@ func OpenFile(path string, maxBytes int64, bindings ...*record.Binding) (*FileSt
 	}
 	s := &FileStore{f: f, seen: make(map[string]time.Time), maxBytes: maxBytes}
 	// flock the initial load too — another process may compact mid-read.
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(f); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("replay store: lock: %w", err)
 	}
 	err = s.absorb()
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	flock.Unlock(f)
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -281,10 +281,10 @@ func (s *FileStore) Consume(kind Kind, id string, expiresAt time.Time) Result {
 		return AlreadyConsumed
 	}
 
-	if err := syscall.Flock(int(s.f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(s.f); err != nil {
 		return StorageFailure
 	}
-	defer syscall.Flock(int(s.f.Fd()), syscall.LOCK_UN)
+	defer flock.Unlock(s.f)
 
 	if s.journal == nil {
 		if err := s.absorb(); err != nil {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"ovara.runtime.gateway/internal/fsperm"
 	"ovara.runtime.gateway/internal/persist"
 )
 
@@ -34,7 +35,7 @@ func LoadOrCreateKey(path string) (ed25519.PrivateKey, error) {
 		if serr != nil {
 			return nil, fmt.Errorf("gateway key: stat %s: %w", path, serr)
 		}
-		if st.Mode().Perm()&0077 != 0 {
+		if fsperm.OpenToOthers(st) {
 			return nil, fmt.Errorf("gateway key: %s has unsafe permissions %o — must be 0600", path, st.Mode().Perm())
 		}
 		priv, derr := hex.DecodeString(string(trimSpace(data)))

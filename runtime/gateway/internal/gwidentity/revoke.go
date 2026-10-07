@@ -26,7 +26,7 @@ package gwidentity
 
 import (
 	"fmt"
-	"syscall"
+	"ovara.runtime.gateway/internal/flock"
 	"time"
 
 	"ovara.runtime.gateway/internal/revocation"
@@ -114,10 +114,10 @@ func (r *Registry) absorbLocked() error {
 	if r.f == nil {
 		return nil
 	}
-	if err := syscall.Flock(int(r.f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(r.f); err != nil {
 		return fmt.Errorf("gateway registry: lock: %w", err)
 	}
-	defer syscall.Flock(int(r.f.Fd()), syscall.LOCK_UN)
+	defer flock.Unlock(r.f)
 	return r.absorb()
 }
 
