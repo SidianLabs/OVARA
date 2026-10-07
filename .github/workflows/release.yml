@@ -13,20 +13,40 @@ on:
         description: "Existing tag to (re)build, e.g. v0.10.0"
         required: true
 
+# Least privilege by default; only the publish job may write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test ${{ matrix.module }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        module: [proxy, runtime/gateway]
     steps:
+      # Test exactly what will be built: the pushed tag, or the tag a manual
+      # run names. Without `ref`, a manual run would test the default branch
+      # and then ship a different commit.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Test the shipped binary's module
-        working-directory: proxy
-        run: go test -count=1 ./...
+      # The proxy embeds the gateway, so the gateway's own suite gates the
+      # release too.
+      - name: Test
+        working-directory: ${{ matrix.module }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = ubuntu-latest ]; then
+            go test -race -count=1 ./...
+          else
+            go test -count=1 ./...
+          fi
 
   build:
     needs: test
@@ -70,8 +90,14 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write      # sign build provenance
+      attestations: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -79,6 +105,16 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum ovara_* > checksums.txt && cat checksums.txt
+      # Signed provenance ties every archive to this workflow run and commit.
+      # Unlike checksums.txt (same origin as the binary, so it proves
+      # integrity only), it can be verified independently:
+      #   gh attestation verify <archive> --repo SidianLabs/OVARA
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/ovara_*
+            dist/checksums.txt
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

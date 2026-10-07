@@ -4,11 +4,13 @@
 #   curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.sh | sh
 #
 # Downloads the prebuilt binary for your OS/CPU from the latest GitHub
-# release and checks its SHA-256. If there is no release for your platform
-# (or OVARA_FROM_SOURCE=1), it builds from source instead (needs git + Go).
+# release and checks its SHA-256. If your platform has no prebuilt binary (or
+# OVARA_FROM_SOURCE=1), it builds from source instead (needs git + Go). A
+# failed download is an error; it never silently turns into a source build.
 #
 # Env overrides:
 #   OVARA_VERSION      release tag to install (default: latest)
+#   OVARA_VERIFY       1 = also verify signed build provenance (needs `gh`)
 #   OVARA_INSTALL_DIR  where the binary lands (default: ~/.local/bin)
 #   OVARA_FROM_SOURCE  1 = skip downloads, build from source
 #   OVARA_BRANCH       branch/tag for source builds (default: main)
@@ -39,10 +41,10 @@ detect() {
   esac
 }
 
-fetch() { # url dest
-  if command -v curl >/dev/null; then curl -fsSL "$1" -o "$2"
-  elif command -v wget >/dev/null; then wget -qO "$2" "$1"
-  else return 1; fi
+fetch() { # url dest  (HTTPS only; never follow a redirect to plain http)
+  if command -v curl >/dev/null; then curl --proto '=https' --tlsv1.2 -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null; then wget -qO "$2" --https-only "$1"
+  else die "curl or wget is required"; fi
 }
 
 sha256() {
@@ -51,24 +53,45 @@ sha256() {
 }
 
 from_release() {
-  [ -n "$os" ] && [ -n "$arch" ] || return 1
+  # Every failure here is fatal. This used to be called as `! from_release`,
+  # which both disables `set -e` inside the function and turns ANY failure
+  # (rate limit, network blip, 404) into a silent build of main HEAD, even
+  # when a version had been pinned. A failed download is now an error the
+  # user sees; building from source is an explicit choice.
+  case "${OVARA_RELEASE_BASE:-https://}" in
+    https://*) ;;
+    *) die "OVARA_RELEASE_BASE must be an https:// URL" ;;
+  esac
   if [ "$VERSION" = latest ]; then
     # Pre-releases (v0.x) are not "latest" on GitHub; pick the newest release of any kind.
-    fetch "https://api.github.com/repos/$REPO/releases?per_page=1" "$tmp/rel.json" || return 1
+    fetch "https://api.github.com/repos/$REPO/releases?per_page=1" "$tmp/rel.json" \
+      || die "could not look up the latest release (network, or GitHub API rate limit). Retry, set OVARA_VERSION=vX.Y.Z, or use OVARA_FROM_SOURCE=1"
     tag=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$tmp/rel.json" | head -1)
   else
     tag="$VERSION"
   fi
-  [ -n "$tag" ] || return 1
+  [ -n "$tag" ] || die "no release found. Use OVARA_FROM_SOURCE=1 to build from source"
   name="ovara_${tag#v}_${os}_${arch}"
   base="${OVARA_RELEASE_BASE:-https://github.com/$REPO/releases/download}/$tag"
   say "downloading ovara $tag for $os/$arch..."
-  fetch "$base/$name.tar.gz" "$tmp/$name.tar.gz" || return 1
+  fetch "$base/$name.tar.gz" "$tmp/$name.tar.gz" \
+    || die "could not download $base/$name.tar.gz (does release $tag have a build for $os/$arch?)"
   fetch "$base/checksums.txt" "$tmp/checksums.txt" || die "release $tag has no checksums.txt; refusing to install unverified binary"
-  # "<hash>  <file>" (text mode) or "<hash> *<file>" (binary mode)
-  want=$(grep -E " [*]?$name\.tar\.gz\$" "$tmp/checksums.txt" | cut -d' ' -f1)
+  # "<hash>  <file>" (text mode) or "<hash> *<file>" (binary mode). Exact
+  # field match: the file name contains dots, which a regex would treat as
+  # wildcards.
+  want=$(awk -v f="$name.tar.gz" '$2 == f || $2 == "*" f { print $1; exit }' "$tmp/checksums.txt")
   got=$(sha256 "$tmp/$name.tar.gz")
   [ -n "$want" ] && [ "$want" = "$got" ] || die "checksum mismatch for $name.tar.gz (want $want, got $got)"
+  # checksums.txt comes from the same place as the archive, so it proves the
+  # download was not corrupted, not who built it. Build provenance does:
+  # OVARA_VERIFY=1 requires the GitHub CLI and fails closed.
+  if [ "${OVARA_VERIFY:-}" = 1 ]; then
+    command -v gh >/dev/null || die "OVARA_VERIFY=1 needs the GitHub CLI (gh) to check build provenance"
+    gh attestation verify "$tmp/$name.tar.gz" --repo "$REPO" >/dev/null \
+      || die "build provenance check failed for $name.tar.gz; refusing to install"
+    say "build provenance verified"
+  fi
   tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
   mv "$tmp/$name/ovara" "$tmp/ovara-bin"
 }
@@ -76,16 +99,22 @@ from_release() {
 from_source() {
   command -v git >/dev/null || die "git is required to build from source"
   command -v go  >/dev/null || die "Go 1.25+ is required to build from source (https://go.dev/dl)"
-  branch="${OVARA_BRANCH:-main}"
+  # A pinned version builds THAT tag, never whatever main happens to be.
+  if [ "$VERSION" != latest ]; then branch="$VERSION"; else branch="${OVARA_BRANCH:-main}"; fi
   say "building from source ($branch)..."
   git clone --depth 1 -b "$branch" "https://github.com/$REPO.git" "$tmp/ovara" >/dev/null 2>&1
   (cd "$tmp/ovara/proxy" && CGO_ENABLED=0 go build -trimpath -o "$tmp/ovara-bin" ./cmd/ovara)
 }
 
 detect
-if [ "${OVARA_FROM_SOURCE:-}" = 1 ] || ! from_release; then
-  [ "${OVARA_FROM_SOURCE:-}" = 1 ] || say "no prebuilt binary available; falling back to a source build"
+if [ "${OVARA_FROM_SOURCE:-}" = 1 ]; then
   from_source
+elif [ -z "$os" ] || [ -z "$arch" ]; then
+  # The only automatic source build: this platform has no prebuilt binary.
+  say "no prebuilt binary for $(uname -s)/$(uname -m); building from source"
+  from_source
+else
+  from_release
 fi
 
 mkdir -p "$DEST"

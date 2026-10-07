@@ -1,6 +1,6 @@
 # Ovara
 
-**A checkpoint for AI agents. Reading is free, changing things needs your OK, and every decision leaves a receipt.**
+**A checkpoint for AI agents. Reading from trusted places is free, anything else needs your OK, and every decision leaves a receipt.**
 
 You give a coding agent (Claude Code, Devin, a CI bot…) real tokens and let it
 loose. One bad prompt and it force-pushes to `main`, deletes a branch, or posts
@@ -11,8 +11,9 @@ through it:
 
 | The agent tries to… | Ovara… |
 |---|---|
-| read docs, install packages, `GET` an API | lets it through |
+| read docs, install packages, clone from GitHub/GitLab/npm/PyPI… | lets it through |
 | `git push`, open or merge a PR, deploy, delete something | **pauses it and asks you** |
+| read from a site it has no business with | **pauses it and asks you** (a URL can carry data out just like a POST) |
 | send data to a paste site or file drop | blocks it |
 
 It also keeps your real API keys itself and attaches them to outgoing requests,
@@ -118,10 +119,16 @@ afterwards (to hide something, say), `ovara log` reports it as tampered.
 The default policy `ovara init` writes is short and readable:
 
 ```json
-{ "resource": "GET *",       "allow": true },
-{ "resource": "*://pastebin.com/*", "deny": true },
-{ "resource": "POST *",      "escalate": true }
+{ "resource": "GET https://pypi.org/*", "allow": true },
+{ "resource": "*://pastebin.com/*",     "deny": true },
+{ "resource": "POST *",                  "escalate": true }
 ```
+
+Reads are allowed only from a list of hosts an agent legitimately needs (package
+registries, code hosts, documentation); `ovara policy` shows the full list. A
+host that is not on it pauses for approval, and so does a `GET` that carries a
+request body or a very long query string. To trust another host, add a rule for
+it to `policy.json`.
 
 `allow` lets it through, `escalate` pauses it for you, `deny` blocks it. If more
 than one rule matches, **deny beats allow, and allow beats escalate**. Anything not

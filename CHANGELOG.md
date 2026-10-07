@@ -10,6 +10,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Focus: make the product usable and understandable for people running coding
 agents, and fix correctness bugs found in an in-depth review.
 
+### Security (hardening pass)
+
+- **Default policy no longer lets an agent send data out unapproved.** `GET *`
+  and the host-less `POST *git-upload-pack` rule are gone. Reads are allowed only
+  from a list of trusted hosts (package registries, code hosts, docs); git
+  clone/fetch only from GitHub, GitLab and Bitbucket; any other host pauses for
+  approval. A `GET`/`HEAD` that carries a body or a query over 512 bytes is
+  escalated even on an allowed host. **Behaviour change:** existing
+  `policy.json` files are not rewritten; re-run `ovara init -force` in a scratch
+  directory and compare, or add rules for hosts you need.
+- **No DNS lookup before policy.** `CONNECT` no longer resolves a host name
+  before policy has seen a request for it (a lookup of `<data>.attacker.example`
+  is itself a data channel). Names are resolved at dial time; private IP
+  literals are still refused immediately.
+- Host matching for sensitive-host rules is case- and trailing-dot-insensitive.
+- `X-HTTP-Method-Override` and similar headers are no longer forwarded.
+- Response scrubbing redacts only secret values (plus the bare token and its
+  URL/JSON-escaped spellings), no longer protocol values such as
+  `anthropic-version`.
+- Proxy hardening: header/idle timeouts, TLS handshake deadline, cap of 64
+  requests parked on approval, rate-limited receipts for unauthenticated
+  requests, and loopback (`127.0.0.1:9443`) as the default listen address.
+  `--boundary` still binds the boundary-facing address. Streamed (SSE)
+  responses are flushed as they arrive.
+- The proxy CA is never silently regenerated: an existing but unusable CA is an
+  error instead of being overwritten.
+- **Gateway fails closed.** A configured persistent store (receipts, approvals,
+  continuations, executions, events, capabilities) that cannot be opened now
+  stops startup. It used to fall back to an empty in-memory store, turning
+  tampering or corruption into silent data loss.
+- **An approved action is never run unrecorded.** Continuation claim, retry,
+  cancel and recover roll back and refuse if the transition cannot be written,
+  so a crash cannot make a restart run the same approved action again.
+- Journal: a complete final record missing only its newline is terminated
+  instead of being merged with the next append. Compaction removes stale temp
+  files, and releases the live journal before renaming (needed on Windows).
+- Degraded anchor mode no longer anchors an unverified local-ahead tail.
+- Decision, approval, continuation, execution and event IDs are full UUIDs; the
+  approval action digest is length-prefixed, full SHA-256, and binds environment
+  and metadata.
+- `ovara doctor` checked the wrong config keys (always warned "memory-mode"); it
+  now checks the real ones, warns when no off-host anchor is configured, and
+  fails on `fail_open` / `unsafe_no_agent_auth`.
+- Release workflow tests the exact tag on Linux, macOS and Windows for both the
+  proxy and gateway modules, runs with least-privilege permissions, and attests
+  build provenance. `install.sh` no longer turns a failed download into a build
+  of `main` (a pinned version is honoured), requires HTTPS, matches checksum
+  names exactly, and both installers support `OVARA_VERIFY=1` provenance
+  checks; `install.ps1` forces TLS 1.2 and asks before editing PATH.
+
 ### Added
 
 - **Prebuilt releases**: pushing a `v*` tag runs `.github/workflows/release.yml`,
@@ -129,7 +179,7 @@ authority verification, and Ed25519-signed receipts.
   receipts ≠ execution truth or global immutable history; trust_epoch ≠
   consensus; revocation ≠ kill-on-revoke for running executions.
 
-## [Unreleased]
+## Earlier changes (previously a second, duplicate `[Unreleased]` heading)
 
 ### Security
 
