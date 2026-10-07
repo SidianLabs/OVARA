@@ -25,8 +25,8 @@ receipts in microseconds.
 > remain cooperative — an agent that bypasses them is unconstrained. The
 > physical boundary — a credential-starving executor proxy where every side
 > effect transits a notarizing chokepoint — is described in
-> [`docs/architecture/executor_proxy.md`](docs/architecture/executor_proxy.md)
-> and ships in [`proxy/`](proxy/).
+> [`docs/architecture/executor_proxy.md`](architecture/executor_proxy.md)
+> and ships in [`proxy/`](../proxy/).
 
 ```text
 ┌────────────┐   ┌─────────────────────┐   ┌────────────────────┐
@@ -98,7 +98,7 @@ ovara run -dir mydir --boundary docker   # docker --internal network recipe
 then run your agent inside it (the command prints the exact `ip netns exec`
 line). Without that boundary the proxy is advisory: a cooperative agent uses
 it, an uncooperative one routes around it. HTTPS only. Details in
-[`proxy/DEPLOYMENT.md`](proxy/DEPLOYMENT.md).
+[`proxy/DEPLOYMENT.md`](../proxy/DEPLOYMENT.md).
 
 ---
 
@@ -345,27 +345,23 @@ Everything in Ovara builds around five primitives:
 
 ```
 ovara/
-├── apps/admin-dashboard/   # Next.js admin UI
-├── cloud/control-plane/    # Hosted control plane (Fastify + Drizzle + PostgreSQL)
-├── docs/                   # User-facing documentation
-├── enterprise/             # SSO (OIDC/SAML), compliance reports
+├── proxy/                  # Executor proxy + the `ovara` CLI (init/run/watch/demo/...). THE PRODUCT.
+├── runtime/gateway/        # The Go gateway the proxy embeds: policy, approvals, receipts
+├── sdk/                    # TypeScript and Python clients for the gateway API
+├── tools/                  # gateway CLI, migration tool, benchmark tool
+├── docs/                   # Documentation
 ├── examples/               # Sample configs, demo scripts
-├── identity/               # Standalone Go module: ed25519 primitives
-├── infrastructure/         # Terraform, Docker Compose
-├── integrations/           # CrewAI, OpenAI, LangChain, MCP, browser-automation
-├── observability/          # Grafana dashboards, Prometheus alerts
-├── packages/               # Cross-language shared types
-├── policy/                 # OPA/Cedar adapters, policy compiler
-├── proxy/                  # Executor proxy + unified `ovara` CLI (init/run/demo)
-├── research/               # Research notes
-├── runtime/gateway/        # The main Go gateway
-├── sdk/                    # TypeScript and Python SDKs
-├── security/               # AppArmor, eBPF, Seccomp, Firecracker profiles
-├── services/               # Microservices (approval, alerting, observability, etc.)
-├── telemetry/              # NATS collector, ClickHouse schema
-├── tools/                  # CLI, migration tool, benchmark tool
-└── trust/                  # Federated trust graph and CLI
+├── integrations/           # MCP / OpenAI wrappers over the SDK   (experimental)
+├── policy/                 # Policy compiler                       (experimental)
+├── services/               # Standalone microservices              (experimental, not connected)
+├── security/               # Sandbox profiles and notes            (experimental)
+└── tests/                  # End-to-end and boundary harnesses
 ```
+
+The cloud control plane, admin dashboard, enterprise SSO/compliance code,
+and the separate `identity/`, `trust/`, `telemetry/`, `infrastructure/` and
+`apps/` trees that earlier versions of this document describe were removed;
+see [`decisions/cloud-control-plane.md`](decisions/cloud-control-plane.md).
 
 ---
 
@@ -381,7 +377,9 @@ ovara/
 | 6 | SDKs (TypeScript, Python) and framework integrations | ✅ |
 | 7 | Production hardening, observability, observability microservices | ✅ |
 
-See [`docs/build/`](docs/build/) for the per-phase checkpoint documents.
+Phases 4, 5 and 7 describe a hosted/federated platform that was **removed**
+(see above); the table is kept as history, not as current scope. The
+per-phase checkpoint documents are in [`build/`](build/).
 
 ---
 
@@ -393,47 +391,46 @@ make check
 
 # Specific module
 cd runtime/gateway && go test -race -count=1 ./...
-cd identity && go test -race -count=1 ./...
-cd trust && go test -race -count=1 ./...
+cd proxy && go test -race -count=1 ./...
 
-# TypeScript modules
-cd cloud/control-plane && npm test
-cd enterprise/sso && npm test
-cd enterprise/compliance && npm test
+# TypeScript SDK
 cd sdk/typescript && npm test
-cd apps/admin-dashboard && npm test
 
 # Python SDK
 cd sdk/python && pytest
+
+# Fuzz a parser for a minute (see .github/workflows/fuzz.yml for the list)
+cd proxy && go test -run='^$' -fuzz=FuzzNormalizeHost -fuzztime=1m ./internal/proxy
 ```
 
-**Current state:** 1,200+ test functions across 30+ packages, 0 data races,
-100% TS strict mode compliance, 70+ Python test cases.
+**Current state:** about 1,200 Go test functions in the gateway, plus the
+proxy and SDK suites; the weekly fuzz job covers the git-body parser, host
+normalization, the policy matcher and journal opening.
 
 ---
 
 ## Documentation Map
 
-- Vision: [docs/vision](docs/vision)
-- Product requirements: [docs/prd](docs/prd)
-- Architecture: [docs/architecture](docs/architecture)
-- API reference: [docs/api](docs/api)
-- Security: [docs/security](docs/security)
-- Operations: [docs/operations.md](docs/operations.md)
-- Deployment: [docs/deployment.md](docs/deployment.md)
-- Developer: [docs/developer](docs/developer)
-- Research: [docs/research](docs/research)
-- RFCs: [docs/rfc](docs/rfc)
-- ADRs: [docs/adr](docs/adr)
-- Build phases: [docs/build](docs/build)
+- Vision: [docs/vision](vision)
+- Product requirements: [docs/prd](prd)
+- Architecture: [docs/architecture](architecture)
+- API reference: [docs/api](api)
+- Security: [docs/security](security)
+- Operations: [docs/operations.md](operations.md)
+- Deployment: [docs/deployment.md](deployment.md)
+- Developer: [docs/developer](developer)
+- Research: [docs/research](research)
+- RFCs: [docs/rfc](rfc)
+- ADRs: [docs/adr](adr)
+- Build phases: [docs/build](build)
 
 ---
 
 ## Contributing
 
-We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-workflow, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community norms,
-and [SECURITY.md](SECURITY.md) for vulnerability disclosure.
+We welcome contributions. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the
+workflow, [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) for community norms,
+and [SECURITY.md](../SECURITY.md) for vulnerability disclosure.
 
 This project follows strict **test-driven development** for all production
 code — write the test first, watch it fail, then write the minimum code
@@ -443,6 +440,6 @@ to pass.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](../LICENSE).
 
 Copyright 2026 SidianLabs.
