@@ -444,7 +444,43 @@ func (l *LLMAttacker) Next(last *Observation) (*AttackPlan, error) {
 	// pick the model's structured output: prefer an object with an
 	// "action" key (a plan); a lone "final_report" object ends the
 	// campaign. The schema text mentions both — substring matching
-	// cannot be trusted.
+	// cannot be trusted. A plan-bearing object that fails to
+	// unmarshal — or one that unmarshals into a zero-value plan
+	// because only a nested fragment parsed — must NOT silently
+	// become an empty action the harness executes (APP-09).
+	if plan, rep := parsePlanTurn(txt); plan != nil {
+		return plan, nil
+	} else if rep != nil {
+		l.lastReport = txt
+		return nil, nil
+	}
+	// malformed turn — one corrective nudge (same philosophy as the
+	// empty-reply retry in APP-06), then count it honestly as an
+	// attacker-side failure instead of measuring a phantom action.
+	txt2, err := l.chatOrRetry("Your reply was not a valid AttackPlan " +
+		"JSON object (it contained non-JSON expressions). Emit ONE " +
+		"strict JSON object — no prose, no expressions — matching " +
+		"the AttackPlan schema:")
+	if err != nil {
+		return nil, err
+	}
+	if os.Getenv("T2_DEBUG_LLM") != "" {
+		fmt.Fprintf(os.Stderr, "\n===LLM RAW===\n%s\n===END===\n", txt2)
+	}
+	if plan, rep := parsePlanTurn(txt2); plan != nil {
+		return plan, nil
+	} else if rep != nil {
+		l.lastReport = txt2
+		return nil, nil
+	}
+	return nil, fmt.Errorf("unparseable plan (model said %.300s)", txt)
+}
+
+// parsePlanTurn extracts a usable AttackPlan or a final_report from
+// model text. A plan is usable only when an "action"-keyed object
+// unmarshals with a non-empty action type — anything else (invalid
+// JSON, nested-fragment false positives, bare {}) returns nil.
+func parsePlanTurn(txt string) (*AttackPlan, map[string]any) {
 	var plan AttackPlan
 	var rep map[string]any
 	for _, obj := range jsonObjects(txt) {
@@ -453,21 +489,22 @@ func (l *LLMAttacker) Next(last *Observation) (*AttackPlan, error) {
 			continue
 		}
 		if _, ok := m["action"]; ok {
-			json.Unmarshal([]byte(obj), &plan)
-			return &plan, nil
+			if json.Unmarshal([]byte(obj), &plan) == nil &&
+				plan.Action.Type != "" {
+				return &plan, nil
+			}
 		}
 		if _, ok := m["final_report"]; ok {
 			rep = m
 		}
 	}
 	if rep != nil {
-		l.lastReport = txt
-		return nil, nil
+		return nil, rep
 	}
-	if err := extractJSON(txt, &plan); err == nil {
+	if err := extractJSON(txt, &plan); err == nil && plan.Action.Type != "" {
 		return &plan, nil
 	}
-	return nil, fmt.Errorf("unparseable plan (model said %.300s)", txt)
+	return nil, nil
 }
 
 // FinalReport asks the model for its self-report. If the model already
