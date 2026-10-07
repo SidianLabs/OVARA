@@ -135,7 +135,10 @@ class OvaraClient:
     async def check(self, request: ActionRequest) -> dict:
         """POST /v1/runtime/check. Returns the gateway's DecisionResponse
         JSON object verbatim (snake_case keys)."""
-        return await self._post("/v1/runtime/check", _serialize_action_request(request))
+        # Built per attempt: a retry that re-sent the first attempt's nonce
+        # would be rejected by the gateway's replay protection. A
+        # caller-supplied nonce is kept as given.
+        return await self._post("/v1/runtime/check", lambda: _serialize_action_request(request))
 
     async def allow(self, action_type: str, resource: str, env: str = "local") -> bool:
         resp = await self.check(
@@ -144,8 +147,10 @@ class OvaraClient:
         return resp.get("decision") == "allow"
 
     async def batch_check(self, requests: list[ActionRequest]) -> list[DecisionResponse]:
-        payload = {"requests": [_serialize_action_request(r) for r in requests]}
-        result = await self._post("/v1/runtime/batch-check", payload)
+        result = await self._post(
+            "/v1/runtime/batch-check",
+            lambda: {"requests": [_serialize_action_request(r) for r in requests]},
+        )
         return [DecisionResponse.from_gateway(d) for d in result.get("decisions", [])]
 
     async def status(self) -> GatewayStatus:
@@ -162,16 +167,28 @@ class OvaraClient:
         return [ReceiptRecord.from_gateway(r) for r in result.get("receipts", [])] if result else []
 
     async def get_receipt(self, receipt_id: str) -> ReceiptRecord:
-        return await self._get(f"/v1/receipts/{receipt_id}")
+        return ReceiptRecord.from_gateway(await self._get(f"/v1/receipts/{receipt_id}"))
+
+    # The gateway wraps list results in an envelope ({"approvals": [...]},
+    # plus count/next_cursor for some); unwrap it so the declared list type
+    # is what callers actually get.
+    @staticmethod
+    def _unwrap(result: Any, key: str) -> list[dict]:
+        if isinstance(result, list):
+            return result
+        return (result or {}).get(key, [])
 
     async def list_approvals(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        return await self._get("/v1/approvals", params={"limit": limit, "offset": offset})
+        result = await self._get("/v1/approvals", params={"limit": limit, "offset": offset})
+        return self._unwrap(result, "approvals")
 
     async def list_executions(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        return await self._get("/v1/executions", params={"limit": limit, "offset": offset})
+        result = await self._get("/v1/executions", params={"limit": limit, "offset": offset})
+        return self._unwrap(result, "executions")
 
     async def list_continuations(self, limit: int = 50, offset: int = 0) -> list[dict]:
-        return await self._get("/v1/continuations", params={"limit": limit, "offset": offset})
+        result = await self._get("/v1/continuations", params={"limit": limit, "offset": offset})
+        return self._unwrap(result, "continuations")
 
     async def get_capabilities(self) -> dict:
         return await self._get("/v1/capabilities")
@@ -182,7 +199,8 @@ class OvaraClient:
     async def _get(self, path: str, params: Optional[dict] = None) -> Any:
         return await self._request("GET", path, params=params)
 
-    async def _post(self, path: str, body: dict) -> Any:
+    async def _post(self, path: str, body: Any) -> Any:
+        """`body` is a dict, or a zero-argument callable that builds one per attempt."""
         return await self._request("POST", path, body=body)
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -191,7 +209,7 @@ class OvaraClient:
             self._client = httpx.AsyncClient(timeout=self._timeout)
         return self._client
 
-    async def _request(self, method: str, path: str, *, params: Optional[dict] = None, body: Optional[dict] = None) -> Any:
+    async def _request(self, method: str, path: str, *, params: Optional[dict] = None, body: Any = None) -> Any:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -206,7 +224,7 @@ class OvaraClient:
                     f"{self._base_url}{path}",
                     headers=headers,
                     params=params,
-                    json=body,
+                    json=body() if callable(body) else body,
                 )
                 resp.raise_for_status()
                 text = resp.text

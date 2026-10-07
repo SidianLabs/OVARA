@@ -290,7 +290,17 @@ func isMethodToken(s string) bool {
 // isRefList reports whether s is a comma-separated git ref list as
 // appended by the proxy's git gate ("refs/heads/main,refs/tags/v1").
 func isRefList(s string) bool {
+	// The proxy's git gate cannot always produce a ref list. It flags a push
+	// it could not parse, or whose ref header exceeded its buffer, with one of
+	// these exact markers so policy can still see "this is a push" and match
+	// on it (an unparsed push is not a safe push).
+	if s == "git-receive-pack" || s == "git-receive-pack(truncated)" {
+		return true
+	}
 	for _, ref := range strings.Split(s, ",") {
+		// A ref that deletes the branch/tag carries a "(delete)" marker so a
+		// rule can require approval for deletions specifically.
+		ref = strings.TrimSuffix(ref, "(delete)")
 		if !strings.HasPrefix(ref, "refs/") {
 			return false
 		}

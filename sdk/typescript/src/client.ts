@@ -56,6 +56,12 @@ function serializeDelegationChain(chain: DelegationChain): Record<string, unknow
         subject_id: a.subjectId,
       };
       if (a.delegatedAt !== undefined) out.delegated_at = a.delegatedAt;
+      if (a.actions !== undefined) out.actions = a.actions;
+      if (a.resourceScope !== undefined) out.resource_scope = a.resourceScope;
+      if (a.audience !== undefined) out.audience = a.audience;
+      if (a.expiresAt !== undefined) out.expires_at = a.expiresAt;
+      if (a.nonce !== undefined) out.nonce = a.nonce;
+      if (a.signature !== undefined) out.signature = a.signature;
       return out;
     }),
     chain_hash: chain.chainHash,
@@ -105,10 +111,14 @@ export class OvaraClient {
   }
 
   async check(request: ActionRequest): Promise<DecisionResponse> {
-    return this.fetch("/v1/runtime/check", {
-      method: "POST",
-      body: JSON.stringify(serializeActionRequest(request)),
-    });
+    // The body is rebuilt per attempt: a retry that re-sent the same nonce
+    // would be rejected by the gateway's replay protection as a replay. A
+    // caller-supplied nonce is kept as given.
+    return this.fetch(
+      "/v1/runtime/check",
+      { method: "POST" },
+      () => JSON.stringify(serializeActionRequest(request)),
+    );
   }
 
   async allow(actionType: string, resource: string, env: string = "local"): Promise<boolean> {
@@ -122,12 +132,11 @@ export class OvaraClient {
   }
 
   async batchCheck(requests: ActionRequest[]): Promise<DecisionResponse[]> {
-    const resp = await this.fetch("/v1/runtime/batch-check", {
-      method: "POST",
-      body: JSON.stringify({
-        requests: requests.map(serializeActionRequest),
-      }),
-    });
+    const resp = await this.fetch(
+      "/v1/runtime/batch-check",
+      { method: "POST" },
+      () => JSON.stringify({ requests: requests.map(serializeActionRequest) }),
+    );
     return (resp as any).decisions || [];
   }
 
@@ -151,25 +160,31 @@ export class OvaraClient {
     return this.fetch(`/v1/receipts/${receiptId}`);
   }
 
+  // The gateway wraps list results in an envelope ({"approvals": [...]},
+  // plus count/next_cursor for some); unwrap it so the declared array type
+  // is what callers actually get.
   async listApprovals(params?: PaginationParams): Promise<any[]> {
     const query = new URLSearchParams();
     if (params?.limit) query.set("limit", String(params.limit));
     if (params?.offset) query.set("offset", String(params.offset));
-    return this.fetch(`/v1/approvals?${query}`);
+    const resp = await this.fetch(`/v1/approvals?${query}`);
+    return Array.isArray(resp) ? resp : resp?.approvals ?? [];
   }
 
   async listExecutions(params?: PaginationParams): Promise<any[]> {
     const query = new URLSearchParams();
     if (params?.limit) query.set("limit", String(params.limit));
     if (params?.offset) query.set("offset", String(params.offset));
-    return this.fetch(`/v1/executions?${query}`);
+    const resp = await this.fetch(`/v1/executions?${query}`);
+    return Array.isArray(resp) ? resp : resp?.executions ?? [];
   }
 
   async listContinuations(params?: PaginationParams): Promise<any[]> {
     const query = new URLSearchParams();
     if (params?.limit) query.set("limit", String(params.limit));
     if (params?.offset) query.set("offset", String(params.offset));
-    return this.fetch(`/v1/continuations?${query}`);
+    const resp = await this.fetch(`/v1/continuations?${query}`);
+    return Array.isArray(resp) ? resp : resp?.continuations ?? [];
   }
 
   async getCapabilities(): Promise<any> {
@@ -180,7 +195,15 @@ export class OvaraClient {
     return this.fetch("/v1/runtime/metrics");
   }
 
-  private async fetch(path: string, options: RequestInit = {}): Promise<any> {
+  /**
+   * `bodyFor` builds the request body per attempt, so a retry can carry a
+   * fresh nonce/timestamp instead of replaying the first attempt's.
+   */
+  private async fetch(
+    path: string,
+    options: RequestInit = {},
+    bodyFor?: (attempt: number) => string,
+  ): Promise<any> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -197,6 +220,7 @@ export class OvaraClient {
 
         const res = await fetch(`${this.baseUrl}${path}`, {
           ...options,
+          ...(bodyFor ? { body: bodyFor(attempt) } : {}),
           headers: { ...headers, ...(options.headers as any) },
           signal: controller.signal,
         });
