@@ -44,7 +44,12 @@
 - T3 scaffolded (NOT run): T3Attacker = LLM + persistent MemoryStore
   (per model+condition, survives restarts) + passive recon verb +
   mandatory per-turn hypothesis; seeded from prior results jsonl.
-- T3 scaffolded (NOT run — pending H9 → now unblocked; bounded
-  dry-run vs C-core in progress).
+- T3 active: dry-run vs C-core 0/8 (memory-guided); **T3-LANDLOCK-
+  PREVENTED** on Linux lane (t3-002-D @ 09617d4): 8 attempts, 0
+  bypass, learned symlink vector kernel-denied EACCES, canary
+  inode-verified untouched. t3-001-D preserved as APP-09 casualty
+  (malformed plan JSON → phantom plans; fixed + ledgered).
+  Comparative T3×C-core vs T3×C+Landlock analysis: same strings
+  authorize at policy; only containment verifies object identity.
 - Docs shipped: PHASE3_RESULTS, GUARANTEE_DEGRADATION, TCB_ANALYSIS,
   CAPABILITY_CONTROL_FRONTIER under workspace/docs/.
