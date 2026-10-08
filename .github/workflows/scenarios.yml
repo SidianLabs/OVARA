@@ -26,3 +26,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run user scenarios
         run: tests/scenarios/run.sh
+
+  separate-user-attacks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Agent attacks Ovara from another OS user
+        run: tests/redteam/separate-user/run.sh

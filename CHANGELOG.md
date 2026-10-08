@@ -21,6 +21,24 @@ agents, and fix correctness bugs found in an in-depth review.
 - `security/ebpf`, `security/apparmor`, `research/`, and a stray test
   `enrollment.json`. All remain in git history.
 
+### Added
+
+- **The approver now sees what is being sent**, not just where. The query
+  string, body size and type, and the first bytes of a text body (credentials
+  masked, binary and oversized bodies never read) are shown in `ovara approvals`,
+  `ovara watch` and on the browser page. The preview travels as the check's
+  metadata and is copied onto the approval from the gateway's own record, never
+  from the approval caller.
+- **Approve and trust a host for reads**: `ovara approve <id> -trust-host`, `[t]`
+  in `ovara watch`, and a button on the approval page add a read-only
+  (GET/HEAD) allow rule for that one exact host. Never offered for writes,
+  wildcards, IP literals or plain http.
+- `tests/redteam/separate-user`: the agent attacks Ovara from a different
+  unprivileged OS user (read keys, edit policy, forge receipts, approve its own
+  request, kill the process). 19 attacks, all blocked.
+- `docs/use-cases.md`: where Ovara fits (laptop, container, hosted sandbox, CI,
+  your own harness), what is verified and what is not.
+
 ### Fixed (found by running the real binary the way a person uses it)
 
 New end-to-end harness `tests/scenarios/` drives `pip`, `npm`, `git clone`,
