@@ -2,7 +2,7 @@
 
 # The product: one binary, built from proxy/ (it embeds the gateway).
 GO_CORE    := runtime/gateway proxy
-GO_MODULES := $(GO_CORE) services/approval services/receipt-storage services/alerting services/observability tools/cli tools/migration tools/benchmarks
+GO_MODULES := $(GO_CORE) tools/cli tools/migration tools/benchmarks
 TS_MODULES := sdk/typescript integrations/mcp integrations/openai policy/compiler
 
 all: vet test build

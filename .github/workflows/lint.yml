@@ -6,7 +6,6 @@ on:
     paths:
       - "runtime/**"
       - "proxy/**"
-      - "services/**"
       - "tools/**"
       - ".golangci.yml"
       - ".github/workflows/lint.yml"
@@ -21,10 +20,6 @@ jobs:
         module:
           - runtime/gateway
           - proxy
-          - services/approval
-          - services/alerting
-          - services/observability
-          - services/receipt-storage
           - tools/cli
           - tools/migration
           - tools/benchmarks
