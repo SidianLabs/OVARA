@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # Actions are referenced by tag; Dependabot proposes bumps (and pins) so
+  # a moved tag cannot silently change what the release job runs.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
+  - package-ecosystem: gomod
+    directory: "/proxy"
+    schedule: { interval: weekly }
+  - package-ecosystem: gomod
+    directory: "/runtime/gateway"
+    schedule: { interval: weekly }
+  - package-ecosystem: npm
+    directory: "/sdk/typescript"
+    schedule: { interval: weekly }
+  - package-ecosystem: pip
+    directory: "/sdk/python"
+    schedule: { interval: weekly }

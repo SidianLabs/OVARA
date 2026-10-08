@@ -191,6 +191,7 @@ forgeries still verify. Hardware-backed key protection (KMS/HSM) is not built ye
 - **How it works, in depth:** [`docs/overview-full.md`](docs/overview-full.md) (the long-form overview with the architecture, primitives and API)
 - **Deploying it:** [`proxy/DEPLOYMENT.md`](proxy/DEPLOYMENT.md) and [`docs/deployment.md`](docs/deployment.md)
 - **Using the gateway API directly:** [`docs/api`](docs/api)
+- **What Ovara does and does not protect against:** [`docs/threat-model.md`](docs/threat-model.md)
 - **Security model and reporting a vulnerability:** [`SECURITY.md`](SECURITY.md)
 - **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
