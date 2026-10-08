@@ -6,19 +6,14 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
-	"hash/crc32"
 	"fmt"
-	"io"
+	"hash/crc32"
 	"log"
 	"net"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,7 +162,7 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	proxyToken := randHex(32)
 
 	gwConfig := map[string]any{
-		"server_port":         gatewayPort,
+		"server_port": gatewayPort,
 		// Loopback-only: the approval/decision API must never be reachable
 		// from a bounded agent, or the agent could approve its own
 		// escalations. `ovara run` keeps gateway+proxy on the same host.
@@ -186,17 +181,17 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		// deployment must never run memory-mode authority stores — a
 		// restart would otherwise silently lose identity, replay
 		// protection, and every pending approval.
-		"gateway_key_file":        "var/gateway.key",
-		"gateway_registry_file":   "var/data/gateway_registry.jsonl",
-		"identity_registry_file":  "var/data/identity_registry.json",
-		"replay_file":             "var/data/replay.jsonl",
-		"continuations_file":      "var/data/continuations.jsonl",
-		"approvals_file":          "var/data/approvals.json",
-		"execution_file":          "var/data/executions.jsonl",
-		"receipts_file":           "var/data/receipts.json",
-		"events_file":             "var/data/events.jsonl",
-		"capabilities_file":       "var/data/capabilities.json",
-		"enrollment_file":         "var/data/enrollment.json",
+		"gateway_key_file":         "var/gateway.key",
+		"gateway_registry_file":    "var/data/gateway_registry.jsonl",
+		"identity_registry_file":   "var/data/identity_registry.json",
+		"replay_file":              "var/data/replay.jsonl",
+		"continuations_file":       "var/data/continuations.jsonl",
+		"approvals_file":           "var/data/approvals.json",
+		"execution_file":           "var/data/executions.jsonl",
+		"receipts_file":            "var/data/receipts.json",
+		"events_file":              "var/data/events.jsonl",
+		"capabilities_file":        "var/data/capabilities.json",
+		"enrollment_file":          "var/data/enrollment.json",
 		"journal_signing_required": true,
 	}
 
@@ -536,331 +531,4 @@ func mustGetwd() string {
 		return "."
 	}
 	return d
-}
-
-// --- demo ------------------------------------------------------------------
-
-func cmdDemo() error {
-	// The gateway and proxy log through the std logger; the demo narrates
-	// instead, so silence it (set OVARA_DEMO_VERBOSE=1 to see everything).
-	if os.Getenv("OVARA_DEMO_VERBOSE") == "" {
-		log.SetOutput(io.Discard)
-	}
-	dir, err := os.MkdirTemp("", "ovara-demo-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-
-	// Free port for the gateway.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	gwPort := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
-	ln.Close()
-
-	if _, err := deploy(dir, gwPort, true); err != nil {
-		return err
-	}
-	// Demo-only extra rule so we can show a block without touching the
-	// network: anything with "leak" in the URL is denied. The real default
-	// policy blocks known data-dump sites instead.
-	// (Applied below, once the demo upstream's address is known.)
-	if err := os.Chdir(dir); err != nil {
-		return err
-	}
-	cfg, err := config.Load("proxy.json")
-	if err != nil {
-		return err
-	}
-	cfg.GatewayURL = "http://127.0.0.1:" + gwPort
-	cfg.EscalatePollSec = 1
-
-	// Local "upstream" the agent wants to reach.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"method":%q,"path":%q}`, r.Method, r.URL.Path)
-	}))
-	defer upstream.Close()
-	if err := addDemoDenyRule(filepath.Join(dir, "policy.json"), upstream.Listener.Addr().String()); err != nil {
-		return err
-	}
-
-	go func() {
-		if err := server.Run("config.json"); err != nil {
-			log.Printf("gateway: %v", err)
-		}
-	}()
-	if err := waitForGateway(cfg.GatewayURL, 15*time.Second); err != nil {
-		return err
-	}
-
-	srv, rootCA, err := wire(cfg)
-	if err != nil {
-		return err
-	}
-	// The demo upstream is loopback — the SSRF destination guard would
-	// correctly refuse it, so it is disabled for the demo only.
-	srv.SetPublicEgressOnly(false)
-	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	go http.Serve(proxyLn, srv)
-	proxyURL, _ := url.Parse("http://" + proxyLn.Addr().String())
-	if cfg.AgentToken != "" {
-		proxyURL.User = url.UserPassword("agent", cfg.AgentToken)
-	}
-	roots := x509.NewCertPool()
-	roots.AppendCertsFromPEM(rootCA.CertPEM())
-	agent := &http.Client{Transport: &http.Transport{
-		Proxy:           http.ProxyURL(proxyURL),
-		TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
-	}}
-
-	admin, err := newAdminClient(".")
-	if err != nil {
-		return err
-	}
-
-	say := func(format string, a ...any) { fmt.Printf(format+"\n", a...) }
-	say("")
-	say("Ovara demo — an AI agent, a checkpoint it cannot bypass, and you.")
-	say("Everything below is local: no network, no real credentials.")
-	say("")
-	say("The agent's only way out is through Ovara. Ovara checks every request")
-	say("against policy.json: reading is free, changing things needs a human,")
-	say("and known data-dump sites are blocked.")
-
-	// 1 — a read.
-	say("\n━━ 1. The agent reads something")
-	say("   agent → GET %s/v1/models", upstream.URL)
-	code, _ := agentCall(agent, "GET", upstream.URL+"/v1/models")
-	say("   ✓ ALLOWED (HTTP %d) — policy: \"reading is allowed\"", code)
-
-	// 2 — a write: pauses for a human.
-	say("\n━━ 2. The agent tries to change something (think: git push, merge a PR, deploy)")
-	say("   agent → POST %s/v1/deploy", upstream.URL)
-	say("   ⏸  PAUSED — Ovara is holding the request until a human decides")
-	humanDone := make(chan struct{})
-	go func() {
-		defer close(humanDone)
-		deadline := time.Now().Add(30 * time.Second)
-		for time.Now().Before(deadline) {
-			list, err := admin.pending()
-			if err == nil && len(list) > 0 {
-				a := list[0]
-				say("   📩 you would see this (in `ovara watch`): the agent wants to: %s", describe(a.Resource))
-				time.Sleep(1500 * time.Millisecond)
-				if err := admin.resolve(a.ApprovalID, true, "demo-human", ""); err != nil {
-					say("   (demo could not approve: %v)", err)
-				} else {
-					say("   👍 you approve it")
-				}
-				return
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	}()
-	code, _ = agentCall(agent, "POST", upstream.URL+"/v1/deploy")
-	<-humanDone
-	if code != http.StatusOK {
-		return fmt.Errorf("demo: approved request returned HTTP %d, want 200", code)
-	}
-	say("   ✓ went through after approval (HTTP %d)", code)
-
-	// 3 — a leak attempt: blocked outright.
-	say("\n━━ 3. The agent tries to send data somewhere it shouldn't")
-	say("   agent → POST %s/leak/secrets", upstream.URL)
-	code, _ = agentCall(agent, "POST", upstream.URL+"/leak/secrets")
-	if code == http.StatusOK {
-		return fmt.Errorf("demo: leak request was NOT blocked")
-	}
-	say("   ✗ BLOCKED (HTTP %d) — no human needed, policy says no", code)
-
-	// 4 — evidence.
-	say("\n━━ 4. Evidence: every decision left a signed receipt")
-	pubBytes, err := hex.DecodeString(strings.TrimSpace(mustRead(cfg.PubKeyFile)))
-	if err != nil {
-		return err
-	}
-	printReceipts(cfg.ReceiptsFile)
-	res := receipts.VerifyFile(cfg.ReceiptsFile, ed25519.PublicKey(pubBytes))
-	if !res.Valid {
-		return fmt.Errorf("receipt chain failed verification at %d: %s", res.FailAt, res.Reason)
-	}
-	say("   chain of %d receipts verified offline: valid ✓ (tampering with any one would break it)", res.Total)
-
-	say("\nThat is the whole idea. To use it for real:")
-	say("   ovara init mydir && ovara run -dir mydir     # start it")
-	say("   ovara watch -dir mydir                       # answer approval requests")
-	say("   ovara log -dir mydir                         # see what the agent did")
-	say("")
-	return nil
-}
-
-// agentCall makes one proxied request and returns the HTTP status.
-func agentCall(c *http.Client, method, target string) (int, string) {
-	req, err := http.NewRequest(method, target, nil)
-	if err != nil {
-		return 0, err.Error()
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return 0, err.Error()
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, strings.TrimSpace(string(b))
-}
-
-// addDemoDenyRule prepends a deny rule for URLs containing "leak".
-func addDemoDenyRule(policyPath, upstreamAddr string) error {
-	raw, err := os.ReadFile(policyPath)
-	if err != nil {
-		return err
-	}
-	var pol map[string]any
-	if err := json.Unmarshal(raw, &pol); err != nil {
-		return err
-	}
-	rules, _ := pol["rules"].([]any)
-	deny := map[string]any{
-		"action_type": "http.request", "environment": "*", "resource": "POST *leak*",
-		"deny": true, "description": "Demo only: block anything that looks like leaking data",
-	}
-	// The demo's "read" goes to its own loopback upstream, which (rightly)
-	// is not on the trusted-host list of the real default policy.
-	read := map[string]any{
-		"action_type": "http.request", "environment": "*", "resource": "GET http://" + upstreamAddr + "/*",
-		"allow": true, "description": "Demo only: reading the demo upstream is allowed",
-	}
-	pol["rules"] = append([]any{deny, read}, rules...)
-	out, err := json.MarshalIndent(pol, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(policyPath, append(out, '\n'), 0o644)
-}
-
-// printReceipts lists one line per receipt in the chain.
-func printReceipts(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		var r receipts.Receipt
-		if json.Unmarshal([]byte(line), &r) != nil {
-			continue
-		}
-		fmt.Printf("   • %-5s %-7s %s\n", strings.ToUpper(r.Decision), r.Method, r.URL)
-	}
-}
-
-func mustRead(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		log.Fatalf("read %s: %v", path, err)
-	}
-	return string(b)
-}
-
-// printLastReceipt prints the most recent chain entry's decision fields.
-func printLastReceipt(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	var r receipts.Receipt
-	if json.Unmarshal([]byte(lines[len(lines)-1]), &r) != nil {
-		return
-	}
-	fmt.Printf("  receipt %s: %s %s → %s (%d)\n", r.ReceiptID, r.Method, r.URL, r.Decision, r.Status)
-}
-
-// defaultPolicyRules is what `ovara init` writes to policy.json. The idea,
-// in one line: reading is free, writing needs a human, and a few known
-// data-dump sites are blocked outright. The gateway decides deny > allow >
-// escalate, so a more specific allow below also overrides the "writes
-// need approval" rules. Edit policy.json freely; changes are picked up
-// without a restart.
-func defaultPolicyRules() []map[string]any {
-	rule := func(resource, effect, desc string) map[string]any {
-		r := map[string]any{"action_type": "http.request", "environment": "*", "description": desc}
-		if resource != "" {
-			r["resource"] = resource
-		}
-		r[effect] = true
-		return r
-	}
-	rules := []map[string]any{}
-	// Reading is free, but only from places an agent legitimately needs:
-	// package registries, code hosts and documentation. A blanket "GET *"
-	// would let an agent send data to ANY server it controls (the path and
-	// query of a GET carry data just as well as a POST body), so a host that
-	// is not listed here pauses for approval like everything else.
-	for _, h := range trustedReadHosts {
-		rules = append(rules,
-			rule("GET https://"+h+"/*", "allow", "Reading from "+h+" is allowed"),
-			rule("HEAD https://"+h+"/*", "allow", "Reading from "+h+" is allowed"),
-		)
-	}
-	// git clone/fetch/pull speak smart-HTTP with a POST to git-upload-pack;
-	// it only reads. The host is part of the rule: a bare "*git-upload-pack"
-	// would match a POST to ANY server whose path ends that way.
-	for _, h := range trustedGitHosts {
-		rules = append(rules, rule("POST https://"+h+"/*git-upload-pack", "allow", "git clone/fetch/pull from "+h+" is reading"))
-	}
-	rules = append(rules,
-		// The agent must be able to talk to its own model provider.
-		rule("POST https://api.anthropic.com/*", "allow", "The agent may call the Anthropic API"),
-		rule("POST https://api.openai.com/*", "allow", "The agent may call the OpenAI API"),
-		// Known places where stolen data typically gets dumped.
-		rule("*://pastebin.com/*", "deny", "Blocked: paste site commonly used to leak data"),
-		rule("*://transfer.sh/*", "deny", "Blocked: anonymous file drop"),
-		rule("*://webhook.site/*", "deny", "Blocked: request-capture site commonly used to leak data"),
-		rule("*://*.requestbin.com/*", "deny", "Blocked: request-capture site commonly used to leak data"),
-		// Anything that changes something out in the world needs a human.
-		// This covers git push, opening/merging PRs, deleting branches,
-		// triggering deploys and posting messages.
-		rule("POST *", "escalate", "Writes need approval (git push, PRs, deploys, messages)"),
-		rule("PUT *", "escalate", "Writes need approval"),
-		rule("PATCH *", "escalate", "Writes need approval"),
-		rule("DELETE *", "escalate", "Deletes need approval"),
-		// Anything we did not think of, including reads from a host that is
-		// not on the trusted list: ask.
-		rule("", "escalate", "Catch-all: anything unrecognised requires approval"),
-	)
-	return rules
-}
-
-// isLoopbackHost reports whether a listen host is loopback-only. An empty
-// host (":9443") means every interface, so it is not.
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// trustedGitHosts may be cloned/fetched from without approval.
-var trustedGitHosts = []string{"github.com", "gitlab.com", "bitbucket.org"}
-
-// trustedReadHosts may be read from without approval: package registries,
-// code hosts, and documentation. Add your own hosts in policy.json.
-var trustedReadHosts = []string{
-	// code hosts
-	"github.com", "api.github.com", "raw.githubusercontent.com",
-	"codeload.github.com", "objects.githubusercontent.com", "gitlab.com", "bitbucket.org",
-	// package registries
-	"pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "registry.yarnpkg.com",
-	"proxy.golang.org", "sum.golang.org", "index.crates.io", "static.crates.io", "crates.io",
-	"rubygems.org", "repo.maven.apache.org", "repo1.maven.org", "pkg.go.dev",
-	// documentation
-	"docs.python.org", "go.dev", "developer.mozilla.org", "nodejs.org",
-	"docs.anthropic.com", "platform.openai.com", "docs.github.com",
 }
