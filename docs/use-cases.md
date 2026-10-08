@@ -66,8 +66,12 @@ sudo ovara run -dir ~/ovara --boundary netns     # or: --boundary docker
 # run the agent inside it as a separate user (the command is printed)
 ```
 
-Verified on Linux: only the proxy port is reachable from inside the boundary;
-other host ports and direct internet connections are dropped; IPv6 is off; and
+Verified on Linux (`tests/boundary`, and the 25-check suite in
+`tests/redteam/boundary`, which also confirms the proxy path itself works so the
+"denied" results are real refusals): only the proxy port is reachable from inside
+the boundary; other host ports, ssh, the metadata address and direct internet
+connections are dropped; IPv6 and ICMP are off; an agent without network
+capabilities cannot flush the firewall or add routes; and
 an agent running as a different unprivileged user cannot read the keys, edit the
 policy, forge or delete receipts, approve its own requests (the proxy token does
 not open the approvals API), or stop the process (`tests/redteam/separate-user`).
