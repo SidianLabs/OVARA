@@ -40,3 +40,12 @@ __pycache__/
 *.key
 *.pem
 .env
+
+# Runtime state written by a local gateway/test run (never source)
+runtime/gateway/var/
+.pytest_cache/
+coverage/
+*.tgz
+.env.*
+*.compact.tmp
+# Go fuzz cache (failing inputs live in testdata/fuzz and ARE committed)

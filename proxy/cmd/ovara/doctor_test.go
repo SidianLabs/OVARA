@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -113,5 +114,44 @@ func TestLooksLikeSecret(t *testing.T) {
 		if got := looksLikeSecret(v); got != want {
 			t.Errorf("looksLikeSecret(%q) = %v, want %v", v, got, want)
 		}
+	}
+}
+
+func TestDoctor_FlagsLooseSecretAndWritablePolicy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits are not enforced on Windows")
+	}
+	dir := t.TempDir()
+	if _, err := deploy(dir, "0", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := statuses(auditDeployment(dir)); got["secret file permissions"] != "PASS" || got["policy.json permissions"] != "PASS" {
+		t.Fatalf("a fresh init must have private secrets and an owner-only policy: %v", got)
+	}
+	if err := os.Chmod(filepath.Join(dir, "var", "receipt.key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "policy.json"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	got := statuses(auditDeployment(dir))
+	if got["secret file permissions"] != "FAIL" {
+		t.Errorf("a world-readable signing key must FAIL, got %v", got)
+	}
+	if got["policy.json permissions"] != "FAIL" {
+		t.Errorf("a world-writable policy must FAIL, got %v", got)
+	}
+}
+
+func TestDoctor_WindowsSaysPermissionsAreNotChecked(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	dir := t.TempDir()
+	if _, err := deploy(dir, "0", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := statuses(auditDeployment(dir))["file permissions"]; got != "WARN" {
+		t.Fatalf("Windows must WARN that permissions are unchecked rather than PASS, got %q", got)
 	}
 }

@@ -1,4 +1,4 @@
-.PHONY: all ovara demo build vet test test-ts build-ts test-py lint check docker-build clean
+.PHONY: all ovara demo build vet test test-ts build-ts test-py lint check docker-build clean bench fuzz
 
 # The product: one binary, built from proxy/ (it embeds the gateway).
 GO_CORE    := runtime/gateway proxy
@@ -57,3 +57,10 @@ docker-build:
 clean:
 	rm -f ovara ovara.exe
 	@for mod in $(TS_MODULES); do rm -rf $$mod/dist; done
+
+# ── Fuzz (a minute each; CI runs longer weekly) ──────
+fuzz:
+	cd proxy && go test -run='^$$' -fuzz='^FuzzParseRefUpdates$$' -fuzztime=1m ./internal/proxy
+	cd proxy && go test -run='^$$' -fuzz='^FuzzNormalizeHost$$' -fuzztime=1m ./internal/proxy
+	cd runtime/gateway && go test -run='^$$' -fuzz='^FuzzMatchCanonicalResource$$' -fuzztime=1m ./internal/policy
+	cd runtime/gateway && go test -run='^$$' -fuzz='^FuzzOpenNeverPanics$$' -fuzztime=1m ./internal/record

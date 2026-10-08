@@ -20,7 +20,8 @@ type Client struct {
 	token   string
 	env     string
 	subject    string
-	resolveOnce sync.Once
+	resolveMu  sync.Mutex
+	resolved   bool
 	hc         *http.Client
 }
 
@@ -50,22 +51,27 @@ func New(baseURL, token, env string) *Client {
 // rotated credential still binds to its stable identity, so the local
 // hash derivation can be stale. Falls back to the RC1 derivation —
 // bindIdentity on the gateway rejects a wrong guess either way.
-func (c *Client) resolveSubject() {
+// It reports whether the answer is final. A transport error (the gateway is
+// not up yet) is NOT final and is retried on the next request; before, the
+// lookup ran once and a gateway that was slow to start left the proxy with
+// the derived fallback for the life of the process. Any HTTP answer, even an
+// error from an older gateway without /v1/whoami, is final.
+func (c *Client) resolveSubject() (final bool) {
 	if c.token == "" {
-		return // auth-disabled dev mode keeps the descriptive constant
+		return true // auth-disabled dev mode keeps the descriptive constant
 	}
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/v1/whoami", nil)
 	if err != nil {
-		return
+		return true
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return
+		return true
 	}
 	var body struct {
 		PrincipalID string `json:"principal_id"`
@@ -73,10 +79,15 @@ func (c *Client) resolveSubject() {
 	if json.NewDecoder(resp.Body).Decode(&body) == nil && body.PrincipalID != "" {
 		c.subject = body.PrincipalID
 	}
+	return true
 }
 
 func (c *Client) resolvedSubject() string {
-	c.resolveOnce.Do(c.resolveSubject)
+	c.resolveMu.Lock()
+	defer c.resolveMu.Unlock()
+	if !c.resolved {
+		c.resolved = c.resolveSubject()
+	}
 	return c.subject
 }
 

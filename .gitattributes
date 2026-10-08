@@ -1,0 +1,11 @@
+# One line-ending convention in the repository, whatever the checkout OS.
+# Without this, Windows checkouts show every file as "not gofmt-clean" and
+# diffs fill with CRLF noise.
+* text=auto eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.gz binary
