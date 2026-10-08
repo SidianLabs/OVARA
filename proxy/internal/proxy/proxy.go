@@ -463,7 +463,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	decision := "error"
 	status := 0
 	approvalID := ""
-	defer func() {
+	// The receipt is written exactly once: before the upstream response
+	// headers are sent (so the agent can never hold a response whose receipt
+	// is not yet on disk), or on return for every path that never reaches
+	// that point.
+	var recordOnce sync.Once
+	record := func() { recordOnce.Do(func() {
 		if _, err := s.chain.Record(r.Method, url, decision, status, approvalID); err != nil {
 			// A transit without a receipt is a boundary breach: scream to
 			// stderr in fail-closed mode, not just the log stream.
@@ -473,7 +478,8 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 				fmt.Fprintf(os.Stderr, "CRITICAL: %s\n", msg)
 			}
 		}
-	}()
+		}) }
+	defer record()
 
 	failedOpen := false
 	d, err := s.gw.Check(r.Context(), r.Method, url)
@@ -626,6 +632,8 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(k, v)
 		}
 	}
+	// Receipt first, then the response: status and decision are final here.
+	record()
 	w.WriteHeader(resp.StatusCode)
 	body := io.Reader(resp.Body)
 	if len(injected) > 0 {

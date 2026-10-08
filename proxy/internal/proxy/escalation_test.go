@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -208,5 +209,39 @@ func TestEveryOutcomeIsReceipted(t *testing.T) {
 	do(srv, "GET", up.URL+"/b")
 	if n := countLines(t, chainFile); n != 2 {
 		t.Fatalf("2 requests, %d receipts", n)
+	}
+}
+
+// The agent must never hold a response whose receipt is not yet on disk. The
+// upstream sends its headers and then stalls mid-body; by the time the client
+// has the headers, the receipt has to exist.
+func TestReceiptIsWrittenBeforeTheResponseReachesTheAgent(t *testing.T) {
+	release := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		fmt.Fprint(w, "first-chunk\n")
+		w.(http.Flusher).Flush()
+		<-release
+		fmt.Fprint(w, "second-chunk\n")
+	}))
+	defer up.Close()
+	defer close(release)
+
+	srv, _, chainFile := newScripted(t, "allow")
+	proxySrv := httptest.NewServer(srv)
+	defer proxySrv.Close()
+
+	proxyURL, _ := url.Parse(proxySrv.URL)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 10 * time.Second}
+	resp, err := client.Get(up.URL + "/stream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Headers are in hand, the body is still open. The receipt must be there.
+	if n := countLines(t, chainFile); n != 1 {
+		t.Fatalf("response headers reached the agent with %d receipts on disk, want 1", n)
 	}
 }
