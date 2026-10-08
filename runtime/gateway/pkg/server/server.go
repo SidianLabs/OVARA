@@ -310,6 +310,12 @@ func Run(configPath string) error {
 	}
 
 	shieldStore := trust.NewShieldStore()
+	// Risk decays and automatic restrictions lift themselves. Without this an
+	// agent that hit a few blocked sites stayed quarantined (every request
+	// needing a human) until an operator called /v1/shield/unrestrict.
+	// Manual restrictions are unaffected and still last until lifted.
+	shieldStore.SetRiskWindow(10 * time.Minute)
+	shieldStore.SetAutoRestrictTTL(15 * time.Minute)
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
 
 	// Durable replay protection (P2.1): a configured journal that cannot

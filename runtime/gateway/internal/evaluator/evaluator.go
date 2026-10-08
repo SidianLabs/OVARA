@@ -467,10 +467,14 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 		requiresApproval = true
 	}
 
-	if req.AgentIdentity != nil && decision != "" {
+	// Only DENIES are risk events. An escalation is the checkpoint doing its
+	// job (a human is being asked); counting it as suspicious meant that three
+	// approved pushes quarantined the agent, after which every request,
+	// including reads from trusted hosts, needed a human.
+	if req.AgentIdentity != nil && decision != "" && decision != models.DecisionEscalate {
 		e.shieldStore.RecordDecision(req.AgentIdentity.SubjectID, string(decision))
-		if e.shieldStore.ShouldAutoRestrict(req.AgentIdentity.SubjectID, 3) {
-			e.shieldStore.AutoRestrictAfterRepeatedRisk(req.AgentIdentity.SubjectID, 3)
+		if e.shieldStore.ShouldAutoRestrict(req.AgentIdentity.SubjectID, autoRestrictThreshold) {
+			e.shieldStore.AutoRestrictAfterRepeatedRisk(req.AgentIdentity.SubjectID, autoRestrictThreshold)
 		}
 	}
 
@@ -887,3 +891,9 @@ func trustLevelBelow(actual models.TrustLevel, minName string) bool {
 	}
 	return actualOrd < minOrd
 }
+
+// autoRestrictThreshold is how many denials within the shield's risk window
+// quarantine an agent. Three was far too low: an agent retrying one blocked
+// request a few times is ordinary behaviour, not an attack. Probing that
+// persists past this still trips the shield.
+const autoRestrictThreshold = 10
