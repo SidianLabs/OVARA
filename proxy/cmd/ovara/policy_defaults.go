@@ -39,6 +39,12 @@ func defaultPolicyRules() []map[string]any {
 		// The agent must be able to talk to its own model provider.
 		rule("POST https://api.anthropic.com/*", "allow", "The agent may call the Anthropic API"),
 		rule("POST https://api.openai.com/*", "allow", "The agent may call the OpenAI API"),
+		// `npm install` runs `npm audit` automatically: a POST that sends the
+		// package names and versions being installed to the registry. It reads
+		// advisories, it writes nothing, and without this rule every agent
+		// `npm install` stalls for the full approval window.
+		rule("POST https://registry.npmjs.org/-/npm/v1/security/advisories/bulk", "allow", "npm audit (sends package names/versions, reads advisories)"),
+		rule("POST https://registry.npmjs.org/-/npm/v1/security/audits/quick", "allow", "npm audit (sends package names/versions, reads advisories)"),
 		// Known places where stolen data typically gets dumped.
 		rule("*://pastebin.com/*", "deny", "Blocked: paste site commonly used to leak data"),
 		rule("*://transfer.sh/*", "deny", "Blocked: anonymous file drop"),
