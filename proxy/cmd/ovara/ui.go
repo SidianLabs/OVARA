@@ -51,14 +51,15 @@ func (u *uiServer) handler() http.Handler {
 			What      string `json:"what"`
 			Raw       string `json:"raw"`
 			Agent     string `json:"agent"`
-			CreatedAt string `json:"created_at"`
+			CreatedAt string   `json:"created_at"`
+			Details   []string `json:"details"`
 		}
 		out := []item{}
 		for _, a := range list {
 			if u.admin.stale(a) {
 				continue
 			}
-			out = append(out, item{a.ApprovalID, describe(a.Resource), a.Resource, a.AgentID, a.CreatedAt.Format("2006-01-02T15:04:05Z07:00")})
+			out = append(out, item{a.ApprovalID, describe(a.Resource), a.Resource, a.AgentID, a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), contextLines(a)})
 		}
 		writeJSONResp(w, out)
 	}))

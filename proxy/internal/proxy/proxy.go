@@ -482,7 +482,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	defer record()
 
 	failedOpen := false
-	d, err := s.gw.Check(r.Context(), r.Method, url)
+	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, requestContext(r))
 	if err != nil {
 		log.Printf("gateway check failed for %s: %v", url, err)
 		if !s.failOpen {

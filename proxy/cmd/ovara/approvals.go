@@ -63,6 +63,28 @@ type pendingApproval struct {
 	AgentID    string    `json:"agent_id"`
 	CreatedAt  time.Time `json:"created_at"`
 	Status     string    `json:"status"`
+	// Context is what the proxy saw beyond the URL: query, body size/type, a
+	// redacted body preview. Shown to the approver so they know WHAT is being
+	// sent, not just where.
+	Context map[string]string `json:"context,omitempty"`
+}
+
+// contextLines renders a.Context as short labelled lines, in a stable order.
+func contextLines(a pendingApproval) []string {
+	order := []struct{ key, label string }{
+		{"query", "query string"},
+		{"content_type", "body type"},
+		{"body_bytes", "body size"},
+		{"body_preview", "body starts"},
+		{"method_override", "method override"},
+	}
+	var out []string
+	for _, o := range order {
+		if v := a.Context[o.key]; v != "" {
+			out = append(out, o.label+": "+strings.NewReplacer("\r\n", " ⏎ ", "\n", " ⏎ ").Replace(v))
+		}
+	}
+	return out
 }
 
 // newAdminClient reads the deployment's config.json for the gateway
@@ -249,6 +271,9 @@ func printApproval(w io.Writer, a pendingApproval) {
 	fmt.Fprintln(w, "┌─ approval needed ─────────────────────────────────────")
 	fmt.Fprintf(w, "│ agent wants to: %s\n", describe(a.Resource))
 	fmt.Fprintf(w, "│ raw request:    %s\n", a.Resource)
+	for _, l := range contextLines(a) {
+		fmt.Fprintf(w, "│ %s\n", l)
+	}
 	if a.AgentID != "" {
 		fmt.Fprintf(w, "│ agent:          %s\n", a.AgentID)
 	}

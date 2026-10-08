@@ -109,7 +109,15 @@ func nonce() string {
 
 // Check evaluates an HTTP egress action. resource is "METHOD scheme://host/path".
 func (c *Client) Check(ctx context.Context, method, url string) (*Decision, error) {
-	body, _ := json.Marshal(map[string]any{
+	return c.CheckWithContext(ctx, method, url, nil)
+}
+
+// CheckWithContext is Check plus a display-only preview of the request (query
+// string, body size and type, a short redacted body snippet). The gateway
+// records it with the evaluated request and shows it to the human who is asked
+// to approve; it takes no part in the policy decision.
+func (c *Client) CheckWithContext(ctx context.Context, method, url string, preview map[string]string) (*Decision, error) {
+	payload := map[string]any{
 		"action_type": "http.request",
 		"resource":    fmt.Sprintf("%s %s", method, url),
 		"environment": c.env,
@@ -119,7 +127,11 @@ func (c *Client) Check(ctx context.Context, method, url string) (*Decision, erro
 		},
 		"nonce":     nonce(),
 		"issued_at": time.Now().UTC().Format(time.RFC3339Nano),
-	})
+	}
+	if len(preview) > 0 {
+		payload["metadata"] = map[string]any{"proxy_context": preview}
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/runtime/check", bytes.NewReader(body))
 	if err != nil {
 		return nil, err

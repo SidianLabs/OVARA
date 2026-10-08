@@ -173,6 +173,9 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		bound.RequestHash = origResp.ReceiptStub.ActionDigest
 		bound.PolicyVersion = origResp.ReceiptStub.PolicyVersion
 	}
+	// What the approver should see beyond the URL, taken from the evaluated
+	// request's metadata (server-recorded, never from this call's body).
+	bound.Context = approvalContextFromMetadata(origReq.Metadata)
 	if origResp.TrustContext != nil {
 		bound.ShieldActive = origResp.TrustContext.ShieldActive
 		bound.Restricted = origResp.TrustContext.Restricted

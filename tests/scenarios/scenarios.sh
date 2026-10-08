@@ -63,6 +63,16 @@ if ID=$(waitpending); then
   ovara deny "$ID" -dir /tmp/d >/dev/null 2>&1; wait $P
   check "git push is paused (denied here)" 403 "$(cat /tmp/c3)"
 else wait $P; bad "git push did not pause" "got $(cat /tmp/c3)"; fi
+( agent curl -s -o /dev/null -w '%{http_code}' --max-time 40 -X POST -H 'Content-Type: application/json' -d '{"note":"hello-body-marker","password":"s3cretpassword99"}' "https://example.edu/api?x=query-marker&api_key=ghp_abcdefghijklmnopqrstuvwxyz0123456789" > /tmp/c4 ) & P=$!
+if ID=$(waitpending); then
+  SEEN=$(ovara approvals -dir /tmp/d 2>&1)
+  echo "$SEEN" | grep -q "query-marker" && ok "approver sees the query string" || bad "approver does not see the query" "$SEEN"
+  echo "$SEEN" | grep -q "hello-body-marker" && ok "approver sees what the body starts with" || bad "approver does not see the body" "$SEEN"
+  echo "$SEEN" | grep -qE "s3cretpassword99|ghp_abcdefgh" && bad "a secret reached the approval screen" "$SEEN" || ok "secrets are redacted in the approval screen"
+  TOK=$(grep -oE '#t=[A-Za-z0-9_-]+' /tmp/run.log | head -1 | cut -c4-)
+  curl -s -H "Authorization: Bearer $TOK" http://127.0.0.1:9090/api/pending | grep -q "hello-body-marker" && ok "browser page gets the same preview" || bad "browser page has no preview" ""
+  ovara deny "$ID" -dir /tmp/d >/dev/null 2>&1; wait $P
+else wait $P; bad "POST with a body did not pause" "got $(cat /tmp/c4)"; fi
 check "unanswered approval times out (neither hangs nor passes)" 504 "$(agent curl -s -o /dev/null -w '%{http_code}' --max-time 50 https://example.net/)"
 
 echo "=== D. keys stay with Ovara"
