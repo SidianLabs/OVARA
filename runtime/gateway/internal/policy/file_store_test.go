@@ -184,8 +184,13 @@ func TestParseStore_Strictness(t *testing.T) {
 			`{"action_type":"http.request","environment":"*","resource":"*","allow":true}` + `]}`, false},
 		{"resource omitted parses", `{"version":"v1","rules":[` +
 			`{"action_type":"http.request","environment":"*","allow":true}` + `]}`, false},
-		{"nested conditions object ok", `{"version":"v1","rules":[` +
-			`{"action_type":"http.request","environment":"*","resource":"*","allow":true,"conditions":{"max_severity":"high"}}` + `]}`, false},
+		// The gateway never evaluates conditions other than depends_on/ref.
+		// A rule that carries one looks narrower than it is and would apply
+		// to every request, so it must not load.
+		{"unevaluated condition widens", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","resource":"*","allow":true,"conditions":{"max_severity":"high"}}` + `]}`, true},
+		{"understood conditions object ok", `{"version":"v1","rules":[` +
+			`{"action_type":"http.request","environment":"*","resource":"*","allow":true,"conditions":{"depends_on":"shell:local"}}` + `]}`, false},
 	}
 	for _, c := range cases {
 		_, err := ParseStore([]byte(c.doc), "")

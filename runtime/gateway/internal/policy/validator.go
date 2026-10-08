@@ -205,6 +205,18 @@ func (v *Validator) validateRule(idx int, rule *fileRule, seen map[string]int) [
 	var errs []string
 	prefix := fmt.Sprintf("rule[%d]", idx)
 
+	// The gateway does not evaluate rule conditions: only "depends_on" and
+	// "ref" are read, and only to order rules. A rule that carries any other
+	// condition (e.g. principal_id, agent_id, time windows, as written by
+	// the OPA/Cedar adapters) would NOT be restricted by it: it would apply
+	// to everyone, silently widening an allow or narrowing nothing. Refuse
+	// it loudly instead.
+	for key := range rule.Conditions {
+		if key != "depends_on" && key != "ref" {
+			errs = append(errs, fmt.Sprintf("%s: condition %q is not evaluated by the gateway, so this rule would apply to every request; scope it with action_type, environment and resource instead", prefix, key))
+		}
+	}
+
 	if rule.ActionType == "" {
 		errs = append(errs, fmt.Sprintf("%s: action_type is required", prefix))
 	}
