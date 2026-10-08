@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -139,7 +140,7 @@ func TestDenyDecisionBlocksWithoutAskingAnyone(t *testing.T) {
 }
 
 // A policy "allow" on a host in the sensitive list is still a human decision.
-func TestSensitiveHostForcesApprovalEvenWhenPolicyAllows(t *testing.T) {
+func TestSensitiveHostIsBlockedEvenWhenPolicyAllows(t *testing.T) {
 	srv, sg, _ := newScripted(t, "allow")
 	up, hits := upstreamCounting(t)
 	srv.SetSensitiveHosts([]string{"127.0.0.1"})
@@ -148,8 +149,14 @@ func TestSensitiveHostForcesApprovalEvenWhenPolicyAllows(t *testing.T) {
 	if hits.Load() != 0 || rec.Code == 200 {
 		t.Fatalf("sensitive host reached without approval: code=%d hits=%d", rec.Code, hits.Load())
 	}
-	if sg.creates.Load() != 1 {
-		t.Fatalf("an approval should have been opened, got %d", sg.creates.Load())
+	// A DENY with an explanation, not an approval request: the gateway only
+	// opens approvals for decisions it recorded as escalate (409 otherwise),
+	// so a proxy-forced pause could never have been answered.
+	if rec.Code != http.StatusForbidden || sg.creates.Load() != 0 {
+		t.Fatalf("want 403 and no approval opened, got code=%d approvals=%d", rec.Code, sg.creates.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "sensitive_host") {
+		t.Fatalf("the refusal must say why: %s", rec.Body.String())
 	}
 }
 

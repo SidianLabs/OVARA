@@ -111,9 +111,9 @@ func countLines(t *testing.T, path string) int {
 	return strings.Count(string(data), "\n")
 }
 
-// Reads that carry data (a body, or an enormous query) are escalated even
+// Reads that carry data (a body, or an enormous query) are refused even
 // when policy allows the verb, and never reach the upstream unapproved.
-func TestReadsThatCarryDataAreEscalated(t *testing.T) {
+func TestReadsThatCarryDataAreRefused(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)

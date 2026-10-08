@@ -32,7 +32,7 @@ agents, and fix correctness bugs found in an in-depth review.
   from a list of trusted hosts (package registries, code hosts, docs); git
   clone/fetch only from GitHub, GitLab and Bitbucket; any other host pauses for
   approval. A `GET`/`HEAD` that carries a body or a query over 512 bytes is
-  escalated even on an allowed host. **Behaviour change:** existing
+  refused (403, with the reason) even on an allowed host. **Behaviour change:** existing
   `policy.json` files are not rewritten; re-run `ovara init -force` in a scratch
   directory and compare, or add rules for hosts you need.
 - **No DNS lookup before policy.** `CONNECT` no longer resolves a host name

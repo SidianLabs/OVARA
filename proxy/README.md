@@ -104,9 +104,11 @@ resource string.
 
 Reachable internal services are an escape hatch: an agent that exploits a
 package proxy or artifact registry inside its allowed path can pivot through
-it to the internet. List such hosts in `sensitive_hosts` (same glob syntax
-as credential bindings) and every request to them is forced down the
-escalate path — held for human approval regardless of policy:
+as credential bindings). A request to them that policy would **allow** is
+refused instead (policy "escalate" still goes to a human as usual).
+policy rule explicitly matches it. (An earlier version described this as
+"held for human approval"; the gateway only opens approvals for decisions it
+recorded as escalate, so a proxy-forced pause was never possible.)
 
 ```json
 {"sensitive_hosts": ["artifactory.internal", "*.pkg.internal.corp"]}

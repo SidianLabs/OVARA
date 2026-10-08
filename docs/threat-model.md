@@ -20,7 +20,7 @@ decision is written to a signed, hash-chained receipt log.
 | A well-meaning agent makes a destructive call (`git push` to `main`, delete a branch, deploy) | Writes escalate to a human | The agent's traffic goes through the proxy |
 | The agent leaks a secret it was given | The agent never holds your real keys; they are added upstream of it | You gave Ovara the keys, not the agent |
 | A reflected secret (a debug endpoint echoes the Authorization header) | Injected values and the bare token are scrubbed from response headers, body and trailers; encoded or ranged responses on credentialed requests are refused | The request was credentialed |
-| The agent reads private data and sends it to a server it controls | Reads are allowed only from a short list of trusted hosts; any other host escalates; a read carrying a body or a long query escalates | The default policy is kept |
+| The agent reads private data and sends it to a server it controls | Reads are allowed only from a short list of trusted hosts; any other host pauses for approval; a read carrying a body or a long query is refused | The default policy is kept |
 | Data smuggled in a host name (DNS exfiltration) | A host name is not resolved until policy has approved a request to it | Always |
 | Edits to the log after the fact | Receipts are Ed25519-signed and hash-chained; `ovara log` and `ovara doctor` verify the chain | The signing key and the log are not both under the agent's control (see below) |
 | A crash re-running an approved action | The "executing" claim is written to disk before the action runs; if that write fails the action is refused | Always |

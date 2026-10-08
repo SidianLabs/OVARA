@@ -494,9 +494,13 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		d = &gateway.Decision{Decision: "allow"}
 		failedOpen = true
 	}
-	// Pivot-risk hosts always require approval, regardless of policy allow.
+	// Pivot-risk hosts are never reachable on a policy "allow" alone. This is a
+	// DENY, not a pause: the gateway only opens an approval for a decision it
+	// recorded as escalate (it refuses with 409 for an allowed one, on purpose),
+	// so a proxy-forced "escalate" could never be approved and only ever looked
+	// like a pause. To permit such a host, change the policy.
 	if d.Decision == "allow" && matchHostGlob(s.sensitiveHosts, r.URL.Hostname()) {
-		d.Decision = "escalate"
+		d.Decision = "deny"
 		d.ReasonCodes = append(d.ReasonCodes, "sensitive_host")
 	}
 	// A "read" that carries a body or a huge query string can move data out
@@ -504,7 +508,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// (it can hold secrets), so shape is the only signal we have.
 	if d.Decision == "allow" && !failedOpen {
 		if why := readCarriesData(r); why != "" {
-			d.Decision = "escalate"
+			d.Decision = "deny"
 			d.ReasonCodes = append(d.ReasonCodes, why)
 		}
 	}

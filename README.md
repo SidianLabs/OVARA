@@ -126,9 +126,10 @@ The default policy `ovara init` writes is short and readable:
 
 Reads are allowed only from a list of hosts an agent legitimately needs (package
 registries, code hosts, documentation); `ovara policy` shows the full list. A
-host that is not on it pauses for approval, and so does a `GET` that carries a
-request body or a very long query string. To trust another host, add a rule for
-it to `policy.json`.
+host that is not on it pauses for approval. A `GET` that carries a request body
+or a very long query string is **refused** with an explanation (the path and
+query of a read can carry data out), even on a trusted host. To trust another
+host, add a rule for it to `policy.json`.
 
 `allow` lets it through, `escalate` pauses it for you, `deny` blocks it. If more
 than one rule matches, **deny beats allow, and allow beats escalate**. Anything not
