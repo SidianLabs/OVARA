@@ -53,13 +53,17 @@ func (u *uiServer) handler() http.Handler {
 			Agent     string `json:"agent"`
 			CreatedAt string   `json:"created_at"`
 			Details   []string `json:"details"`
+			// TrustHost is set when the request is a read from a named https
+			// host, i.e. when "approve and trust this host for reads" applies.
+			TrustHost string `json:"trust_host,omitempty"`
 		}
 		out := []item{}
 		for _, a := range list {
 			if u.admin.stale(a) {
 				continue
 			}
-			out = append(out, item{a.ApprovalID, describe(a.Resource), a.Resource, a.AgentID, a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), contextLines(a)})
+			th, _ := trustableHost(a.Resource)
+			out = append(out, item{a.ApprovalID, describe(a.Resource), a.Resource, a.AgentID, a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), contextLines(a), th})
 		}
 		writeJSONResp(w, out)
 	}))
@@ -69,9 +73,36 @@ func (u *uiServer) handler() http.Handler {
 			if !approve {
 				reason = "denied from the ovara approval page"
 			}
-			if err := u.admin.resolve(r.PathValue("id"), approve, whoAmI()+" (browser)", reason); err != nil {
+			id := r.PathValue("id")
+			// "Approve and trust this host for reads": look the request up
+			// first so the host comes from the gateway's record, never from
+			// anything the browser sends.
+			trustHost := ""
+			if approve && r.URL.Query().Get("trust") == "1" {
+				list, err := u.admin.pending()
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				for _, a := range list {
+					if a.ApprovalID == id {
+						trustHost, _ = trustableHost(a.Resource)
+					}
+				}
+				if trustHost == "" {
+					http.Error(w, "trusting a host only applies to reads (GET/HEAD) from a named https host", http.StatusBadRequest)
+					return
+				}
+			}
+			if err := u.admin.resolve(id, approve, whoAmI()+" (browser)", reason); err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
+			}
+			if trustHost != "" {
+				if _, err := trustReadHost(u.admin.dir, trustHost); err != nil {
+					http.Error(w, "approved, but could not trust the host: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
 			}
 			writeJSONResp(w, map[string]bool{"ok": true})
 		})

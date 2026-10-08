@@ -54,7 +54,15 @@ check "huge query string to a trusted host is refused" 403 "$(agent curl -s -o /
 
 echo "=== C. the human in the loop"
 ( agent curl -s -o /dev/null -w '%{http_code}' --max-time 40 https://example.com/ > /tmp/c1 ) & P=$!
-if ID=$(waitpending); then ovara approve "$ID" -dir /tmp/d >/dev/null 2>&1; wait $P; check "unknown host: paused, approved, then passes" 200 "$(cat /tmp/c1)"; else wait $P; bad "unknown host: nothing became pending" "got $(cat /tmp/c1)"; fi
+if ID=$(waitpending); then
+  ovara approve "$ID" -dir /tmp/d -trust-host 2>&1 | grep -q "trusted example.com for reads" && ok "approve with -trust-host reports the host as trusted" || bad "-trust-host did not report trusting the host" ""
+  wait $P; check "unknown host: paused, approved, then passes" 200 "$(cat /tmp/c1)"
+  sleep 3
+  check "trusted host: the next read is NOT asked again" 200 "$(agent curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://example.com/)"
+  ( agent curl -s -o /dev/null -w '%{http_code}' --max-time 30 -X POST -d x https://example.com/ > /tmp/c5 ) & P5=$!
+  if ID5=$(waitpending); then ok "trusting a host for reads does not open writes (a POST there still pauses)"; ovara deny "$ID5" -dir /tmp/d >/dev/null 2>&1; else bad "a POST to a read-trusted host did not pause" ""; fi
+  wait $P5
+else wait $P; bad "unknown host: nothing became pending" "got $(cat /tmp/c1)"; fi
 ( agent curl -s -o /dev/null -w '%{http_code}' --max-time 40 https://example.org/ > /tmp/c2 ) & P=$!
 if ID=$(waitpending); then ovara deny "$ID" -dir /tmp/d >/dev/null 2>&1; wait $P; check "unknown host: paused, DENIED by a human" 403 "$(cat /tmp/c2)"; else wait $P; bad "deny scenario: nothing pending" "got $(cat /tmp/c2)"; fi
 ( agent curl -s -o /dev/null -w '%{http_code}' --max-time 60 -X POST -d x https://github.com/octocat/Hello-World.git/git-receive-pack > /tmp/c3 ) & P=$!
@@ -92,8 +100,8 @@ if [ "$CODE" = 200 ]; then
 else skip "credential injection + scrub" "httpbin.org unreachable (HTTP $CODE)"; fi
 
 echo "=== E. policy edits apply live"
-python3 /tmp/allow.py example.com; sleep 3
-check "new allow rule takes effect without a restart" 200 "$(agent curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://example.com/)"
+python3 /tmp/allow.py www.iana.org; sleep 3
+check "new allow rule takes effect without a restart" 200 "$(agent curl -s -o /dev/null -L -w '%{http_code}' --max-time 20 https://www.iana.org/)"
 
 echo "=== F. the browser approval page"
 TOK=$(grep -oE '#t=[A-Za-z0-9_-]+' /tmp/run.log | head -1 | cut -c4-)

@@ -33,6 +33,9 @@ type adminClient struct {
 	// agent gets a timeout. Approving after that changes nothing for the
 	// agent, so such approvals are treated as expired. Zero disables this.
 	maxWait time.Duration
+	// dir is the deployment directory, needed to edit policy.json when the
+	// approver chooses to trust a host for reads.
+	dir string
 }
 
 // stale reports whether the agent has already stopped waiting for a.
@@ -115,6 +118,7 @@ func newAdminClient(dir string) (*adminClient, error) {
 		token:   cfg.Tokens[0],
 		hc:      &http.Client{Timeout: 10 * time.Second},
 		maxWait: proxyWait(dir),
+		dir:     dir,
 	}, nil
 }
 
@@ -324,6 +328,7 @@ func cmdResolve(approve bool, args []string) error {
 	}
 	fs, dir := dirFlag(name)
 	reason := fs.String("reason", "", "optional reason, recorded in the audit trail")
+	trust := fs.Bool("trust-host", false, "with approve: also allow future reads (GET/HEAD) from this host without asking")
 	// Accept the id before or after the flags: `ovara approve <id> -dir x`.
 	var id string
 	var rest []string
@@ -344,8 +349,36 @@ func cmdResolve(approve bool, args []string) error {
 	if err != nil {
 		return err
 	}
+	var host string
+	if approve && *trust {
+		// Look the request up BEFORE approving, so a request that cannot be
+		// trusted for reads (a POST, say) fails before anything is approved.
+		list, err := c.pending()
+		if err != nil {
+			return err
+		}
+		for _, a := range list {
+			if a.ApprovalID == id {
+				h, ok := trustableHost(a.Resource)
+				if !ok {
+					return fmt.Errorf("-trust-host only applies to reads (GET/HEAD) from a named https host; this request is %q", a.Resource)
+				}
+				host = h
+			}
+		}
+		if host == "" {
+			return fmt.Errorf("approval %s is not pending", id)
+		}
+	}
 	if err := c.resolve(id, approve, whoAmI(), *reason); err != nil {
 		return err
+	}
+	if host != "" {
+		if added, err := trustReadHost(c.dir, host); err != nil {
+			fmt.Printf("approved, but could not trust %s: %v\n", host, err)
+		} else if added {
+			fmt.Printf("trusted %s for reads: GET/HEAD there will no longer ask (edit policy.json to undo).\n", host)
+		}
 	}
 	if approve {
 		fmt.Printf("approved %s — the agent's request will now go through.\n", id)
@@ -405,7 +438,12 @@ func watchLoop(c *adminClient, in io.Reader, out io.Writer, every time.Duration,
 // the input stream is closed.
 func askAndResolve(c *adminClient, a pendingApproval, rd *bufio.Reader, out io.Writer) bool {
 	for {
-		fmt.Fprint(out, "  [a]pprove  [d]eny  [s]kip > ")
+		host, canTrust := trustableHost(a.Resource)
+		if canTrust {
+			fmt.Fprintf(out, "  [a]pprove  [t]rust %s for reads  [d]eny  [s]kip > ", host)
+		} else {
+			fmt.Fprint(out, "  [a]pprove  [d]eny  [s]kip > ")
+		}
 		line, err := rd.ReadString('\n')
 		ans := strings.ToLower(strings.TrimSpace(line))
 		if err != nil && ans == "" {
@@ -417,6 +455,17 @@ func askAndResolve(c *adminClient, a pendingApproval, rd *bufio.Reader, out io.W
 				fmt.Fprintln(out, "  could not approve:", e)
 			} else {
 				fmt.Fprintln(out, "  ✓ approved")
+			}
+		case "t", "trust":
+			if !canTrust {
+				continue
+			}
+			if e := c.resolve(a.ApprovalID, true, whoAmI(), ""); e != nil {
+				fmt.Fprintln(out, "  could not approve:", e)
+			} else if _, e := trustReadHost(c.dir, host); e != nil {
+				fmt.Fprintln(out, "  ✓ approved, but could not trust the host:", e)
+			} else {
+				fmt.Fprintf(out, "  ✓ approved, and %s is trusted for reads from now on\n", host)
 			}
 		case "d", "deny", "n", "no":
 			if e := c.resolve(a.ApprovalID, false, whoAmI(), "denied from ovara watch"); e != nil {
