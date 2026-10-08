@@ -49,3 +49,6 @@ coverage/
 .env.*
 *.compact.tmp
 # Go fuzz cache (failing inputs live in testdata/fuzz and ARE committed)
+
+# local scratch for ad-hoc container debugging
+.scratch-scn/

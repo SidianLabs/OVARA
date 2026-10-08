@@ -21,6 +21,31 @@ agents, and fix correctness bugs found in an in-depth review.
 - `security/ebpf`, `security/apparmor`, `research/`, and a stray test
   `enrollment.json`. All remain in git history.
 
+### Fixed (found by running the real binary the way a person uses it)
+
+New end-to-end harness `tests/scenarios/` drives `pip`, `npm`, `git clone`,
+Node `fetch()`, `curl`, a human approving and denying, a real injected key, live
+policy edits, the approval page, tampering and a restart. It found four bugs
+that the unit suites had not:
+
+- **The shield quarantined normal agents.** Every deny *and every escalation*
+  counted as a risk event, forever; after three, the agent was restricted and
+  every request, including reads from trusted hosts, needed a human. Only
+  denials count now, events age out of a 10 minute window, automatic
+  restrictions lift after 15 minutes (manual ones still last until lifted),
+  and quarantine needs 10 denials, not 3.
+- **Policy hot reload never ran.** The watcher only started when
+  `policy_refresh_interval > 0`, which `ovara init` never sets, so edits to a
+  running deployment were ignored while the README promised otherwise. It now
+  starts by default, watches the directory so rename-style saves are caught,
+  and folds bursts of events into one reload.
+- **Proxy-forced "pauses" could never be approved.** The gateway only opens an
+  approval for a decision it recorded as escalate; the proxy's forced
+  escalation (sensitive hosts, reads carrying a body) hit a 409 and the agent
+  got an instant 403. They are now explicit denials with the reason shown.
+- **Receipts were written after the response.** An agent could hold a response
+  before its receipt existed. The receipt is now written before the headers.
+
 ### Security (hardening pass)
 
 - **Rules with conditions the gateway does not evaluate are refused** at load
