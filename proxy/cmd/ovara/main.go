@@ -507,8 +507,12 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 		if cfg.AgentToken != "" {
 			userinfo = "agent:" + cfg.AgentToken + "@"
 		}
-		log.Printf("boundary up — run your agent inside it, as YOUR user (root in the boundary could remove the firewall):")
-		log.Printf("  sudo ip netns exec %s sudo -u \"$USER\" env HTTPS_PROXY=http://%s%s:%s SSL_CERT_FILE=%s/var/ca.pem <agent>", ns, userinfo, boundaryProxyIP(subnetIdx), proxyPort, mustGetwd())
+		log.Printf("boundary up — run your agent inside it as an UNPRIVILEGED user that is NOT the user running Ovara")
+		log.Printf("(root in the boundary could remove the firewall; the same user as Ovara could read its keys and edit policy.json):")
+		log.Printf("  sudo useradd --system --no-create-home ovara-agent   # once")
+		log.Printf("  sudo install -m 644 %s/var/ca.pem /usr/local/share/ovara-ca.pem   # the PUBLIC cert; the agent needs only this", mustGetwd())
+		log.Printf("  sudo ip netns exec %s sudo -u ovara-agent env HTTPS_PROXY=http://%s%s:%s SSL_CERT_FILE=/usr/local/share/ovara-ca.pem <agent>", ns, userinfo, boundaryProxyIP(subnetIdx), proxyPort)
+		log.Printf("and keep that user out of this directory:  chmod 700 %s", mustGetwd())
 	} else {
 		log.Printf("boundary network ready — launch the agent per the docker recipe above")
 	}
