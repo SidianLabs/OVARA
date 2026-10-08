@@ -46,7 +46,6 @@ import (
 	"ovara.runtime.gateway/internal/sandbox"
 	"ovara.runtime.gateway/internal/trust"
 
-	"github.com/fsnotify/fsnotify"
 )
 
 // Run starts the gateway with the given config file and blocks until
@@ -229,7 +228,10 @@ func Run(configPath string) error {
 		} else {
 			policyStore = store
 
-			if cfg.PolicyRefreshInterval > 0 {
+			// On by default: `ovara init` never sets policy_refresh_interval, so with the
+			// old "> 0" test hot reload was off in every deployment while the docs
+			// promised it. A negative value is the explicit opt-out.
+			if cfg.PolicyRefreshInterval >= 0 {
 				policySource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
 				w, err := policy.NewWatcher(policySource)
 				if err != nil {
@@ -243,7 +245,19 @@ func Run(configPath string) error {
 						go func() {
 							defer wg.Done()
 							for event := range watcher.Events() {
-								if event.Has(fsnotify.Write) {
+								if watcher.IsPolicyEvent(event) {
+									// Let a multi-step write (truncate, then write) finish
+									// and fold the burst of events into one reload; a
+									// half-written file fails to parse and keeps the old
+									// policy.
+									time.Sleep(150 * time.Millisecond)
+									for drained := false; !drained; {
+										select {
+										case <-watcher.Events():
+										default:
+											drained = true
+										}
+									}
 									if err := watcher.Reload(); err != nil {
 										log.Printf("policy reload failed: %v", err)
 										metrics.RecordPolicyReload(false, err.Error())
