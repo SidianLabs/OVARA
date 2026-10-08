@@ -109,14 +109,12 @@ ovara/
 ├── sdk/                 # Client SDKs (TypeScript, Python)
 ├── docs/                # Documentation
 ├── examples/            # Sample configs and demo scripts
-├── security/            # Security profiles (AppArmor, eBPF, Seccomp) and findings
+├── security/            # Sandbox notes and security findings
 ├── tools/               # Operator tools (CLI, migration, benchmarks)
 │
 │   Experimental — not connected to the gateway yet:
 ├── integrations/        # MCP and OpenAI integrations
-├── policy/              # Policy adapters and compiler
-├── services/            # Standalone services (approval, alerting, ...)
-└── research/            # Research notes
+└── policy/              # Policy compiler
 ```
 
 ## Branch and Commit Conventions

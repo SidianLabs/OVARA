@@ -10,7 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Focus: make the product usable and understandable for people running coding
 agents, and fix correctness bugs found in an in-depth review.
 
+### Removed
+
+- `services/` (approval, alerting, observability, receipt-storage): four
+  standalone services that nothing called, with in-memory state and, for
+  receipt-storage, a signature scheme (HMAC) that no longer matches the
+  gateway's Ed25519 receipts.
+- `policy/adapters/` (OPA, Cedar, custom): they scoped rules by writing
+  `conditions` the gateway never evaluates, which silently widened rules.
+- `security/ebpf`, `security/apparmor`, `research/`, and a stray test
+  `enrollment.json`. All remain in git history.
+
 ### Security (hardening pass)
+
+- **Rules with conditions the gateway does not evaluate are refused** at load
+  and in the validator (only `depends_on` / `ref` are understood). They used
+  to load and apply to every request.
 
 - **Default policy no longer lets an agent send data out unapproved.** `GET *`
   and the host-less `POST *git-upload-pack` rule are gone. Reads are allowed only

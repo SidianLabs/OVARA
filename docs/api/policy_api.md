@@ -149,13 +149,13 @@ plane to enrolled gateways via the cloud enrollment sync service.
 
 ## Adapters
 
-Policies from other formats (OPA Rego, AWS Cedar, custom JSON) can be
-translated to Ovara's native format using the adapters in
-[`policy/adapters/`](../../policy/adapters/):
-
-- [OPA (Rego) adapter](../../policy/adapters/opa/)
-- [Cedar adapter](../../policy/adapters/cedar/)
-- [Custom JSON adapter](../../policy/adapters/custom/)
+Translators from OPA Rego, AWS Cedar and custom JSON used to live in
+`policy/adapters/`. They were **removed**: they expressed principal scoping
+as rule `conditions`, which the gateway never evaluates, so a rule meant for
+one agent would have applied to everyone. The gateway now refuses to load any
+rule with a condition other than `depends_on` / `ref`. Write policies in
+Ovara's native format and scope them with `action_type`, `environment` and
+`resource`.
 
 ## Validation
 

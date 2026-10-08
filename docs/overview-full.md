@@ -353,7 +353,6 @@ ovara/
 ├── examples/               # Sample configs, demo scripts
 ├── integrations/           # MCP / OpenAI wrappers over the SDK   (experimental)
 ├── policy/                 # Policy compiler                       (experimental)
-├── services/               # Standalone microservices              (experimental, not connected)
 ├── security/               # Sandbox profiles and notes            (experimental)
 └── tests/                  # End-to-end and boundary harnesses
 ```

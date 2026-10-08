@@ -183,7 +183,7 @@ forgeries still verify. Hardware-backed key protection (KMS/HSM) is not built ye
 | Proxy and the `ovara` command (`init`, `run`, `watch`, `demo`, `doctor`) | [`proxy`](proxy) | **Works.** Runs on Linux, macOS and Windows |
 | Enforced network boundary | [`proxy/scripts`](proxy/scripts) | Linux only |
 | TypeScript and Python SDKs | [`sdk`](sdk) | Working clients for the gateway API, not yet published to npm/PyPI |
-| MCP/OpenAI integrations, standalone services, policy compiler | `integrations`, `services`, `policy` | **Experimental.** Partly built and not connected to the gateway yet; do not rely on them |
+| MCP/OpenAI integrations, policy compiler | `integrations`, `policy` | **Experimental.** Partly built and not connected to the gateway yet; do not rely on them |
 | Cloud control plane, admin dashboard, SSO, compliance | — | **Removed.** They could not talk to the gateway; see [`docs/decisions/cloud-control-plane.md`](docs/decisions/cloud-control-plane.md) |
 
 ## Where to go next

@@ -1,5 +1,5 @@
 #!/bin/bash
-# full_stack_demo.sh - Complete Ovara demo showcasing all features
+# full_stack_demo.sh - walk the gateway HTTP API with curl (needs a running gateway)
 # Usage: ./examples/full_stack_demo.sh [gateway_url]
 set -e
 
@@ -124,18 +124,9 @@ echo "============================================"
 echo "  Demo Complete!"
 echo "============================================"
 echo ""
-echo "Services running:"
-echo "  - Gateway:        $GATEWAY"
-echo "  - Control Plane:  http://localhost:3000"
-echo "  - SSO:            http://localhost:3001"
-echo "  - Compliance:     http://localhost:3002"
-echo "  - Analytics:      http://localhost:3003"
-echo "  - Approval:       http://localhost:8081"
-echo "  - Receipt:        http://localhost:8082"
-echo "  - Alerting:       http://localhost:8083"
-echo "  - Observability:  http://localhost:8084"
+echo "Gateway: $GATEWAY"
 echo ""
-echo "Quick commands:"
-echo "  make test         # Run all tests"
-echo "  make build        # Build all modules"
-echo "  make docker-up    # Start full stack"
+echo "Next:"
+echo "  ovara demo        # the 30-second story, no setup"
+echo "  make test         # run all tests"
+echo "  make build        # build all modules"
