@@ -3,6 +3,7 @@ package evaluator
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -143,6 +144,8 @@ type SimResult struct {
 	TrustLevel        models.TrustLevel
 	PolicyVersion     string
 	Passed            bool
+	// MatchedRule names the rule that decided (see RuleOutcome.Rule).
+	MatchedRule string `json:"MatchedRule,omitempty"`
 }
 
 type BatchSimResult struct {
@@ -464,10 +467,14 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 		requiresApproval = true
 	}
 
-	if req.AgentIdentity != nil && decision != "" {
+	// Only DENIES are risk events. An escalation is the checkpoint doing its
+	// job (a human is being asked); counting it as suspicious meant that three
+	// approved pushes quarantined the agent, after which every request,
+	// including reads from trusted hosts, needed a human.
+	if req.AgentIdentity != nil && decision != "" && decision != models.DecisionEscalate {
 		e.shieldStore.RecordDecision(req.AgentIdentity.SubjectID, string(decision))
-		if e.shieldStore.ShouldAutoRestrict(req.AgentIdentity.SubjectID, 3) {
-			e.shieldStore.AutoRestrictAfterRepeatedRisk(req.AgentIdentity.SubjectID, 3)
+		if e.shieldStore.ShouldAutoRestrict(req.AgentIdentity.SubjectID, autoRestrictThreshold) {
+			e.shieldStore.AutoRestrictAfterRepeatedRisk(req.AgentIdentity.SubjectID, autoRestrictThreshold)
 		}
 	}
 
@@ -562,6 +569,21 @@ type RuleOutcome struct {
 	// LeaseRequired is set when the matched rule carries require_lease:
 	// an allow outcome without a valid lease escalates instead.
 	LeaseRequired bool
+	// Rule names the deciding rule for people (its description, else its
+	// resource pattern); empty when no rule matched (default escalate).
+	Rule string
+}
+
+// ruleLabel is how a rule is named to a person: its description when
+// the operator wrote one, else its resource pattern.
+func ruleLabel(r policy.Rule) string {
+	if r.Description != "" {
+		return r.Description
+	}
+	if r.Resource != "" {
+		return r.Resource
+	}
+	return r.ActionType + " / " + r.Environment
 }
 
 func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
@@ -573,39 +595,39 @@ func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *mode
 	for _, r := range actionRules {
 		if res(r) && r.Deny && (r.Environment == "*" || r.Environment == string(req.Environment)) {
 			if req.Environment == models.EnvironmentProduction {
-				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
+				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied, Rule: ruleLabel(r)}
 			}
-			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny}
+			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: ruleLabel(r)}
 		}
 	}
 	for _, r := range envRules {
 		if res(r) && r.Deny && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
 			if req.Environment == models.EnvironmentProduction {
-				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied}
+				return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied, Rule: ruleLabel(r)}
 			}
-			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny}
+			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: ruleLabel(r)}
 		}
 	}
 
 	for _, r := range actionRules {
 		if res(r) && r.Allow && (r.Environment == "*" || r.Environment == string(req.Environment)) {
-			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease}
+			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
 		}
 	}
 	for _, r := range envRules {
 		if res(r) && r.Allow && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
-			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease}
+			return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
 		}
 	}
 
 	for _, r := range actionRules {
 		if res(r) && r.Escalate && (r.Environment == "*" || r.Environment == string(req.Environment)) {
-			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
+			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(r)}
 		}
 	}
 	for _, r := range envRules {
 		if res(r) && r.Escalate && r.Environment != "*" && (r.ActionType == "*" || r.ActionType == string(req.ActionType)) {
-			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate}
+			return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(r)}
 		}
 	}
 
@@ -697,6 +719,7 @@ func (e *Evaluator) Simulate(req *models.ActionRequest, candidateStore *policy.S
 		TrustScore:       trustResult.Score,
 		TrustLevel:       trustResult.Level,
 		PolicyVersion:    candidateStore.Version(),
+		MatchedRule:      outcome.Rule,
 		Passed:           true,
 	}, nil
 }
@@ -817,20 +840,39 @@ func (e *Evaluator) buildReceiptStub(req *models.ActionRequest, decision models.
 }
 
 func generateID() string {
-	return fmt.Sprintf("dec_%s", uuid.New().String()[:16])
+	// The whole UUID: a truncated one has ~60 random bits, and a colliding
+	// decision/receipt ID would overwrite a receipt in the map.
+	return "dec_" + uuid.New().String()
 }
 
+// actionDigest binds an approval to exactly the request that was evaluated.
+// Every field is length-prefixed (so "ab"+"c" and "a"+"bc" differ), the
+// environment and metadata are covered, and the full SHA-256 is kept: the
+// previous digest was an undelimited concatenation truncated to 64 bits.
 func actionDigest(req *models.ActionRequest) string {
 	h := sha256.New()
-	h.Write([]byte(string(req.ActionType)))
-	h.Write([]byte(req.Resource))
+	field := func(s string) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+		h.Write(n[:])
+		h.Write([]byte(s))
+	}
+	field("ovara-action-digest-v2")
+	field(string(req.ActionType))
+	field(req.Resource)
+	field(string(req.Environment))
 	if req.AgentIdentity != nil {
-		h.Write([]byte(req.AgentIdentity.SubjectID))
+		field(req.AgentIdentity.SubjectID)
+	} else {
+		field("")
 	}
 	if req.CapabilityLease != nil {
-		h.Write([]byte(req.CapabilityLease.LeaseID))
+		field(req.CapabilityLease.LeaseID)
+	} else {
+		field("")
 	}
-	return "sha256:" + hex.EncodeToString(h.Sum(nil))[:16]
+	field(string(req.Metadata))
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 // trustLevelBelow returns true if actualLevel is below the named minimum.
@@ -849,3 +891,9 @@ func trustLevelBelow(actual models.TrustLevel, minName string) bool {
 	}
 	return actualOrd < minOrd
 }
+
+// autoRestrictThreshold is how many denials within the shield's risk window
+// quarantine an agent. Three was far too low: an agent retrying one blocked
+// request a few times is ordinary behaviour, not an attack. Probing that
+// persists past this still trips the shield.
+const autoRestrictThreshold = 10

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"ovara.proxy/internal/config"
@@ -42,10 +43,26 @@ func cmdDoctor(args []string) error {
 	}
 	fmt.Println()
 	if failed {
-		fmt.Println("CONTAINMENT: NOT GUARANTEED — resolve FAIL items")
+		fmt.Println("CONFIGURATION: NOT SAFE — resolve the FAIL items")
 		return fmt.Errorf("posture audit failed")
 	}
-	fmt.Println("CONTAINMENT: VALID UNDER DOCUMENTED ASSUMPTIONS")
+	warned := false
+	for _, c := range checks {
+		if c.status == "WARN" {
+			warned = true
+		}
+	}
+	// This audits files, not the running system. It cannot see which OS user
+	// the agent runs as, or whether the agent has a network path around the
+	// proxy, so it never claims the agent is contained.
+	if warned {
+		fmt.Println("CONFIGURATION: OK, with warnings above")
+	} else {
+		fmt.Println("CONFIGURATION: OK")
+	}
+	fmt.Println("NOT CHECKED: that the agent runs as a different OS user than Ovara, and that")
+	fmt.Println("it has no network path around the proxy (use `ovara run --boundary`). Until")
+	fmt.Println("both hold, a hostile agent can bypass or rewrite what Ovara records.")
 	return nil
 }
 
@@ -130,10 +147,9 @@ func auditDeployment(dir string) []check {
 		{"gateway_key_file", "gateway signing key"},
 		{"identity_registry_file", "identity registry"},
 		{"replay_file", "replay journal"},
-		{"continuation_file", "continuations"},
-		{"approval_file", "approvals"},
+		{"continuations_file", "continuations"},
+		{"approvals_file", "approvals"},
 		{"execution_file", "executions"},
-		{"anchor_file", "anchor checkpoints"},
 	}
 	var missing []string
 	for _, d := range durable {
@@ -145,6 +161,17 @@ func auditDeployment(dir string) []check {
 		out = append(out, check{"durable state", "PASS", "all authority stores file-backed"})
 	} else {
 		out = append(out, check{"durable state", "WARN", fmt.Sprintf("memory-mode: %s — restart loses this trust state", strings.Join(missing, ", "))})
+	}
+	// An anchor keeps a copy of the log's head somewhere the agent's user
+	// cannot write. Without one, anyone who can write this directory can
+	// roll the log back or rewrite it, and nothing here would notice.
+	if str("gateway_anchor_url") == "" {
+		out = append(out, check{"anchor", "WARN", "no off-host anchor (gateway_anchor_url): a user who can write this directory can rewrite the log undetected"})
+	} else {
+		out = append(out, check{"anchor", "PASS", "log head is anchored at " + str("gateway_anchor_url")})
+	}
+	if b("fail_open") || b("unsafe_no_agent_auth") {
+		out = append(out, check{"unsafe flags", "FAIL", "fail_open / unsafe_no_agent_auth is set: requests can bypass the checkpoint"})
 	}
 	if b("journal_signing_required") {
 		out = append(out, check{"journal signing", "PASS", "journal_signing_required=true"})
@@ -182,10 +209,50 @@ func auditDeployment(dir string) []check {
 		}
 	}
 
+	// --- file permissions -----------------------------------------------------
+	out = append(out, auditPermissions(dir, pcfg)...)
+
 	// --- receipt chain -------------------------------------------------------
 	chainRes := auditReceipts(dir, pcfg)
 	out = append(out, chainRes...)
 
+	return out
+}
+
+// auditPermissions checks that secrets are private to the owner and that
+// nobody else can edit the policy. Mode bits mean nothing on Windows, so
+// there it says so instead of reporting a false PASS.
+func auditPermissions(dir string, cfg *config.Config) []check {
+	if runtime.GOOS == "windows" {
+		return []check{{"file permissions", "WARN", "not checked on Windows (mode bits are not enforced); keep this directory under your user's private profile"}}
+	}
+	secret := []string{"config.json", "proxy.json", cfg.ReceiptKeyFile, cfg.CAKeyFile, "var/gateway.key"}
+	var loose []string
+	for _, f := range secret {
+		if f == "" {
+			continue
+		}
+		fi, err := os.Stat(filepath.Join(dir, f))
+		if err != nil {
+			continue // not created yet
+		}
+		if fi.Mode().Perm()&0o077 != 0 {
+			loose = append(loose, fmt.Sprintf("%s (%#o)", f, fi.Mode().Perm()))
+		}
+	}
+	var out []check
+	if len(loose) > 0 {
+		out = append(out, check{"secret file permissions", "FAIL", "readable by other users: " + strings.Join(loose, ", ") + " — chmod 600"})
+	} else {
+		out = append(out, check{"secret file permissions", "PASS", "keys and tokens are owner-only"})
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "policy.json")); err == nil {
+		if fi.Mode().Perm()&0o022 != 0 {
+			out = append(out, check{"policy.json permissions", "FAIL", fmt.Sprintf("writable by group/other (%#o): anyone who can write it can allow everything", fi.Mode().Perm())})
+		} else {
+			out = append(out, check{"policy.json permissions", "PASS", "only the owner can edit the policy"})
+		}
+	}
 	return out
 }
 

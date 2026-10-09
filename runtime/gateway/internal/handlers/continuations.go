@@ -25,6 +25,7 @@ type ContinuationHandler struct {
 	orchestrator     *continuation.Orchestrator
 	identityChecker  func(agentID string) bool
 	revocation       revocation.Checker
+	approvals        continuation.ApprovalGetter
 	bulkMaxBatchCap  int
 	bulkDefaultBatch int
 }
@@ -49,6 +50,13 @@ func (h *ContinuationHandler) SetIdentityChecker(fn func(agentID string) bool) {
 // orchestrator drain loop does.
 func (h *ContinuationHandler) SetRevocation(rc revocation.Checker) {
 	h.revocation = rc
+}
+
+// SetApprovalStore installs the claim-time provenance boundary — the
+// synchronous execute path must resolve the approval record behind a
+// continuation exactly as the orchestrator does before dispatch.
+func (h *ContinuationHandler) SetApprovalStore(a continuation.ApprovalGetter) {
+	h.approvals = a
 }
 
 func (h *ContinuationHandler) SetExecutorRegistry(reg *execution.ExecutorRegistry) {
@@ -565,6 +573,25 @@ func (h *ContinuationHandler) handleExecute(w http.ResponseWriter, r *http.Reque
 			return
 		case deny:
 			cnt.MarkDenied("revocation", why)
+			h.store.Update(cnt)
+			api.JSONConflict(w, "continuation denied: "+why)
+			return
+		}
+	}
+
+	// Claim-time provenance: the approval record behind this continuation
+	// must resolve and match, or the continuation was not produced by the
+	// approval pipeline. Same semantics as the orchestrator's claimGate.
+	if h.approvals != nil {
+		deny, why, err := continuation.CheckClaimProvenance(h.approvals, cnt)
+		switch {
+		case err != nil:
+			cnt.MarkRequeue()
+			h.store.Update(cnt)
+			api.JSONConflict(w, "approval state unavailable — cannot execute")
+			return
+		case deny:
+			cnt.MarkDenied("provenance", why)
 			h.store.Update(cnt)
 			api.JSONConflict(w, "continuation denied: "+why)
 			return

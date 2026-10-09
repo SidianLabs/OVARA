@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -57,7 +56,10 @@ func main() {
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	log.Printf("anchoring chain head to %s (every=%d url=%q)", anchorFile, max(anchorEvery, 1), os.Getenv("OVARA_ANCHOR_URL"))
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	bindings := creds.Load(cfg.Credentials)
+	bindings, skipped := creds.LoadReport(cfg.Credentials)
+	for _, s := range skipped {
+		log.Printf("credential binding for %s skipped: %v not set", s.Host, s.Missing)
+	}
 
 	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
@@ -70,7 +72,7 @@ func main() {
 		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen, cfg.AgentToken != "")
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
-	if err := http.ListenAndServe(cfg.ListenAddr, srv); err != nil {
+	if err := proxy.NewHTTPServer(cfg.ListenAddr, srv).ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

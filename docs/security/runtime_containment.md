@@ -1,5 +1,13 @@
 # Runtime Containment
 
+> **Status: design document, partly removed.** The AppArmor profile
+> (`security/apparmor/`) and the eBPF interceptor (`security/ebpf/`)
+> described below were never wired into the gateway and have been removed
+> from the repository (they remain in git history). What is implemented
+> today is the network boundary in `proxy/scripts` (Linux `netns` /
+> Docker) and the Docker sandbox for command execution. See
+> [`../threat-model.md`](../threat-model.md) for what holds in each mode.
+
 Runtime containment is the defense-in-depth layer that prevents the
 agent from escaping its sandbox and gaining unauthorized access to
 the host system or network.

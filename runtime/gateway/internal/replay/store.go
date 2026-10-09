@@ -21,7 +21,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
+	"ovara.runtime.gateway/internal/appendfile"
+	"ovara.runtime.gateway/internal/flock"
 	"time"
 
 	"ovara.runtime.gateway/internal/record"
@@ -123,12 +124,12 @@ func OpenFile(path string, maxBytes int64, bindings ...*record.Binding) (*FileSt
 	}
 	s := &FileStore{f: f, seen: make(map[string]time.Time), maxBytes: maxBytes}
 	// flock the initial load too — another process may compact mid-read.
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(f); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("replay store: lock: %w", err)
 	}
 	err = s.absorb()
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	flock.Unlock(f)
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -208,7 +209,7 @@ func (s *FileStore) absorb() error {
 			// partial final line. It was never a confirmed consume —
 			// truncate it and continue.
 			if nl == int64(len(buf)) {
-				if err := s.f.Truncate(s.offset + pos); err != nil {
+				if err := appendfile.Truncate(s.f, s.offset+pos); err != nil {
 					return fmt.Errorf("replay store: truncate corrupt tail: %w", err)
 				}
 				s.offset += pos
@@ -247,21 +248,19 @@ func (s *FileStore) compact() error {
 		lines = append(lines, data...)
 		lines = append(lines, '\n')
 	}
-	// Truncate+rewrite on a SEPARATE non-append fd: O_APPEND ignores
-	// WriteAt offsets. Truncating in place (not rename) keeps the inode
-	// — every other process's fd and our own O_APPEND writes stay valid.
-	cf, err := os.OpenFile(s.f.Name(), os.O_RDWR, 0600)
-	if err != nil {
-		return fmt.Errorf("replay store: compact open: %w", err)
-	}
-	defer cf.Close()
-	if err := cf.Truncate(0); err != nil {
+	// Truncate to zero, then append the live set through our own
+	// O_APPEND fd (it writes at the new end, offset 0). Truncating in
+	// place (not rename) keeps the inode — every other process's fd and
+	// our own O_APPEND writes stay valid. Writing through s.f, not a
+	// second fd, matters on Windows: the flock is a byte-range lock
+	// owned by s.f's handle, and a second handle cannot write the range.
+	if err := appendfile.Truncate(s.f, 0); err != nil {
 		return fmt.Errorf("replay store: compact truncate: %w", err)
 	}
-	if _, err := cf.WriteAt(lines, 0); err != nil {
+	if _, err := s.f.Write(lines); err != nil {
 		return fmt.Errorf("replay store: compact write: %w", err)
 	}
-	if err := cf.Sync(); err != nil {
+	if err := s.f.Sync(); err != nil {
 		return fmt.Errorf("replay store: compact sync: %w", err)
 	}
 	s.offset = int64(len(lines))
@@ -281,10 +280,10 @@ func (s *FileStore) Consume(kind Kind, id string, expiresAt time.Time) Result {
 		return AlreadyConsumed
 	}
 
-	if err := syscall.Flock(int(s.f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(s.f); err != nil {
 		return StorageFailure
 	}
-	defer syscall.Flock(int(s.f.Fd()), syscall.LOCK_UN)
+	defer flock.Unlock(s.f)
 
 	if s.journal == nil {
 		if err := s.absorb(); err != nil {

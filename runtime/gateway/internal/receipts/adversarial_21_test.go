@@ -36,7 +36,9 @@ func TestAdv21_ReceiptsSigned(t *testing.T) {
 	}
 	os.Remove(p)
 
-	if _, err := NewFileBackedStore(p, 0, time.Hour, b); err != nil {
+	s, err := NewFileBackedStore(p, 0, time.Hour, b)
+	if err != nil {
 		t.Fatal(err)
 	}
+	s.Close()
 }

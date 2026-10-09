@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -207,8 +208,21 @@ func TestOpen_TornTail_Truncated(t *testing.T) {
 }
 
 func TestOpen_UnwritablePath_Fails(t *testing.T) {
-	if _, err := Open("/proc/definitely-not-writable/gwreg.jsonl"); err == nil {
-		t.Fatal("unopenable registry must fail")
+	// A parent that is a regular file is unopenable on every platform.
+	parent := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(parent, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{filepath.Join(parent, "gwreg.jsonl")}
+	if runtime.GOOS != "windows" {
+		// On Windows "/proc/..." is just C:\proc\..., which is writable.
+		paths = append(paths, "/proc/definitely-not-writable/gwreg.jsonl")
+	}
+	for _, p := range paths {
+		if r, err := Open(p); err == nil {
+			r.Close()
+			t.Fatalf("unopenable registry %s must fail", p)
+		}
 	}
 }
 
@@ -391,6 +405,7 @@ func TestConcurrentMixedOps_NoCorruption(t *testing.T) {
 	// Every committed line must parse — concurrent flock+append must
 	// never interleave a partial record.
 	f, _ := os.Open(p)
+	defer f.Close()
 	dec := json.NewDecoder(f)
 	for dec.More() {
 		var rec KeyRecord

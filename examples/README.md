@@ -4,7 +4,7 @@ This directory contains scripts for exercising the OVARA Runtime Gateway flows.
 
 ## Prerequisites
 
-- Go 1.21+ installed
+- Go 1.25+ installed
 - Gateway service running at `localhost:8080` (or set `GATEWAY` env var)
 
 ## Quick Start

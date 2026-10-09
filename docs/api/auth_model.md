@@ -105,9 +105,8 @@ Unsigned leases are rejected. Leases from issuers not in
 lease is never used as a source of trust — it is caller-supplied and
 cannot prove anything.
 
-For self-hosted deployments, issuers are configured via
-[`identity/registry`](../../identity/internal/store/registry.go) and
-propagated into `trusted_issuers`. For cloud deployments, issuers
+For self-hosted deployments, issuers are configured directly in the
+gateway config's `trusted_issuers` map (`ovara init` generates one). For cloud deployments, issuers
 register through the control plane.
 
 ## Authorization vs Authentication

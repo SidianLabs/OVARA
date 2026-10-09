@@ -12,7 +12,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/big"
 	"net"
 	"os"
@@ -33,10 +35,21 @@ type CA struct {
 
 // LoadOrCreate loads a persisted CA or generates a new ECDSA P-256 root.
 func LoadOrCreate(certFile, keyFile string) (*CA, error) {
-	if cert, key, err := load(certFile, keyFile); err == nil {
+	cert, key, err := load(certFile, keyFile)
+	if err == nil {
 		return &CA{cert: cert, key: key, certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), cache: map[string]*tls.Certificate{}}, nil
 	}
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	// Only a CA that does not exist yet may be created. A CA that exists
+	// but cannot be loaded (unreadable, corrupt, key/cert mismatch) is an
+	// error: silently replacing it would invalidate every trust-store
+	// installation and overwrite key material the operator may need.
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("CA files exist but cannot be used (%s, %s): %w; fix or remove them deliberately", certFile, keyFile, err)
+	}
+	if _, kerr := os.Stat(keyFile); kerr == nil {
+		return nil, fmt.Errorf("CA certificate %s is missing but key %s exists; refusing to overwrite the key", certFile, keyFile)
+	}
+	key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +67,7 @@ func LoadOrCreate(certFile, keyFile string) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	cert, err := x509.ParseCertificate(der)
+	cert, err = x509.ParseCertificate(der)
 	if err != nil {
 		return nil, err
 	}

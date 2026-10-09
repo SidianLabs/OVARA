@@ -2,7 +2,7 @@
 
 **Severity:** HIGH
 **Component:** proxy/internal/proxy/scrub.go, proxy.go:505-528
-**Status:** CONFIRMED LIVE (clean-room audit)
+**Status:** FIXED — proxy strips Accept-Encoding/Range on credentialed requests and refuses encoded bodies it cannot scrub (`proxy/internal/proxy/sec0001_test.go`)
 
 ## Preconditions
 A credential binding exists for a host whose response can reflect request

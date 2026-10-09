@@ -5,6 +5,211 @@ All notable changes to Ovara are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Focus: make the product usable and understandable for people running coding
+agents, and fix correctness bugs found in an in-depth review.
+
+### Removed
+
+- `services/` (approval, alerting, observability, receipt-storage): four
+  standalone services that nothing called, with in-memory state and, for
+  receipt-storage, a signature scheme (HMAC) that no longer matches the
+  gateway's Ed25519 receipts.
+- `policy/adapters/` (OPA, Cedar, custom): they scoped rules by writing
+  `conditions` the gateway never evaluates, which silently widened rules.
+- `security/ebpf`, `security/apparmor`, `research/`, and a stray test
+  `enrollment.json`. All remain in git history.
+
+### Added
+
+- **The approver now sees what is being sent**, not just where. The query
+  string, body size and type, and the first bytes of a text body (credentials
+  masked, binary and oversized bodies never read) are shown in `ovara approvals`,
+  `ovara watch` and on the browser page. The preview travels as the check's
+  metadata and is copied onto the approval from the gateway's own record, never
+  from the approval caller.
+- **Approve and trust a host for reads**: `ovara approve <id> -trust-host`, `[t]`
+  in `ovara watch`, and a button on the approval page add a read-only
+  (GET/HEAD) allow rule for that one exact host. Never offered for writes,
+  wildcards, IP literals or plain http.
+- `tests/redteam/separate-user`: the agent attacks Ovara from a different
+  unprivileged OS user (read keys, edit policy, forge receipts, approve its own
+  request, kill the process). 19 attacks, all blocked.
+- `docs/use-cases.md`: where Ovara fits (laptop, container, hosted sandbox, CI,
+  your own harness), what is verified and what is not.
+
+- `tests/agents`: real opencode (installed from npm, driven by a scripted mock
+  model) run behind Ovara in cooperative and enforced mode, with 27 commands
+  covering normal work, blocks, policy-evasion tricks and proxy-evasion tricks,
+  plus a custom-agent-harness scenario against the gateway's decision API
+  (16 checks). All pass; the proxy-evasion bypasses succeed in cooperative mode
+  and are blocked in enforced mode, as documented.
+- The default policy allows the two `npm audit` POSTs
+  (`registry.npmjs.org/-/npm/v1/security/{advisories/bulk,audits/quick}`).
+  `npm install` runs them automatically and they only read advisories; before,
+  every agent `npm install` stalled for the whole approval window.
+
+### Fixed (found by running the real binary the way a person uses it)
+
+New end-to-end harness `tests/scenarios/` drives `pip`, `npm`, `git clone`,
+Node `fetch()`, `curl`, a human approving and denying, a real injected key, live
+policy edits, the approval page, tampering and a restart. It found four bugs
+that the unit suites had not:
+
+- **The shield quarantined normal agents.** Every deny *and every escalation*
+  counted as a risk event, forever; after three, the agent was restricted and
+  every request, including reads from trusted hosts, needed a human. Only
+  denials count now, events age out of a 10 minute window, automatic
+  restrictions lift after 15 minutes (manual ones still last until lifted),
+  and quarantine needs 10 denials, not 3.
+- **Policy hot reload never ran.** The watcher only started when
+  `policy_refresh_interval > 0`, which `ovara init` never sets, so edits to a
+  running deployment were ignored while the README promised otherwise. It now
+  starts by default, watches the directory so rename-style saves are caught,
+  and folds bursts of events into one reload.
+- **Proxy-forced "pauses" could never be approved.** The gateway only opens an
+  approval for a decision it recorded as escalate; the proxy's forced
+  escalation (sensitive hosts, reads carrying a body) hit a 409 and the agent
+  got an instant 403. They are now explicit denials with the reason shown.
+- **Receipts were written after the response.** An agent could hold a response
+  before its receipt existed. The receipt is now written before the headers.
+
+### Security (hardening pass)
+
+- **Rules with conditions the gateway does not evaluate are refused** at load
+  and in the validator (only `depends_on` / `ref` are understood). They used
+  to load and apply to every request.
+
+- **Default policy no longer lets an agent send data out unapproved.** `GET *`
+  and the host-less `POST *git-upload-pack` rule are gone. Reads are allowed only
+  from a list of trusted hosts (package registries, code hosts, docs); git
+  clone/fetch only from GitHub, GitLab and Bitbucket; any other host pauses for
+  approval. A `GET`/`HEAD` that carries a body or a query over 512 bytes is
+  refused (403, with the reason) even on an allowed host. **Behaviour change:** existing
+  `policy.json` files are not rewritten; re-run `ovara init -force` in a scratch
+  directory and compare, or add rules for hosts you need.
+- **No DNS lookup before policy.** `CONNECT` no longer resolves a host name
+  before policy has seen a request for it (a lookup of `<data>.attacker.example`
+  is itself a data channel). Names are resolved at dial time; private IP
+  literals are still refused immediately.
+- Host matching for sensitive-host rules is case- and trailing-dot-insensitive.
+- `X-HTTP-Method-Override` and similar headers are no longer forwarded.
+- Response scrubbing redacts only secret values (plus the bare token and its
+  URL/JSON-escaped spellings), no longer protocol values such as
+  `anthropic-version`.
+- Proxy hardening: header/idle timeouts, TLS handshake deadline, cap of 64
+  requests parked on approval, rate-limited receipts for unauthenticated
+  requests, and loopback (`127.0.0.1:9443`) as the default listen address.
+  `--boundary` still binds the boundary-facing address. Streamed (SSE)
+  responses are flushed as they arrive.
+- The proxy CA is never silently regenerated: an existing but unusable CA is an
+  error instead of being overwritten.
+- **Gateway fails closed.** A configured persistent store (receipts, approvals,
+  continuations, executions, events, capabilities) that cannot be opened now
+  stops startup. It used to fall back to an empty in-memory store, turning
+  tampering or corruption into silent data loss.
+- **An approved action is never run unrecorded.** Continuation claim, retry,
+  cancel and recover roll back and refuse if the transition cannot be written,
+  so a crash cannot make a restart run the same approved action again.
+- Journal: a complete final record missing only its newline is terminated
+  instead of being merged with the next append. Compaction removes stale temp
+  files, and releases the live journal before renaming (needed on Windows).
+- Degraded anchor mode no longer anchors an unverified local-ahead tail.
+- Decision, approval, continuation, execution and event IDs are full UUIDs; the
+  approval action digest is length-prefixed, full SHA-256, and binds environment
+  and metadata.
+- `ovara doctor` checked the wrong config keys (always warned "memory-mode"); it
+  now checks the real ones, warns when no off-host anchor is configured, and
+  fails on `fail_open` / `unsafe_no_agent_auth`.
+- Release workflow tests the exact tag on Linux, macOS and Windows for both the
+  proxy and gateway modules, runs with least-privilege permissions, and attests
+  build provenance. `install.sh` no longer turns a failed download into a build
+  of `main` (a pinned version is honoured), requires HTTPS, matches checksum
+  names exactly, and both installers support `OVARA_VERIFY=1` provenance
+  checks; `install.ps1` forces TLS 1.2 and asks before editing PATH.
+
+### Added
+
+- **Prebuilt releases**: pushing a `v*` tag runs `.github/workflows/release.yml`,
+  which tests, builds `ovara` for linux/darwin (amd64, arm64) and windows/amd64,
+  and publishes archives plus `checksums.txt` as a GitHub release.
+  `install.sh` / `install.ps1` download the right archive and refuse it if the
+  SHA-256 does not match (source build fallback in install.sh). `ovara version`.
+- **Local approval page**: `ovara run` serves `http://127.0.0.1:9090` (link with the
+  operator token in the URL fragment), with pending requests (Approve / Deny) and
+  integrity-checked recent activity. Loopback-only, Host-checked against DNS
+  rebinding, token in a header (no cookies, so no CSRF), not frameable.
+  `-ui off` disables it.
+- **`ovara watch`, `ovara approvals`, `ovara approve <id>`, `ovara deny <id>`**:
+  answer an agent's paused requests from the terminal, in plain English.
+- **`ovara env`**: prints the agent environment for bash / PowerShell / cmd: proxy
+  URL with the agent token, Ovara's CA for Node / Python / curl / git / OpenSSL,
+  and placeholder API keys. (The old instructions omitted the agent token, so
+  every request got a 407.)
+- **`ovara policy`** explains the rules in plain English (blocked / allowed /
+  ask me first), and **`ovara policy test "<METHOD URL>"`** dry-runs a request
+  against the live policy and names the rule that decided. The gateway's
+  `/v1/policy/simulate` now returns `MatchedRule`.
+- **`ovara log`**: what the agent did, one line per request (allowed / approved /
+  blocked / timed out), with an offline integrity check of the receipt chain.
+- Default policy allows `git clone`/`fetch`/`pull` (a POST to `git-upload-pack`
+  that only reads). Pushes still need approval. Verified with a real clone.
+- `ovara watch` and `ovara approvals` skip requests the agent already stopped
+  waiting for, since approving them would do nothing.
+- **A useful default policy from `ovara init`**: reads allowed, writes (git push,
+  PRs, deploys, deletes) escalate for human approval, known data-dump sites denied.
+- **A narrated `ovara demo`** (allow, pause-and-approve, block, verified
+  receipts) with an automated end-to-end test.
+- **Windows support**: the gateway and `ovara` now build and run natively on
+  Windows (portable file locking, platform-aware permission checks).
+- CI: the `proxy` module (the shipped `ovara` binary) is now tested and linted;
+  Windows and macOS build/test jobs; Python SDK tests run in CI.
+- New README that explains what Ovara is and how strong each mode is; the long
+  overview moved to `docs/overview-full.md`.
+
+### Removed
+
+- Disconnected, broken or unsafe modules: `trust/` (unauthenticated federation
+  server), `identity/` (unused, incompatible lease format), `telemetry/`,
+  `services/analytics`, `packages/`, four scaffold integrations, `infrastructure/`,
+  `observability/`. All are recoverable from git history.
+- The cloud control plane (`cloud/control-plane`), admin dashboard
+  (`apps/admin-dashboard`) and `enterprise/` (SSO, compliance). They could not
+  start from their image or talk to the gateway (incompatible rule format, no
+  enrollment wiring) and had multi-tenant security holes. See
+  `docs/decisions/cloud-control-plane.md`; recoverable from git history.
+
+### Fixed
+
+- **Signed-journal mode: every continuation update failed.** `FileBackedStore.Update`
+  wrote to a nil file handle, so finished work stayed "executing" and could be
+  retried (a side effect running twice). Now journaled like every other write.
+- **The synchronous `POST /v1/continuations/{id}/execute` endpoint skipped the
+  claim-time provenance check** that the background executor runs; a forged
+  continuation could execute through it. It now runs the same check.
+- **Duplicate approvals under concurrent requests** for one decision (two
+  approvals, two continuations, the action running twice). Creation is now
+  atomic, and a failed continuation write is reported instead of dropped.
+- **A key not set in Ovara's environment broke the agent's own credentials**:
+  `${GITHUB_TOKEN}` expanded to nothing and the proxy overwrote the agent's working
+  header with `Bearer ` (or an empty `x-api-key`, breaking Claude Code subscription
+  logins). Such bindings are now skipped with a clear startup message, and `ovara env`
+  sets placeholders only for keys Ovara really injects.
+- **Credentials could leak to the agent (SEC-0001):** Range requests and
+  upstream-encoded bodies slipped past the reflected-credential scrubber. The
+  proxy now strips `Accept-Encoding`/`Range` on credentialed requests and refuses
+  bodies it cannot scrub.
+- **`fail_open` injected real credentials** into traffic that had no policy
+  decision. Fail-open traffic is now forwarded without credentials.
+- **Receipts signed by a revoked or destroyed gateway key after its
+  revocation no longer verify** (`gwctl verify-receipt`, `/v1/receipts/verify`).
+  Receipts from before the revocation still verify; backdating by a key holder
+  remains the documented key-compromise limit.
+- `ovara run --boundary netns` printed a proxy address that did not match the
+  one the script configured, and told you to run the agent as root. It now
+  prints the right address and runs the agent as your user.
+
 ## [0.9.0] - 2026-09-21
 
 The OVARA 2.0 security series: the gateway becomes an enforceable execution
@@ -43,7 +248,7 @@ authority verification, and Ed25519-signed receipts.
   receipts ≠ execution truth or global immutable history; trust_epoch ≠
   consensus; revocation ≠ kill-on-revoke for running executions.
 
-## [Unreleased]
+## Earlier changes (previously a second, duplicate `[Unreleased]` heading)
 
 ### Security
 

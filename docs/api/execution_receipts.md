@@ -104,9 +104,10 @@ Receipts are stored in the
 [`runtime/gateway/internal/receipts`](../../runtime/gateway/internal/receipts/)
 package. The store supports both in-memory and file-backed persistence.
 Default retention is **60 minutes** (`receipts_max_age_minutes`, default
-60; `receipts_max_size` bounds the count). For long-term archival use
-the standalone [receipt-storage service](../../services/receipt-storage/),
-which provides durable storage and a verification API.
+60; `receipts_max_size` bounds the count). The proxy also keeps its own
+signed, hash-chained receipt log (`var/receipts.jsonl`), which `ovara log`
+verifies; archive that file for long-term retention. (A separate
+receipt-storage service existed but was never connected and was removed.)
 
 ## Tamper Detection
 

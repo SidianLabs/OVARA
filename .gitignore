@@ -19,13 +19,36 @@ node_modules/
 *.tsbuildinfo
 next-env.d.ts
 runtime/gateway/server
+runtime/gateway/ovara-gateway
+/ovara
+/ovara.exe
 tools/cli/ovara.tools.cli
-trust/trust-cli
 sdk/python/**/__pycache__/
 __pycache__/
 
 .devin/
 .commandcode/
-trust/trust-server
 tools/benchmarks/benchmark
 dist/
+
+# Python
+*.egg-info/
+.venv/
+__pycache__/
+
+# Local deployment state / secrets (never commit)
+*.key
+*.pem
+.env
+
+# Runtime state written by a local gateway/test run (never source)
+runtime/gateway/var/
+.pytest_cache/
+coverage/
+*.tgz
+.env.*
+*.compact.tmp
+# Go fuzz cache (failing inputs live in testdata/fuzz and ARE committed)
+
+# local scratch for ad-hoc container debugging
+.scratch-scn/

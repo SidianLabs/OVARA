@@ -1,5 +1,11 @@
 # Memory Ledger
 
+> **Historical snapshot (June 2026) — not the current status.** This document
+> was written before the v1.0.0 tag was withdrawn (see CHANGELOG). Ovara is
+> pre-release (v0.9.x) and "production ready" claims below do not apply. For what
+> works today, read the [README](README.md).
+
+
 ## Project: Ovara
 ## Current Phase: 79 (Final Completion) — V1.0.0 DELIVERED
 ## Last Updated: 2026-06-12

@@ -33,6 +33,12 @@ type ApprovalRequest struct {
 	AnomalyCodes []string           `json:"anomaly_codes,omitempty"`
 	ShieldActive bool               `json:"shield_active,omitempty"`
 	Restricted   bool               `json:"restricted,omitempty"`
+	// Context is what the approver should SEE about the request beyond its
+	// URL: the query string, body size and type, a short redacted body
+	// preview. It is copied from the metadata of the request the gateway
+	// evaluated (never from the approval caller) and is display-only: it
+	// grants nothing and is not used for any authorization decision.
+	Context map[string]string `json:"context,omitempty"`
 	// RequestHash binds this approval to the exact evaluated request
 	// (sha256 over action/resource/agent/lease). Empty for legacy records.
 	RequestHash   string `json:"request_hash,omitempty"`
@@ -104,6 +110,9 @@ type CreateRequest struct {
 	AnomalyCodes  []string           `json:"anomaly_codes,omitempty"`
 	ShieldActive  bool               `json:"shield_active,omitempty"`
 	Restricted    bool               `json:"restricted,omitempty"`
+	// Context is filled in by the gateway from the evaluated request, never
+	// from the caller (json:"-").
+	Context       map[string]string  `json:"-"`
 	RequestHash   string             `json:"request_hash,omitempty"`
 	PolicyVersion string             `json:"policy_version,omitempty"`
 	// P2.3.4 authority identifiers — server-populated from the recorded
@@ -128,6 +137,7 @@ func (c *CreateRequest) ToApproval(approvalID string) *ApprovalRequest {
 		AnomalyCodes:  c.AnomalyCodes,
 		ShieldActive:  c.ShieldActive,
 		Restricted:    c.Restricted,
+		Context:       c.Context,
 		RequestHash:   c.RequestHash,
 		PolicyVersion: c.PolicyVersion,
 		LeaseID:       c.LeaseID,

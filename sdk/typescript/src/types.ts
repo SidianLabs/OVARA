@@ -38,6 +38,21 @@ export interface DelegationAuthority {
   subjectId: string;
   /** RFC3339 timestamp, optional. */
   delegatedAt?: string;
+  /** Action types this hop may exercise; a child hop may only narrow. */
+  actions?: string[];
+  /** Glob restricting delegated resources; a child hop may only narrow. */
+  resourceScope?: string;
+  audience?: string;
+  /** RFC3339 timestamp. */
+  expiresAt?: string;
+  nonce?: string;
+  /**
+   * Base64 ed25519 signature over the canonical hop payload (including the
+   * previous hop's signature). Chains the gateway cannot verify against its
+   * trusted-issuer registry are rejected, so a chain without this is
+   * rejected too.
+   */
+  signature?: string;
 }
 
 export interface DelegationChain {

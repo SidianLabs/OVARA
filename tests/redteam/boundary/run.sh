@@ -17,6 +17,10 @@ DOCKER_PROXY_IP="${DOCKER_PROXY_IP:-172.30.0.1}"
 GATEWAY_PORT="${GATEWAY_PORT:-18080}"
 CA="${CA:-/tmp/cleanroom/env/var/ca.pem}"
 FAIL=0
+# The proxy requires its token. Without it every CONNECT is refused with 407, so
+# an "allowed path" check would fail and every "CONNECT denied" check would pass
+# for the wrong reason. Set PROXY_TOKEN to the deployment's agent token.
+PXY="http://${PROXY_TOKEN:+agent:$PROXY_TOKEN@}"
 
 if [ "$MODE" = "netns" ]; then
   RUN() { sudo -n ip netns exec "$NS" "$@"; }
@@ -38,12 +42,12 @@ tcp() { RUN timeout 4 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1 && echo OPEN || 
 # tcps distinguishes refused (path open, no service) from timeout (filtered).
 tcps() { RUN timeout 4 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1 && echo OPEN || echo REFUSED_OR_BLOCKED; }
 httpc() { RUN curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$1" 2>/dev/null; }
-prox() { RUN curl -s -o /dev/null -w "%{http_code}" --max-time 8 -x "http://$PIP:$PROXY_PORT" --cacert "$CA" "$1" 2>/dev/null; }
+prox() { RUN curl -s -o /dev/null -w "%{http_code}" --max-time 8 -x "${PXY}$PIP:$PROXY_PORT" --cacert "$CA" "$1" 2>/dev/null; }
 
 echo "=== boundary suite: mode=$MODE ns=$NS net=$NET proxy=$PIP:$PROXY_PORT ==="
 
 # --- allowed path ---
-P=$(prox https://api.github.com/); case "$P" in 000|"") echo "proxy CONNECT                  | 2xx/4xx | $P     | FAIL"; FAIL=$((FAIL+1));; *) echo "proxy CONNECT                  | 2xx/4xx | $P     | PASS";; esac
+P=$(prox https://api.github.com/); case "$P" in 000|""|407) echo "proxy CONNECT                  | 2xx/4xx | $P     | FAIL"; FAIL=$((FAIL+1));; *) echo "proxy CONNECT                  | 2xx/4xx | $P     | PASS";; esac
 
 # --- direct egress (must fail) ---
 check "direct IPv4 https"            "BLOCKED" "$(tcp 1.1.1.1 443)"
@@ -75,11 +79,11 @@ check "route add as dropped-cap"     "BLOCKED" "$(RUN setpriv --bounding-set=-ne
 check "iface create as dropped-cap"  "BLOCKED" "$(RUN setpriv --bounding-set=-net_admin,-net_raw --reuid 1000 --regid 1000 --clear-groups bash -c 'ip link add dummy0 type dummy' >/dev/null 2>&1 && echo CREATED || echo BLOCKED)"
 
 # --- denied CONNECTs through the proxy (deny + receipt expected) ---
-check "CONNECT :22 denied"           "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x http://$PIP:$PROXY_PORT https://github.com:22/ 2>/dev/null)"
-check "CONNECT private denied"       "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x http://$PIP:$PROXY_PORT https://192.168.1.1/ 2>/dev/null)"
-check "CONNECT loopback denied"      "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x http://$PIP:$PROXY_PORT https://127.0.0.1/ 2>/dev/null)"
-check "CONNECT metadata denied"      "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x http://$PIP:$PROXY_PORT https://169.254.169.254/ 2>/dev/null)"
-check "CONNECT cgnat denied"         "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x http://$PIP:$PROXY_PORT https://100.64.0.1/ 2>/dev/null)"
+check "CONNECT :22 denied"           "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x ${PXY}$PIP:$PROXY_PORT https://github.com:22/ 2>/dev/null)"
+check "CONNECT private denied"       "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x ${PXY}$PIP:$PROXY_PORT https://192.168.1.1/ 2>/dev/null)"
+check "CONNECT loopback denied"      "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x ${PXY}$PIP:$PROXY_PORT https://127.0.0.1/ 2>/dev/null)"
+check "CONNECT metadata denied"      "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x ${PXY}$PIP:$PROXY_PORT https://169.254.169.254/ 2>/dev/null)"
+check "CONNECT cgnat denied"         "000"     "$(RUN curl -s -o /dev/null -w '%{http_code}' --max-time 5 -x ${PXY}$PIP:$PROXY_PORT https://100.64.0.1/ 2>/dev/null)"
 
 # --- docker-only: L2 isolation ---
 if [ "$MODE" = "docker" ]; then

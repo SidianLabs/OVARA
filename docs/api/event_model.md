@@ -105,8 +105,6 @@ The event pipeline described here is the **target** design, not current
 behavior. `runtime/gateway/internal/observe/` contains an OTLP span
 exporter and a NATS event pipeline, but it is **never instantiated** in
 `server.go`; the `otel_*` config fields are parsed and unused, and the
-`ConsoleExporter` discards output. The `observability/` Prometheus and
-Grafana assets reference `ovara_*` metrics that nothing exports yet.
-See [`observability/README.md`](../../observability/README.md) for what
-would be required to connect the pipeline (OTLP spans, NATS subjects,
-ClickHouse schema under `telemetry/`).
+`ConsoleExporter` discards output. No `ovara_*` metrics are exported
+yet. (Earlier Prometheus/Grafana assets and a ClickHouse collector were
+removed because nothing fed them; see git history.)

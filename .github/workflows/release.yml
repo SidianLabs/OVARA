@@ -1,0 +1,131 @@
+name: Release
+
+# Push a tag like v0.10.0 to publish prebuilt `ovara` binaries for Linux,
+# macOS and Windows, with SHA-256 checksums, as a GitHub release.
+# install.sh / install.ps1 download from these releases.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.10.0"
+        required: true
+
+# Least privilege by default; only the publish job may write.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test ${{ matrix.module }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        module: [proxy, runtime/gateway]
+    steps:
+      # Test exactly what will be built: the pushed tag, or the tag a manual
+      # run names. Without `ref`, a manual run would test the default branch
+      # and then ship a different commit.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      # The proxy embeds the gateway, so the gateway's own suite gates the
+      # release too.
+      - name: Test
+        working-directory: ${{ matrix.module }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.os }}" = ubuntu-latest ]; then
+            go test -race -count=1 ./...
+          else
+            go test -count=1 ./...
+          fi
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          name="ovara_${TAG#v}_${GOOS}_${GOARCH}"
+          bin=ovara; [ "$GOOS" = windows ] && bin=ovara.exe
+          mkdir -p "dist/$name"
+          (cd proxy && go build -trimpath -ldflags "-s -w -X main.version=${TAG}" -o "../dist/$name/$bin" ./cmd/ovara)
+          cp LICENSE README.md "dist/$name/"
+          cd dist
+          if [ "$GOOS" = windows ]; then zip -qr "$name.zip" "$name"; else tar -czf "$name.tar.gz" "$name"; fi
+          rm -rf "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ovara-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write      # sign build provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum ovara_* > checksums.txt && cat checksums.txt
+      # Signed provenance ties every archive to this workflow run and commit.
+      # Unlike checksums.txt (same origin as the binary, so it proves
+      # integrity only), it can be verified independently:
+      #   gh attestation verify <archive> --repo SidianLabs/OVARA
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/ovara_*
+            dist/checksums.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          pre=""
+          case "$TAG" in v0.*|*-*) pre="--prerelease" ;; esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* $pre --title "ovara $TAG" \
+              --notes "Download the archive for your platform, or install with install.sh / install.ps1 (see README). Verify with checksums.txt. Changes: see CHANGELOG.md."
+          fi

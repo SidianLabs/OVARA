@@ -37,10 +37,11 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
-	"syscall"
-	"time"
-
 	"ovara.runtime.gateway/internal/anchor"
+	"ovara.runtime.gateway/internal/appendfile"
+	"ovara.runtime.gateway/internal/flock"
+	"ovara.runtime.gateway/internal/fsperm"
+	"time"
 )
 
 type KeyState string
@@ -203,19 +204,19 @@ func open(path string, create bool) (*Registry, error) {
 		f.Close()
 		return nil, fmt.Errorf("gateway registry: stat: %w", err)
 	}
-	if st.Mode().Perm()&0077 != 0 {
+	if fsperm.OpenToOthers(st) {
 		f.Close()
 		return nil, fmt.Errorf("gateway registry: %s has unsafe permissions %o — must be owner-only (0600)", path, st.Mode().Perm())
 	}
 	r := &Registry{f: f, keys: map[string]map[string]*KeyRecord{},
 		grants: map[string]*GrantRecord{}, grantsByGW: map[string]map[string]*GrantRecord{},
 		revoked: map[string]map[string]bool{}, tips: map[string]map[string]Tip{}}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flock.Lock(f); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("gateway registry: lock: %w", err)
 	}
 	err = r.absorb()
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	flock.Unlock(f)
 	if err != nil {
 		f.Close()
 		return nil, err
@@ -261,7 +262,7 @@ func (r *Registry) absorb() error {
 		var probe seqChainProbe
 		if err := json.Unmarshal(line, &probe); err != nil {
 			if nl == int64(len(buf)) {
-				if err := r.f.Truncate(r.off + pos); err != nil {
+				if err := appendfile.Truncate(r.f, r.off+pos); err != nil {
 					return fmt.Errorf("gateway registry: truncate torn tail: %w", err)
 				}
 				r.off += pos
@@ -353,10 +354,10 @@ func (r *Registry) mutate(fn func() ([]any, error)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.f != nil {
-		if err := syscall.Flock(int(r.f.Fd()), syscall.LOCK_EX); err != nil {
+		if err := flock.Lock(r.f); err != nil {
 			return fmt.Errorf("gateway registry: lock: %w", err)
 		}
-		defer syscall.Flock(int(r.f.Fd()), syscall.LOCK_UN)
+		defer flock.Unlock(r.f)
 		if err := r.absorb(); err != nil {
 			return err
 		}
@@ -478,10 +479,10 @@ func (r *Registry) ReconcileAnchor(ctx context.Context, q anchor.Querier) (Recon
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.f != nil {
-		if err := syscall.Flock(int(r.f.Fd()), syscall.LOCK_EX); err != nil {
+		if err := flock.Lock(r.f); err != nil {
 			return 0, nil, fmt.Errorf("gateway registry: lock: %w", err)
 		}
-		defer syscall.Flock(int(r.f.Fd()), syscall.LOCK_UN)
+		defer flock.Unlock(r.f)
 		if err := r.absorb(); err != nil {
 			return 0, nil, err
 		}
@@ -686,10 +687,10 @@ func (r *Registry) Lookup(gatewayID string) ([]*KeyRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.f != nil {
-		if err := syscall.Flock(int(r.f.Fd()), syscall.LOCK_EX); err != nil {
+		if err := flock.Lock(r.f); err != nil {
 			return nil, fmt.Errorf("gateway registry: lock: %w", err)
 		}
-		defer syscall.Flock(int(r.f.Fd()), syscall.LOCK_UN)
+		defer flock.Unlock(r.f)
 		if err := r.absorb(); err != nil {
 			return nil, err
 		}
@@ -927,10 +928,10 @@ func (r *Registry) GrantsFor(gatewayID string) ([]*GrantRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.f != nil {
-		if err := syscall.Flock(int(r.f.Fd()), syscall.LOCK_EX); err != nil {
+		if err := flock.Lock(r.f); err != nil {
 			return nil, fmt.Errorf("gateway registry: lock: %w", err)
 		}
-		defer syscall.Flock(int(r.f.Fd()), syscall.LOCK_UN)
+		defer flock.Unlock(r.f)
 		if err := r.absorb(); err != nil {
 			return nil, err
 		}

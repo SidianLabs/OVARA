@@ -1,442 +1,200 @@
 # Ovara
 
-**Runtime trust infrastructure for autonomous systems.**
+**A checkpoint for AI agents. Reading from trusted places is free, anything else needs your OK, and every decision leaves a receipt.**
 
-Ovara sits on the execution path between an autonomous agent and a consequential
-action, deciding whether that action should be **allowed**, **denied**, or
-**escalated** for human approval — and producing a cryptographic receipt for
-every decision.
+You give a coding agent (Claude Code, Devin, a CI bot…) real tokens and let it
+loose. One bad prompt and it force-pushes to `main`, deletes a branch, or posts
+your API key to a paste site.
 
-The first product is **Ovara Runtime**: a low-latency, single-binary Go gateway
-that evaluates machine-driven actions (shell, Git, GitHub, CI/CD) and applies
-cryptographically-verified capability leases, trust-aware policy, and signed
-receipts in microseconds.
+Ovara sits between the agent and the internet. Every request the agent makes goes
+through it:
 
-> **Security model, stated plainly (2.0):** the gateway is an *enforceable*
-> boundary for the actions it executes — enrolled gateway identity, durable
-> revocation, claim-time authority recheck, and Ed25519-signed receipts. An
-> agent cannot redefine the boundary it acts under. Client-side interceptors
-> remain cooperative — an agent that bypasses them is unconstrained. The
-> physical boundary — a credential-starving executor proxy where every side
-> effect transits a notarizing chokepoint — is described in
-> [`docs/architecture/executor_proxy.md`](docs/architecture/executor_proxy.md)
-> and ships in [`proxy/`](proxy/).
+| The agent tries to… | Ovara… |
+|---|---|
+| read docs, install packages, clone from GitHub/GitLab/npm/PyPI… | lets it through |
+| `git push`, open or merge a PR, deploy, delete something | **pauses it and asks you** |
+| read from a site it has no business with | **pauses it and asks you** (a URL can carry data out just like a POST) |
+| send data to a paste site or file drop | blocks it |
 
-```text
-┌────────────┐   ┌─────────────────────┐   ┌────────────────────┐
-│ AI Agent   │──▶│  Ovara Gateway      │──▶│ Target System      │
-│ SDK/Code   │   │  • Identity (ed25519)│   │ shell | git | ci   │
-└────────────┘   │  • Capability lease │   └────────────────────┘
-                 │  • Policy engine    │            │
-                 │  • Trust scoring    │            ▼
-                 │  • Receipt (Ed25519)│   ┌────────────────────┐
-                 └─────────────────────┘   │ Execution Receipt  │
-                                           │ (signed, auditable)│
-                                           └────────────────────┘
-```
+It also keeps your real API keys itself and attaches them to outgoing requests,
+so the agent never holds a key it could leak. Every allow, pause and block is
+written to a signed, tamper-evident receipt log you can verify later.
+
+> **Status: early (v0.9, pre-release).** The core described on this page works and
+> is tested. Most framework integrations
+> are experimental, see [What's solid and what isn't](#whats-solid-and-what-isnt).
 
 ---
 
-## Quickstart
+## See it in 30 seconds
 
-One binary runs the whole local deployment — gateway plus executor proxy.
-
-**Install** (requires git + Go 1.25+):
+Install (downloads a prebuilt binary and verifies its SHA-256 checksum):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.sh | sh    # Linux / macOS
 ```
 
-or build from source:
+```powershell
+irm https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.ps1 | iex       # Windows
+```
+
+Or build it yourself with Go 1.25+: `cd proxy && go build -o ovara ./cmd/ovara`.
 
 ```bash
-cd proxy
-go build -o ovara ./cmd/ovara
+ovara demo                         # no setup, no network, no root
 ```
 
-**Run:**
+The demo plays out a tiny story: the agent **reads** something (allowed), tries to
+**deploy** (paused, then approved by a pretend human), tries to **leak data**
+(blocked), and then verifies the receipt chain.
+
+## Use it for real
 
 ```bash
-ovara demo            # 30-second self-contained proof, no setup
-ovara init mydir      # generates keys, configs, policy, operator token
-ovara run -dir mydir  # gateway + executor proxy in one process
+ovara init mydir                 # writes keys, config, and a sensible default policy
+export GITHUB_TOKEN=...            # the REAL keys go in Ovara's environment, not the agent's
+export ANTHROPIC_API_KEY=...
+ovara run -dir mydir             # starts the gateway and the proxy
 ```
 
-**Docker** (build context is the repo root):
+`ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a
+**local approval page**: whatever the agent is waiting on, with Approve and Deny
+buttons, plus a live, integrity-checked history of what it did. The page is only
+served to your own machine, and only someone holding the link's token can approve.
+
+Prefer the terminal? Answer from a **second terminal** instead:
 
 ```bash
-docker build -f proxy/Dockerfile -t ovara .
-docker run -v ovara-data:/data -p 8080:8080 -p 9443:9443 ovara init /data
-docker run -v ovara-data:/data -p 8080:8080 -p 9443:9443 ovara run -dir /data
+ovara watch -dir mydir
 ```
 
-Then wire your agent's environment to the proxy:
+```
+┌─ approval needed ─────────────────────────────────────
+│ agent wants to: push to refs/heads/main on github.com/acme/app
+│ waiting:        4s   id: apr_1e448924-ef74-48
+└───────────────────────────────────────────────────────
+  [a]pprove  [d]eny  [s]kip >
+```
+
+Then start your agent from a shell that routes it through Ovara:
 
 ```bash
-export HTTPS_PROXY=http://localhost:9443
-export SSL_CERT_FILE=mydir/var/ca.pem
+eval "$(ovara env -dir mydir)"                 # bash / zsh
+ovara env -dir mydir -shell powershell | iex   # PowerShell
+claude                                           # or any agent: it now runs through Ovara
 ```
 
-Credentials: export real API keys (`GITHUB_TOKEN`, `OPENAI_API_KEY`, ...) in
-the **Ovara process** environment — the agent never sees them. The proxy
-injects them at the wire per the host bindings in `proxy.json`.
+`ovara env` sets the proxy address (including the agent's proxy token) and
+points every common certificate setting (Node, Python, curl, git, OpenSSL) at
+Ovara's certificate, so Ovara can see inside HTTPS. It also sets placeholder
+values for `GITHUB_TOKEN`, `ANTHROPIC_API_KEY` and the rest, so tools that won't
+start without a key still start. Ovara swaps in the real key on the way out.
 
-**What makes it non-advisory:** the agent's environment must have no other
-egress. The boundary is built into the binary — run as root:
+Prefer not to sit at a terminal? `ovara approvals` lists what is waiting, and
+`ovara approve <id>` / `ovara deny <id>` answer one request. A paused request
+waits 60 seconds (`escalate_timeout_sec` in `proxy.json`); after that the agent
+gets a timeout and can simply retry.
+
+### What did my agent do?
 
 ```bash
-ovara run -dir mydir --boundary netns    # creates agent0 netns + nftables deny-all
-ovara run -dir mydir --boundary docker   # docker --internal network recipe
+ovara log -dir mydir
 ```
 
-then run your agent inside it (the command prints the exact `ip netns exec`
-line). Without that boundary the proxy is advisory: a cooperative agent uses
-it, an uncooperative one routes around it. HTTPS only. Details in
-[`proxy/DEPLOYMENT.md`](proxy/DEPLOYMENT.md).
+```
+WHEN                 OUTCOME       WHAT THE AGENT DID
+2026-10-07 13:04:12  allowed       read https://pypi.org/simple/requests/
+2026-10-07 13:04:20  approved      push to refs/heads/main on github.com/acme/app
+2026-10-07 13:05:01  BLOCKED       send data to https://pastebin.com/api/api_post.php
 
----
+1 allowed, 1 approved, 1 BLOCKED
+integrity: ✓ all 3 receipts are signed and unbroken — this log has not been edited
+```
 
-## Why Ovara Exists
+Every line comes from a signed, hash-chained receipt, so if anyone edits the log
+afterwards (to hide something, say), `ovara log` reports it as tampered.
 
-Cloud IAM, API gateways, workload identity, and observability were built for
-humans, deterministic services, predictable control flow, long-lived
-credentials, and bounded automation.
+### Your rules live in `mydir/policy.json`
 
-**Autonomous systems change the threat model and the execution model.** They
-make decisions at runtime, use tools adaptively, operate under delegated
-authority, and can drift over long horizons. Existing systems can
-authenticate these systems, but they cannot adequately **constrain**,
-**explain**, or **revoke** them at the moment of action.
+The default policy `ovara init` writes is short and readable:
 
-Ovara provides that missing layer.
+```json
+{ "resource": "GET https://pypi.org/*", "allow": true },
+{ "resource": "*://pastebin.com/*",     "deny": true },
+{ "resource": "POST *",                  "escalate": true }
+```
 
----
+Reads are allowed only from a list of hosts an agent legitimately needs (package
+registries, code hosts, documentation); `ovara policy` shows the full list. A
+host that is not on it pauses for approval. A `GET` that carries a request body
+or a very long query string is **refused** with an explanation (the path and
+query of a read can carry data out), even on a trusted host. To trust another
+host, add a rule for it to `policy.json`.
 
-## Product Surface
+`allow` lets it through, `escalate` pauses it for you, `deny` blocks it. If more
+than one rule matches, **deny beats allow, and allow beats escalate**. Anything not
+matched is escalated. Edit the file; changes are picked up without a restart.
 
-> **Pre-release software (v0.x).** The gateway core is real and heavily
-> tested; packaging, CI, and parts of the surrounding ecosystem are still
-> being hardened. Not yet certified for production use.
-
-| Product | Status | Description |
-|---------|--------|-------------|
-| **Ovara Runtime** | 🟡 Beta | Single-binary Go gateway: interception, policy evaluation, approvals, execution, receipts — the most complete component |
-| **Ovara Identity** | 🟡 Beta | Machine identity primitives (ed25519) with capability leases and delegation chains |
-| **Ovara Observe** | 🚧 Scaffold | Action lineage & event log today; OTLP/NATS telemetry + ClickHouse analytics planned (not wired — see `observability/README.md`) |
-| **Ovara Shield** | 🟡 Beta | Anomaly signals, trust degradation, containment hooks |
-| **Ovara Cloud** | 🔶 Alpha | Hosted control plane, gateway enrollment, policy distribution, multi-tenant — partially implemented |
-| **Ovara Federation** | 🔶 Alpha | Cross-organization trust graph with portable receipts — partially implemented |
-| **Ovara SDKs** | 🟡 Beta | TypeScript (`@ovara/sdk`) and Python (`ovara-sdk`) with portable verification |
-| **Ovara Integrations** | 🔶 Alpha | CrewAI, OpenAI Agents, OpenAI, LangChain, MCP, Browser Automation |
-| **Ovara Admin** | 🔶 Alpha | Next.js dashboard for gateway monitoring, policy editor, audit log |
-
----
-
-## What You Get
-
-### 12 Execution Surfaces
-
-`shell` · `exec` · `git.push` · `git.pull` · `git.fetch` · `git.checkout` ·
-`github.push` · `github.pr` · `github.merge` · `github.delete_branch` ·
-`ci.trigger` · `shell.sandboxed` (opt-in via `OVARA_SANDBOX_ENABLED=true`)
-
-### Cryptographic Identity
-
-- **ed25519** key pairs for `AgentIdentity` (asserted identity; see security model note above)
-- Signed **CapabilityLease** with TTL and delegation depth — verified against a
-  **trusted-issuer key registry** (`trusted_issuers` in config), never against
-  keys carried in the request
-- **SHA-256 hash lineage** for `DelegationChain` (integrity check, not proof of authority)
-- Unsigned or unknown-issuer leases are rejected
-
-### Trust-Aware Security
-
-- **Drift detection** — sliding-window action pattern analysis
-- **Trust degradation** — exponential decay with streak acceleration
-- **Chain detection** — self-delegation, depth, rapid re-delegation
-- **Trust-dependent policy rules** — `MinTrustScore`, `MinTrustLevel`
-
-### Cryptographic Receipts
-
-- **Ed25519 gateway signatures** (`edsig_v1:<hex>`) over the full decision
-  record — verifiable offline with `gwctl verify-receipt` using registry
-  public material only (no private key or HMAC secret needed)
-- **HMAC-SHA256** signing with deterministic action digests (`sig_v1:<hex>`)
-- Historical receipts stay verifiable across gateway key rotation and
-  revocation — public-key records are retained for verification even when
-  the key is no longer live for authentication
-- File-backed archival with retention
-
-### Gateway Trust & Revocation (2.0)
-
-- **Gateway enrollment** — PoP-bound gateway keys admitted to a durable,
-  hash-chained registry before the gateway serves; unenrolled gateways
-  refuse to boot into the trusted path
-- **Durable revocation** — issuer, delegation-hop, and lease revocation
-  persisted in a journal with a monotonic trust epoch
-- **Claim-time authority recheck** — authority is revalidated at the claim
-  linearization point; pre-claim revocation denies with zero execution
-- **Identity/credential lifecycle** — registered credentials with rotation
-  grace, suspend/resume/retire; suspended or retired subjects' queued work
-  never executes
-
-### Operational Tooling
-
-- Operator bearer-token auth, bulk retry/cancel, unified pagination
-- SLA health diagnostics, stuck-executing recovery, panic recovery
-- Batch check endpoint (`POST /v1/runtime/batch-check`)
-- File-backed stores with configurable retention
-- Structured JSONL event/decision logs (`/var/data/*.jsonl`), `GET /v1/events`, `GET /v1/runtime/metrics`
-- *Planned (not wired yet):* OTLP/NATS telemetry pipeline, Prometheus `ovara_*` metrics — see `observability/README.md`
-
-### Production Hardening
-
-- AppArmor mandatory access control profile
-- eBPF ring-buffer syscall interceptor
-- Seccomp syscall allowlist (~130 syscalls)
-- Firecracker microVM sandbox config
-- Terraform K8s manifests (single-region deployable; multi-region layout in `regions.tf` is scaffolded but not wired — modules commented out)
-- systemd, Docker, and Docker Compose deployment
-
----
-
-## Performance (Apple M4)
-
-| Operation | Latency |
-|-----------|---------|
-| Policy-only decision (httptest, in-process) | ~9.7 µs |
-| Decision with identity | ~10.7 µs |
-| Decision with trust anomaly | ~10.7 µs |
-| Full identity+lease decision | ~12.9 µs |
-| Evaluator (no HTTP) | ~2.7 µs |
-| HMAC-SHA256 sign | ~620 ns |
-| HMAC-SHA256 verify | ~650 ns |
-| Decision cache get/put | ~39-40 ns |
-
-~10-13µs decision path and ~115k decisions/sec on loopback (see `docs/BENCHMARKS.md`) — fast enough for inline interception in agent workflows.
-
----
-
-## Quick Start (standalone gateway — advanced)
-
-The unified CLI above is the common path. This section runs the advisory
-gateway alone; the standalone proxy binary is `proxy/cmd/ovara-proxy`.
-
-### Run the Gateway
+Not sure what a rule will do? Ask:
 
 ```bash
-git clone https://github.com/SidianLabs/OVARA.git
-cd OVARA/runtime/gateway
-go build -o ovara-gateway ./cmd/server
-./ovara-gateway                              # uses etc/config.json
-OVARA_CONFIG=./etc/config.json ./ovara-gateway
+ovara policy -dir mydir        # all rules, grouped: blocked / allowed / ask me first
+ovara policy test "POST https://github.com/acme/app.git/git-receive-pack refs/heads/main" -dir mydir
 ```
 
-The gateway starts on `:8080` with the bundled policy in `etc/`. To issue
-your first decision:
-
-```bash
-curl -X POST http://localhost:8080/v1/runtime/check \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action_type": "shell",
-    "resource": "shell:git push origin main",
-    "agent_identity": { "issuer": "ovara", "subject_id": "agt_001" },
-    "environment": "dev",
-    "nonce": "'$(uuidgen)'",
-    "issued_at": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
-  }'
+```
+push to refs/heads/main on github.com/acme/app
+  → ASK ME FIRST: it would pause until you approve
+  because of the rule: Writes need approval (git push, PRs, deploys, messages)
 ```
 
-### Use the TypeScript SDK
+`policy test` is a dry run against the live policy: nothing is sent and no
+approval is opened.
 
-The SDK is not yet published to npm — install it from the repo:
+## How strong is the protection?
 
-```bash
-npm install ./sdk/typescript
-```
+Be clear about what you are buying:
 
-```typescript
-import { OvaraClient } from '@ovara/sdk';
+- **Cooperative mode (what you get with `ovara env`).** Ovara controls every
+  request that goes through it. A program that ignores the proxy setting can still
+  reach the internet directly. This happens by accident too: Node's built-in
+  `fetch()` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is set, which
+  `ovara env` does for you. So this mode stops a well-meaning agent from making
+  mistakes, but it does not stop a determined, hostile one. Check `ovara log` to
+  confirm your agent's traffic is actually showing up.
+- **Enforced mode (`ovara run --boundary netns` or `--boundary docker`, Linux, needs root).**
+  The agent runs somewhere with **no route to the internet except through Ovara**,
+  so there is nothing to ignore. This is the setup to use when you do not fully
+  trust the agent. See [`proxy/DEPLOYMENT.md`](proxy/DEPLOYMENT.md).
+  Run the agent as a normal user inside it. Root in the boundary can remove the
+  firewall rules.
+- **Plain HTTP and other protocols.** Credentials are only injected over HTTPS.
+  Coverage of non-HTTP protocols is uneven.
 
-const client = new OvaraClient({
-  baseUrl: 'http://localhost:8080',
-  agentId: 'agt_001',
-  token: process.env.OVARA_TOKEN,
-});
+Honest limits: whoever steals Ovara's signing key can forge receipts. Once you
+revoke the key, receipts dated after the revocation are rejected, but backdated
+forgeries still verify. Hardware-backed key protection (KMS/HSM) is not built yet. See [`SECURITY.md`](SECURITY.md) and
+[`docs/OVARA_2.1_SECURITY_DECISIONS.md`](docs/OVARA_2.1_SECURITY_DECISIONS.md).
 
-const decision = await client.check({
-  action_type: 'shell',
-  resource: 'shell:git push origin main',
-  environment: 'dev',
-});
+## What's solid and what isn't
 
-if (decision.decision === 'allow') { /* proceed */ }
-if (decision.decision === 'escalate') { /* request approval */ }
-```
+| Part | Where | State |
+|---|---|---|
+| Gateway: policy, approvals, signed receipts, revocation | [`runtime/gateway`](runtime/gateway) | **Tested core.** Heavily tested, including adversarial suites |
+| Proxy and the `ovara` command (`init`, `run`, `watch`, `demo`, `doctor`) | [`proxy`](proxy) | **Works.** Runs on Linux, macOS and Windows |
+| Enforced network boundary | [`proxy/scripts`](proxy/scripts) | Linux only |
+| TypeScript and Python SDKs | [`sdk`](sdk) | Working clients for the gateway API, not yet published to npm/PyPI |
+| MCP/OpenAI integrations, policy compiler | `integrations`, `policy` | **Experimental.** Partly built and not connected to the gateway yet; do not rely on them |
+| Cloud control plane, admin dashboard, SSO, compliance | — | **Removed.** They could not talk to the gateway; see [`docs/decisions/cloud-control-plane.md`](docs/decisions/cloud-control-plane.md) |
 
-### Use the Python SDK
+## Where to go next
 
-The SDK is not yet published to PyPI — install it from the repo:
+- **How it works, in depth:** [`docs/overview-full.md`](docs/overview-full.md) (the long-form overview with the architecture, primitives and API)
+- **Deploying it:** [`proxy/DEPLOYMENT.md`](proxy/DEPLOYMENT.md) and [`docs/deployment.md`](docs/deployment.md)
+- **Using the gateway API directly:** [`docs/api`](docs/api)
+- **Where it fits (laptop, sandbox, CI, your own harness) and what is verified:** [`docs/use-cases.md`](docs/use-cases.md)
+- **What Ovara does and does not protect against:** [`docs/threat-model.md`](docs/threat-model.md)
+- **Security model and reporting a vulnerability:** [`SECURITY.md`](SECURITY.md)
+- **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
-```bash
-pip install ./sdk/python
-```
-
-```python
-from ovara_sdk import OvaraClient
-
-client = OvaraClient(base_url="http://localhost:8080", agent_id="agt_001")
-decision = await client.check(
-    action_type="shell",
-    resource="shell:git push origin main",
-    environment="dev",
-)
-```
-
-### Run the Demos
-
-```bash
-cd examples
-./start_gateway.sh        # in another terminal
-./demo_safe_shell.sh
-./demo_approval_flow.sh
-./demo_restricted_agent.sh
-```
-
----
-
-## Architecture
-
-```mermaid
-flowchart TD
-    A["AI Agent / Workflow"] --> B["Ovara Runtime Interceptor"]
-    B --> C["Identity Verification (ed25519)"]
-    C --> D["Capability Lease Validation"]
-    D --> E["Policy Engine"]
-    E --> F["Risk + Trust Evaluation"]
-    F --> G{"Allow / Deny / Escalate"}
-    G -->|Allow| H["Execution Sandbox / Target System"]
-    G -->|Escalate| I["Human Approval"]
-    H --> J["Observe Pipeline (OTLP/NATS)"]
-    I --> J
-    J --> K["Execution Receipt + Audit Trail"]
-```
-
-### Core Primitives
-
-Everything in Ovara builds around five primitives:
-
-- **`AgentIdentity`** — the stable identity of a machine actor
-- **`CapabilityLease`** — a short-lived, scoped delegation of authority
-- **`DelegationChain`** — the verifiable lineage of authority transfer
-- **`TrustContext`** — the current posture used during authorization
-- **`ExecutionReceipt`** — the signed record of a decision and resulting action
-
----
-
-## Monorepo Structure
-
-```
-ovara/
-├── apps/admin-dashboard/   # Next.js admin UI
-├── cloud/control-plane/    # Hosted control plane (Fastify + Drizzle + PostgreSQL)
-├── docs/                   # User-facing documentation
-├── enterprise/             # SSO (OIDC/SAML), compliance reports
-├── examples/               # Sample configs, demo scripts
-├── identity/               # Standalone Go module: ed25519 primitives
-├── infrastructure/         # Terraform, Docker Compose
-├── integrations/           # CrewAI, OpenAI, LangChain, MCP, browser-automation
-├── observability/          # Grafana dashboards, Prometheus alerts
-├── packages/               # Cross-language shared types
-├── policy/                 # OPA/Cedar adapters, policy compiler
-├── proxy/                  # Executor proxy + unified `ovara` CLI (init/run/demo)
-├── research/               # Research notes
-├── runtime/gateway/        # The main Go gateway
-├── sdk/                    # TypeScript and Python SDKs
-├── security/               # AppArmor, eBPF, Seccomp, Firecracker profiles
-├── services/               # Microservices (approval, alerting, observability, etc.)
-├── telemetry/              # NATS collector, ClickHouse schema
-├── tools/                  # CLI, migration tool, benchmark tool
-└── trust/                  # Federated trust graph and CLI
-```
-
----
-
-## Delivery Phases
-
-| Phase | Title | Status |
-|-------|-------|--------|
-| 1 | Runtime interception for shell, GitHub, and CI/CD | ✅ |
-| 2 | Machine identity, capability leases, signed provenance | ✅ |
-| 3 | Trust-aware authorization, drift detection, anomaly-informed escalation | ✅ |
-| 4 | Hosted cloud platform, regional gateways, enterprise policy distribution | ✅ |
-| 5 | Federated machine identity and portable trust infrastructure | ✅ |
-| 6 | SDKs (TypeScript, Python) and framework integrations | ✅ |
-| 7 | Production hardening, observability, observability microservices | ✅ |
-
-See [`docs/build/`](docs/build/) for the per-phase checkpoint documents.
-
----
-
-## Validation
-
-```bash
-# All Go modules: build, vet, test, race
-make check
-
-# Specific module
-cd runtime/gateway && go test -race -count=1 ./...
-cd identity && go test -race -count=1 ./...
-cd trust && go test -race -count=1 ./...
-
-# TypeScript modules
-cd cloud/control-plane && npm test
-cd enterprise/sso && npm test
-cd enterprise/compliance && npm test
-cd sdk/typescript && npm test
-cd apps/admin-dashboard && npm test
-
-# Python SDK
-cd sdk/python && pytest
-```
-
-**Current state:** 1,200+ test functions across 30+ packages, 0 data races,
-100% TS strict mode compliance, 70+ Python test cases.
-
----
-
-## Documentation Map
-
-- Vision: [docs/vision](docs/vision)
-- Product requirements: [docs/prd](docs/prd)
-- Architecture: [docs/architecture](docs/architecture)
-- API reference: [docs/api](docs/api)
-- Security: [docs/security](docs/security)
-- Operations: [docs/operations.md](docs/operations.md)
-- Deployment: [docs/deployment.md](docs/deployment.md)
-- Developer: [docs/developer](docs/developer)
-- Research: [docs/research](docs/research)
-- RFCs: [docs/rfc](docs/rfc)
-- ADRs: [docs/adr](docs/adr)
-- Build phases: [docs/build](docs/build)
-
----
-
-## Contributing
-
-We welcome contributions. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
-workflow, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community norms,
-and [SECURITY.md](SECURITY.md) for vulnerability disclosure.
-
-This project follows strict **test-driven development** for all production
-code — write the test first, watch it fail, then write the minimum code
-to pass.
-
----
-
-## License
-
-Apache License 2.0 — see [LICENSE](LICENSE).
-
-Copyright 2026 SidianLabs.
+Apache 2.0. Copyright 2026 SidianLabs.

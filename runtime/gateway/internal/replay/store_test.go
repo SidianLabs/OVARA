@@ -86,6 +86,9 @@ func TestConsume_Crash(t *testing.T) {
 		t.Fatalf("consume = %v", r)
 	}
 	// no Close — simulates abrupt termination; fsync already happened.
+	// The handle is released only at test end (Windows cannot remove
+	// an open file during TempDir cleanup).
+	defer s.Close()
 	s2 := open(t, p)
 	defer s2.Close()
 	if r := s2.Consume(KindDelegation, "pid-1", exp1h); r != AlreadyConsumed {

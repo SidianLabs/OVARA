@@ -17,7 +17,7 @@ expected to uphold this code. Please report unacceptable behavior to
 
 - **Search existing issues** before opening a new one to avoid duplicates.
 - Use the **bug report** issue template and include:
-  - Ovara version (`ovara-gateway --version` or `git describe`)
+  - Ovara version (`ovara version`)
   - Operating system and architecture
   - Reproduction steps with the smallest possible policy + request
   - Expected vs. actual behavior, with logs
@@ -45,7 +45,7 @@ vulnerability disclosure policy.
    should be split into reviewable units.
 4. **Run the full validation** before requesting review:
    ```bash
-   make check    # runs vet, test, build, test-ts, build-ts
+   make check    # runs vet, test, build, test-ts, build-ts, test-py
    ```
 5. **Update documentation** for any user-facing change. Every endpoint,
    CLI flag, config field, or policy schema change should update the
@@ -104,25 +104,17 @@ code pass immediately and prove nothing.
 
 ```
 ovara/
-├── apps/                # End-user applications (admin dashboard)
-├── cloud/               # Hosted control plane
-├── docs/                # User-facing documentation
-├── enterprise/          # Enterprise add-ons (SSO, compliance)
-├── examples/            # Sample configs and demo scripts
-├── identity/            # Machine identity primitives (standalone Go module)
-├── infrastructure/      # Terraform, docker-compose
-├── integrations/        # Framework integrations (CrewAI, LangChain, etc.)
-├── observability/       # Grafana/Prometheus dashboards
-├── packages/            # Shared cross-language types
-├── policy/              # Policy adapters and compiler
-├── research/            # Research notes
-├── runtime/gateway/     # The main Go gateway
+├── proxy/               # THE PRODUCT: the `ovara` binary (proxy + CLI; embeds the gateway)
+├── runtime/gateway/     # The gateway: policy, approvals, receipts, revocation
 ├── sdk/                 # Client SDKs (TypeScript, Python)
-├── security/            # Security profiles (AppArmor, eBPF, Seccomp)
-├── services/            # Microservices (approval, alerting, observability, etc.)
-├── telemetry/           # Telemetry collector and schema
+├── docs/                # Documentation
+├── examples/            # Sample configs and demo scripts
+├── security/            # Sandbox notes and security findings
 ├── tools/               # Operator tools (CLI, migration, benchmarks)
-└── trust/               # Federated trust graph and CLI
+│
+│   Experimental — not connected to the gateway yet:
+├── integrations/        # MCP and OpenAI integrations
+└── policy/              # Policy compiler
 ```
 
 ## Branch and Commit Conventions
@@ -140,12 +132,11 @@ ovara/
 3. **Architecture review** required for changes to:
    - `runtime/gateway/internal/evaluator/` (the decision pipeline)
    - `runtime/gateway/internal/trust/` (trust models)
-   - `identity/` (cryptographic primitives)
-   - `trust/` (federated trust graph)
+   - `proxy/internal/` (the egress proxy: policy gating, credential injection, scrubbing)
 4. **Security review** required for changes to:
-   - `security/`
+   - `security/` and `install.sh` / `install.ps1` / `.github/workflows/release.yml` (what users run)
    - `runtime/gateway/internal/auth/`
-   - `runtime/gateway/internal/identity/`
+   - `runtime/gateway/internal/identity/`, `idregistry/`, `gwidentity/`, `receipt/`, `record/` (keys, journals, signing)
    - Any cryptographic code paths.
 
 ## Release Process

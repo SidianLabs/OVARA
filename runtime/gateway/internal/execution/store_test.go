@@ -6,6 +6,7 @@ import (
 	"os"
 	osExec "os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -283,7 +284,17 @@ func TestShellExecutor_WorkingDir(t *testing.T) {
 	ctx := context.Background()
 	exec := NewShellExecutorWithLimits(10, 1024*1024, 256*1024)
 	exec.WorkingDir = "/tmp"
-	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", "shell:pwd", 10)
+	command, want := "shell:pwd", "/tmp\n"
+	if runtime.GOOS == "windows" {
+		// sh on Windows (Git Bash/MSYS) prints its own path namespace
+		// ("/c/tmp"), so prove the working dir by listing a marker file.
+		exec.WorkingDir = t.TempDir()
+		if err := os.WriteFile(filepath.Join(exec.WorkingDir, "wd-marker"), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+		command, want = "shell:ls", "wd-marker\n"
+	}
+	exe := NewExecution("cnt_1", "dec_1", "apr_1", "agt_1", "shell", command, 10)
 	err := exec.Execute(ctx, exe)
 	if err != nil {
 		t.Fatalf("execute failed: %v", err)
@@ -291,8 +302,8 @@ func TestShellExecutor_WorkingDir(t *testing.T) {
 	if exe.State != StateSucceeded {
 		t.Errorf("state = %s, want succeeded", exe.State)
 	}
-	if exe.Stdout != "/tmp\n" {
-		t.Errorf("stdout = %q, want %q", exe.Stdout, "/tmp\n")
+	if exe.Stdout != want {
+		t.Errorf("stdout = %q, want %q", exe.Stdout, want)
 	}
 }
 
@@ -729,6 +740,25 @@ func TestParseGitResource(t *testing.T) {
 				t.Errorf("branch = %s, want %s", res.Branch, tt.wantBranch)
 			}
 		})
+	}
+}
+
+func TestParseGitResource_WindowsDrive(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("drive letters are only path syntax on Windows")
+	}
+	for _, tt := range []struct{ resource, repo, branch string }{
+		{`git:C:\work\repo`, `C:\work\repo`, ""},
+		{`git:C:\work\repo:main`, `C:\work\repo`, "main"},
+		{`git:d:/work/repo:feature`, `d:/work/repo`, "feature"},
+	} {
+		res, err := ParseGitResource(tt.resource)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.resource, err)
+		}
+		if res.Repo != tt.repo || res.Branch != tt.branch {
+			t.Errorf("%s: got (%q, %q), want (%q, %q)", tt.resource, res.Repo, res.Branch, tt.repo, tt.branch)
+		}
 	}
 }
 

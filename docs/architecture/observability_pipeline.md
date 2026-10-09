@@ -3,10 +3,9 @@
 > **Status: aspirational — not yet wired.** This document describes the
 > target architecture. Today the observe pipeline
 > (`runtime/gateway/internal/observe/`) is never instantiated in
-> `server.go`, the `otel_*` config fields are parsed but unused, and the
-> `ovara_*` Prometheus/Grafana assets under `observability/` have no
-> producing metrics. See `observability/README.md` for what is required
-> to connect it.
+> `server.go` and the `otel_*` config fields are parsed but unused. The
+> earlier dashboard and collector assets were removed because nothing fed
+> them (see git history).
 
 ## Design
 

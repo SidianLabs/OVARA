@@ -1,87 +1,66 @@
-.PHONY: all build test clean docker-build docker-push lint vet check
+.PHONY: all ovara demo build vet test test-ts build-ts test-py lint check docker-build clean bench fuzz
 
-GO_MODULES := runtime/gateway identity trust proxy services/approval services/receipt-storage services/alerting services/observability tools/cli tools/migration tools/benchmarks telemetry/collector
-TS_MODULES := cloud/control-plane enterprise/sso enterprise/compliance sdk/typescript integrations/mcp integrations/langchain integrations/crewai integrations/openai-agents integrations/browser-automation integrations/openai policy/compiler apps/admin-dashboard packages/shared-types services/analytics
+# The product: one binary, built from proxy/ (it embeds the gateway).
+GO_CORE    := runtime/gateway proxy
+GO_MODULES := $(GO_CORE) tools/cli tools/migration tools/benchmarks
+TS_MODULES := sdk/typescript integrations/mcp integrations/openai policy/compiler
 
 all: vet test build
 
+# ── The ovara binary ─────────────────────────────────
+ovara:
+	cd proxy && go build -o ../ovara ./cmd/ovara
+	@echo "built ./ovara — try: ./ovara demo"
+
+demo: ovara
+	./ovara demo
+
 # ── Go ──────────────────────────────────────────────
+# `set -e` + subshells: any failing module fails the target.
 vet:
-	@for mod in $(GO_MODULES); do \
-		echo "=== go vet $$mod ===" && cd $$mod && go vet ./... && cd $(CURDIR); \
-	done
+	@set -e; for mod in $(GO_MODULES); do echo "=== go vet $$mod ==="; (cd $$mod && go vet ./...); done
 
 test:
-	@for mod in $(GO_MODULES); do \
-		echo "=== go test $$mod ===" && cd $$mod && go test -race -count=1 ./... && cd $(CURDIR); \
-	done
-
-test-ts:
-	@for mod in $(TS_MODULES); do \
-		if [ -f $$mod/package.json ]; then \
-			echo "=== test $$mod ===" && cd $$mod && npx vitest run; cd $(CURDIR); \
-		fi; \
-	done
+	@set -e; for mod in $(GO_MODULES); do echo "=== go test $$mod ==="; (cd $$mod && go test -race -count=1 ./...); done
 
 build:
-	@for mod in $(GO_MODULES); do \
-		echo "=== go build $$mod ===" && cd $$mod && go build ./... && cd $(CURDIR); \
-	done
-
-build-ts:
-	@for mod in $(TS_MODULES); do \
-		if [ -f $$mod/package.json ]; then \
-			echo "=== tsc $$mod ===" && cd $$mod && npx tsc --noEmit && cd $(CURDIR); \
-		fi; \
-	done
+	@set -e; for mod in $(GO_MODULES); do echo "=== go build $$mod ==="; (cd $$mod && go build ./...); done
 
 bench:
-	@echo "=== bench runtime/gateway ===" && cd runtime/gateway && go test -bench=. -benchtime=2s -count=5 -benchmem ./... 2>/dev/null | grep -E "^Benchmark|^ok"
+	cd runtime/gateway && go test -run='^$$' -bench=. -benchtime=2s -benchmem ./...
 
-bench-compare:
-	@echo "=== benchmark comparison ===" && cd runtime/gateway && go test -bench=. -benchtime=3s -count=10 -benchmem ./internal/handlers/ 2>/dev/null | grep "^Benchmark" | sort
+# ── TypeScript / Python ─────────────────────────────
+test-ts:
+	@set -e; for mod in $(TS_MODULES); do echo "=== vitest $$mod ==="; (cd $$mod && npx vitest run); done
 
-# ── Docker ───────────────────────────────────────────
-docker-build:
-	docker build -t ovara/gateway:latest runtime/gateway
-	docker build -t ovara/control-plane:latest cloud/control-plane
-	docker build -t ovara/approval:latest services/approval
-	docker build -t ovara/receipt-storage:latest services/receipt-storage
-	docker build -t ovara/alerting:latest services/alerting
-	docker build -t ovara/observability:latest services/observability
+build-ts:
+	@set -e; for mod in $(TS_MODULES); do echo "=== tsc $$mod ==="; (cd $$mod && npx tsc --noEmit); done
 
-docker-build-all:
-	docker compose -f infrastructure/docker-compose.full.yml build
-
-docker-up:
-	docker compose -f infrastructure/docker-compose.full.yml up -d
-
-docker-down:
-	docker compose -f infrastructure/docker-compose.full.yml down
+test-py:
+	cd sdk/python && python -m pytest -q
 
 # ── Lint ─────────────────────────────────────────────
 lint:
-	@echo "=== golangci-lint ===" && golangci-lint run runtime/gateway/... identity/... trust/... services/... 2>/dev/null || echo "install golangci-lint for full linting"
+	@command -v golangci-lint >/dev/null || { echo "golangci-lint is not installed"; exit 1; }
+	@set -e; for mod in $(GO_MODULES); do echo "=== golangci-lint $$mod ==="; (cd $$mod && golangci-lint run ./...); done
 
-# ── Security ─────────────────────────────────────────
-security-check:
-	@echo "=== AppArmor profile validation ===" && apparmor_parser -Q security/apparmor/ovara-gateway 2>/dev/null && echo "AppArmor OK" || echo "AppArmor: install apparmor-utils to validate"
-	@echo "=== Seccomp profile validation ===" && python3 -c "import json; json.load(open('security/sandbox/seccomp-profile.json'))" 2>/dev/null && echo "Seccomp OK" || echo "Seccomp: profile not yet created"
-
-# ── Full validation ──────────────────────────────────
-validate: vet test build test-ts build-ts security-check
-	@echo "=== ALL VALIDATION PASSED ==="
-
-# ── Check (CI entry point) ───────────────────────────
-check: vet test build test-ts build-ts
+# ── CI entry point ──────────────────────────────────
+check: vet test build test-ts build-ts test-py
 	@echo "=== ALL CHECKS PASSED ==="
 
-# ── Clean ────────────────────────────────────────────
+# ── Docker ───────────────────────────────────────────
+# Build context is the repo root for both images.
+docker-build:
+	docker build -f proxy/Dockerfile -t ovara/ovara:latest .
+	docker build -f runtime/gateway/Dockerfile -t ovara/gateway:latest .
+
 clean:
-	@for mod in $(GO_MODULES); do \
-		rm -f $$mod/ovara* 2>/dev/null; \
-	done
-	@for mod in $(TS_MODULES); do \
-		rm -rf $$mod/dist $$mod/node_modules 2>/dev/null; \
-	done
-	@echo "cleaned build artifacts"
+	rm -f ovara ovara.exe
+	@for mod in $(TS_MODULES); do rm -rf $$mod/dist; done
+
+# ── Fuzz (a minute each; CI runs longer weekly) ──────
+fuzz:
+	cd proxy && go test -run='^$$' -fuzz='^FuzzParseRefUpdates$$' -fuzztime=1m ./internal/proxy
+	cd proxy && go test -run='^$$' -fuzz='^FuzzNormalizeHost$$' -fuzztime=1m ./internal/proxy
+	cd runtime/gateway && go test -run='^$$' -fuzz='^FuzzMatchCanonicalResource$$' -fuzztime=1m ./internal/policy
+	cd runtime/gateway && go test -run='^$$' -fuzz='^FuzzOpenNeverPanics$$' -fuzztime=1m ./internal/record

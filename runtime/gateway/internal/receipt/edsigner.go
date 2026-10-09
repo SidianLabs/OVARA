@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"ovara.runtime.gateway/internal/gwidentity"
 	"ovara.runtime.gateway/internal/models"
@@ -29,6 +30,10 @@ var (
 	ErrNoRegistry = errors.New("receipt: no gateway key registry — cannot verify")
 	// ErrUnsigned marks a receipt that carries no gateway signature.
 	ErrUnsigned = errors.New("receipt: no gateway_sig present")
+	// ErrSignedAfterRevocation marks a receipt whose signed issue time is
+	// after its key was revoked or destroyed — a key that is known to be
+	// dead cannot vouch for anything new.
+	ErrSignedAfterRevocation = errors.New("receipt: signed after its gateway key was revoked")
 )
 
 // EdSigner stamps and signs receipts with the gateway's Ed25519
@@ -131,6 +136,13 @@ type KeyResolver interface {
 	ResolvePublicKey(gatewayID, keyID string) (ed25519.PublicKey, error)
 }
 
+// KeyRevocation is optionally implemented by a KeyResolver that knows
+// when a key was revoked or destroyed. Superseded (rotated-out) keys are
+// not revoked: rotation is routine, not a compromise.
+type KeyRevocation interface {
+	RevokedAt(gatewayID, keyID string) (time.Time, bool)
+}
+
 // RegistryResolver resolves keys through the durable gwidentity
 // registry — the same authority journal that records key lifecycle.
 type RegistryResolver struct {
@@ -163,6 +175,26 @@ func (rr RegistryResolver) ResolvePublicKey(gatewayID, keyID string) (ed25519.Pu
 	return nil, fmt.Errorf("receipt: %w for %s", gwidentity.ErrUnknownKey, keyID)
 }
 
+// RevokedAt reports when (gatewayID, keyID) was revoked or destroyed.
+func (rr RegistryResolver) RevokedAt(gatewayID, keyID string) (time.Time, bool) {
+	if rr.Reg == nil {
+		return time.Time{}, false
+	}
+	recs, err := rr.Reg.Lookup(gatewayID)
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, rec := range recs {
+		if rec.KeyID != keyID {
+			continue
+		}
+		if (rec.State == gwidentity.KeyRevoked || rec.State == gwidentity.KeyDestroyed) && !rec.RetiredAt.IsZero() {
+			return rec.RetiredAt, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // VerifySignature is the single authoritative receipt-signature
 // check: parse → resolve the historical key via the registry →
 // reconstruct the canonical payload → ed25519.Verify. A public key
@@ -188,5 +220,19 @@ func VerifySignature(res KeyResolver, r *models.Receipt) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return ed25519.Verify(pub, SignedPayload(r), sig), nil
+	if !ed25519.Verify(pub, SignedPayload(r), sig) {
+		return false, nil
+	}
+	// A revoked key keeps verifying what it signed while trusted, but a
+	// receipt claiming to be issued after the revocation is refused.
+	// (IssuedAt is covered by the signature, so it cannot be moved
+	// without re-signing; an attacker holding the key can still backdate
+	// — that residual risk is the documented C2-B key-compromise limit.)
+	if kr, ok := res.(KeyRevocation); ok {
+		if at, revoked := kr.RevokedAt(r.GatewayID, r.GatewayKeyID); revoked && r.IssuedAt.After(at) {
+			return false, fmt.Errorf("%w: issued %s, key revoked %s", ErrSignedAfterRevocation,
+				r.IssuedAt.UTC().Format(time.RFC3339), at.UTC().Format(time.RFC3339))
+		}
+	}
+	return true, nil
 }

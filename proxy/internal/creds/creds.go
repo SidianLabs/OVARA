@@ -14,17 +14,47 @@ type Binding struct {
 	Headers map[string]string `json:"headers"` // header -> value, ${ENV} expanded at load
 }
 
-// Load expands ${ENV_VAR} placeholders in header values.
+// Load expands ${ENV_VAR} placeholders in header values. A binding whose
+// variables are not all set is dropped (see LoadReport).
 func Load(bindings []Binding) []Binding {
+	out, _ := LoadReport(bindings)
+	return out
+}
+
+// Skipped describes a binding that was not loaded because a variable it
+// needs is unset or empty.
+type Skipped struct {
+	Host    string
+	Missing []string
+}
+
+// LoadReport expands ${ENV_VAR} placeholders and reports bindings it had
+// to drop. Injecting a binding with an unset variable would replace the
+// agent's own (possibly working) header with "Bearer " or an empty key,
+// breaking requests that would otherwise succeed. A dropped binding means
+// the agent's own headers pass through unchanged for that host.
+func LoadReport(bindings []Binding) ([]Binding, []Skipped) {
 	out := make([]Binding, 0, len(bindings))
+	var skipped []Skipped
 	for _, b := range bindings {
 		h := make(map[string]string, len(b.Headers))
+		var missing []string
 		for k, v := range b.Headers {
-			h[k] = os.ExpandEnv(v)
+			h[k] = os.Expand(v, func(name string) string {
+				val := os.Getenv(name)
+				if val == "" {
+					missing = append(missing, name)
+				}
+				return val
+			})
+		}
+		if len(missing) > 0 {
+			skipped = append(skipped, Skipped{Host: b.Host, Missing: missing})
+			continue
 		}
 		out = append(out, Binding{Host: b.Host, Headers: h})
 	}
-	return out
+	return out, skipped
 }
 
 // Match returns the headers to inject for an upstream host, or nil.

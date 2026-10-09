@@ -200,6 +200,7 @@ func TestAdmit_AtomicConsumeAndBind_Persisted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r2.Close()
 	gs, _ := r2.GrantsFor("gw_a")
 	if len(gs) != 1 || gs[0].State != GrantConsumed {
 		t.Fatalf("consumed grant must persist, got %+v", gs)
@@ -221,6 +222,7 @@ func TestAbsorb_MixedKindRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mixed-kind file must load: %v", err)
 	}
+	defer r2.Close()
 	if gs, _ := r2.GrantsFor("gw_old"); len(gs) != 1 {
 		t.Fatal("grant must survive reload")
 	}

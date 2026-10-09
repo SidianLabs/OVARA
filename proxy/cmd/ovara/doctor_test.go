@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -29,8 +30,34 @@ func TestDoctor_FreshInit(t *testing.T) {
 	if checks["config.json"] != "PASS" || checks["auth"] != "PASS" || checks["receipt signing key"] != "PASS" {
 		t.Errorf("expected core checks PASS on fresh init: %v", checks)
 	}
-	if checks["durable state"] != "WARN" {
-		t.Errorf("expected durable-state WARN for memory-mode init, got %s", checks["durable state"])
+	// `ovara init` configures every authority store as file-backed; doctor
+	// used to look for misspelled keys and warned "memory-mode" regardless.
+	if checks["durable state"] != "PASS" {
+		t.Errorf("a fresh init is file-backed; durable-state should PASS, got %s", checks["durable state"])
+	}
+	// No off-host anchor exists on a fresh local init, and doctor says so.
+	if checks["anchor"] != "WARN" {
+		t.Errorf("expected an anchor WARN on a fresh init, got %s", checks["anchor"])
+	}
+}
+
+func TestDoctor_FlagsMemoryModeWhenStoresUnset(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := deploy(dir, "0", false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "config.json"))
+	var cfg map[string]any
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	delete(cfg, "continuations_file")
+	out, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := statuses(auditDeployment(dir))["durable state"]; got != "WARN" {
+		t.Fatalf("missing continuations_file must WARN, got %s", got)
 	}
 }
 
@@ -87,5 +114,44 @@ func TestLooksLikeSecret(t *testing.T) {
 		if got := looksLikeSecret(v); got != want {
 			t.Errorf("looksLikeSecret(%q) = %v, want %v", v, got, want)
 		}
+	}
+}
+
+func TestDoctor_FlagsLooseSecretAndWritablePolicy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits are not enforced on Windows")
+	}
+	dir := t.TempDir()
+	if _, err := deploy(dir, "0", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := statuses(auditDeployment(dir)); got["secret file permissions"] != "PASS" || got["policy.json permissions"] != "PASS" {
+		t.Fatalf("a fresh init must have private secrets and an owner-only policy: %v", got)
+	}
+	if err := os.Chmod(filepath.Join(dir, "var", "receipt.key"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "policy.json"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	got := statuses(auditDeployment(dir))
+	if got["secret file permissions"] != "FAIL" {
+		t.Errorf("a world-readable signing key must FAIL, got %v", got)
+	}
+	if got["policy.json permissions"] != "FAIL" {
+		t.Errorf("a world-writable policy must FAIL, got %v", got)
+	}
+}
+
+func TestDoctor_WindowsSaysPermissionsAreNotChecked(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	dir := t.TempDir()
+	if _, err := deploy(dir, "0", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := statuses(auditDeployment(dir))["file permissions"]; got != "WARN" {
+		t.Fatalf("Windows must WARN that permissions are unchecked rather than PASS, got %q", got)
 	}
 }

@@ -39,6 +39,7 @@ func TestAbsorb_ExternalShrink_FailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer r.Close()
 	pubA, _, _ := ed25519.GenerateKey(nil)
 	if _, err := r.Register("gw_a", pubA); err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -198,14 +199,30 @@ func (s *FileBackedStore) JournalTip() (uint64, string) {
 }
 
 // persistLocked appends the continuation record and fsyncs. Callers must
-// hold s.mu. Write errors are logged but do not roll back the in-memory
-// transition already applied under the lock.
-func (s *FileBackedStore) persistLocked(c *Continuation) {
+// hold s.mu. The error is returned so state transitions that gate a
+// side-effect (claim, retry, cancel, recover) can roll back and refuse
+// rather than proceed on a transition that never reached the disk.
+func (s *FileBackedStore) persistLocked(c *Continuation) error {
 	data, err := json.Marshal(c)
 	if err != nil {
-		return
+		return err
 	}
-	_ = s.appendLocked(c.ContinuationID, data)
+	return s.appendLocked(c.ContinuationID, data)
+}
+
+// transitionLocked applies mutate to the stored continuation and persists
+// it. If the write fails the in-memory state is restored and false is
+// returned, so a caller never acts on (e.g. executes) a claim that a crash
+// would forget. Callers must hold s.mu.
+func (s *FileBackedStore) transitionLocked(c *Continuation, mutate func()) bool {
+	prior := c.snapshot()
+	mutate()
+	if err := s.persistLocked(c); err != nil {
+		log.Printf("continuation %s: transition to %s not persisted, rolled back: %v", c.ContinuationID, c.State, err)
+		s.continuations[c.ContinuationID] = prior
+		return false
+	}
+	return true
 }
 
 func (s *FileBackedStore) Get(id string) (*Continuation, bool) {
@@ -231,11 +248,11 @@ func (s *FileBackedStore) Update(c *Continuation) error {
 		return fmt.Errorf("failed to marshal continuation: %w", err)
 	}
 
-	if _, err := s.file.Write(append(data, '\n')); err != nil {
+	// appendLocked handles both modes: a signed journal envelope in signed
+	// mode, a raw JSON line in legacy mode. Writing to s.file directly
+	// would hit a nil file in signed mode and fail every update.
+	if err := s.appendLocked(c.ContinuationID, data); err != nil {
 		return fmt.Errorf("failed to write continuation update: %w", err)
-	}
-	if err := s.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync continuation file: %w", err)
 	}
 
 	s.continuations[c.ContinuationID] = c
@@ -325,8 +342,12 @@ func (s *FileBackedStore) ClaimForExecution(id string) (*Continuation, bool) {
 		return nil, false
 	}
 	if isClaimable(c) {
-		markExecuting(c)
-		s.persistLocked(c)
+		// The claim must be durable BEFORE the action runs: if it is not,
+		// a crash after the side-effect would let the restart claim and
+		// run it again (a second git push, a second deploy).
+		if !s.transitionLocked(c, func() { markExecuting(c) }) {
+			return nil, false
+		}
 		return c.snapshot(), true
 	}
 	return nil, false
@@ -342,8 +363,9 @@ func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
 		return nil, false
 	}
 	if c.State == StateResumed && !c.IsExpired() {
-		markExecuting(c)
-		s.persistLocked(c)
+		if !s.transitionLocked(c, func() { markExecuting(c) }) {
+			return nil, false
+		}
 		return c.snapshot(), true
 	}
 	return nil, false
@@ -363,9 +385,8 @@ func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) 
 	if c.State != StateExecuting {
 		return nil, false
 	}
-	c.State = StateExecuted
-	if data, err := json.Marshal(c); err == nil {
-		_ = s.appendLocked(c.ContinuationID, data)
+	if !s.transitionLocked(c, func() { c.State = StateExecuted }) {
+		return nil, false
 	}
 	return c.snapshot(), true
 }
@@ -399,16 +420,16 @@ func (s *FileBackedStore) RetryForExecution(id string) (*Continuation, bool) {
 	if !c.retryEligible() {
 		return nil, false
 	}
-	c.State = StateResumed
-	c.RetryCount++
-	now := time.Now().UTC()
-	c.ResumedAt = &now
-
-	// Persist the retry transition inline (cannot call Update: it re-locks s.mu).
-	// A best-effort write keeps the incremented RetryCount durable across restarts;
-	// the in-memory transition has already been applied under the lock.
-	if data, err := json.Marshal(c); err == nil {
-		_ = s.appendLocked(c.ContinuationID, data)
+	// Persist inline (cannot call Update: it re-locks s.mu). A retry that
+	// is not durable is refused: the incremented RetryCount is what bounds
+	// how often an action may be re-run.
+	if !s.transitionLocked(c, func() {
+		c.State = StateResumed
+		c.RetryCount++
+		now := time.Now().UTC()
+		c.ResumedAt = &now
+	}) {
+		return nil, false
 	}
 	return c.snapshot(), true
 }
@@ -426,9 +447,8 @@ func (s *FileBackedStore) CancelForOperation(id string) (*Continuation, bool) {
 	if !c.CanCancel() {
 		return nil, false
 	}
-	c.MarkCancelled()
-	if data, err := json.Marshal(c); err == nil {
-		_ = s.appendLocked(c.ContinuationID, data)
+	if !s.transitionLocked(c, func() { c.MarkCancelled() }) {
+		return nil, false
 	}
 	return c.snapshot(), true
 }
@@ -452,6 +472,9 @@ func (s *FileBackedStore) FilePath() string {
 }
 
 func (s *FileBackedStore) Close() error {
+	if s.journal != nil {
+		return s.journal.Close()
+	}
 	if s.file != nil {
 		return s.file.Close()
 	}
@@ -633,7 +656,14 @@ func (s *FileBackedStore) Compact() error {
 func (s *FileBackedStore) compactSigned() error {
 	seq, tip := s.journal.Tip()
 	tmpPath := s.path + ".compact.tmp"
-	w, err := record.ResumeAt("continuation", tmpPath, s.journal.Domain(), s.journalSigner(), seq, tip)
+	domain, signer := s.journal.Domain(), s.journalSigner()
+	// A temp file left by a crashed or failed earlier compaction would be
+	// appended to (ResumeAt opens O_APPEND), producing a second marker behind
+	// stale lines that no longer opens. Always start from nothing.
+	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("compact: remove stale temp: %w", err)
+	}
+	w, err := record.ResumeAt("continuation", tmpPath, domain, signer, seq, tip)
 	if err != nil {
 		return fmt.Errorf("compact: %w", err)
 	}
@@ -675,16 +705,22 @@ func (s *FileBackedStore) compactSigned() error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("compact: close: %w", err)
 	}
+	// Windows refuses to rename over a file that is still open, so the live
+	// journal is closed first and reopened on whichever file survives.
+	_ = s.journal.Close()
 	if err := os.Rename(tmpPath, s.path); err != nil {
+		os.Remove(tmpPath)
+		if old, rerr := record.ResumeAt("continuation", s.path, domain, signer, seq, tip); rerr == nil {
+			s.journal = old
+		}
 		return fmt.Errorf("compact: rename: %w", err)
 	}
 	// Reopen the journal on the compacted file so the writer continues
 	// from the new physical tip (ResumeAt keeps logical seq/parent).
-	j, err := record.ResumeAt("continuation", s.path, s.journal.Domain(), s.journalSigner(), newSeq, newTip)
+	j, err := record.ResumeAt("continuation", s.path, domain, signer, newSeq, newTip)
 	if err != nil {
 		return fmt.Errorf("compact: reopen: %w", err)
 	}
-	_ = s.journal.Close()
 	s.journal = j
 	s.staleIDs = nil
 	if s.tipsSink != nil {

@@ -29,15 +29,29 @@ issues.
 ## Security Architecture
 
 Ovara is a runtime trust layer for autonomous systems. Its security model
-is built on defense-in-depth across four independent layers.
+combines a gateway authorization chain, an egress proxy, and (optionally)
+an enforced network boundary. Only the first two are built into the `ovara`
+binary; the kernel-level layers shown in the diagram below are a **design
+target, not a shipped feature**.
 
 > **RC1 status**: the gateway authorization chain (identity → delegation
 > → lease → policy → approval → execution → evidence) and the egress
 > proxy (MITM + credential injection + scrubbing + signed receipts) are
 > implemented and clean-room verified — see
 > `docs/OVARA_RC1_SECURITY_REPORT.md`. The kernel-level layers below
-> (AppArmor/seccomp/eBPF/Firecracker) are the hardening path, not the
+> (AppArmor/seccomp/eBPF/Firecracker) are NOT implemented in the gateway
+> (it has a Docker sandbox for command execution, nothing more); they are the
+> hardening path, not the
 > current default deployment.
+>
+> **What contains the agent today** depends on the mode. In *cooperative*
+> mode (`ovara env`) the agent is only asked to use the proxy; a hostile
+> agent can ignore it. If the agent runs as the same OS user as Ovara it can
+> also read Ovara's keys and edit its policy and log; run it as a different
+> user. *Enforced* mode (`--boundary`, Linux) removes the network path
+> around the proxy. `ovara doctor` reports which of these hold.
+>
+> Target design (not built):
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -73,7 +87,8 @@ Ovara uses well-audited cryptographic primitives:
 | Primitive | Use | Library |
 |-----------|-----|---------|
 | ed25519 | Delegation hop signatures, capability lease signatures, proxy receipt-chain signatures, trusted-issuer verification | Go `crypto/ed25519` |
-| HMAC-SHA256 | Gateway receipt signing (`receipt_signing_key`) | Go `crypto/hmac` + `crypto/sha256` |
+| ed25519 (`edsig_v1`) | Gateway receipt signatures: domain-separated, length-prefixed preimage covering every receipt field; receipts issued after their key was revoked are rejected | Go `crypto/ed25519` |
+| HMAC-SHA256 | Legacy gateway receipt signing (`receipt_signing_key`), kept alongside `edsig_v1` | Go `crypto/hmac` + `crypto/sha256` |
 | SHA-256 | Action digests, delegation replay keys, credential-derived principal IDs, canonical encoding | Go `crypto/sha256` |
 
 Canonical signing format: all signed delegation/lease payloads use a
@@ -93,8 +108,9 @@ including Python-signed two-hop chains verified by Go.
   hops verified against a configured `trusted_issuers` registry; chain
   linkage `issuer[i+1] == subject[i]`; terminal subject must equal the
   authenticated principal; non-amplification enforced; replay keyed on
-  the terminal hop's *signed* nonce (in-memory, 5-minute window —
-  process-local, not durable). A valid chain narrows the request; it
+  the terminal hop's *signed* nonce (5-minute window; durable across
+  restarts when `replay_file` is configured, which `ovara init` does —
+  process-local otherwise). A valid chain narrows the request; it
   can never lift policy.
 - **Capability leases**: ed25519-signed, issuer-verified; require exact
   audience match to the gateway identity; subject must equal the
@@ -117,8 +133,18 @@ admin access. We recommend:
 - Use a token with at least 32 bytes of entropy (`openssl rand -hex 32`)
 - Use separate tokens per environment and per operator
 - On compromise: replace the token in config and restart the gateway —
-  tokens are static config-file credentials in RC1 (no runtime token
-  revocation API; credential lifecycle is deferred work)
+  tokens in `config.json` are static credentials and cannot be revoked
+  without a restart. Credentials held in the identity registry
+  (`identity_registry_file`) can be revoked at runtime.
+
+## Failure behaviour
+
+The gateway fails closed. A configured persistent store (receipts,
+approvals, continuations, executions, events, capabilities) that cannot be
+opened stops startup rather than continuing with an empty in-memory store;
+an approved action whose "executing" claim cannot be written to disk is not
+run. Recovering from a corrupt or tampered journal is a deliberate operator
+step (inspect, then move the file aside), never an automatic one.
 
 ## Receipt Signing Key
 

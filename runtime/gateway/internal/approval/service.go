@@ -23,7 +23,7 @@ func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
 		return nil, fmt.Errorf("action_type is required")
 	}
 
-	approvalID := fmt.Sprintf("apr_%s", uuid.New().String()[:16])
+	approvalID := fmt.Sprintf("apr_%s", uuid.New().String())
 	approval := req.ToApproval(approvalID)
 
 	if err := s.store.Create(approval); err != nil {

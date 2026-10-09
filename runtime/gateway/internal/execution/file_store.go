@@ -400,7 +400,13 @@ func (s *FileBackedStore) Compact() error {
 func (s *FileBackedStore) compactSigned() error {
 	seq, tip := s.journal.Tip()
 	tmpPath := s.path + ".compact.tmp"
-	w, err := record.ResumeAt("execution", tmpPath, s.journal.Domain(), s.journal.Signer(), seq, tip)
+	domain, signer := s.journal.Domain(), s.journal.Signer()
+	// Never append to a temp file left behind by an earlier failed or
+	// crashed compaction.
+	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("compact: remove stale temp: %w", err)
+	}
+	w, err := record.ResumeAt("execution", tmpPath, domain, signer, seq, tip)
 	if err != nil {
 		return fmt.Errorf("compact: %w", err)
 	}
@@ -431,14 +437,19 @@ func (s *FileBackedStore) compactSigned() error {
 		os.Remove(tmpPath)
 		return fmt.Errorf("compact: close: %w", err)
 	}
+	// Windows refuses to rename over a file that is still open.
+	_ = s.journal.Close()
 	if err := os.Rename(tmpPath, s.path); err != nil {
+		os.Remove(tmpPath)
+		if old, rerr := record.ResumeAt("execution", s.path, domain, signer, seq, tip); rerr == nil {
+			s.journal = old
+		}
 		return fmt.Errorf("compact: rename: %w", err)
 	}
-	j, err := record.ResumeAt("execution", s.path, s.journal.Domain(), s.journal.Signer(), newSeq, newTip)
+	j, err := record.ResumeAt("execution", s.path, domain, signer, newSeq, newTip)
 	if err != nil {
 		return fmt.Errorf("compact: reopen: %w", err)
 	}
-	_ = s.journal.Close()
 	s.journal = j
 	s.staleIDs = nil
 	if s.tipsSink != nil {

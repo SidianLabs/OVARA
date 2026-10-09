@@ -37,12 +37,9 @@ linters:
     - gocyclo       # cyclomatic complexity
     - goconst       # repeated strings as constants
     - dupl          # duplicate code detection
-    - ineffassign   # already listed
 
-  # Don't fail on these by default
-  presets:
-    - bugs
-    - unused
+# Note: no `presets:` here. With `disable-all: true`, a preset ENABLES every
+# linter in it, so the list above silently grew well beyond what is written.
 
 issues:
   max-issues-per-linter: 50
@@ -56,8 +53,9 @@ issues:
         - gocritic
       text: "should have comment|is too long|cyclomatic|duplicated"
   exclude:
-    # Allow common patterns that we don't want to fix
-    - "Error return value of .* is not checked"
+    # errcheck is NOT excluded: an ignored error is exactly how a failed
+    # journal write became "the action ran anyway". Intentional ignores are
+    # written `_ = f()` so the choice is visible in review.
     - "exported function .* should have comment"
 
 severity:

@@ -5,11 +5,8 @@ on:
     branches: [main, "phase-*"]
     paths:
       - "runtime/**"
-      - "identity/**"
-      - "trust/**"
-      - "services/**"
+      - "proxy/**"
       - "tools/**"
-      - "telemetry/**"
       - ".golangci.yml"
       - ".github/workflows/lint.yml"
   pull_request:
@@ -22,16 +19,10 @@ jobs:
       matrix:
         module:
           - runtime/gateway
-          - identity
-          - trust
-          - services/approval
-          - services/alerting
-          - services/observability
-          - services/receipt-storage
+          - proxy
           - tools/cli
           - tools/migration
           - tools/benchmarks
-          - telemetry/collector
     steps:
       - uses: actions/checkout@v4
 
@@ -58,21 +49,3 @@ jobs:
           only-new-issues: true
           args: --timeout=5m
 
-  tslint:
-    name: ESLint (TypeScript)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install
-        working-directory: cloud/control-plane
-        run: npm ci
-
-      - name: Lint
-        working-directory: cloud/control-plane
-        run: npm run lint || true

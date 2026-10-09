@@ -46,7 +46,6 @@ import (
 	"ovara.runtime.gateway/internal/sandbox"
 	"ovara.runtime.gateway/internal/trust"
 
-	"github.com/fsnotify/fsnotify"
 )
 
 // Run starts the gateway with the given config file and blocks until
@@ -206,8 +205,7 @@ func Run(configPath string) error {
 	if cfg.EventsFile != "" {
 		store, err := events.NewFileBackedStoreWithRetention(cfg.EventsFile, cfg.EventsMaxSize, cfg.EventsRetentionDays, cfg.EventsMaxRecords, bind("events"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed event store: %v, using in-memory", err)
-			eventStore = events.NewInMemoryStore(10000)
+			return failClosedStore("event", cfg.EventsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("events"))
 			postOpenRatchet("events", store.JournalTip)
@@ -230,7 +228,10 @@ func Run(configPath string) error {
 		} else {
 			policyStore = store
 
-			if cfg.PolicyRefreshInterval > 0 {
+			// On by default: `ovara init` never sets policy_refresh_interval, so with the
+			// old "> 0" test hot reload was off in every deployment while the docs
+			// promised it. A negative value is the explicit opt-out.
+			if cfg.PolicyRefreshInterval >= 0 {
 				policySource := policy.NewLocalFileSource(cfg.PolicyFile, cfg.PolicyVersion, policyStore)
 				w, err := policy.NewWatcher(policySource)
 				if err != nil {
@@ -244,7 +245,19 @@ func Run(configPath string) error {
 						go func() {
 							defer wg.Done()
 							for event := range watcher.Events() {
-								if event.Has(fsnotify.Write) {
+								if watcher.IsPolicyEvent(event) {
+									// Let a multi-step write (truncate, then write) finish
+									// and fold the burst of events into one reload; a
+									// half-written file fails to parse and keeps the old
+									// policy.
+									time.Sleep(150 * time.Millisecond)
+									for drained := false; !drained; {
+										select {
+										case <-watcher.Events():
+										default:
+											drained = true
+										}
+									}
 									if err := watcher.Reload(); err != nil {
 										log.Printf("policy reload failed: %v", err)
 										metrics.RecordPolicyReload(false, err.Error())
@@ -298,8 +311,7 @@ func Run(configPath string) error {
 		}
 		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, maxAge, bind("receipts"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed receipt store: %v, falling back to in-memory", err)
-			receiptsStore = receipts.NewInMemoryStore()
+			return failClosedStore("receipt", cfg.ReceiptsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("receipts"))
 			postOpenRatchet("receipts", store.JournalTip)
@@ -312,6 +324,12 @@ func Run(configPath string) error {
 	}
 
 	shieldStore := trust.NewShieldStore()
+	// Risk decays and automatic restrictions lift themselves. Without this an
+	// agent that hit a few blocked sites stayed quarantined (every request
+	// needing a human) until an operator called /v1/shield/unrestrict.
+	// Manual restrictions are unaffected and still last until lifted.
+	shieldStore.SetRiskWindow(10 * time.Minute)
+	shieldStore.SetAutoRestrictTTL(15 * time.Minute)
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
 
 	// Durable replay protection (P2.1): a configured journal that cannot
@@ -364,8 +382,7 @@ func Run(configPath string) error {
 	if cfg.ApprovalsFile != "" {
 		store, err := approval.NewFileBackedStore(cfg.ApprovalsFile, bind("approval"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed approval store: %v, falling back to in-memory", err)
-			approvalStore = approval.NewInMemoryStore()
+			return failClosedStore("approval", cfg.ApprovalsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("approval"))
 			postOpenRatchet("approval", store.JournalTip)
@@ -381,8 +398,7 @@ func Run(configPath string) error {
 	if cfg.ContinuationsFile != "" {
 		store, err := continuation.NewFileBackedStoreWithRetention(cfg.ContinuationsFile, cfg.ContinuationsMaxSize, cfg.ContinuationRetentionDays, cfg.ContinuationMaxRecords, bind("continuation"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed continuation store: %v, using in-memory", err)
-			continuationStore = continuation.NewInMemoryStore()
+			return failClosedStore("continuation", cfg.ContinuationsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("continuation"))
 			postOpenRatchet("continuation", store.JournalTip)
@@ -417,8 +433,7 @@ func Run(configPath string) error {
 	if cfg.CapabilitiesFile != "" {
 		store, err := capabilities.NewFileBackedStore(cfg.CapabilitiesFile, cfg.CapabilitiesMaxSize, 0, bind("capabilities"))
 		if err != nil {
-			log.Printf("warning: failed to create file-backed capabilities store: %v, falling back to in-memory", err)
-			capabilitiesStore = capabilities.NewInMemoryStore()
+			return failClosedStore("capabilities", cfg.CapabilitiesFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("capabilities"))
 			postOpenRatchet("capabilities", store.JournalTip)
@@ -434,7 +449,7 @@ func Run(configPath string) error {
 	if cfg.CapabilitiesHistoryFile != "" {
 		store, err := capabilities.NewFileBackedHistoryStore(cfg.CapabilitiesHistoryFile, 50000)
 		if err != nil {
-			log.Printf("warning: failed to create file-backed history store: %v, using in-memory", err)
+			return failClosedStore("capability history", cfg.CapabilitiesHistoryFile, err)
 		} else {
 			capabilitiesHistoryStore = store
 			log.Printf("capability history persisted to %s", cfg.CapabilitiesHistoryFile)
@@ -540,8 +555,7 @@ func Run(configPath string) error {
 			bind("execution"),
 		)
 		if err != nil {
-			log.Printf("warning: failed to create file-backed execution store: %v, using in-memory", err)
-			execStore = execution.NewInMemoryStore()
+			return failClosedStore("execution", cfg.ExecutionFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("execution"))
 			postOpenRatchet("execution", store.JournalTip)
@@ -649,6 +663,7 @@ func Run(configPath string) error {
 	orchestrator.SetEventStore(eventStore)
 	orchestrator.SetGatewayID(enrollmentSvc.GetIdentity().ID)
 	orchestrator.SetApprovalStore(approvalStore)
+	continuationHandler.SetApprovalStore(approvalStore)
 	if revChecker != nil {
 		orchestrator.SetRevocation(revChecker)
 		continuationHandler.SetRevocation(revChecker)
@@ -800,7 +815,16 @@ func Run(configPath string) error {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- http.ListenAndServe(addr, wrappedMux)
+		// Bounded header/idle time so a client that connects and stalls
+		// cannot pin sockets. No WriteTimeout: approvals are long-polled.
+		hs := &http.Server{
+			Addr:              addr,
+			Handler:           wrappedMux,
+			ReadHeaderTimeout: 15 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    64 << 10,
+		}
+		serveErr <- hs.ListenAndServe()
 	}()
 
 	select {
@@ -829,6 +853,16 @@ type gatewayTrust struct {
 // is fatal in durable mode; there is no silent fallback and no silent
 // re-identity (a new gw_id is never generated here — enrollment owns
 // the ID).
+// failClosedStore is the startup error for a configured, persistent store
+// that cannot be opened. It used to log a warning and continue with an
+// empty in-memory store, which turns "the journal was tampered with, rolled
+// back or corrupted" into silent data loss plus a gateway that happily
+// serves with no approvals, continuations or receipts. Refusing to start
+// leaves the evidence in place for the operator.
+func failClosedStore(name, path string, err error) error {
+	return fmt.Errorf("%s store %s cannot be opened: %w (refusing to start with an empty in-memory store; inspect or move the file aside deliberately)", name, path, err)
+}
+
 func initGatewayTrust(cfg *config.Config, svc enrollment.Service) (*gatewayTrust, error) {
 	durable := cfg.GatewayRegistryFile != ""
 	id := svc.GetIdentity()
@@ -1063,6 +1097,12 @@ func reconcileAnchor(cfg *config.Config, reg *gwidentity.Registry, priv ed25519.
 			log.Printf("anchor: gateway_anchor_catchup=auto no longer auto-pushes (P2.3.3 remediation) — operator catch-up required")
 		}
 		log.Printf("anchor: unanchored tail (local seq %d > oracle %d) — degraded mode continuing WITHOUT anchoring; run gwctl anchor-catchup", seq, acp.Seq)
+			// Do not install the pusher: with it set, the very next
+			// mutation (even the startup tip ratchet) would commit a
+			// checkpoint at the local seq and make the unverified tail
+			// authoritative. Anchoring resumes after the operator's
+			// catch-up and a restart.
+			return nil
 	}
 	return reg.SetAnchor(pusher, signer)
 }

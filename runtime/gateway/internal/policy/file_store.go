@@ -41,6 +41,17 @@ func ParseStore(data []byte, versionHint string) (*Store, error) {
 		return nil, err
 	}
 
+	// Conditions are never evaluated. A rule that relies on one to be
+	// narrow (the OPA/Cedar adapters scope rules to a principal this way)
+	// would load and then apply to EVERY request. Refuse to load it.
+	for i, r := range fp.Rules {
+		for key := range r.Conditions {
+			if key != "depends_on" && key != "ref" {
+				return nil, fmt.Errorf("rule[%d]: condition %q is not evaluated by the gateway, so the rule would apply to every request; scope it with action_type, environment and resource instead", i, key)
+			}
+		}
+	}
+
 	version := fp.Version
 	if version == "" {
 		version = versionHint

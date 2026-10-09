@@ -109,6 +109,7 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer j.Close()
 	if len(seen) != 3 || seen[0] != "a" || seen[2] != "c" {
 		t.Fatalf("seen %v", seen)
 	}
@@ -401,4 +402,47 @@ func TestCompactReopen(t *testing.T) {
 		t.Fatalf("floor at compaction boundary rejected: %v", err)
 	}
 	j3.Close()
+}
+
+// A complete, correctly signed final record that is only missing its
+// trailing newline (crash between the record and the "\n") is committed.
+// The next append must not land on the same line: that used to produce one
+// unparseable line and a journal that could never be opened again.
+func TestCompleteFinalLineWithoutNewlineIsTerminated(t *testing.T) {
+	e := setup(t)
+	p := filepath.Join(e.dir, "c.journal")
+	write3(t, e, p)
+
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(strings.TrimRight(string(data), "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	j := foldOK(t, e, p, Floor{})
+	if j == nil {
+		t.Fatal("journal with a complete final line was rejected")
+	}
+	if s, _ := j.Tip(); s != 3 {
+		t.Fatalf("tip %d, want 3 (the unterminated record is committed)", s)
+	}
+	if _, _, err := j.Append("continuation", "d", map[string]string{"v": "d"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+
+	// Every record on its own line, and the journal reopens cleanly.
+	if got := len(lines(t, p)); got != 4 {
+		t.Fatalf("%d lines, want 4: the new record merged into the old line", got)
+	}
+	j2, err := Open("continuation", p, e.domain, e.signer, e.resolve, Floor{}, func(*Envelope) error { return nil })
+	if err != nil {
+		t.Fatalf("journal no longer opens after the append: %v", err)
+	}
+	defer j2.Close()
+	if s, _ := j2.Tip(); s != 4 {
+		t.Fatalf("tip %d after reopen, want 4", s)
+	}
 }
