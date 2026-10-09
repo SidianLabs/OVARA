@@ -1,4 +1,4 @@
-FROM golang:1.25 AS go
+FROM golang:1.26 AS go
 FROM node:24-bookworm
 COPY --from=go /usr/local/go /usr/local/go
 ENV PATH=$PATH:/usr/local/go/bin

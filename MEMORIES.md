@@ -151,7 +151,7 @@ Layout:
 - **Windows**: rename over an open journal fails (close first).
 - **Docker Desktop crash**: stale `%LOCALAPPDATA%\Docker\run\dockerInference`: quit Docker, `wsl --shutdown`, delete it, restart.
 - Flaky under load: `TestLoadDecisionLatency`, `TestOrchestrator_SkipNoExecutor_UsesMarkRequeue`.
-- `go.mod` `go` directive must stay **1.25.6**; `x/sys` at `v0.44.0` (dependabot #32 bumps it, so check it does not raise the directive).
+- CI (`go-version: "1.26"`) and the test images (`golang:1.26`) build with Go 1.26: Go 1.25's standard library stopped receiving fixes (govulncheck on 1.25.14 reports 9 stdlib CVEs fixed only in 1.26.9; PR #39 first run). The `go.mod` `go` directive stays **1.25.6** (language version; a newer toolchain is fine). `x/sys` at `v0.44.0`; dependabot #32 bumps it, check it does not raise the directive.
 - Classifier: `git rm` of tracked dirs gets blocked; hand those commands to the owner.
 - **Cloud session specifics**: start `dockerd` yourself with `--registry-mirror=https://mirror.gcr.io`. Containers' direct TLS is intercepted by the session's egress proxy, so a local-only image that trusts `/root/.ccr/ca-bundle.crt` is needed. Build it in the scratchpad: copy the Dockerfile, add `COPY ccr.crt /usr/local/share/ca-certificates/` + `update-ca-certificates` + `NODE_EXTRA_CA_CERTS`, tag `ovara-agents-ccr`, then run the same `docker run … bash -c "tr -d '\r' < /repo/tests/agents/X.sh …"` command. **Never commit that CA.** The kernel has no IPv6. The host Go is 1.24, but `GOTOOLCHAIN` fetches 1.25.6 automatically. Python SDK tests need `pip install '.[dev]'` in a venv; delete the `sdk/python/build/` it leaves behind.
 - Test expectations that encoded bugs get updated deliberately, and the commit says so.

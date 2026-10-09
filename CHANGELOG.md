@@ -168,6 +168,10 @@ that the unit suites had not:
 
 ### Security (hardening pass)
 
+- CI and the test images build with Go 1.26: the standard library of Go 1.25
+  no longer receives fixes (`govulncheck` on 1.25.14 reports nine `net/http`,
+  `crypto/tls` and `net/textproto` advisories fixed only in 1.26.9).
+
 - **The tip ledger only moves forward.** Recording a store tip below the
   floor, or the same seq with a different hash, is refused when it is
   written. Before, it was accepted and ignored, and the problem surfaced only

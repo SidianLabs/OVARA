@@ -147,7 +147,7 @@ sudo journalctl -u ovara-gateway -f
 ### Docker
 
 ```dockerfile
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /build
 COPY . .
 RUN cd runtime/gateway && CGO_ENABLED=0 go build -o /ovara-gateway ./cmd/server/
