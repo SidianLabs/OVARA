@@ -143,6 +143,7 @@ func Create(project, dir string, opts Options) (*Workspace, error) {
 			return nil
 		}
 		rel, _ := filepath.Rel(dir, p)
+		rel = filepath.ToSlash(rel) // the same key git uses, on every OS
 		if isExcluded(rel, excludes) {
 			seen[rel] = true
 		}
