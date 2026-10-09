@@ -12,7 +12,10 @@ package main
 //      except the proxy;
 //   4. run the agent inside the namespace as an unprivileged user that is
 //      not the one running Ovara, with the proxy environment and no keys;
-//   5. when it exits, bring its changes back as a commit on a new branch of
+//   5. every program the agent starts is stopped at exec and checked
+//      against policy (action_type shell): allowed, killed, or held for a
+//      person (internal/boxgate);
+//   6. when it exits, bring its changes back as a commit on a new branch of
 //      the real repository, after a person has read the diff and a policy
 //      has had its say on each path.
 //
@@ -36,9 +39,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"ovara.proxy/internal/boxgate"
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/workspace"
@@ -61,6 +66,7 @@ func cmdBox(args []string) error {
 	approveTimeout := fs.Duration("approve-timeout", 10*time.Minute, "how long the commit-back waits for a person")
 	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
 	noCommitBack := fs.Bool("no-commit-back", false, "do not offer to bring changes back; keep the workspace")
+	noGate := fs.Bool("no-command-gate", false, "do not check the agent's commands against policy (the network and file boundaries still hold)")
 	var envs, mounts multiFlag
 	fs.Var(&envs, "env", "extra NAME=value for the agent (repeatable; values that look like keys are refused)")
 	fs.Var(&mounts, "exclude", "extra path glob to leave out of the workspace (repeatable; .ovaraignore is read too)")
@@ -223,35 +229,73 @@ func cmdBox(args []string) error {
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigs)
-	if err := agent.Start(); err != nil {
-		return fmt.Errorf("starting the agent: %w", err)
-	}
-	agentDone := make(chan error, 1)
-	go func() { agentDone <- agent.Wait() }()
+	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
+	gate := newCommandGate(gw, *dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !*noGate)
+	var exitCode int
 	var agentErr error
-	select {
-	case agentErr = <-agentDone:
-	case s := <-sigs:
-		fmt.Fprintf(os.Stderr, "\n==> %s: stopping the agent\n", s)
-		syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
+	if *noGate {
+		if err := agent.Start(); err != nil {
+			return fmt.Errorf("starting the agent: %w", err)
+		}
+		agentDone := make(chan error, 1)
+		go func() { agentDone <- agent.Wait() }()
 		select {
 		case agentErr = <-agentDone:
-		case <-time.After(10 * time.Second):
-			syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
-			agentErr = <-agentDone
+		case s := <-sigs:
+			fmt.Fprintf(os.Stderr, "\n==> %s: stopping the agent\n", s)
+			syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
+			select {
+			case agentErr = <-agentDone:
+			case <-time.After(10 * time.Second):
+				syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
+				agentErr = <-agentDone
+			}
 		}
-	}
-	exitCode := 0
-	if agentErr != nil {
-		var ee *exec.ExitError
-		if errors.As(agentErr, &ee) {
-			exitCode = ee.ExitCode()
-		} else {
-			return agentErr
+		if agentErr != nil {
+			var ee *exec.ExitError
+			if errors.As(agentErr, &ee) {
+				exitCode = ee.ExitCode()
+			} else {
+				return agentErr
+			}
 		}
+	} else {
+		// the gate traces the tree from the launcher's own process; a signal
+		// to us is forwarded to the agent's process group
+		tr := &boxgate.Tracer{Decide: gate.decide, Skip: gate.skip}
+		type res struct {
+			code int
+			err  error
+		}
+		done := make(chan res, 1)
+		go func() {
+			c, err := tr.Run(agent)
+			done <- res{c, err}
+		}()
+		var r res
+		select {
+		case r = <-done:
+		case s := <-sigs:
+			fmt.Fprintf(os.Stderr, "\n==> %s: stopping the agent\n", s)
+			for agent.Process == nil {
+				time.Sleep(50 * time.Millisecond)
+			}
+			syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
+			select {
+			case r = <-done:
+			case <-time.After(10 * time.Second):
+				syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
+				r = <-done
+			}
+		}
+		if r.err != nil {
+			return fmt.Errorf("running the agent under the command gate: %w", r.err)
+		}
+		exitCode = r.code
 	}
 	fmt.Fprintf(os.Stderr, "==> agent exited with status %d\n", exitCode)
 	printBoxSummary(inDir(*dir, cfg.ReceiptsFile), receiptsBefore)
+	gate.summary()
 
 	// 5. what comes back
 	if *noCommitBack {
@@ -268,7 +312,6 @@ func cmdBox(args []string) error {
 		return nil
 	}
 	branch := "ovara/box-" + runID
-	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
 	ctx := context.Background()
 	var denied, allowed []string
 	for _, c := range changes {
@@ -336,6 +379,95 @@ func cmdBox(args []string) error {
 		return fmt.Errorf("agent exited with status %d", exitCode)
 	}
 	return nil
+}
+
+// commandGate decides each exec in the box through the gateway.
+type commandGate struct {
+	gw       *gateway.Client
+	dir      string
+	timeout  time.Duration
+	on       bool
+	started  bool // the agent itself has been exec'd; before that, our wrappers run
+	mu       sync.Mutex
+	counts   map[string]int
+	lastExit string
+}
+
+func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool) *commandGate {
+	return &commandGate{gw: gw, dir: dir, timeout: timeout, on: on, counts: map[string]int{}}
+}
+
+// skip exempts the launcher's own chain (ip netns exec → runuser → env)
+// up to and including env; the next exec in that chain is the agent.
+func (g *commandGate) skip(e boxgate.Exec) bool {
+	if g.started {
+		return false
+	}
+	base := filepath.Base(e.Exe)
+	if base == "ip" || base == "runuser" {
+		return true
+	}
+	if base == "env" {
+		g.started = true // what env execs next is the agent
+		return true
+	}
+	g.started = true
+	return false
+}
+
+func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
+	line := boxgate.CommandLine(e)
+	preview := map[string]string{"program": e.Exe, "directory": e.Cwd}
+	d, err := g.gw.CheckAction(context.Background(), "shell", "shell:"+line, preview)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ovara] command gate: gateway unreachable, refusing: %s (%v)\n", line, err)
+		g.count("denied")
+		return boxgate.Deny
+	}
+	switch d.Decision {
+	case "allow":
+		g.count("allowed")
+		return boxgate.Allow
+	case "deny":
+		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", line)
+		g.count("denied")
+		return boxgate.Deny
+	}
+	id, err := g.gw.CreateApprovalFor(context.Background(), d, "shell", "shell:"+line)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ovara] command gate: could not open an approval, refusing: %s (%v)\n", line, err)
+		g.count("denied")
+		return boxgate.Deny
+	}
+	fmt.Fprintf(os.Stderr, "[ovara] command paused for your approval (%s): %s\n", id, line)
+	status, err := waitApproval(context.Background(), g.gw, id, g.timeout)
+	if err != nil || status != "approved" {
+		if status == "" {
+			status = "error"
+		}
+		fmt.Fprintf(os.Stderr, "[ovara] command %s: %s\n", status, line)
+		g.count("denied")
+		return boxgate.Deny
+	}
+	g.count("approved")
+	return boxgate.Allow
+}
+
+func (g *commandGate) count(k string) {
+	g.mu.Lock()
+	g.counts[k]++
+	g.mu.Unlock()
+}
+
+func (g *commandGate) summary() {
+	if !g.on {
+		fmt.Fprintln(os.Stderr, "==> command gate off (-no-command-gate)")
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	fmt.Fprintf(os.Stderr, "==> %d command(s) checked: %d allowed, %d approved by you, %d refused\n",
+		g.counts["allowed"]+g.counts["approved"]+g.counts["denied"], g.counts["allowed"], g.counts["approved"], g.counts["denied"])
 }
 
 func waitApproval(ctx context.Context, gw *gateway.Client, id string, timeout time.Duration) (string, error) {

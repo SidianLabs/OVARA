@@ -63,6 +63,28 @@ func defaultPolicyRules() []map[string]any {
 		fsRule("fs.commit_back.path", "path:.git/*", "deny", "The agent may not change git hooks or config"),
 		fsRule("fs.commit_back.path", "path:*", "allow", "Other paths may come back for review"),
 		fsRule("fs.commit_back", "commit:*", "escalate", "Changes come back to the real repository only after a person reads the diff"),
+		// `ovara box` command gate: every program the agent starts is checked
+		// (action_type shell, resource "shell:<command line>"). Development
+		// work is free; what would make the box less of a box is refused;
+		// the classic destructive commands and anything that publishes pause
+		// for a person. Most-specific precedence: these beat "shell:*".
+		fsRule("shell", "shell:sudo*", "deny", "No privilege changes in the box"),
+		fsRule("shell", "shell:su *", "deny", "No privilege changes in the box"),
+		fsRule("shell", "shell:su", "deny", "No privilege changes in the box"),
+		fsRule("shell", "shell:mount*", "deny", "The box's mounts are not the agent's to change"),
+		fsRule("shell", "shell:umount*", "deny", "The box's mounts are not the agent's to change"),
+		fsRule("shell", "shell:nft*", "deny", "The box's network rules are not the agent's to change"),
+		fsRule("shell", "shell:iptables*", "deny", "The box's network rules are not the agent's to change"),
+		fsRule("shell", "shell:ip netns*", "deny", "The box's network is not the agent's to change"),
+		fsRule("shell", "shell:ip link*", "deny", "The box's network is not the agent's to change"),
+		fsRule("shell", "shell:ip route*", "deny", "The box's network is not the agent's to change"),
+		fsRule("shell", "shell:ovara*", "deny", "The agent may not operate Ovara"),
+		fsRule("shell", "shell:*rm -rf*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:*rm -fr*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:*git push*", "escalate", "Publishing pauses for a person (and changes come back through commit-back anyway)"),
+		fsRule("shell", "shell:*mkfs*", "escalate", "Destructive: pauses for a person"),
+		fsRule("shell", "shell:*dd if=*", "escalate", "Destructive: pauses for a person"),
+		fsRule("shell", "shell:*", "allow", "Everything else the agent runs in the box is allowed and recorded"),
 		// Anything that changes something out in the world needs a human.
 		// This covers git push, opening/merging PRs, deleting branches,
 		// triggering deploys and posting messages.
