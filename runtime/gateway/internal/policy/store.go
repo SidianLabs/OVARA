@@ -204,6 +204,8 @@ func (s *Store) Reload() error {
 	}
 	s.rules = newStore.rules
 	s.version = newStore.version
+	s.precedence = newStore.precedence
+	s.defaultDecision = newStore.defaultDecision
 	return nil
 }
 
@@ -264,6 +266,8 @@ func (s *Store) ReloadFromStore(other *Store) error {
 	defer s.mu.Unlock()
 	s.rules = other.ListRules()
 	s.version = other.Version()
+	s.precedence = other.precedence
+	s.defaultDecision = other.defaultDecision
 	return nil
 }
 

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,5 +86,39 @@ func TestWriteFile_KeepsPrecedenceAndDefault(t *testing.T) {
 	}
 	if again.Precedence() != PrecedenceMostSpecific || again.DefaultDecision() != DefaultDeny {
 		t.Fatalf("lost on round trip: %q %q", again.Precedence(), again.DefaultDecision())
+	}
+}
+
+// A hot reload must carry the file's precedence and default, not only its
+// rules: a policy that drops the field goes back to the order-based rule,
+// and one that adds it switches over, without a restart.
+func TestReload_CarriesPrecedenceAndDefault(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "policy.json")
+	write := func(doc string) {
+		if err := os.WriteFile(p, []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"version":"a","precedence":"most-specific","default":"deny","rules":[]}`)
+	st, err := LoadStoreFromFile(p, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(`{"version":"b","rules":[]}`)
+	if err := st.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if st.Precedence() != PrecedenceOrder || st.DefaultDecision() != DefaultEscalate {
+		t.Fatalf("after dropping the fields: %q %q", st.Precedence(), st.DefaultDecision())
+	}
+	other, err := ParseStore([]byte(`{"version":"c","precedence":"most-specific","default":"deny","rules":[]}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReloadFromStore(other); err != nil {
+		t.Fatal(err)
+	}
+	if st.Precedence() != PrecedenceMostSpecific || st.DefaultDecision() != DefaultDeny {
+		t.Fatalf("after ReloadFromStore: %q %q", st.Precedence(), st.DefaultDecision())
 	}
 }
