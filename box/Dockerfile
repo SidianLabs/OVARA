@@ -1,5 +1,9 @@
 # The box image for `ovara box -tier 2`: what an agent's box is made of.
 #
+# Released as ghcr.io/sidianlabs/ovara-box:<tag> (amd64 and arm64, with an
+# SBOM and signed provenance); a released ovara pins it by digest, so
+# `sudo ovara box -tier 2 ./myrepo -- bash` needs no build. From source:
+#
 #   docker build -t ovara-box box/
 #   sudo ovara box -tier 2 ./myrepo -- bash
 #

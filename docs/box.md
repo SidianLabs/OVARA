@@ -299,6 +299,13 @@ properties, each checked by `tests/box/box.sh` with `TIER=2`:
 | Fails closed | if Ovara or the launcher goes away, the relay has nowhere to go and every exec is refused; the container is removed on exit (`--rm`, then `docker rm -f`) | no box container left after a run |
 | Bounded | `--pids-limit` (default 4096), optional `-memory` and `-cpus`, `--ipc private` | — |
 
+Each release publishes the image as `ghcr.io/sidianlabs/ovara-box:<tag>`
+(amd64 and arm64, SBOM and signed provenance:
+`gh attestation verify oci://ghcr.io/sidianlabs/ovara-box@<digest> --repo
+SidianLabs/OVARA`), and the released binary defaults to it by digest
+(`ovara version` prints it). Builds from source default to a local
+`ovara-box`.
+
 The box image (`box/Dockerfile`) is Node 24 on Debian slim with git,
 Python, curl and an `ovara-agent` user (uid 10001); npm and pip install into
 the per-run home. People extend it with their agent (`FROM ovara-box`, then

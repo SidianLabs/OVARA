@@ -77,6 +77,11 @@ agents, and fix correctness bugs found in an in-depth review.
   pauses at its first request; npm install scripts are off. `dev`
   (default) is unchanged. Tested end to end with real npm and pip
   (`tests/box/strict.sh`, 23 checks).
+- **The box image is published with each release** to
+  `ghcr.io/sidianlabs/ovara-box` (amd64 and arm64, SBOM, signed
+  provenance), and a released `ovara` defaults to it by digest, so tier 2
+  needs no local build. The release's Docker actions are pinned by commit;
+  every pull request builds the image for both architectures.
 - **Aider tested behind Ovara**, in cooperative, enforced, tier 1 box and
   tier 2 box modes, with the same 27-command battery as the other three
   agents (`tests/agents/aider.sh`).

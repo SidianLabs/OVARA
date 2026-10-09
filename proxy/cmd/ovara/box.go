@@ -129,7 +129,7 @@ func cmdBox(args []string) error {
 	tier := fs.Int("tier", 1, "isolation: 1 = separate user in a network namespace; 2 = a container (no network but Ovara, no capabilities, read-only root, no host files)")
 	name := fs.String("name", "ovara-box", "tier 1: network namespace name (one box per name at a time)")
 	agentUser := fs.String("user", boxDefaultUser, "tier 1: unprivileged user the agent runs as (created if missing)")
-	image := fs.String("image", boxDefaultImage, "tier 2: the box image (build it from box/Dockerfile; extend it with your agent)")
+	image := fs.String("image", defaultBoxImage(), "tier 2: the box image (a release pins its own published image by digest; extend it with your agent)")
 	pids := fs.Int("pids", 4096, "tier 2: most processes the box may have at once")
 	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
 	cpus := fs.String("cpus", "", "tier 2: CPU limit for the box (e.g. 2; default none)")
@@ -708,6 +708,15 @@ func serveGate(ln net.Listener, gate *commandGate) {
 			return
 		}
 	}
+}
+
+// defaultBoxImage is the image this build was released with, or the local
+// development image.
+func defaultBoxImage() string {
+	if boxImage != "" {
+		return boxImage
+	}
+	return boxDefaultImage
 }
 
 // ensureImage makes sure the box image is there, pulling it when it names a

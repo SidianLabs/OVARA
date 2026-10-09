@@ -35,6 +35,12 @@ import (
 // version is stamped by release builds: -ldflags "-X main.version=v0.10.0".
 var version = "dev"
 
+// boxImage is stamped by release builds: the box image this ovara was
+// released with, by digest (ghcr.io/sidianlabs/ovara-box@sha256:...), so
+// `ovara box -tier 2` pulls exactly that image. Development builds leave it
+// empty and use a locally built "ovara-box".
+var boxImage = ""
+
 func main() {
 	log.SetFlags(0)
 	if len(os.Args) < 2 {
@@ -45,6 +51,9 @@ func main() {
 	switch os.Args[1] {
 	case "version", "-version", "--version":
 		fmt.Println("ovara", version)
+		if boxImage != "" {
+			fmt.Println("box image", boxImage)
+		}
 		return
 	case "init":
 		err = cmdInit(os.Args[2:])

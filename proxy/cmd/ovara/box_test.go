@@ -65,3 +65,16 @@ func TestMergeEnv(t *testing.T) {
 		t.Fatalf("got %v, want %s", got, want)
 	}
 }
+
+func TestDefaultBoxImage(t *testing.T) {
+	saved := boxImage
+	defer func() { boxImage = saved }()
+	boxImage = ""
+	if got := defaultBoxImage(); got != boxDefaultImage {
+		t.Fatalf("dev build: %q", got)
+	}
+	boxImage = "ghcr.io/sidianlabs/ovara-box@sha256:abc"
+	if got := defaultBoxImage(); got != boxImage {
+		t.Fatalf("release build: %q", got)
+	}
+}
