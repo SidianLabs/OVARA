@@ -48,5 +48,9 @@ jobs:
           # repo carries preexisting lint debt. Gate only what the diff
           # introduces; whole-repo cleanup can come as its own change.
           only-new-issues: true
+          # `config verify` downloads the config schema from golangci-lint.run
+          # on every run; twice that download timed out and failed the job
+          # before any linting. The config is checked when it is loaded anyway.
+          verify: false
           args: --timeout=5m
 
