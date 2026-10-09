@@ -122,3 +122,37 @@ func TestReload_CarriesPrecedenceAndDefault(t *testing.T) {
 		t.Fatalf("after ReloadFromStore: %q %q", st.Precedence(), st.DefaultDecision())
 	}
 }
+
+// A command line or path that contains "://" is not a URL resource: it is
+// matched as a plain glob, so "shell:*" covers `curl http://x`.
+func TestMatchResource_URLShapeNotSubstring(t *testing.T) {
+	yes := map[string]string{
+		"shell:*":                "shell:bash -c curl http://127.0.0.1:9100/v1",
+		"shell:*rm -rf*":         "shell:export A=http://x; rm -rf /tmp/y",
+		"path:*":                 "path:docs/links://weird",
+		"GET https://pypi.org/*": "GET https://pypi.org/simple/",
+		"*://pastebin.com/*":     "POST https://pastebin.com/api",
+	}
+	for pat, res := range yes {
+		if !MatchResource(pat, res) {
+			t.Errorf("%q should match %q", pat, res)
+		}
+	}
+	if MatchResource("shell:sudo*", "shell:curl http://sudo.example/") {
+		t.Error("glob matched where it should not")
+	}
+	// URL resources keep their strict handling: userinfo never matches
+	if MatchResource("GET https://pypi.org/*", "GET https://pypi.org@evil.example/") {
+		t.Error("userinfo URL matched")
+	}
+	for _, r := range []string{"GET https://x/", "https://x/", "git+ssh://x/"} {
+		if !isURLResource(r) {
+			t.Errorf("%q is a URL resource", r)
+		}
+	}
+	for _, r := range []string{"shell:curl https://x/", "path:a://b", "commit:proj (2 files)", "shell:ls"} {
+		if isURLResource(r) {
+			t.Errorf("%q is not a URL resource", r)
+		}
+	}
+}

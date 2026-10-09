@@ -310,7 +310,7 @@ func MatchResource(pattern, resource string) bool {
 	if pattern == "" {
 		return true
 	}
-	if !strings.Contains(resource, "://") {
+	if !isURLResource(resource) {
 		return globMatch(pattern, resource) // non-URL resource: plain glob
 	}
 	canon, ok := CanonicalResource(resource)
@@ -402,6 +402,28 @@ func CanonicalResource(resource string) (string, bool) {
 // isMethodToken reports whether s is a bare HTTP-method-shaped token
 // (letters only — GET/POST/CONNECT/…). Anything containing ':', '/',
 // '@', or other punctuation is a URL fragment posing as a method.
+// isURLResource reports whether a resource has the egress shape
+// "scheme://..." or "METHOD scheme://...". A command line or a path that
+// merely contains "://" somewhere (shell:curl http://x) is not one; it is
+// matched as a plain glob.
+func isURLResource(resource string) bool {
+	rest := resource
+	if i := strings.IndexByte(resource, ' '); i > 0 && isMethodToken(resource[:i]) {
+		rest = resource[i+1:]
+	}
+	j := strings.Index(rest, "://")
+	if j <= 0 {
+		return false
+	}
+	for k := 0; k < j; k++ {
+		c := rest[k]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (k > 0 && ((c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'))) {
+			return false
+		}
+	}
+	return true
+}
+
 func isMethodToken(s string) bool {
 	if s == "" {
 		return false
