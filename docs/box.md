@@ -306,6 +306,13 @@ SidianLabs/OVARA`), and the released binary defaults to it by digest
 (`ovara version` prints it). Builds from source default to a local
 `ovara-box`.
 
+Each release also publishes one image per agent,
+`ghcr.io/sidianlabs/ovara-box-<agent>:<tag>` for `claude`, `codex`,
+`opencode` and `aider`, built FROM the box image by digest
+(`box/agents/Dockerfile`). `ovara box -agent codex` picks it (and implies
+tier 2). The tier 2 agent tests run from these images, so what users get
+is what is tested.
+
 The box image (`box/Dockerfile`) is Node 24 on Debian slim with git,
 Python, curl and an `ovara-agent` user (uid 10001); npm and pip install into
 the per-run home. People extend it with their agent (`FROM ovara-box`, then

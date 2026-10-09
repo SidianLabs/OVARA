@@ -130,6 +130,7 @@ func cmdBox(args []string) error {
 	name := fs.String("name", "ovara-box", "tier 1: network namespace name (one box per name at a time)")
 	agentUser := fs.String("user", boxDefaultUser, "tier 1: unprivileged user the agent runs as (created if missing)")
 	image := fs.String("image", defaultBoxImage(), "tier 2: the box image (a release pins its own published image by digest; extend it with your agent)")
+	agentName := fs.String("agent", "", "tier 2: use the published box image with this agent installed: claude, codex, opencode or aider (implies -tier 2)")
 	pids := fs.Int("pids", 4096, "tier 2: most processes the box may have at once")
 	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
 	cpus := fs.String("cpus", "", "tier 2: CPU limit for the box (e.g. 2; default none)")
@@ -158,6 +159,21 @@ func cmdBox(args []string) error {
 	project, agentCmd := rest[0], rest[2:]
 	if runtime.GOOS != "linux" {
 		return errors.New("ovara box needs Linux (a network namespace); on macOS/Windows run it inside a Linux VM")
+	}
+	if *agentName != "" {
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		img, err := agentImage(*agentName)
+		if err != nil {
+			return err
+		}
+		if set["image"] {
+			return errors.New("-agent and -image both name the image: use one")
+		}
+		if set["tier"] && *tier != 2 {
+			return errors.New("-agent is for tier 2 (a container image)")
+		}
+		*tier, *image = 2, img
 	}
 	if *tier != 1 && *tier != 2 {
 		return fmt.Errorf("-tier %d: want 1 or 2", *tier)
@@ -708,6 +724,21 @@ func serveGate(ln net.Listener, gate *commandGate) {
 			return
 		}
 	}
+}
+
+// boxAgents are the agents with a published image (box/agents/Dockerfile).
+var boxAgents = map[string]bool{"claude": true, "codex": true, "opencode": true, "aider": true}
+
+// agentImage names the box image with agent installed: the release's
+// published image for this version, or the local development build.
+func agentImage(agent string) (string, error) {
+	if !boxAgents[agent] {
+		return "", fmt.Errorf("-agent %q: want claude, codex, opencode or aider (or -image for your own image)", agent)
+	}
+	if repo, _, ok := strings.Cut(boxImage, "@"); ok && repo != "" && version != "dev" {
+		return repo + "-" + agent + ":" + version, nil
+	}
+	return boxDefaultImage + "-" + agent, nil
 }
 
 // defaultBoxImage is the image this build was released with, or the local

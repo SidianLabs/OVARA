@@ -69,8 +69,10 @@ agent in a container instead: no network interface but a relay to Ovara,
 no capabilities, a read-only root, and nothing of your machine inside but
 the project's copy. A release pulls its own published image
 (`ghcr.io/sidianlabs/ovara-box`, pinned by digest, signed provenance); a
-build from source uses `docker build -t ovara-box box/`. Extend it with
-your agent (`FROM` that image). Details and limits are in
+build from source uses `docker build -t ovara-box box/`. For the common
+agents there are ready images: `sudo ovara box -agent codex ./myrepo --
+codex` (also `claude`, `opencode`, `aider`); for anything else, extend the
+box image with your agent (`FROM` it). Details and limits are in
 `docs/box.md` section 6.4.
 
 Add `-profile strict` and a dependency the project's lockfiles do not pin

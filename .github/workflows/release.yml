@@ -93,6 +93,48 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
+  # One image per agent, FROM the box image above by digest:
+  # ghcr.io/sidianlabs/ovara-box-<agent>:<tag> (`ovara box -agent <agent>`).
+  agent-images:
+    needs: box-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      matrix:
+        agent: [claude, codex, opencode, aider]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: box/agents
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            BASE=ghcr.io/sidianlabs/ovara-box@${{ needs.box-image.outputs.digest }}
+            AGENT=${{ matrix.agent }}
+          tags: ghcr.io/sidianlabs/ovara-box-${{ matrix.agent }}:${{ github.event.inputs.tag || github.ref_name }}
+          sbom: true
+          provenance: mode=max
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/sidianlabs/ovara-box-${{ matrix.agent }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
   build:
     needs: [test, box-image]
     runs-on: ubuntu-latest
@@ -136,7 +178,7 @@ jobs:
           path: dist/*
 
   publish:
-    needs: build
+    needs: [build, agent-images]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -82,6 +82,12 @@ agents, and fix correctness bugs found in an in-depth review.
   provenance), and a released `ovara` defaults to it by digest, so tier 2
   needs no local build. The release's Docker actions are pinned by commit;
   every pull request builds the image for both architectures.
+- **Ready-made agent images and `ovara box -agent`.** Releases publish
+  `ghcr.io/sidianlabs/ovara-box-<agent>` for claude, codex, opencode and
+  aider (`box/agents/Dockerfile`); `sudo ovara box -agent codex ./repo --
+  codex` needs nothing else. The tier 2 agent tests now run from these
+  images. The battery's raw-TCP check (B5) uses bash's `/dev/tcp`, so a
+  missing `nc` can no longer make it pass.
 - **Aider tested behind Ovara**, in cooperative, enforced, tier 1 box and
   tier 2 box modes, with the same 27-command battery as the other three
   agents (`tests/agents/aider.sh`).

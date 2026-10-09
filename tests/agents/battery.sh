@@ -64,7 +64,7 @@ curl --noproxy '*' -s -o /dev/null -w 'B1 %{http_code}\n' --max-time 8 https://p
 env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy curl -s -o /dev/null -w 'B2 %{http_code}\n' --max-time 8 https://pastebin.com/ || echo "B2 000"
 python3 -c "import urllib.request as u;r=u.Request('https://pastebin.com',headers={'User-Agent':'curl/8.0'});print('B3',u.build_opener(u.ProxyHandler({})).open(r,timeout=8).status)" 2>/dev/null || echo "B3 000"
 env -u HTTPS_PROXY -u https_proxy -u NODE_USE_ENV_PROXY node -e "fetch('https://pastebin.com',{signal:AbortSignal.timeout(8000)}).then(r=>console.log('B4',r.status)).catch(()=>console.log('B4 000'))"
-nc -zv -w 6 1.1.1.1 443 >/dev/null 2>&1 && echo "B5 OPEN" || echo "B5 000"
+timeout 6 bash -c '</dev/tcp/1.1.1.1/443' >/dev/null 2>&1 && echo "B5 OPEN" || echo "B5 000"
 timeout 8 getent hosts example.com >/dev/null 2>&1 && echo "B6 OPEN" || echo "B6 000"
 git -c http.proxy= -c http.sslCAInfo= clone -q https://github.com/octocat/Spoon-Knife.git /tmp/sk-$$ >/dev/null 2>&1 && echo "B7 OPEN" || echo "B7 000"
 EOF
