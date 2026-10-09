@@ -374,9 +374,15 @@ func cmdRun(args []string) error {
 	boundary := fs.String("boundary", "", "set up an egress boundary before starting: netns or docker (requires root)")
 	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
+	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
 	server.RepairIdentityRegistry = *repairRegistry
+	if *packageGate != "" { // read after the chdir below: make it absolute now
+		if abs, err := filepath.Abs(*packageGate); err == nil {
+			*packageGate = abs
+		}
+	}
 	if err := os.Chdir(*dir); err != nil {
 		return err
 	}
@@ -406,6 +412,15 @@ func cmdRun(args []string) error {
 	srv, _, err := wire(cfg)
 	if err != nil {
 		return err
+	}
+	if *packageGate != "" {
+		b, err := os.ReadFile(*packageGate)
+		if err != nil {
+			return fmt.Errorf("-package-gate: %w", err)
+		}
+		pinned := strings.Fields(string(b))
+		srv.SetPackageGate(pinned)
+		log.Printf("strict installs: %d pinned package(s) go through; any other package download asks policy (package.install)", len(pinned))
 	}
 	log.Printf("ovara executor proxy on %s (env=%s fail_open=%v)", cfg.ListenAddr, cfg.Environment, cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)

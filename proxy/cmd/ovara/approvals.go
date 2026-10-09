@@ -87,6 +87,13 @@ func contextLines(a pendingApproval) []string {
 			out = append(out, o.label+": "+strings.NewReplacer("\r\n", " ⏎ ", "\n", " ⏎ ").Replace(v))
 		}
 	}
+	// strict installs: which download, and why it is asked
+	if v := a.Context["download"]; v != "" {
+		out = append(out, "download: "+v)
+	}
+	if v := a.Context["why"]; v != "" {
+		out = append(out, "asked because: "+v)
+	}
 	// `ovara box` commit-back: what comes back, what policy kept out, the diff
 	if v := a.Context["files"]; v != "" {
 		out = append(out, "files: "+v)
@@ -197,6 +204,14 @@ func (c *adminClient) resolve(id string, approve bool, who, reason string) error
 func describe(resource string) string {
 	if rest, ok := strings.CutPrefix(resource, "commit:"); ok {
 		return "bring the agent's changes back to " + rest + " as a new branch"
+	}
+	// strict installs: "npm:left-pad@1.3.0"
+	for _, eco := range []string{"npm", "pypi", "go", "crate"} {
+		if rest, ok := strings.CutPrefix(resource, eco+":"); ok {
+			if i := strings.LastIndex(rest, "@"); i > 0 {
+				return "install " + eco + " package " + rest[:i] + " " + rest[i+1:] + " (a new dependency: not in the project's lockfiles)"
+			}
+		}
 	}
 	method, rest, ok := strings.Cut(resource, " ")
 	if !ok {

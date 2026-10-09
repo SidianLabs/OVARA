@@ -85,6 +85,12 @@ func defaultPolicyRules() []map[string]any {
 		fsRule("shell", "shell:*mkfs*", "escalate", "Destructive: pauses for a person"),
 		fsRule("shell", "shell:*dd if=*", "escalate", "Destructive: pauses for a person"),
 		fsRule("shell", "shell:*", "allow", "Everything else the agent runs in the box is allowed and recorded"),
+		// `ovara box -profile strict`: downloading a package the project's
+		// lockfiles did not pin when the box started (action_type
+		// package.install, resource "npm:name@version") pauses once; an
+		// approved one is allowed for the rest of the run. Allow trusted
+		// packages here, e.g. "npm:@types/*".
+		fsRule("package.install", "*", "escalate", "A new dependency pauses once with its name and version (strict profile)"),
 		// Anything that changes something out in the world needs a human.
 		// This covers git push, opening/merging PRs, deleting branches,
 		// triggering deploys and posting messages.

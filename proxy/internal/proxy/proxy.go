@@ -45,6 +45,7 @@ type Server struct {
 	agentToken      string // if set, proxy clients must authenticate
 	unauthLimiter   *rateLimiter
 	escalateSem     chan struct{} // caps requests parked awaiting approval
+	pkgGate         *packageGate  // strict installs (packages.go); nil = off
 }
 
 // maxPendingEscalations bounds how many requests may be held waiting for a
@@ -550,6 +551,37 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Strict installs: downloading a package the project has not pinned is
+	// a second question, about the package (packages.go). Only a download
+	// the URL policy itself allowed is asked; one a person already approved
+	// as a URL needs no second answer.
+	if d.Decision == "allow" && !failedOpen {
+		if ref, ok := s.packageDownload(r.URL.Hostname(), r.URL.Path); ok {
+			outcome, id := s.checkPackage(r.Context(), ref, url)
+			if id != "" {
+				approvalID = id
+			}
+			switch outcome {
+			case pkgAllow:
+			case pkgTimeout:
+				decision = "escalate"
+				writeJSON(http.StatusGatewayTimeout, map[string]any{"error": "approval timeout", "package": ref, "approval_id": approvalID})
+				return
+			case pkgAborted:
+				decision = "escalate"
+				return
+			case pkgError:
+				decision = "deny"
+				writeJSON(http.StatusBadGateway, map[string]any{"error": "gateway unreachable, fail-closed", "package": ref})
+				return
+			default:
+				decision = "deny"
+				writeJSON(http.StatusForbidden, map[string]any{"error": "package not allowed", "package": ref, "approval_id": approvalID})
+				return
+			}
+		}
+	}
+
 	// SSRF guard: the policy decision says nothing about WHERE this goes —
 	// refuse loopback/private/link-local/metadata destinations outright.
 	host := normalizeHost(r.URL.Hostname())
@@ -662,6 +694,17 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 // client disconnects. Returns the outcome and the approval_id ("" if the
 // gateway could not register one).
 func (s *Server) awaitEscalation(ctx context.Context, d *gateway.Decision, method, url string) (string, string) {
+	return s.holdForApproval(ctx, url, func() (string, error) {
+		if d.ApprovalID != "" {
+			return d.ApprovalID, nil
+		}
+		return s.gw.CreateApproval(ctx, d, method, url)
+	})
+}
+
+// holdForApproval opens an approval with create and waits for its answer,
+// within the escalate window and the cap on parked requests.
+func (s *Server) holdForApproval(ctx context.Context, what string, create func() (string, error)) (string, string) {
 	// Bound the number of requests parked on a human: an agent that opens
 	// hundreds of escalating requests must not exhaust goroutines, sockets
 	// or the approval queue. Over the cap the request is refused.
@@ -670,18 +713,14 @@ func (s *Server) awaitEscalation(ctx context.Context, d *gateway.Decision, metho
 		case s.escalateSem <- struct{}{}:
 			defer func() { <-s.escalateSem }()
 		default:
-			log.Printf("escalate: %d approvals already pending; refusing %s", cap(s.escalateSem), url)
+			log.Printf("escalate: %d approvals already pending; refusing %s", cap(s.escalateSem), what)
 			return "denied", ""
 		}
 	}
-	approvalID := d.ApprovalID
-	if approvalID == "" {
-		id, err := s.gw.CreateApproval(ctx, d, method, url)
-		if err != nil {
-			log.Printf("escalate: create approval for %s failed: %v", url, err)
-			return "denied", ""
-		}
-		approvalID = id
+	approvalID, err := create()
+	if err != nil {
+		log.Printf("escalate: create approval for %s failed: %v", what, err)
+		return "denied", ""
 	}
 	deadline := time.NewTimer(s.escalateTimeout)
 	defer deadline.Stop()

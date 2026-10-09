@@ -55,6 +55,7 @@ import (
 	"ovara.proxy/internal/boxgate"
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
+	"ovara.proxy/internal/lockfiles"
 	"ovara.proxy/internal/workspace"
 )
 
@@ -71,6 +72,10 @@ const (
 	boxInCA          = "/etc/ovara/ca.pem"
 	boxInBinary      = "/opt/ovara/ovara"
 	boxContainerName = "ovara-box-"
+
+	// profiles (docs/box.md §11.4)
+	boxProfileDev    = "dev"
+	boxProfileStrict = "strict"
 
 	// run outcomes
 	outcomeClean  = "clean"  // everything came back or nothing changed: the workspace is removed
@@ -127,6 +132,7 @@ func cmdBox(args []string) error {
 	pids := fs.Int("pids", 4096, "tier 2: most processes the box may have at once")
 	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
 	cpus := fs.String("cpus", "", "tier 2: CPU limit for the box (e.g. 2; default none)")
+	profile := fs.String("profile", boxProfileDev, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9)")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "approval page address (loopback only; \"off\" to disable)")
 	approveTimeout := fs.Duration("approve-timeout", 10*time.Minute, "how long the commit-back waits for a person")
 	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
@@ -154,6 +160,9 @@ func cmdBox(args []string) error {
 	}
 	if *tier != 1 && *tier != 2 {
 		return fmt.Errorf("-tier %d: want 1 or 2", *tier)
+	}
+	if *profile != boxProfileDev && *profile != boxProfileStrict {
+		return fmt.Errorf("-profile %s: want dev or strict", *profile)
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("ovara box needs root (tier 1: the network namespace; tier 2: handing the workspace to the box's user and keeping Ovara's sockets out of its reach): run it with sudo; the agent itself runs as an unprivileged user")
@@ -232,6 +241,28 @@ func cmdBox(args []string) error {
 	if err := os.Chown(home, uid, gid); err != nil {
 		return err
 	}
+	// strict installs: what the project has pinned goes through; anything
+	// else the agent adds pauses once (the proxy's package gate)
+	pinnedFile := ""
+	if *profile == boxProfileStrict {
+		refs, files := lockfiles.Scan(ws.Dir)
+		pinnedFile = filepath.Join(runDir, "pinned-packages.txt")
+		if err := os.WriteFile(pinnedFile, []byte(strings.Join(refs, "\n")+"\n"), 0o600); err != nil {
+			return err
+		}
+		if len(files) == 0 {
+			fmt.Fprintln(os.Stderr, "==> strict installs: no lockfile in the project, so every package the agent installs pauses once")
+		} else {
+			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through; any other package pauses once\n", len(refs), strings.Join(files, ", "))
+		}
+		if b, err := os.ReadFile(filepath.Join(*dir, "policy.json")); err == nil && !strings.Contains(string(b), `"package.install"`) {
+			fmt.Fprintln(os.Stderr, "    warning: policy.json has no package.install rule; without one a new package is refused, not paused (add {\"action_type\": \"package.install\", \"resource\": \"*\", \"escalate\": true})")
+		}
+		// install scripts are the package manager's to stop; -env can turn them back on
+		envs = append(multiFlag{"npm_config_ignore_scripts=true"}, envs...)
+	}
+	envs = append(multiFlag{"OVARA_BOX_PROFILE=" + *profile}, envs...)
+
 	// the PUBLIC certificate, where the agent can read it (the deployment dir is 0700)
 	caPub := filepath.Join(runDir, "ovara-ca.pem")
 	if b, err := os.ReadFile(inDir(*dir, cfg.CACertFile)); err == nil {
@@ -256,6 +287,9 @@ func cmdBox(args []string) error {
 	runArgs := []string{"run", "-dir", *dir, "-ui", *uiAddr}
 	if *tier == 1 {
 		runArgs = append(runArgs, "--boundary", "netns", "--boundary-name", *name)
+	}
+	if pinnedFile != "" {
+		runArgs = append(runArgs, "-package-gate", pinnedFile)
 	}
 	run := exec.Command(self, runArgs...) //nolint:gosec // the launcher re-executes itself with flags it validated
 	run.Stdout = os.Stderr
