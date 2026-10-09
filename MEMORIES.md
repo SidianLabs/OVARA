@@ -20,7 +20,7 @@ Branch: `test/real-agents`, 7 commits ahead of `main`, **not pushed**. The owner
 3. Aider: needs a different driver. It proposes commands and asks before running them. Options: `aider --message "/run <cmd>"` per command, or check whether a flag makes it run suggested commands unattended. Verify before claiming either.
 4. Other scenarios: hosted-sandbox pattern, CI-bot pattern (no human, so unanswered approvals give 504), `tests/boundary/docker_test.sh` (never run).
 5. Product gaps: scoped approval-page token (`proxy/cmd/ovara/main.go`, `startUI`: the browser link still carries the full operator token); pin GitHub Actions to SHAs (dependabot PR #29 wants checkout v4→v7); Phase 3/4/7 items.
-6. Memories skill: `.claude/skills/memories/SKILL.md` and a one-line pointer in README/AGENTS.md. Never done.
+6. Memories skill (a `memories` skill file in the agent skills folder) and a one-line pointer in README/AGENTS.md. Never done.
 
 ### 0.3 Owner's open requests (their words)
 - "test on each scenarios … fork opencode … add ovara into it and test if that works properly same for other scenarios can it be broken or bpassed". **Done:** opencode, Anthropic's agent CLI, Codex CLI (coop + enforced) and the custom harness. **Not done:** Aider, hosted-sandbox, CI-bot. No fork was made; the agents are installed from npm. Ask before forking anything.
