@@ -39,6 +39,9 @@ agents, and fix correctness bugs found in an in-depth review.
 - `docs/use-cases.md`: where Ovara fits (laptop, container, hosted sandbox, CI,
   your own harness), what is verified and what is not.
 
+- `tests/scenarios/ci-bot.sh` (`tests/scenarios/run.sh ci-bot`): Ovara as a
+  background CI step with nobody to approve: timeouts, a job policy that
+  allows exactly one write, deny-over-allow, receipts, and shutdown on SIGTERM.
 - `tests/agents`: real agents installed from npm (opencode, Anthropic's agent CLI, Codex
   CLI), each driven by a scripted mock of its model API (OpenAI
   chat-completions, Anthropic Messages, OpenAI Responses), run behind Ovara in
@@ -80,6 +83,21 @@ that the unit suites had not:
   got an instant 403. They are now explicit denials with the reason shown.
 - **Receipts were written after the response.** An agent could hold a response
   before its receipt existed. The receipt is now written before the headers.
+- **A deployment could not be restarted.** The identity registry's mutate step
+  carried the new contents back from its working copy but not the new
+  file_seq, so the second change at startup (operator tokens, then agent
+  tokens) sealed file_seq 1 twice with different contents. The next
+  `ovara run` refused the file as equivocation. Every deployment that had run
+  once was affected. Deployments created by an earlier build keep refusing
+  (correctly: it cannot be told apart from tampering); run `ovara init` into
+  a new directory and keep the old one for its record.
+- **`ovara run` ignored SIGTERM.** The embedded gateway took the signal,
+  closed its stores and returned, and the proxy kept serving without it. It
+  now stops the proxy too (paused requests are dropped after 5 seconds) and
+  exits 0, so `docker stop`, CI job ends and service managers work.
+- The user-scenario restart check passed against the old process, which had
+  ignored the stop signal. It now checks that the old process is gone and the
+  new one is serving.
 - **The netns boundary failed on kernels without IPv6.** The setup wrote the
   `disable_ipv6` sysctls unconditionally, so `ovara run --boundary netns`
   exited with status 1 where `/proc/sys/net/ipv6` does not exist. Such a
@@ -92,6 +110,11 @@ that the unit suites had not:
   it when `npm install -g` fails.
 
 ### Security (hardening pass)
+
+- **The tip ledger only moves forward.** Recording a store tip below the
+  floor, or the same seq with a different hash, is refused when it is
+  written. Before, it was accepted and ignored, and the problem surfaced only
+  as an unrecoverable "equivocation" at the next start.
 
 - **The approval-page link no longer carries the operator token.** `ovara run`
   printed `http://127.0.0.1:9090/#t=<operator token>`, so the link in a log

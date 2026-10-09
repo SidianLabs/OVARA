@@ -278,7 +278,10 @@ func (r *Registry) mutate(fn func(*Registry) error) error {
 	if err := c.persist(); err != nil {
 		return err
 	}
+	// Carry the new tip back too: the next mutation must chain onto the
+	// file just written (file_seq+1), not re-seal the same file_seq.
 	r.ids, r.cred = c.ids, c.cred
+	r.fileSeq, r.fileHash = c.fileSeq, c.fileHash
 	return nil
 }
 

@@ -817,9 +817,21 @@ func (r *Registry) RecordTips(gatewayID string, tips map[string]Tip) error {
 	if len(tips) == 0 {
 		return nil
 	}
+	// The floor only moves forward. A tip below it, or the same seq with a
+	// different hash, means a store re-sealed or rolled back its own file:
+	// refuse it now, while the writer can still report it, instead of
+	// recording it and failing every later start with "equivocation".
 	rec := &TipsRecord{Kind: "tips", GatewayID: gatewayID,
 		IssuedAt: time.Now().UTC(), Tips: tips}
-	return r.mutate(func() ([]any, error) { return []any{rec}, nil })
+	return r.mutate(func() ([]any, error) {
+		// runs under the registry lock, on the state mutate just loaded
+		for store, tip := range tips {
+			if ex, ok := r.tips[gatewayID][store]; ok && (tip.Seq < ex.Seq || (tip.Seq == ex.Seq && tip.Hash != ex.Hash)) {
+				return nil, fmt.Errorf("gateway registry: tip for %s does not advance the floor (seq %d after %d)", store, tip.Seq, ex.Seq)
+			}
+		}
+		return []any{rec}, nil
+	})
 }
 
 // LatestTips returns the folded tip floor for (gateway_id) — the set

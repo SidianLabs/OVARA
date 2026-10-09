@@ -136,20 +136,38 @@ If the provider cannot force egress through your proxy, you are in cooperative
 mode, whatever the setup looks like. Ask the provider specifically whether the
 agent can open outbound connections that bypass a configured proxy.
 
-## 4. A bot or agent in CI  — *not tested*
+## 4. A bot or agent in CI  — *tested*
 
 Nobody is there to click Approve. An unanswered approval times out (HTTP 504)
 rather than passing, which is safe but means a default policy will fail the job
 the first time the agent does something that needs approval. So write the
 policy you actually want and leave nothing to a human:
 
-- allow exactly the hosts the job needs (`GET https://registry.npmjs.org/*`, …),
-- allow the specific write you expect (`POST https://api.github.com/repos/acme/app/pulls`),
-- deny or leave everything else to time out.
+- allow exactly the hosts the job reads from (the defaults cover the package
+  registries and code hosts; add `GET https://your.artifacts.host/*` …),
+- allow the specific write you expect
+  (`POST https://api.github.com/repos/acme/app/pulls`),
+- deny the places you never want reached (`*://pastebin.com/*`, …),
+- set a short `escalate_timeout_sec` in `proxy.json` (for example 10), because
+  every other write waits that long and then fails with 504.
 
-Run Ovara in the same job as a background step and export the agent
-environment from `ovara env`. This is cooperative mode: it limits what an agent
-does by mistake, not what a compromised job can do.
+You cannot write "allow this one write, deny every other write": the gateway
+resolves **deny over allow**, so a catch-all `POST *` deny also blocks the write
+you allowed. Leave the catch-all as an escalation and keep the timeout short;
+the unexpected write still fails, it just takes the timeout to do so.
+
+Run Ovara in the same job as a background step (`ovara run -dir d -ui off &`,
+wait for the proxy port, `eval "$(ovara env -dir d)"`). It stops on SIGTERM
+when the job ends. This is cooperative mode: it limits what an agent does by
+mistake, not what a compromised job can do.
+
+Verified by `tests/scenarios/run.sh ci-bot` against the real binary: allowed
+reads pass; an unapproved write and a read from an unlisted host time out with
+504 after the configured timeout and leave nothing pending; the one allowed
+write passes while a different write to the same host still stops; a dump site
+is refused at once; a catch-all deny refuses instantly but also blocks the
+allowed write; every decision is in the receipts, the chain verifies, and
+`ovara run` exits on SIGTERM with the record intact.
 
 ## 5. Your own agent or agentic harness  — *mechanism tested*
 

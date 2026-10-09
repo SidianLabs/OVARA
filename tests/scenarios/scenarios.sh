@@ -123,9 +123,14 @@ if ovara log -dir /tmp/d 2>&1 | grep -qiE "tamper|broken|invalid|edited"; then o
 cp /tmp/receipts.bak d/var/receipts.jsonl
 
 echo "=== H. restart"
-pkill -f "ovara run"; sleep 2
+# The old process must really be gone, or "works again" would be answered by
+# it (that is how a broken restart once passed this check).
+pkill -TERM -f "ovara run"
+for i in $(seq 1 20); do pgrep -f "ovara run" >/dev/null || break; sleep 0.5; done
+if pgrep -f "ovara run" >/dev/null; then bad "ovara stops on SIGTERM" "still running 10s later"; pkill -9 -f "ovara run"; sleep 1; else ok "ovara stops on SIGTERM"; fi
 HTTPBIN_TOKEN="$SECRET" ovara run -dir d -ui off >/tmp/run2.log 2>&1 &
 for i in $(seq 1 60); do (echo > /dev/tcp/127.0.0.1/9443) 2>/dev/null && break; sleep 0.5; done
+grep -q "gateway healthy" /tmp/run2.log && ok "the restarted process is the one serving" || bad "restart failed" "$(grep -iE 'gateway:|error' /tmp/run2.log | tail -1)"
 check "works again after a restart" 200 "$(agent curl -s -o /dev/null -w '%{http_code}' --max-time 30 https://pypi.org/simple/requests/)"
 if ovara log -dir /tmp/d 2>&1 | grep -q "signed and unbroken"; then ok "chain still valid across the restart"; else bad "chain after restart" "not valid"; fi
 if ovara doctor -dir /tmp/d 2>&1 | grep -q "^FAIL"; then bad "doctor reports FAIL on a running deployment" "$(ovara doctor -dir /tmp/d 2>&1 | grep '^FAIL' | head -2)"; else ok "doctor: no FAIL items"; fi

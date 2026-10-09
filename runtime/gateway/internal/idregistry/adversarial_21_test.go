@@ -74,3 +74,40 @@ func TestAdv21_RegistrySealed(t *testing.T) {
 		t.Fatal("registry below ledger floor accepted")
 	}
 }
+
+// Every mutation must advance file_seq. mutate() works on a clone; if the
+// clone's new tip is not carried back, the next mutation seals the same
+// file_seq again with different contents, and the next start refuses the
+// file as equivocation. `ovara run` seeds two roles at startup, so a fresh
+// deployment could never be restarted.
+func TestSealed_SuccessiveMutationsAdvanceSeqAndReopen(t *testing.T) {
+	signer, resolve := advSigner(t)
+	p := filepath.Join(t.TempDir(), "id.json")
+	reg, err := Open(p, &record.Binding{Signer: signer, Resolve: resolve})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var floor record.Floor
+	reg.SetTipsSink(func(seq uint64, hash string) error {
+		if floor.Known && seq <= floor.Seq {
+			return errors.New("ledger: file_seq did not advance")
+		}
+		floor = record.Floor{Known: true, Seq: seq, Hash: hash}
+		return nil
+	})
+	if err := reg.SeedConfig([]string{"operator-token-0123456789"}, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.SeedConfig([]string{"agent-token-0123456789abc"}, "agent"); err != nil {
+		t.Fatalf("second mutation: %v", err)
+	}
+	if floor.Seq != 2 {
+		t.Fatalf("ledger floor seq = %d after two mutations, want 2", floor.Seq)
+	}
+	if seq, hash := reg.JournalTip(); seq != floor.Seq || hash != floor.Hash {
+		t.Fatalf("registry tip (%d,%s) != ledger floor (%d,%s)", seq, hash, floor.Seq, floor.Hash)
+	}
+	if _, err := Open(p, &record.Binding{Signer: signer, Resolve: resolve, Floor: floor}); err != nil {
+		t.Fatalf("restart refused: %v", err)
+	}
+}

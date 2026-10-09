@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -375,10 +376,15 @@ func cmdRun(args []string) error {
 			return fmt.Errorf("boundary setup: %w", err)
 		}
 	}
+	// The gateway owns SIGINT/SIGTERM: on a signal it closes its stores and
+	// Run returns nil. The proxy must not outlive it (every check would fail
+	// and the process would ignore the signal), so that also stops the proxy.
+	gatewayDone := make(chan struct{})
 	go func() {
 		if err := server.Run("config.json"); err != nil {
 			log.Fatalf("gateway: %v", err)
 		}
+		close(gatewayDone)
 	}()
 	if err := waitForGateway(cfg.GatewayURL, 10*time.Second); err != nil {
 		return err
@@ -408,7 +414,20 @@ func cmdRun(args []string) error {
 	} else if host, _, err := net.SplitHostPort(listenAddr); err == nil && !isLoopbackHost(host) {
 		log.Printf("WARNING: proxy listens on %s, reachable from the network. Anyone holding the proxy token can use it; set listen_addr to 127.0.0.1:PORT unless you meant this", listenAddr)
 	}
-	return proxy.NewHTTPServer(listenAddr, srv).ListenAndServe()
+	hs := proxy.NewHTTPServer(listenAddr, srv)
+	go func() {
+		<-gatewayDone
+		log.Printf("gateway stopped; stopping the proxy")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if hs.Shutdown(ctx) != nil {
+			hs.Close() // paused requests waiting on a human: drop them
+		}
+	}()
+	if err := hs.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 // startUI serves the local approval page and returns the link to open
