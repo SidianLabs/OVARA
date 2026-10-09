@@ -91,6 +91,12 @@ that the unit suites had not:
   once was affected. Deployments created by an earlier build keep refusing
   (correctly: it cannot be told apart from tampering); run `ovara init` into
   a new directory and keep the old one for its record.
+- **A deployment that had approved anything could not be restarted.**
+  Approving marks a paused request approved and queued in one step and
+  writes one journal record (escalated → queued); the signed journal's
+  replay table only allowed queued after approved, so the next start refused
+  the journal. Replay now accepts that step when the record carries the
+  approval (who approved it and when), and still refuses it otherwise.
 - **`ovara run` ignored SIGTERM.** The embedded gateway took the signal,
   closed its stores and returned, and the proxy kept serving without it. It
   now stops the proxy too (paused requests are dropped after 5 seconds) and
