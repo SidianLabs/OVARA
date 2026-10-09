@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-09 (cloud session). Read this first, then `README.md`, `docs/threat-model.md`, `docs/use-cases.md`.
 
-Branch: `test/real-agents`, 31 commits ahead of `main`, **not pushed**. The owner said do not push yet.
+Branch: `test/real-agents`, pushed to GitHub on 2026-10-09 (owner said "try again" and the push went through); PR being opened. CI on GitHub runs for the first time on it: fix what the runners show.
 `hardening/path-to-10` is finished: merged into `main` as PR #27 (`97cafe1`). Do not reuse it.
 Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never mention Claude (or other AI tools) in commit messages or branch names (§5).
 
@@ -33,7 +33,6 @@ Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never 
 - VMs/credits: links in §8. A cloud coding session can run Docker incl. `--privileged` (§5).
 
 ### 0.4 Blockers waiting on the owner
-- Push `test/real-agents` / open a PR: owner said no for now.
 - The `main` history rewrite: owner runs it (the classifier blocks filter-branch and force-push here).
 - Startup credits, fork permission, any `git rm` of tracked dirs: give the owner the exact command.
 
