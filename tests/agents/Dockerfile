@@ -10,3 +10,6 @@ RUN apt-get update -qq && apt-get install -y -qq python3-venv sudo iproute2 nfta
 # image without the agent in it.
 RUN npm install -g --no-fund --no-audit opencode-ai @anthropic-ai/claude-code @openai/codex && \
     opencode --version && claude --version && codex --version && git --version && node --version
+# Aider (Python): its own virtualenv, pinned; a failed install fails the build.
+RUN python3 -m venv /opt/aider && /opt/aider/bin/pip install -q --no-cache-dir aider-chat==0.86.2 && \
+    ln -s /opt/aider/bin/aider /usr/local/bin/aider && aider --version

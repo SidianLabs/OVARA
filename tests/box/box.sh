@@ -89,6 +89,10 @@ if [ "${OVARA_BOX_TIER:-1}" = 2 ]; then
   r T2_META "$(timeout 4 bash -c '</dev/tcp/169.254.169.254/80' 2>/dev/null && echo OPEN || echo BLOCKED)"
   r T2_UDP "$(timeout 3 bash -c 'echo x >/dev/udp/1.1.1.1/53' 2>/dev/null && echo OPEN || echo BLOCKED)"
   r T2_SECRETS "$(ls -d /root/.ssh /root/.aws $HOME/.ssh $HOME/.aws $HOME/.netrc $HOME/.npmrc $HOME/.git-credentials $HOME/.docker 2>/dev/null | wc -l)"
+  # Python's normal workflow works in the box: a virtualenv's pip installs
+  # (no index here, so it fails for want of a package, not for its config)
+  python3 -m venv /tmp/t2venv >/dev/null 2>&1
+  r T2_VENVPIP "$(/tmp/t2venv/bin/pip install --no-index six 2>&1 | grep -q -- "--user" && echo broken || echo ok)"
   r T2_PROCS "$(ps -eo user= | sort -u | tr '\n' ' ' | sed 's/ $//')"
   # the whole image, not a list of places: nothing credential-shaped anywhere
   # (npm packages' own test fixtures are not the image's secrets)
@@ -185,6 +189,7 @@ if [ "$TIER" = 2 ]; then
   check "cloud metadata: no route" BLOCKED "$(val T2_META)"
   check "UDP out: no route" BLOCKED "$(val T2_UDP)"
   check "no credential files in the box" 0 "$(val T2_SECRETS)"
+  check "pip in a virtualenv works in the box" ok "$(val T2_VENVPIP)"
   check "processes in the box: the gate (root) and the agent only" "ovara-agent root" "$(val T2_PROCS)"
   check "no credential-shaped file anywhere in the image" "" "$(val T2_IMAGE_SECRETS)"
 fi

@@ -8,7 +8,7 @@
 #   OVARA_TEST_ON_HOST=1 tests/box/host.sh box              the box test (tests/box/box.sh, TIER=2)
 #   OVARA_TEST_ON_HOST=1 tests/box/host.sh redteam          the boundary red team inside a tier 2 box
 #   OVARA_TEST_ON_HOST=1 tests/box/host.sh redteam-docker   the boundary red team in docker mode
-#   OVARA_TEST_ON_HOST=1 tests/box/host.sh agent opencode|anthropic|codex
+#   OVARA_TEST_ON_HOST=1 tests/box/host.sh agent opencode|anthropic|codex|aider
 #
 # SKIP_IMAGE_BUILD=1 uses ovara-box / ovara-box-test as they are.
 set -euo pipefail
@@ -19,7 +19,7 @@ repo="$(cd "$here/../.." && pwd)"
 SUDO=""; [ "$(id -u)" = 0 ] || SUDO="sudo"
 case "$what" in
   box|redteam|redteam-docker) ;;
-  agent) case "$agent" in opencode|anthropic|codex) ;; *) echo "agent: opencode, anthropic or codex" >&2; exit 2;; esac ;;
+  agent) case "$agent" in opencode|anthropic|codex|aider) ;; *) echo "agent: opencode, anthropic, codex or aider" >&2; exit 2;; esac ;;
   *) sed -n '2,15p' "$0" >&2; exit 2 ;;
 esac
 [ "$(readlink -f /repo 2>/dev/null)" = "$repo" ] || $SUDO ln -sfn "$repo" /repo
