@@ -46,21 +46,19 @@ jobs:
 
   # Real agents (installed from npm, driven by a scripted mock model, so no
   # API key is needed) behind the real binary.
-  agents-coop:
+  agents:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [opencode, anthropic, codex]
+        mode: [coop, enforced]
     steps:
       - uses: actions/checkout@v4
-      - name: Real opencode behind Ovara, cooperative mode
-        run: tests/agents/run.sh coop
-
-  agents-enforced:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Real opencode inside a netns boundary as an unprivileged user (privileged container)
-        run: tests/agents/run.sh enforced
+      # enforced: a netns boundary, the agent as an unprivileged user (privileged container)
+      - name: Real ${{ matrix.agent }} behind Ovara (${{ matrix.mode }})
+        run: tests/agents/run.sh ${{ matrix.mode }} ${{ matrix.agent }}
 
   agents-harness:
     runs-on: ubuntu-latest
