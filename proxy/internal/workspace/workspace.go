@@ -135,7 +135,7 @@ func Create(project, dir string, opts Options) (*Workspace, error) {
 		}
 	}
 	// also anything the clone brought that matches a directory pattern
-	filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error { // best effort: a missing file is not a secret
 		if err != nil || info.IsDir() {
 			if info != nil && info.IsDir() && info.Name() == ".git" {
 				return filepath.SkipDir
@@ -285,7 +285,7 @@ func (w *Workspace) CommitBack(branch string, exclude []string) (commit string, 
 		if _, err := gitRun(w.Dir, "checkout", "--quiet", w.Baseline, "--", p); err != nil {
 			// not in the baseline: an added file; drop it
 			os.RemoveAll(filepath.Join(w.Dir, p))
-			gitRun(w.Dir, "rm", "--quiet", "--cached", "--ignore-unmatch", "--", p)
+			_, _ = gitRun(w.Dir, "rm", "--quiet", "--cached", "--ignore-unmatch", "--", p) // already gone from the tree; the index entry may or may not exist
 		}
 	}
 	for _, p := range w.Excluded {
@@ -351,8 +351,9 @@ func gitStatusPaths(top string) ([]statusPath, error) {
 	if err != nil {
 		return nil, err
 	}
-	var paths []statusPath
-	for _, ent := range strings.Split(out, "\x00") {
+	ents := strings.Split(out, "\x00")
+	paths := make([]statusPath, 0, len(ents))
+	for _, ent := range ents {
 		if len(ent) < 4 {
 			continue
 		}

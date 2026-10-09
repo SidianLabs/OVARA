@@ -22,6 +22,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
       # Reports only vulnerabilities in code the module actually calls.
       - name: govulncheck
         working-directory: ${{ matrix.module }}

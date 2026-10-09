@@ -27,6 +27,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
 
       - name: Build
         working-directory: ${{ matrix.module }}
@@ -51,6 +52,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
       - name: E2E Tests
         working-directory: runtime/gateway
         run: go test -v -run TestE2E ./cmd/e2e/
@@ -75,6 +77,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
       # The gateway's shell executor runs `sh -c`; Git for Windows ships sh.
       - name: Put Git sh on PATH
         if: runner.os == 'Windows'

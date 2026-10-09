@@ -55,6 +55,23 @@ const (
 	boxDefaultUser = "ovara-agent"
 	boxRunsRoot    = "/var/lib/ovara/runs"
 	boxPreviewMax  = 64 << 10
+
+	// run outcomes
+	outcomeClean  = "clean"  // everything came back or nothing changed: the workspace is removed
+	outcomeKept   = "kept"   // something is left for a person: the workspace stays
+	outcomeFailed = "failed" // an error on our side: the workspace stays
+
+	// gateway decisions and approval states
+	decisionAllow    = "allow"
+	decisionDeny     = "deny"
+	decisionEscalate = "escalate"
+	approvalApproved = "approved"
+	approvalError    = "error"
+
+	// command-gate tallies
+	countAllowed  = "allowed"
+	countApproved = "approved"
+	countDenied   = "denied"
 )
 
 var keyLikeName = regexp.MustCompile(`(?i)(key|token|secret|password|passwd|credential)`)
@@ -155,11 +172,11 @@ func cmdBox(args []string) error {
 	// the PUBLIC certificate, where the agent can read it (the deployment dir is 0700)
 	caPub := filepath.Join(runDir, "ovara-ca.pem")
 	if b, err := os.ReadFile(inDir(*dir, cfg.CACertFile)); err == nil {
-		os.WriteFile(caPub, b, 0o644)
+		_ = os.WriteFile(caPub, b, 0o644) //nolint:gosec // the PUBLIC certificate: the agent must be able to read it
 	}
-	outcome := "failed"
+	outcome := outcomeFailed
 	defer func() {
-		if *keep || *noCommitBack || outcome != "clean" {
+		if *keep || *noCommitBack || outcome != outcomeClean {
 			fmt.Fprintf(os.Stderr, "==> workspace kept at %s\n", ws.Dir)
 			return
 		}
@@ -168,7 +185,11 @@ func cmdBox(args []string) error {
 	}()
 
 	// 3. Ovara itself, with the boundary
-	run := exec.Command(os.Args[0], "run", "-dir", *dir, "--boundary", "netns", "--boundary-name", *name, "-ui", *uiAddr)
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	run := exec.Command(self, "run", "-dir", *dir, "--boundary", "netns", "--boundary-name", *name, "-ui", *uiAddr) //nolint:gosec // the launcher re-executes itself with flags it validated
 	run.Stdout = os.Stderr
 	run.Stderr = os.Stderr
 	run.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -176,13 +197,13 @@ func cmdBox(args []string) error {
 		return err
 	}
 	stopRun := func() {
-		run.Process.Signal(syscall.SIGTERM)
+		_ = run.Process.Signal(syscall.SIGTERM)
 		done := make(chan struct{})
-		go func() { run.Wait(); close(done) }()
+		go func() { _ = run.Wait(); close(done) }()
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
-			run.Process.Kill()
+			_ = run.Process.Kill()
 		}
 	}
 	defer stopRun()
@@ -193,7 +214,7 @@ func cmdBox(args []string) error {
 	// the certificate is created by the first `ovara run`; copy it now if it was not there before
 	if _, err := os.Stat(caPub); err != nil {
 		if b, err := os.ReadFile(inDir(*dir, cfg.CACertFile)); err == nil {
-			os.WriteFile(caPub, b, 0o644)
+			_ = os.WriteFile(caPub, b, 0o644) //nolint:gosec // the PUBLIC certificate: the agent must be able to read it
 		}
 	}
 	receiptsBefore := countLines(inDir(*dir, cfg.ReceiptsFile))
@@ -245,11 +266,11 @@ func cmdBox(args []string) error {
 		case agentErr = <-agentDone:
 		case s := <-sigs:
 			fmt.Fprintf(os.Stderr, "\n==> %s: stopping the agent\n", s)
-			syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
+			_ = syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
 			select {
 			case agentErr = <-agentDone:
 			case <-time.After(10 * time.Second):
-				syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
+				_ = syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
 				agentErr = <-agentDone
 			}
 		}
@@ -282,11 +303,11 @@ func cmdBox(args []string) error {
 			for agent.Process == nil {
 				time.Sleep(50 * time.Millisecond)
 			}
-			syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
+			_ = syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
 			select {
 			case r = <-done:
 			case <-time.After(10 * time.Second):
-				syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
+				_ = syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
 				r = <-done
 			}
 		}
@@ -301,7 +322,7 @@ func cmdBox(args []string) error {
 
 	// 5. what comes back
 	if *noCommitBack {
-		outcome = "kept"
+		outcome = outcomeKept
 		return nil
 	}
 	changes, err := ws.Changes()
@@ -310,7 +331,7 @@ func cmdBox(args []string) error {
 	}
 	if len(changes) == 0 {
 		fmt.Fprintln(os.Stderr, "==> the agent changed nothing")
-		outcome = "clean"
+		outcome = outcomeClean
 		return nil
 	}
 	branch := "ovara/box-" + runID
@@ -321,7 +342,7 @@ func cmdBox(args []string) error {
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
 		}
-		if d.Decision == "deny" {
+		if d.Decision == decisionDeny {
 			denied = append(denied, c.Path)
 		} else {
 			allowed = append(allowed, c.Path)
@@ -332,7 +353,7 @@ func cmdBox(args []string) error {
 	}
 	if len(allowed) == 0 {
 		fmt.Fprintln(os.Stderr, "==> every changed path is kept out by policy; nothing comes back")
-		outcome = "kept"
+		outcome = outcomeKept
 		return nil
 	}
 	preview, err := ws.Preview(boxPreviewMax)
@@ -351,11 +372,11 @@ func cmdBox(args []string) error {
 		return fmt.Errorf("gateway: %w", err)
 	}
 	switch d.Decision {
-	case "deny":
+	case decisionDeny:
 		fmt.Fprintln(os.Stderr, "==> policy refuses the commit-back; the workspace is kept")
-		outcome = "kept"
+		outcome = outcomeKept
 		return nil
-	case "escalate":
+	case decisionEscalate:
 		id, err := gw.CreateApprovalFor(ctx, d, "fs.commit_back", resource)
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
@@ -365,9 +386,9 @@ func cmdBox(args []string) error {
 		if err != nil {
 			return err
 		}
-		if status != "approved" {
+		if status != approvalApproved {
 			fmt.Fprintf(os.Stderr, "==> %s; nothing comes back, the workspace is kept\n", status)
-			outcome = "kept"
+			outcome = outcomeKept
 			return nil
 		}
 	}
@@ -376,7 +397,7 @@ func cmdBox(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "==> changes are on branch %s of %s (%s); review and merge it like a pull request\n", branch, ws.Project, commit[:12])
-	outcome = "clean"
+	outcome = outcomeClean
 	if exitCode != 0 {
 		return fmt.Errorf("agent exited with status %d", exitCode)
 	}
@@ -385,14 +406,13 @@ func cmdBox(args []string) error {
 
 // commandGate decides each exec in the box through the gateway.
 type commandGate struct {
-	gw       *gateway.Client
-	dir      string
-	timeout  time.Duration
-	on       bool
-	started  bool // the agent itself has been exec'd; before that, our wrappers run
-	mu       sync.Mutex
-	counts   map[string]int
-	lastExit string
+	gw      *gateway.Client
+	dir     string
+	timeout time.Duration
+	on      bool
+	started bool // the agent itself has been exec'd; before that, our wrappers run
+	mu      sync.Mutex
+	counts  map[string]int
 }
 
 func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool) *commandGate {
@@ -423,35 +443,35 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 	d, err := g.gw.CheckAction(context.Background(), "shell", "shell:"+line, preview)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ovara] command gate: gateway unreachable, refusing: %s (%v)\n", line, err)
-		g.count("denied")
+		g.count(countDenied)
 		return boxgate.Deny
 	}
 	switch d.Decision {
-	case "allow":
-		g.count("allowed")
+	case decisionAllow:
+		g.count(countAllowed)
 		return boxgate.Allow
-	case "deny":
+	case decisionDeny:
 		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", line)
-		g.count("denied")
+		g.count(countDenied)
 		return boxgate.Deny
 	}
 	id, err := g.gw.CreateApprovalFor(context.Background(), d, "shell", "shell:"+line)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ovara] command gate: could not open an approval, refusing: %s (%v)\n", line, err)
-		g.count("denied")
+		g.count(countDenied)
 		return boxgate.Deny
 	}
 	fmt.Fprintf(os.Stderr, "[ovara] command paused for your approval (%s): %s\n", id, line)
 	status, err := waitApproval(context.Background(), g.gw, id, g.timeout)
-	if err != nil || status != "approved" {
+	if err != nil || status != approvalApproved {
 		if status == "" {
-			status = "error"
+			status = approvalError
 		}
 		fmt.Fprintf(os.Stderr, "[ovara] command %s: %s\n", status, line)
-		g.count("denied")
+		g.count(countDenied)
 		return boxgate.Deny
 	}
-	g.count("approved")
+	g.count(countApproved)
 	return boxgate.Allow
 }
 
@@ -469,7 +489,7 @@ func (g *commandGate) summary() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	fmt.Fprintf(os.Stderr, "==> %d command(s) checked: %d allowed, %d approved by you, %d refused\n",
-		g.counts["allowed"]+g.counts["approved"]+g.counts["denied"], g.counts["allowed"], g.counts["approved"], g.counts["denied"])
+		g.counts[countAllowed]+g.counts[countApproved]+g.counts[countDenied], g.counts[countAllowed], g.counts[countApproved], g.counts[countDenied])
 }
 
 func waitApproval(ctx context.Context, gw *gateway.Client, id string, timeout time.Duration) (string, error) {
@@ -519,7 +539,7 @@ func printBoxSummary(receipts string, skip int) {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "==> %d request(s) through Ovara: %d allowed, %d paused, %d denied; %d host(s)\n",
-		n-skip, counts["allow"], counts["escalate"], counts["deny"], len(hosts))
+		n-skip, counts[decisionAllow], counts[decisionEscalate], counts[decisionDeny], len(hosts))
 }
 
 func jsonField(line, key string) string {

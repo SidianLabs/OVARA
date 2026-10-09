@@ -30,6 +30,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26"
+          check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
 
       # The action runs the linter itself in its own working-directory
       # (repo root by default) — pass the matrix module or it scans the

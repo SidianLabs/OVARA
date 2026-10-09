@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const absent = "<absent>"
+
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := gitOut(dir, args...)
@@ -22,7 +24,7 @@ func write(t *testing.T, path, content string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -32,7 +34,9 @@ func write(t *testing.T, path, content string) {
 func project(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "proj")
-	os.MkdirAll(p, 0o755)
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	git(t, p, "init", "--quiet", "-b", "main")
 	write(t, filepath.Join(p, "README.md"), "hello\n")
 	write(t, filepath.Join(p, "app.py"), "print(1)\n")
@@ -61,7 +65,7 @@ func TestCreate_CopiesProjectWithoutSecrets(t *testing.T) {
 	read := func(rel string) string {
 		b, err := os.ReadFile(filepath.Join(dir, rel))
 		if err != nil {
-			return "<absent>"
+			return absent
 		}
 		return string(b)
 	}
@@ -71,7 +75,7 @@ func TestCreate_CopiesProjectWithoutSecrets(t *testing.T) {
 	if read("notes.txt") != "untracked\n" {
 		t.Fatal("untracked file not carried")
 	}
-	if read(".env") != "<absent>" || read("config/secret.pem") != "<absent>" {
+	if read(".env") != absent || read("config/secret.pem") != absent {
 		t.Fatalf("secrets in the workspace: .env=%q pem=%q", read(".env"), read("config/secret.pem"))
 	}
 	if len(ws.Excluded) != 2 {
@@ -164,14 +168,14 @@ func TestCommitBack_BranchOnlyExcludedPathsRevertedSecretsKept(t *testing.T) {
 	show := func(rel string) string {
 		out, err := gitOut(p, "show", "ovara/box-test:"+rel)
 		if err != nil {
-			return "<absent>"
+			return absent
 		}
 		return out
 	}
 	if show("README.md") != "hello\nchanged by the agent\n" || show("new.txt") != "new\n" || show("app.py") != "print(4)\n" {
 		t.Fatalf("branch content wrong: %q %q %q", show("README.md"), show("new.txt"), show("app.py"))
 	}
-	if show("notes.txt") != "<absent>" {
+	if show("notes.txt") != absent {
 		t.Fatal("deleted file still on the branch")
 	}
 	if show(".github/workflows/ci.yml") != "on: push\n" {

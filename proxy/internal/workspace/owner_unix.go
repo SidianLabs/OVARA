@@ -5,6 +5,7 @@ package workspace
 import (
 	"bytes"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
@@ -27,7 +28,7 @@ func ownerOf(path string) (uid, gid int) {
 // otherwise as ourselves.
 func gitAs(owner [2]int, dir string, args ...string) (string, error) {
 	uid, gid := owner[0], owner[1]
-	if os.Geteuid() != 0 || uid <= 0 {
+	if os.Geteuid() != 0 || uid <= 0 || gid < 0 || uid > math.MaxUint32 || gid > math.MaxUint32 {
 		return gitOut(dir, args...)
 	}
 	cmd := exec.Command("git", args...)

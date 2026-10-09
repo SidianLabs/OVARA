@@ -139,12 +139,16 @@ func TestStartUI_LinkCarriesAFreshPageToken(t *testing.T) {
 		if strings.Contains(url, operator) {
 			t.Fatalf("link carries the operator token: %s", url)
 		}
-		tok := url[strings.Index(url, "#t=")+3:]
+		i := strings.Index(url, "/#t=")
+		if i < 0 {
+			t.Fatalf("link has no page token: %s", url)
+		}
+		tok := url[i+4:]
 		if len(tok) != 64 || strings.Trim(tok, "0123456789abcdef") != "" {
 			t.Fatalf("page token %q is not 32 random bytes in hex", tok)
 		}
 		links[tok] = true
-		base := url[:strings.Index(url, "/#t=")]
+		base := url[:i]
 		for _, c := range []struct {
 			auth string
 			want int

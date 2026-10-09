@@ -90,7 +90,7 @@ func (t *Tracer) Run(cmd *exec.Cmd) (int, error) {
 	live := map[int]bool{root: true}
 	killAll := func() {
 		for pid := range live {
-			unix.Kill(pid, unix.SIGKILL)
+			_ = unix.Kill(pid, unix.SIGKILL)
 		}
 	}
 	defer killAll()
@@ -107,7 +107,7 @@ func (t *Tracer) Run(cmd *exec.Cmd) (int, error) {
 	// the root's own exec is this first stop, not a PTRACE_EVENT_EXEC: gate
 	// it the same way
 	if e := describe(root); !(t.Skip != nil && t.Skip(e)) && t.Decide != nil && t.Decide(e) == Deny {
-		unix.Kill(root, unix.SIGKILL) // SIGKILL ends a stopped tracee at once; the cont below then fails harmlessly
+		_ = unix.Kill(root, unix.SIGKILL) // SIGKILL ends a stopped tracee at once; the cont below then fails harmlessly
 	}
 	if err := unix.PtraceCont(root, 0); err != nil && err != unix.ESRCH {
 		return 0, err
@@ -148,22 +148,22 @@ func (t *Tracer) Run(cmd *exec.Cmd) (int, error) {
 		case sig == unix.SIGTRAP && event == unix.PTRACE_EVENT_EXEC:
 			e := describe(pid)
 			if t.Skip != nil && t.Skip(e) {
-				unix.PtraceCont(pid, 0)
+				_ = unix.PtraceCont(pid, 0)
 				continue
 			}
 			if t.Decide != nil && t.Decide(e) == Deny {
-				unix.Kill(pid, unix.SIGKILL)
+				_ = unix.Kill(pid, unix.SIGKILL)
 			}
-			unix.PtraceCont(pid, 0)
+			_ = unix.PtraceCont(pid, 0)
 		case event != 0:
 			// clone/fork/vfork notification on the parent
-			unix.PtraceCont(pid, 0)
+			_ = unix.PtraceCont(pid, 0)
 		case sig == unix.SIGTRAP || sig == unix.SIGSTOP:
 			// an initial stop of a new child, or a trap of ours: swallow
-			unix.PtraceCont(pid, 0)
+			_ = unix.PtraceCont(pid, 0)
 		default:
 			// a real signal for the tracee: deliver it
-			unix.PtraceCont(pid, int(sig))
+			_ = unix.PtraceCont(pid, int(sig))
 		}
 	}
 	if exit < 0 {
