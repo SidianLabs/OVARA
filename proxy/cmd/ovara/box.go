@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 // `ovara box`: run an agent in a box whose only exits go through Ovara.

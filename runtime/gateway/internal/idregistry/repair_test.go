@@ -13,7 +13,7 @@ import (
 // bugState reproduces what builds before the mutate fix left on disk: the
 // ledger floor holds the first seal of file_seq 1, the file holds a second,
 // different seal of file_seq 1.
-func bugState(t *testing.T, signer *record.Signer, resolve record.ResolveFunc) (string, record.Floor) {
+func bugState(t *testing.T, signer *record.Signer) (string, record.Floor) {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "id.json")
 	first, err := record.SealFile("idregistry", signer, []byte(`{"identities":[],"credentials":[]}`), nil, 0)
@@ -33,7 +33,7 @@ func bugState(t *testing.T, signer *record.Signer, resolve record.ResolveFunc) (
 
 func TestOpenRepair_RepairsTheOldSameSeqState(t *testing.T) {
 	signer, resolve := advSigner(t)
-	p, floor := bugState(t, signer, resolve)
+	p, floor := bugState(t, signer)
 	b := &record.Binding{Signer: signer, Resolve: resolve, Floor: floor}
 
 	if _, err := Open(p, b); !errors.Is(err, record.ErrSameSeqEquivocation) {
@@ -71,7 +71,7 @@ func TestOpenRepair_RepairsTheOldSameSeqState(t *testing.T) {
 
 func TestOpenRepair_RefusesAnotherKey(t *testing.T) {
 	signer, resolve := advSigner(t)
-	p, floor := bugState(t, signer, resolve)
+	p, floor := bugState(t, signer)
 	// a second key the resolver also trusts, but not this gateway's own
 	pub2, priv2, _ := ed25519.GenerateKey(nil)
 	other := record.NewSigner(priv2, "dom-test", "gw2", "k2")
@@ -89,7 +89,7 @@ func TestOpenRepair_RefusesAnotherKey(t *testing.T) {
 
 func TestOpenRepair_StillRefusesRollbackAndLeavesHealthyFilesAlone(t *testing.T) {
 	signer, resolve := advSigner(t)
-	p, floor := bugState(t, signer, resolve)
+	p, floor := bugState(t, signer)
 	ahead := record.Floor{Known: true, Seq: floor.Seq + 1, Hash: "x"}
 	if _, err := OpenRepair(p, &record.Binding{Signer: signer, Resolve: resolve, Floor: ahead}); err == nil {
 		t.Fatal("repaired a file below the ledger floor (rollback)")

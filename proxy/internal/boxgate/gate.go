@@ -12,7 +12,10 @@
 // "os.system(...)"`, a subprocess from node). Only exec stops are
 // requested, so there is no per-syscall cost.
 //
-// Linux only.
+// Linux only; other platforms get the stubs in gate_other.go.
+
+//go:build linux
+
 package boxgate
 
 import (

@@ -16,6 +16,7 @@ func TestRecordTips_FloorOnlyAdvances(t *testing.T) {
 			if reg, err = Open(filepath.Join(t.TempDir(), "gw.jsonl")); err != nil {
 				t.Fatal(err)
 			}
+			defer reg.Close() // Windows cannot remove the temp dir while the journal is open
 		} else {
 			reg = NewInMemory()
 		}

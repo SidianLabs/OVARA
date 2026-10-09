@@ -19,8 +19,12 @@ func TestApproval_SurvivesRestart(t *testing.T) {
 	}
 	approved := NewContinuation("dec_a", "http.request", "POST https://example.org/").WithApprovalID("apr_a")
 	denied := NewContinuation("dec_d", "http.request", "POST https://example.org/").WithApprovalID("apr_d")
-	store.Create(approved)
-	store.Create(denied)
+	if err := store.Create(approved); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(denied); err != nil {
+		t.Fatal(err)
+	}
 	if got := store.ApplyApprovalDecision("apr_a", true, "operator", ""); len(got) != 1 || got[0].State != StateQueued {
 		t.Fatalf("approve: %+v", got)
 	}
