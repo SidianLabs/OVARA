@@ -46,10 +46,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
-        run: bash .github/scripts/docker-hub-mirror.sh
         with:
           fetch-depth: 0   # builds the last pre-fix commit from history
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Upgrading a deployment made by an older build
         run: tests/scenarios/run.sh upgrade
 
