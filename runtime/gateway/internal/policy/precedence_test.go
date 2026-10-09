@@ -37,23 +37,36 @@ func TestParseStore_PrecedenceAndDefault(t *testing.T) {
 	}
 }
 
-func TestParseStore_RefusesShadowedRulesUnderMostSpecific(t *testing.T) {
+// Same scope and pattern, different effects: the file still loads (adding
+// "POST * deny" on top of the default "POST * escalate" is the normal way
+// to say "deny every other write"), and the validator names the winner.
+func TestShadowedRules_LoadAndWarn(t *testing.T) {
 	doc := `{"version":"x","precedence":"most-specific","rules":[
-	  {"action_type":"http.request","environment":"*","resource":"POST *","allow":true},
+	  {"action_type":"http.request","environment":"*","resource":"POST *","escalate":true},
 	  {"action_type":"http.request","environment":"*","resource":"POST *","deny":true}]}`
-	if _, err := ParseStore([]byte(doc), ""); err == nil || !strings.Contains(err.Error(), "same scope and pattern") {
-		t.Fatalf("shadowed rules accepted: %v", err)
+	if _, err := ParseStore([]byte(doc), ""); err != nil {
+		t.Fatalf("composed policy refused: %v", err)
 	}
-	// the same file is legal under order precedence (deny simply wins)
-	if _, err := ParseStore([]byte(strings.Replace(doc, `"precedence":"most-specific",`, "", 1)), ""); err != nil {
+	res, err := NewValidator().ValidatePolicyData([]byte(doc))
+	if err != nil {
 		t.Fatal(err)
 	}
-	// identical duplicates are harmless
-	dup := `{"version":"x","precedence":"most-specific","rules":[
-	  {"action_type":"http.request","environment":"*","resource":"POST *","deny":true},
-	  {"action_type":"http.request","environment":"*","resource":"POST *","deny":true}]}`
-	if _, err := ParseStore([]byte(dup), ""); err != nil {
-		t.Fatal(err)
+	if !res.Valid || len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "rule[1] decides") {
+		t.Fatalf("validator: valid=%v warnings=%v", res.Valid, res.Warnings)
+	}
+	// no warning without most-specific precedence, or for identical duplicates
+	res, _ = NewValidator().ValidatePolicyData([]byte(strings.Replace(doc, `"precedence":"most-specific",`, "", 1)))
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "same scope and pattern") {
+			t.Fatalf("order precedence warned: %v", res.Warnings)
+		}
+	}
+	dup := strings.Replace(doc, `"escalate":true`, `"deny":true`, 1)
+	res, _ = NewValidator().ValidatePolicyData([]byte(dup))
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "same scope and pattern") {
+			t.Fatalf("identical duplicates warned: %v", res.Warnings)
+		}
 	}
 }
 

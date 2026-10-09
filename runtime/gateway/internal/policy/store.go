@@ -63,22 +63,43 @@ func Specificity(pattern string) int {
 	return len(pattern) - strings.Count(pattern, "*")
 }
 
-// checkShadowed refuses rules that share action_type, environment and
-// resource pattern but disagree on the effect.
-func checkShadowed(rules []Rule) error {
+// shadowedRules lists pairs of rules that share action_type, environment
+// and resource pattern but disagree on the effect. Under most-specific
+// precedence the tie-break (deny > allow > escalate) decides between
+// them, which is usually what a policy that adds "POST * deny" on top of
+// the default "POST * escalate" means; the validator reports it so the
+// author can see which one is in force.
+func shadowedRules(rules []Rule) []string {
 	type key struct{ a, e, r string }
 	seen := map[key]int{}
+	var out []string
 	for i, r := range rules {
 		k := key{r.ActionType, r.Environment, r.Resource}
 		if j, ok := seen[k]; ok {
 			if effect(rules[j]) != effect(r) {
-				return fmt.Errorf("rule[%d] and rule[%d] have the same scope and pattern (%s %s %q) but different effects; with most-specific precedence one of them can never decide, so remove one", j, i, r.ActionType, r.Environment, r.Resource)
+				winner := j
+				if rank(r) > rank(rules[j]) {
+					winner = i
+				}
+				out = append(out, fmt.Sprintf("rule[%d] (%s) and rule[%d] (%s) have the same scope and pattern (%s %s %q); under most-specific precedence rule[%d] decides (deny > allow > escalate)", j, effect(rules[j]), i, effect(r), r.ActionType, r.Environment, r.Resource, winner))
 			}
 			continue
 		}
 		seen[k] = i
 	}
-	return nil
+	return out
+}
+
+func rank(r Rule) int {
+	switch {
+	case r.Deny:
+		return 3
+	case r.Allow:
+		return 2
+	case r.Escalate:
+		return 1
+	}
+	return 0
 }
 
 func effect(r Rule) string {

@@ -74,16 +74,6 @@ func ParseStore(data []byte, versionHint string) (*Store, error) {
 	default:
 		return nil, fmt.Errorf("default %q: must be %q or %q", fp.Default, DefaultEscalate, DefaultDeny)
 	}
-	if fp.Precedence == PrecedenceMostSpecific {
-		// Two rules with the same scope and pattern but different effects
-		// would be resolved by the tie-break (deny > allow > escalate) and
-		// one of them could never decide anything. Refuse, so the file
-		// says what it means.
-		if err := checkShadowed(fp.Rules); err != nil {
-			return nil, err
-		}
-	}
-
 	return &Store{version: version, precedence: fp.Precedence, defaultDecision: fp.Default, rules: fp.Rules}, nil
 }
 

@@ -445,9 +445,9 @@ Consequences:
 
 Selected per file: `"precedence": "most-specific"` (what `ovara init`
 writes now); files without it keep the order-based rule. `"default":
-"deny"` sets the no-match decision. The parser refuses a most-specific
-policy with two rules of identical scope and pattern but different effects
-(one could never decide). **Built in milestone 1.**
+"deny"` sets the no-match decision. Two rules of identical scope and
+pattern but different effects resolve by the tie-break and the validator
+names the one in force. **Built in milestone 1.**
 
 ### 11.3 One language for three exits
 
