@@ -33,7 +33,7 @@ jobs:
         run: go test -run='^$' -fuzz='^${{ matrix.target }}$' -fuzztime=3m ${{ matrix.pkg }}
       - name: Upload crashing inputs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: fuzz-${{ matrix.target }}
           path: ${{ matrix.module }}/**/testdata/fuzz/${{ matrix.target }}/*
