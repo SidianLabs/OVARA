@@ -2,36 +2,36 @@
 
 Last updated: 2026-10-09 (cloud session). Read this first, then `README.md`, `docs/threat-model.md`, `docs/use-cases.md`.
 
-Branch: `test/real-agents`, 7 commits ahead of `main`, **not pushed**. The owner said do not push yet.
+Branch: `test/real-agents`, 14 commits ahead of `main`, **not pushed**. The owner said do not push yet.
 `hardening/path-to-10` is finished: merged into `main` as PR #27 (`97cafe1`). Do not reuse it.
+Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never mention Claude (or other AI tools) in commit messages or branch names (§5).
 
 ---
 
 ## 0. Where to continue (start here)
 
 ### 0.1 State
-- Unit suites green (§6). All agent runs below green. Nothing pushed; no PR for this branch.
-- The `User scenarios` workflow (`scenarios.yml`) has run 3 times on GitHub (PR #27, dependabot PRs #29 and #32) and **failed every time in under a second**: the entry scripts were committed as mode 100644, so the runner could not execute them. `148e91e` sets the executable bit. The fix only proves itself once this branch is pushed.
+- All unit suites green (§6), gateway `-race` on the touched packages green. E2E on 2026-10-09: scenarios **40/0**, ci-bot **15/0**, separate-user **19/0**, boundary **0 unexpected**, agents (opencode/anthropic/codex × coop/enforced) **0 failed**, harness **16/0**.
+- The `User scenarios` workflow has failed on GitHub every time in under a second (entry scripts were mode 100644). Fixed on this branch (`run.sh` files are 100755); unproven until pushed.
+- **Existing deployments started by an older build cannot restart** (identity registry sealed twice at seq 1, §3.11). The fixed binary refuses them on purpose (indistinguishable from tampering). They need `ovara init` into a new directory. Tell the owner before they upgrade their own deployment.
 
 ### 0.2 Next steps, in order
-1. **Ask the owner, then push and open a PR** for `test/real-agents`. Watch the new CI: `scenarios`, `separate-user-attacks`, `boundary-redteam`, `agents` (matrix opencode/anthropic/codex × coop/enforced), `agents-harness`. They have never passed on GitHub. Expect to fix what the runners show.
-   - The Codex and Anthropic's agent CLI **coop** jobs on a normal runner should show the 7 bypasses as INFO (21 passed, 8 info, as opencode did on Docker Desktop). That has not been seen yet (see §3.10). If the numbers differ, update `docs/use-cases.md` scenario 1.
-2. `tests/scenarios/Dockerfile` chains installs with `;` (the same silent-failure pattern fixed in `tests/agents/Dockerfile`). Make it fail on a failed install.
-3. Aider: needs a different driver. It proposes commands and asks before running them. Options: `aider --message "/run <cmd>"` per command, or check whether a flag makes it run suggested commands unattended. Verify before claiming either.
-4. Other scenarios: hosted-sandbox pattern, CI-bot pattern (no human, so unanswered approvals give 504), `tests/boundary/docker_test.sh` (never run).
-5. Product gaps: scoped approval-page token (`proxy/cmd/ovara/main.go`, `startUI`: the browser link still carries the full operator token); pin GitHub Actions to SHAs (dependabot PR #29 wants checkout v4→v7); Phase 3/4/7 items.
-6. Memories skill (a `memories` skill file in the agent skills folder) and a one-line pointer in README/AGENTS.md. Never done.
+1. **Owner is rewriting `main` history** (drop AI co-author lines; keep the `v0.9.0` release): PowerShell steps were given in chat, with `clean_msg.py` (byte-exact, only changes messages that mention the tools), checks: same tree, 318 commits, `ef2fbb2` still an ancestor, 1 remaining mention (`165857e`, kept for v0.9.0). After they push it: rebase `test/real-agents` onto the new `main` (`git rebase --onto origin/main <old-main-sha> test/real-agents`), re-run §6, then ask before pushing. Other GitHub branches still hold the old commits.
+2. **Ask the owner, then push and open a PR** for `test/real-agents`. Watch CI: `scenarios`, `separate-user-attacks`, `boundary-redteam`, `agents` (matrix), `agents-harness`. Add a `ci-bot` job (`tests/scenarios/run.sh ci-bot`) to `scenarios.yml`. Coop agent jobs on a normal runner should show 21 passed / 8 info (§3.10).
+3. Aider: needs a different driver (`aider --message "/run <cmd>"` per command, or a flag that runs suggested commands unattended). Verify before claiming.
+4. Other scenarios: hosted-sandbox pattern, `tests/boundary/docker_test.sh` (never run).
+5. Product: pin GitHub Actions to SHAs (dependabot #29 wants checkout v7); consider a policy form for "allow X, deny other writes" (deny beats allow today, §3.11); Phase 3/4/7 items.
+6. Memories skill file and a one-line pointer in README/AGENTS.md. Never done.
 
 ### 0.3 Owner's open requests (their words)
-- "test on each scenarios … fork opencode … add ovara into it and test if that works properly same for other scenarios can it be broken or bpassed". **Done:** opencode, Anthropic's agent CLI, Codex CLI (coop + enforced) and the custom harness. **Not done:** Aider, hosted-sandbox, CI-bot. No fork was made; the agents are installed from npm. Ask before forking anything.
-- VMs/credits for unattended runs: links in §8. The owner's other machine is unreachable until ~2026-10-14. Note: a cloud coding session (this one) **can** run Docker, including `--privileged` netns tests (§5).
-- Memories skill + pointer + commit: not done (0.2 step 6).
+- "test on each scenarios … can it be broken or bpassed". **Done:** opencode, Anthropic's agent CLI, Codex CLI (coop + enforced), the custom harness, and CI-bot. **Not done:** Aider, hosted-sandbox. Ask before forking anything.
+- "No not and ever mention claude on the commits or branch name"; "Also devin and command code": done for this branch and the files; `main`'s history is the owner's rewrite (0.2 step 1).
+- VMs/credits: links in §8. A cloud coding session can run Docker incl. `--privileged` (§5).
 
 ### 0.4 Blockers waiting on the owner
-- **Rewriting `main` history** to drop AI-tool attribution: 49 commits carry assistant co-author lines and `000d70b` a third-party bot's; two merge subjects name that bot's branches. Needs a force-push of public `main` (all later SHAs, tags and PR links change) and GitHub keeps old commits reachable through PR refs. Owner has not decided. File-level traces were removed on `test/real-agents`; README product copy and the `.gitignore` tool-folder entries were kept on purpose.
-- OK to push `test/real-agents` and open a PR? (Owner said no for now.)
-- OK to commit `MEMORIES.md`?
-- Startup credits (links in §8), fork permission, and any `git rm` of tracked dirs: the classifier has blocked these before, so give the owner the exact command.
+- Push `test/real-agents` / open a PR: owner said no for now.
+- The `main` history rewrite: owner runs it (the classifier blocks filter-branch and force-push here).
+- Startup credits, fork permission, any `git rm` of tracked dirs: give the owner the exact command.
 
 ---
 
@@ -104,6 +104,12 @@ Layout:
 - P4 (`https://pastebin.com\@pypi.org/`) gives 200 because curl reads it as userinfo@pypi.org. It is judged by the receipts invariant (clean).
 
 ### 3.11 Bugs found this session
+- **Restart impossible after first run** (`3a97e3e`): `idregistry.mutate` did not carry `fileSeq`/`fileHash` back from its clone, so startup's second seed re-sealed seq 1 → "equivocation" on every later start. Plus: the tip ledger (`gwidentity.RecordTips`) now refuses non-advancing tips at write time.
+- **Restart impossible after any approval** (`5f8d9f6`): approval writes escalated → queued in one record; the signed journal's replay table refused it. Now legal only with `approved_at` + `resolved_by` on the record.
+- **`ovara run` ignored SIGTERM** (`3a97e3e`): the gateway caught it and returned; the proxy kept serving. Now stops the proxy and exits 0.
+- **The scenarios restart check was vacuous**: `pkill` did nothing (SIGTERM ignored), so the old process answered. Now checks the old one is gone and the new one serves.
+- **Approval-page link carried the operator token** (`30f3d65`): now a random per-run page token that only opens the page API.
+- **Deny beats allow**: "allow this write, deny all other writes" cannot be expressed; documented in use-cases §4, asserted by `ci-bot.sh` C3.
 - **netns boundary failed on kernels without IPv6** (`20dd08a`): `setup-egress-boundary.sh` wrote `net.ipv6.conf.*.disable_ipv6` unconditionally, so `ovara run --boundary netns` exited 1. It is now skipped only when `/proc/sys/net/ipv6` is absent.
 - **CI entry scripts not executable** (`148e91e`): `tests/scenarios/run.sh`, `tests/redteam/separate-user/run.sh` and `tests/redteam/boundary/run-in-docker.sh` were 100644 (committed from Windows). All `scenarios.yml` jobs failed instantly on GitHub.
 - **Agent image built without the agent** (`7b2043d`): `tests/agents/Dockerfile` used `;` and `>/dev/null`, so a failed `npm install -g` still produced an image. It now uses `&&` plus `--version` checks.
@@ -173,7 +179,7 @@ Last full verification 2026-10-09 (cloud): all Go modules vet + test OK; TS 35 +
 
 ## 7. Timeline (newest first)
 
-Branch `test/real-agents`, not pushed (hashes below are from before the message rewrite; see `git log`):
+Branch `test/real-agents`, not pushed; `git log --oneline origin/main..HEAD` is authoritative (older hashes below changed in a message rewrite):
 ```
 6a63ec8 docs: real-agent results for opencode, Anthropic's agent CLI and Codex; changelog
 c0c98ed test(agents): Codex CLI behind Ovara; run.sh and CI take the agent
