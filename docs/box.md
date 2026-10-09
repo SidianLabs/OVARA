@@ -273,7 +273,7 @@ encode today:
 | Anthropic's agent CLI | `ANTHROPIC_BASE_URL` (default api.anthropic.com, allowed by policy) | `Bash` | `IS_SANDBOX=1` to run as a non-tty user; nonessential traffic off |
 | Codex CLI | `~/.codex/config.toml` provider (api.openai.com allowed) | `exec_command` | its own sandbox off: Ovara is the sandbox |
 | opencode | `opencode.json` provider | `bash` | `permission.external_directory: allow` |
-| Aider | `OPENAI_API_BASE` / `ANTHROPIC_BASE_URL` | proposes `/run` commands | needs `--yes-always`; exec gate decides |
+| Aider | `OPENAI_API_BASE` / `ANTHROPIC_BASE_URL` | shell blocks in its reply, run after a yes | `--yes-always` does not cover shell commands: a person answers (tests pipe `yes`); exec gate decides; tested in every mode (`tests/agents/aider.sh`) |
 | anything else | user-supplied | whatever it has | the boundary still holds; the exec gate works for any `sh`/`bash` |
 
 The agent's *own* traffic (telemetry, model lists, update checks) is

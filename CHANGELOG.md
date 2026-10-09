@@ -77,6 +77,12 @@ agents, and fix correctness bugs found in an in-depth review.
   pauses at its first request; npm install scripts are off. `dev`
   (default) is unchanged. Tested end to end with real npm and pip
   (`tests/box/strict.sh`, 23 checks).
+- **Aider tested behind Ovara**, in cooperative, enforced, tier 1 box and
+  tier 2 box modes, with the same 27-command battery as the other three
+  agents (`tests/agents/aider.sh`).
+- **Box image: pip works in a virtualenv.** `box/Dockerfile` set
+  `PIP_USER=1`, which makes pip refuse every install inside a virtualenv;
+  removed, and the tier 2 box test checks it.
 - **`ovara box -profile ci`: nothing waits for a person.** Strict installs
   plus an unattended run (`ovara run -unattended`): anything policy would
   pause (a request to an untrusted host, an unpinned package, a command
