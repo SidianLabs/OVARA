@@ -90,6 +90,9 @@ if [ "${OVARA_BOX_TIER:-1}" = 2 ]; then
   r T2_UDP "$(timeout 3 bash -c 'echo x >/dev/udp/1.1.1.1/53' 2>/dev/null && echo OPEN || echo BLOCKED)"
   r T2_SECRETS "$(ls -d /root/.ssh /root/.aws $HOME/.ssh $HOME/.aws $HOME/.netrc $HOME/.npmrc $HOME/.git-credentials $HOME/.docker 2>/dev/null | wc -l)"
   r T2_PROCS "$(ps -eo user= | sort -u | tr '\n' ' ' | sed 's/ $//')"
+  # the whole image, not a list of places: nothing credential-shaped anywhere
+  # (npm packages' own test fixtures are not the image's secrets)
+  r T2_IMAGE_SECRETS "$(find / -xdev \( -path /proc -o -path '*/node_modules' \) -prune -o -type f \( -name 'id_rsa*' -o -name 'id_ed25519*' -o -name 'id_ecdsa*' -o -name 'id_dsa*' -o -name .netrc -o -name .git-credentials -o -name .npmrc -o -name .pypirc -o -name .env -o -path '*/.aws/credentials' -o -path '*/.docker/config.json' -o -path '*/.config/gh/hosts.yml' \) -print 2>/dev/null | head -5 | tr '\n' ' ')"
 fi
 r DONE yes
 EOF
@@ -183,6 +186,7 @@ if [ "$TIER" = 2 ]; then
   check "UDP out: no route" BLOCKED "$(val T2_UDP)"
   check "no credential files in the box" 0 "$(val T2_SECRETS)"
   check "processes in the box: the gate (root) and the agent only" "ovara-agent root" "$(val T2_PROCS)"
+  check "no credential-shaped file anywhere in the image" "" "$(val T2_IMAGE_SECRETS)"
 fi
 
 echo "=== the command gate"
@@ -223,7 +227,9 @@ echo "=== a second run with nothing changed, interrupted by the person"
 timeout 120 ovara box -dir $D -ui off "${BOXFLAGS[@]}" $P -- bash -c 'sleep 60' > /tmp/box2.out 2>&1; E2=$?
 grep -q 'stopping the agent' /tmp/box2.out && ok "Ctrl-C stops the agent" || bad "interrupt" "$(tail -3 /tmp/box2.out)"
 grep -q 'changed nothing' /tmp/box2.out && ok "no changes → nothing comes back" || bad "no-change run" "$(tail -3 /tmp/box2.out)"
-pgrep -f 'ovara run' >/dev/null && bad "ovara run still running after the box" "" || ok "ovara run stopped with the box"
+# only processes in this test's PID namespace (a host also sees other containers')
+ours() { for p in $(pgrep -f "$1"); do [ "$(readlink /proc/$p/ns/pid 2>/dev/null)" = "$(readlink /proc/self/ns/pid)" ] && return 0; done; return 1; }
+ours 'ovara run' && bad "ovara run still running after the box" "" || ok "ovara run stopped with the box"
 if [ "$TIER" = 2 ]; then
   check "no box container left behind" "" "$(docker ps -aq --filter label=ovara.box)"
 fi

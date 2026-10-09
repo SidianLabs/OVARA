@@ -64,6 +64,13 @@ checks every command it runs against the policy, and brings its changes
 back as a branch after you have read the diff. See
 `docs/use-cases.md` scenario 2.
 
+For a stricter box, `sudo ovara box -tier 2 ./myrepo -- claude` runs the
+agent in a container instead: no network interface but a relay to Ovara,
+no capabilities, a read-only root, and nothing of your machine inside but
+the project's copy. Build the image once with `docker build -t ovara-box
+box/` and extend it with your agent. Details and limits are in
+`docs/box.md` section 6.4.
+
 `ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a
 **local approval page**: whatever the agent is waiting on, with Approve and Deny
 buttons, plus a live, integrity-checked history of what it did. The page is only

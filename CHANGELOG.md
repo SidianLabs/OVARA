@@ -50,6 +50,25 @@ agents, and fix correctness bugs found in an in-depth review.
   none wrongly refused).
 - Commit-back writes into the real repository as its owner, so a launcher
   under `sudo` leaves no root-owned objects.
+- **`ovara box -tier 2`: the box as a container.** The agent runs from a
+  box image (`box/Dockerfile`: Node, Python, git, an `ovara-agent` user)
+  with no network interface but loopback, no capabilities, a read-only
+  root, no-new-privileges, and nothing of the host inside but the
+  workspace, a fresh home and paths given with `-mount` (read-only; `/`,
+  system paths, credential locations and the Ovara deployment are
+  refused). PID 1 is `ovara box-init`: it relays loopback to the proxy and
+  asks the host's command gate about every exec, over two Unix sockets in
+  a directory only root can enter, then drops to the agent's uid and traces
+  it. If the host side goes away the box has no way out and every command
+  is refused. Flags: `-tier`, `-image`, `-mount`, `-pids`, `-memory`,
+  `-cpus`. Tested in CI on GitHub's runners: the box test with the
+  container's own checks, the boundary red team from inside the box, and
+  the three agents' battery in a tier 2 box.
+- **The docker boundary recipe is now tested.** `setup-egress-boundary.sh
+  docker` (`ovara run --boundary docker`) had never been run. The red team
+  now runs against it (`tests/redteam/boundary/docker.sh`) with a probe
+  image that has the tools the checks need, the CA mounted, and two new
+  probes in every mode: a DNS lookup of an outside name and a raw socket.
 
 - **Policy precedence: the most specific rule decides.** `policy.json` takes
   `"precedence": "most-specific"` (what `ovara init` writes now): of the

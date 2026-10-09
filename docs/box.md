@@ -118,12 +118,12 @@ box in the first release (see tiers, §4.4).
 |---|---|---|
 | Network | All traffic through the proxy; policy allow/escalate/deny; keys injected; responses scrubbed | **built, tested** (`proxy/`, `tests/scenarios`, `tests/agents`, `tests/redteam`) |
 | Files back to the real project | Workspace is a copy; "commit back" is a gated action with a diff preview | **built, tested** (`proxy/internal/workspace`, `tests/box`) |
-| Files anywhere else on the host | The box runs as another user; the host's files are reachable only where that user may read them (tier 1); not mounted at all in tier 2 | tier 1 built; tier 2 not built (§7) |
+| Files anywhere else on the host | The box runs as another user; the host's files are reachable only where that user may read them (tier 1); not mounted at all in tier 2 | tier 1 built; **tier 2 built, tested** (`tests/box` with `TIER=2`: host paths, Docker socket and credential files absent, root read-only) (§6.4) |
 | Commands | Every exec in the agent's tree is stopped and checked by policy: allow / pause / kill | **built, tested** (`proxy/internal/boxgate`, ptrace; `tests/box`, agents `mode: box`) |
 | Package installs | Through the proxy, with registry pins, install-script policy, new-dependency approval | partial (npm audit rule only) (§9) |
 | Secrets | Never present in the box; injected by the proxy; scrubbed on return | **built, tested** |
 | Process control (kill Ovara, edit policy, forge receipts) | Agent runs as a different unprivileged user with no access to Ovara's directory | **built, tested** (`tests/redteam/separate-user`, 19 attacks) |
-| Non-HTTP protocols (SSH, raw TCP, DNS to the outside) | Dropped by the boundary (no route) | **built, tested** on Linux netns (`tests/redteam/boundary`, 25 checks) |
+| Non-HTTP protocols (SSH, raw TCP, DNS to the outside) | Dropped by the boundary (no route); tier 2 has no interface but loopback | **built, tested**: netns (27 checks), from inside a tier 2 box (28) and the docker recipe (29) (`tests/redteam/boundary`; docker mode run for the first time in milestone 4) |
 
 ### 4.4 Isolation tiers (what the box is made of)
 
@@ -131,7 +131,7 @@ box in the first release (see tiers, §4.4).
 |---|---|---|---|---|
 | **0 cooperative** | `ovara env` only | mistakes | a program that ignores the proxy settings | all |
 | **1 user+netns** | separate unprivileged user, network namespace with no route except Ovara, workspace copy | everything in §4.3 for a non-root agent | kernel exploits; a root agent | Linux (built) |
-| **2 container** | tier 1 inside a container with no capabilities, read-only root, seccomp default profile | the same, plus most of the host filesystem by construction | kernel exploits | Linux, Docker Desktop |
+| **2 container** | a container with no network interface but loopback (the proxy through a root-only socket), no capabilities for the agent, read-only root, no-new-privileges, Docker's default seccomp profile, nothing of the host mounted but the workspace (§6.4) | the same, plus the host filesystem by construction | kernel exploits | Linux (built, milestone 4); Docker Desktop later |
 | **3 microVM** | tier 2 inside Firecracker / Cloud Hypervisor, Ovara outside the VM | kernel exploits from inside | hardware side channels; Ovara bugs | Linux hosts with KVM; later |
 
 The first Box release ships tiers 1 and 2. macOS and Windows get tier 1 or 2
@@ -184,7 +184,10 @@ gateway + proxy + approval page). The Box adds:
   environment (§6) — **built, milestone 2**;
 - a **file gate** that owns the workspace copy and gates commit-back (§7) —
   **built, milestone 2** (`proxy/internal/workspace`);
-- an **exec gate** the agent cannot bypass, in front of the shell (§8);
+- an **exec gate** the agent cannot bypass, in front of the shell (§8) —
+  **built, milestone 3**;
+- **tier 2**: the same box as a container, with nothing of the host in it
+  (§6.4) — **built, milestone 4**;
 - **install policy** in the proxy for package registries (§9);
 - a **policy model v2** that can express "allow these, deny the rest" (§11).
 
@@ -205,16 +208,26 @@ ovara box [flags] <project-dir> -- <agent command...>
   ovara box ./myrepo -- aider --model gpt-4o
   ovara box ./myrepo -- bash             # a shell inside the box, for you
 
-flags
+flags (built)
   -dir DIR          Ovara deployment (default ~/.ovara/box; created on first use)
-  -tier 1|2|3       isolation tier (default: 2 if Docker is available, else 1)
-  -policy FILE      policy to use (default: the box policy, §11.4)
-  -profile NAME     a named policy profile: dev | ci | strict (§11.5)
-  -mount SRC:DST    extra read-only mount into the box (never a secret path; refused for ~/.ssh, ~/.aws, …)
-  -env K=V          non-secret environment for the agent (refused if the value looks like a key)
-  -keep             keep the workspace after exit (default: kept on failure, removed on success)
+  -tier 1|2         isolation tier (default 1; 2 needs Docker and a box image)
+  -image NAME       tier 2: the box image (default ovara-box, from box/Dockerfile)
+  -mount SRC:DST    tier 2: extra READ-ONLY mount (refused: /, system paths, ~/.ssh,
+                    ~/.aws, ~/.gnupg, ~/.docker, ~/.kube, .netrc, .npmrc, …, the
+                    Ovara deployment, and any directory containing one of them)
+  -pids N           tier 2: process limit (default 4096); -memory, -cpus likewise
+  -user NAME        tier 1: the agent's user (default ovara-agent, created if missing)
+  -env K=V          non-secret environment for the agent (refused if the name looks like a key)
+  -exclude GLOB     extra path to leave out of the workspace (.ovaraignore is read too)
+  -keep             keep the workspace after exit (default: kept when something is left, removed on success)
+  -no-commit-back   keep the workspace, offer nothing back
+  -no-command-gate  run without the exec gate (the network and file boundaries still hold)
   -ui ADDR|off      approval page (default 127.0.0.1:9090)
-  -approve-timeout  how long a paused action waits (default 60s interactive, 10s with -profile ci)
+  -approve-timeout  how long the commit-back waits for a person (default 10m)
+
+planned
+  -tier 3           microVM (§4.4)
+  -policy, -profile a named policy profile: dev | ci | strict (§11.4, milestone 5)
 ```
 
 ### 6.2 What it does, in order
@@ -234,8 +247,9 @@ flags
    same inside a container from a small image with the agent's runtime
    (node, python, git) and nothing else, `--cap-drop ALL`, read-only root,
    seccomp default, no host mounts except the workspace and a scratch
-   volume. Tier 1 requires root for the netns; tier 2 does not if Docker is
-   usable.
+   volume (§6.4). Both tiers need root on the host today (tier 1 for the
+   netns; tier 2 to hand the workspace to the box's uid and to keep Ovara's
+   sockets in a directory only root can enter). Rootless tier 2 is later.
 5. **Enter the box with the agent environment**: what `ovara env` prints
    today (`HTTPS_PROXY`, CA variables, `NODE_USE_ENV_PROXY`, placeholder
    keys), plus `OVARA_EXEC_GATE` (§8) and `HOME=/home/agent`.
@@ -264,6 +278,35 @@ model APIs and the known registries; the launcher sets each agent's "no
 telemetry" switches where they exist, and the summary lists every host the
 agent contacted on its own (the `battery.sh` host table, made a feature).
 
+### 6.4 Tier 2 in detail (built in milestone 4)
+
+`ovara box -tier 2 -image IMAGE` runs the agent with `docker run` and these
+properties, each checked by `tests/box/box.sh` with `TIER=2`:
+
+| Property | How | Test |
+|---|---|---|
+| No network but Ovara | `--network none`: the container has loopback only. PID 1 (`ovara box-init`) listens on `127.0.0.1:9443` inside and relays each connection to Ovara's proxy through `/run/ovara/proxy.sock`, a Unix socket the host mounts | only `lo`; direct TCP, UDP, the Docker host gateway and cloud metadata have no route; the red team runs inside (`tests/redteam/boundary`, `MODE=inside`) |
+| The agent cannot reach Ovara's sockets | `/run/ovara` is a host directory, mode 0700, owned by root; the agent is uid 10001 | `ls /run/ovara` and connecting to either socket are refused |
+| No privilege | `--cap-drop ALL`, then only `SETUID`, `SETGID` and `KILL` for PID 1 (to drop to the agent's uid and stop its processes); the agent's capability sets are empty; `--security-opt no-new-privileges` | `CapEff` and `CapPrm` are 0, `NoNewPrivs` is 1; `sudo` is killed by the gate and could not elevate anyway |
+| Read-only root | `--read-only`; `/tmp` and `/scratch` are in-memory; `/work` and `/home/agent` are the run's directories | writing under `/usr` and `/etc` fails |
+| Nothing of the host | mounts: the workspace, a fresh home, the Ovara binary and the public CA read-only, the socket directory read-only, and `-mount` paths read-only (secret and system locations refused, §6.1) | the host's project, `/var/lib/ovara` and the Docker socket are absent; no credential files |
+| Command gate | PID 1 starts the agent traced (`internal/boxgate`) and asks the host about each exec over `/run/ovara/gate.sock`; the host side is the same gate as tier 1 | the tier 1 gate checks pass unchanged (`sudo` killed, `rm -rf` paused and refused) |
+| The agent cannot stop the gate | PID 1 runs as root inside the container; the agent has no capability to signal or trace it | `kill -9 1` is refused; the processes in the box are root (the gate) and the agent only |
+| Fails closed | if Ovara or the launcher goes away, the relay has nowhere to go and every exec is refused; the container is removed on exit (`--rm`, then `docker rm -f`) | no box container left after a run |
+| Bounded | `--pids-limit` (default 4096), optional `-memory` and `-cpus`, `--ipc private` | — |
+
+The box image (`box/Dockerfile`) is Node 24 on Debian slim with git,
+Python, curl and an `ovara-agent` user (uid 10001); npm and pip install into
+the per-run home. People extend it with their agent (`FROM ovara-box`, then
+`npm install -g ...` as root). It holds no keys: the agent gets placeholders
+and Ovara injects the real ones at the proxy. The agent environment is
+passed in a root-only file, not on the `docker` command line.
+
+Limits of tier 2, stated plainly: it shares the host's kernel (a kernel
+exploit leaves the box; tier 3 is the answer); it needs root on the host
+today; `-mount` exposes whatever the person mounts, read-only; and the
+person's Docker daemon is trusted.
+
 ## 7. The file boundary
 
 ### 7.1 What the box sees
@@ -275,6 +318,10 @@ agent contacted on its own (the `battery.sh` host table, made a feature).
 | `/home/agent` | fresh home; agent config written by the launcher | yes |
 | toolchains (`/usr/local/go`, node, python) | the image's | no |
 | everything else on the host | **absent** | — |
+
+This table is what tier 2 builds (milestone 4, §6.4). Tier 1 runs on the
+host's filesystem as a separate user, so there "absent" means "not readable
+by that user", not "not there".
 
 No `~/.ssh`, no `~/.aws`, no `~/.gitconfig` with credentials, no other
 repos, no browser profile. The `-mount` flag adds read-only paths and
@@ -353,6 +400,17 @@ applied the same way the proxy applies network decisions:
   it is killed (the tool sees exit 137 and a line on stderr).
 - **deny**: killed before its first instruction.
 
+In tier 2 the tracer is the container's PID 1 and the decision is made on
+the host; the policy, the approvals and the receipts are the same.
+
+Limit, in both tiers: the gate reads the command line from the stopped
+process's memory. Another process of the same agent could rewrite that
+memory before the program reads its arguments, so the line the person
+approved is not a hard guarantee of the arguments the program used. The
+program itself (the executable) cannot change, every further exec is
+stopped again, and the network and file boundaries do not depend on the
+gate.
+
 Every command produces a receipt: command, directory, decision, exit
 status, duration, output size. Output itself is not recorded unless the
 policy asks (it can contain the project's data).
@@ -407,7 +465,7 @@ nftables). The product has to work the same on every developer machine:
 
 | Host | How the box runs | Ovara runs | Status |
 |---|---|---|---|
-| Linux | tier 1 (netns) or tier 2 (container) directly | on the host | tier 1 built and tested; tier 2 scripted, never run |
+| Linux | tier 1 (netns) or tier 2 (container) directly | on the host | tier 1 and tier 2 built and tested (tier 2 in CI on GitHub's runners) |
 | macOS | tier 2 inside a Lima/Colima VM; `ovara box` drives it | on the host, proxy reachable from the VM's network only | not built |
 | Windows | tier 2 inside WSL2 (Docker Desktop's VM or a dedicated distro) | on the host (Windows binary) or inside WSL2 | not built |
 | CI | tier 1 in a privileged job, or tier 0 with the `ci` profile when privilege is unavailable | same job | tier 0 tested (`ci-bot`), tier 1 tested in the agent matrix |
@@ -484,15 +542,15 @@ project extends.
 |---|---|---|
 | gateway: decisions, approvals, receipts, shield, identity | `runtime/gateway` | yes |
 | proxy: MITM, policy flow, key injection, scrub, preview | `proxy/internal/proxy` | yes |
-| boundary script (netns, docker) | `proxy/scripts/setup-egress-boundary.sh` | yes (docker mode never run) |
+| boundary script (netns, docker) | `proxy/scripts/setup-egress-boundary.sh` | yes (both modes red-teamed in CI) |
 | CLI: init, run, env, watch, approvals, log, doctor | `proxy/cmd/ovara` | yes |
 | approval page | `proxy/cmd/ovara/ui` | yes |
-| **launcher** `ovara box` | `proxy/cmd/ovara/box.go` | no |
-| **workspace + file gate** (snapshot, secret exclusion, diff preview, commit-back as a branch) | `proxy/internal/workspace` | no |
+| **launcher** `ovara box` (tiers 1 and 2) | `proxy/cmd/ovara/box.go`, `boxinit.go` | yes |
+| **workspace + file gate** (snapshot, secret exclusion, diff preview, commit-back as a branch) | `proxy/internal/workspace` | yes |
 | **command gate** | `proxy/internal/boxgate` (ptrace, in the launcher) | yes |
 | **install policy** (registry pins, new-dependency pause) | `proxy/internal/proxy` + profile rules | partial |
-| **policy v2** evaluator + migrate + shadow check | `runtime/gateway/internal/{policy,evaluator}` | no |
-| **box image** (tier 2): agent runtimes, no secrets, read-only root | `box/Dockerfile` | no |
+| **policy v2** evaluator + migrate + shadow check | `runtime/gateway/internal/{policy,evaluator}` | yes |
+| **box image** (tier 2): agent runtimes, no secrets, read-only root | `box/Dockerfile` | yes |
 | **VM driver** (Lima / WSL2) | `proxy/internal/vm` | no |
 | tests: agents matrix, scenarios, red teams | `tests/` | yes; grows per milestone |
 
@@ -536,7 +594,7 @@ updated in the same change.
 | 1 | **Policy v2** | ci-bot C3 flips to "allowed write passes under catch-all deny"; shadow-rule validator test; v1 files migrate byte-for-byte in meaning | 1 week |
 | 2 | **`ovara box` tier 1 on Linux** (launcher + workspace snapshot + secret exclusion; no command gate yet) | **done**: agents matrix runs through `ovara box` (`mode: box`); `tests/box` plants `.env`/`id_rsa`/a committed `.pem` and finds them absent; commit-back lands on a branch with the diff in the approval; the `.github/workflows/*` change is kept out | done |
 | 3 | **Command gate** | **done**: `tests/box` adds `sudo` (killed), `sudo` via python (killed), `rm -rf` (paused, refused, nothing deleted); the agents matrix runs under the gate; a program started by any route is seen (ptrace, no same-user bypass) | done |
-| 4 | **Tier 2 container** + docker boundary test finally run | boundary red team passes in docker mode; box image has no secret paths and a read-only root | 1–2 weeks |
+| 4 | **Tier 2 container** + docker boundary test finally run | **done**: the boundary red team passes in docker mode and from inside a tier 2 box; `tests/box` with `TIER=2` passes the tier 1 checks plus the container's own (no capabilities, read-only root, loopback only, sockets closed to the agent, no host paths or credential files, init unkillable); the three agents run their battery in a tier 2 box | done |
 | 5 | **Install policy** | `strict`: a new dependency pauses once with name+version; a package from an unlisted registry pauses; npm audit still free | 1 week |
 | 6 | **macOS/Windows via VM** | the agents matrix on a macOS runner through Lima and on a Windows runner through WSL2, enforced mode numbers equal to Linux | 2–4 weeks |
 | 7 | **Real-key soak**: real model APIs, 3 agents, multi-day unattended runs, receipt chain verifying throughout | a nightly job that runs 8 hours and reports the host table and chain status | 2 weeks, then ongoing |

@@ -403,7 +403,7 @@ func agentVars(a *boxAgent, host, caPath string) ([]string, error) {
 		return nil, err
 	}
 	caIn := inDir(a.dir, a.cfg.CACertFile)
-	var out []string
+	out := make([]string, 0, len(vars))
 	for _, v := range vars {
 		val := v.value
 		if val == caIn {

@@ -23,7 +23,6 @@ FAIL=0
 # The proxy requires its token. Without it every CONNECT is refused with 407, so
 # an "allowed path" check would fail and every "CONNECT denied" check would pass
 # for the wrong reason. Set PROXY_TOKEN to the deployment's agent token.
-PXY="http://${PROXY_TOKEN:+agent:$PROXY_TOKEN@}"
 
 # HIP: an address of the host as seen from the agent (host services must be
 # unreachable there); GWIP: where the gateway port is probed.
@@ -42,6 +41,9 @@ else
   CA="${SSL_CERT_FILE:-/etc/ovara/ca.pem}"
   PROXY_TOKEN="$(printf '%s' "${HTTPS_PROXY:-}" | sed -n 's#^http://agent:\([^@]*\)@.*#\1#p')"
 fi
+
+# (after the mode block: inside the box the token comes from the agent's own environment)
+PXY="http://${PROXY_TOKEN:+agent:$PROXY_TOKEN@}"
 
 check() { # name expected actual
   local name="$1" expected="$2" actual="$3"
