@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-09 (cloud session). Read this first, then `README.md`, `docs/threat-model.md`, `docs/use-cases.md`.
 
-Branch: `test/real-agents`, 14 commits ahead of `main`, **not pushed**. The owner said do not push yet.
+Branch: `test/real-agents`, 18 commits ahead of `main`, **not pushed**. The owner said do not push yet.
 `hardening/path-to-10` is finished: merged into `main` as PR #27 (`97cafe1`). Do not reuse it.
 Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never mention Claude (or other AI tools) in commit messages or branch names (§5).
 
@@ -11,9 +11,9 @@ Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never 
 ## 0. Where to continue (start here)
 
 ### 0.1 State
-- All unit suites green (§6), gateway `-race` on the touched packages green. E2E on 2026-10-09: scenarios **40/0**, ci-bot **15/0**, separate-user **19/0**, boundary **0 unexpected**, agents (opencode/anthropic/codex × coop/enforced) **0 failed**, harness **16/0**.
-- The `User scenarios` workflow has failed on GitHub every time in under a second (entry scripts were mode 100644). Fixed on this branch (`run.sh` files are 100755); unproven until pushed.
-- **Existing deployments started by an older build cannot restart** (identity registry sealed twice at seq 1, §3.11). The fixed binary refuses them on purpose (indistinguishable from tampering). They need `ovara init` into a new directory. Tell the owner before they upgrade their own deployment.
+- All unit suites green (§6), gateway `-race` on the touched packages green. Full E2E on 2026-10-09 against `2f9c707`: scenarios **40/0**, ci-bot **15/0**, upgrade **9/0**, separate-user **19/0**, boundary **0 unexpected**, agents opencode/anthropic/codex coop **25/0** and enforced **28/0** each, harness **16/0**.
+- The `User scenarios` workflow has failed on GitHub every time in under a second (entry scripts were mode 100644). Fixed on this branch; unproven until pushed. Jobs: scenarios, ci-bot, upgrade (needs `fetch-depth: 0`), separate-user-attacks, boundary-redteam, agents matrix, agents-harness.
+- **Deployments started by an older build** refuse to start ("same file_seq with different hash"); the error names the fix: `ovara run -repair-registry` once (accepts only a same-seq re-seal signed by the gateway's own key, re-seals at seq+1). `tests/scenarios/upgrade.sh` builds the last affected commit (found by the subject `fix: deployments restart`) and upgrades a deployment it made. Keep that subject if history is rewritten.
 
 ### 0.2 Next steps, in order
 1. **Owner is rewriting `main` history** (drop AI co-author lines; keep the `v0.9.0` release): PowerShell steps were given in chat, with `clean_msg.py` (byte-exact, only changes messages that mention the tools), checks: same tree, 318 commits, `ef2fbb2` still an ancestor, 1 remaining mention (`165857e`, kept for v0.9.0). After they push it: rebase `test/real-agents` onto the new `main` (`git rebase --onto origin/main <old-main-sha> test/real-agents`), re-run §6, then ask before pushing. Other GitHub branches still hold the old commits.
@@ -109,6 +109,7 @@ Layout:
 - **`ovara run` ignored SIGTERM** (`3a97e3e`): the gateway caught it and returned; the proxy kept serving. Now stops the proxy and exits 0.
 - **The scenarios restart check was vacuous**: `pkill` did nothing (SIGTERM ignored), so the old process answered. Now checks the old one is gone and the new one serves.
 - **Approval-page link carried the operator token** (`30f3d65`): now a random per-run page token that only opens the page API.
+- **Repair path** (`2f9c707`): `ovara run -repair-registry`, `idregistry.OpenRepair`/`Reseal`, `record.ErrSameSeqEquivocation`; tests in `internal/idregistry/repair_test.go` and `tests/scenarios/upgrade.sh`.
 - **Deny beats allow**: "allow this write, deny all other writes" cannot be expressed; documented in use-cases §4, asserted by `ci-bot.sh` C3.
 - **netns boundary failed on kernels without IPv6** (`20dd08a`): `setup-egress-boundary.sh` wrote `net.ipv6.conf.*.disable_ipv6` unconditionally, so `ovara run --boundary netns` exited 1. It is now skipped only when `/proc/sys/net/ipv6` is absent.
 - **CI entry scripts not executable** (`148e91e`): `tests/scenarios/run.sh`, `tests/redteam/separate-user/run.sh` and `tests/redteam/boundary/run-in-docker.sh` were 100644 (committed from Windows). All `scenarios.yml` jobs failed instantly on GitHub.
