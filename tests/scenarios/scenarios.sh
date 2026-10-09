@@ -109,6 +109,9 @@ if [ -n "$TOK" ]; then ok "approval link printed with a token"; else bad "no UI 
 check "UI page served on loopback" 200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/)"
 check "UI API refuses requests without the token" 401 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/api/pending)"
 check "UI API accepts the token" 200 "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK" http://127.0.0.1:9090/api/pending)"
+OPTOK=$(python3 -c "import json;print(json.load(open('/tmp/d/config.json'))['operator_tokens'][0])")
+[ "$TOK" != "$OPTOK" ] && ok "the printed link does not carry the operator token" || bad "the printed link carries the operator token" ""
+check "UI API refuses the operator token (page token only)" 401 "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $OPTOK" http://127.0.0.1:9090/api/pending)"
 check "UI refuses a DNS-rebinding Host header" 403 "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' -H "Authorization: Bearer $TOK" http://127.0.0.1:9090/api/pending)"
 
 echo "=== G. the record"

@@ -412,7 +412,8 @@ func cmdRun(args []string) error {
 }
 
 // startUI serves the local approval page and returns the link to open
-// (with the operator token in the fragment), or "" when disabled.
+// (with a per-run page token in the fragment, never the operator token),
+// or "" when disabled.
 func startUI(addr string, cfg *config.Config) (string, error) {
 	if addr == "" || addr == "off" {
 		return "", nil
@@ -428,13 +429,17 @@ func startUI(addr string, cfg *config.Config) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	pageToken, err := newPageToken()
+	if err != nil {
+		return "", err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return "", err
 	}
-	ui := &uiServer{admin: admin, receiptsFile: cfg.ReceiptsFile, pubFile: cfg.PubKeyFile}
+	ui := &uiServer{admin: admin, pageToken: pageToken, receiptsFile: cfg.ReceiptsFile, pubFile: cfg.PubKeyFile}
 	go http.Serve(ln, ui.handler())
-	return "http://" + ln.Addr().String() + "/#t=" + admin.token, nil
+	return "http://" + ln.Addr().String() + "/#t=" + pageToken, nil
 }
 
 // setupBoundary runs the embedded egress-boundary script so the agent

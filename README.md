@@ -61,6 +61,9 @@ ovara run -dir mydir             # starts the gateway and the proxy
 **local approval page**: whatever the agent is waiting on, with Approve and Deny
 buttons, plus a live, integrity-checked history of what it did. The page is only
 served to your own machine, and only someone holding the link's token can approve.
+That token is made fresh each time `ovara run` starts and opens only this page,
+never the gateway's admin API, so a link left in a log or scrollback is worth
+little and stops working when Ovara stops.
 
 Prefer the terminal? Answer from a **second terminal** instead:
 

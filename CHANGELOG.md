@@ -93,6 +93,13 @@ that the unit suites had not:
 
 ### Security (hardening pass)
 
+- **The approval-page link no longer carries the operator token.** `ovara run`
+  printed `http://127.0.0.1:9090/#t=<operator token>`, so the link in a log
+  file or terminal scrollback was the key to the gateway's whole admin API.
+  The page now gets its own random token per run, kept only in memory and
+  accepted only by the page's own endpoints; the page server calls the
+  gateway with the operator token itself.
+
 - **Rules with conditions the gateway does not evaluate are refused** at load
   and in the validator (only `depends_on` / `ref` are understood). They used
   to load and apply to every request.
