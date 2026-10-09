@@ -4,7 +4,7 @@ Last updated: 2026-10-09 (cloud session). Read this first, then `README.md`, `do
 
 Branch: `test/real-agents`, pushed to GitHub on 2026-10-09 (owner said "try again" and the push went through); PR being opened. PR #39 open; on `3acf1c4` 45 of 46 checks green incl. all tier 2 jobs; `security-scan` fixed after that: trivy-action pinned by commit (`ed142fd`, v0.36.0; tags now carry a `v` and 0.28.0 is gone), Trivy v0.75.0, and the one HIGH it found (`@modelcontextprotocol/sdk` 1.30.0 in integrations/mcp, CVE-2026-104850) upgraded to 1.32.1. CI pulls Docker Hub images through mirror.gcr.io (`.github/scripts/docker-hub-mirror.sh`) after a 429 storm.
 `hardening/path-to-10` is finished: merged into `main` as PR #27 (`97cafe1`). Do not reuse it.
-Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never mention Claude (or other AI tools) in commit messages or branch names (§5).
+Git identity for commits: `BHAWESHBHASKAR <bhaskarbhawesh09@gmail.com>`. Never mention Claude (or other AI tools) in commit messages or branch names (§5).
 
 ---
 
