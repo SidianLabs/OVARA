@@ -72,10 +72,10 @@ jobs:
       fail-fast: false
       matrix:
         agent: [opencode, anthropic, codex]
-        mode: [coop, enforced]
+        mode: [coop, enforced, box]
     steps:
       - uses: actions/checkout@v4
-      # enforced: a netns boundary, the agent as an unprivileged user (privileged container)
+      # enforced: a netns boundary, the agent as an unprivileged user; box: the same through ovara box (privileged container)
       - name: Real ${{ matrix.agent }} behind Ovara (${{ matrix.mode }})
         run: tests/agents/run.sh ${{ matrix.mode }} ${{ matrix.agent }}
 
