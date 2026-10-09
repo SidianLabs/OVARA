@@ -28,6 +28,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -116,15 +117,16 @@ type fileState struct {
 // trust domain: one file, one writer. Multi-gateway consistency is a
 // documented non-goal for P2.2.
 type Registry struct {
-	path      string
-	signer    *record.Signer      // non-nil → sealed-file mode (P2.4)
-	resolve   record.ResolveFunc
-	fileSeq   uint64
-	fileHash  string
-	tipsSink  func(seq uint64, hash string) error
-	mu        sync.RWMutex
-	ids       map[string]*Identity
-	cred map[string]*Credential // by fingerprint
+	path     string
+	signer   *record.Signer // non-nil → sealed-file mode (P2.4)
+	resolve  record.ResolveFunc
+	fileSeq  uint64
+	fileHash string
+	tipsSink func(seq uint64, hash string) error
+	repaired bool // opened by OpenRepair over a same-seq conflict; Reseal next
+	mu       sync.RWMutex
+	ids      map[string]*Identity
+	cred     map[string]*Credential // by fingerprint
 }
 
 func NewInMemory() *Registry {
@@ -148,6 +150,9 @@ func Open(path string, bindings ...*record.Binding) (*Registry, error) {
 		r.resolve = binding.Resolve
 		payload, seq, hash, err := record.OpenSealedFile("idregistry", path, binding.Signer.Domain(), binding.Resolve, binding.Floor)
 		if err != nil {
+			if errors.Is(err, record.ErrSameSeqEquivocation) {
+				return nil, fmt.Errorf("%w (if this deployment was started by an Ovara build from before 2026-10-09, which sealed this file twice at the same seq, run `ovara run -repair-registry` once)", err)
+			}
 			return nil, err
 		}
 		if payload == nil {
@@ -184,6 +189,47 @@ func Open(path string, bindings ...*record.Binding) (*Registry, error) {
 		r.cred[c.Fingerprint] = c
 	}
 	return r, nil
+}
+
+// OpenRepair opens a sealed registry that an earlier build wrote twice at
+// the same file_seq (the ledger floor recorded the first write, the file
+// holds the second). It accepts the file only when that is the sole
+// problem: same store and domain, payload hash intact, a valid signature
+// by THIS binding's own key, and file_seq exactly at the floor. Anyone able
+// to produce such a file already holds the gateway's signing key. The
+// caller must Reseal after wiring the tips sink, which moves the file and
+// the floor to file_seq+1. Any other failure is returned unchanged.
+func OpenRepair(path string, binding *record.Binding) (*Registry, error) {
+	r, err := Open(path, binding)
+	if err == nil || binding == nil || !errors.Is(err, record.ErrSameSeqEquivocation) {
+		return r, err
+	}
+	ref, kerr := record.SealedFileKeyRef(path)
+	if kerr != nil || ref != binding.Signer.Ref() {
+		return nil, fmt.Errorf("identity registry: not repairing: the file is not signed by this gateway's own key: %w", err)
+	}
+	r, err = Open(path, &record.Binding{Signer: binding.Signer, Resolve: binding.Resolve})
+	if err != nil {
+		return nil, err
+	}
+	if r.fileSeq != binding.Floor.Seq {
+		return nil, fmt.Errorf("identity registry: not repairing: file_seq %d is not the ledger floor %d", r.fileSeq, binding.Floor.Seq)
+	}
+	r.repaired = true
+	return r, nil
+}
+
+// Repaired reports whether OpenRepair accepted a same-seq conflict.
+func (r *Registry) Repaired() bool { return r.repaired }
+
+// Reseal writes the current contents again at file_seq+1, committing the
+// new tip through the tips sink.
+func (r *Registry) Reseal() error {
+	if err := r.mutate(func(*Registry) error { return nil }); err != nil {
+		return err
+	}
+	r.repaired = false
+	return nil
 }
 
 // persist writes the whole registry atomically. Caller holds mu.

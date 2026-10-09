@@ -89,8 +89,12 @@ that the unit suites had not:
   tokens) sealed file_seq 1 twice with different contents. The next
   `ovara run` refused the file as equivocation. Every deployment that had run
   once was affected. Deployments created by an earlier build keep refusing
-  (correctly: it cannot be told apart from tampering); run `ovara init` into
-  a new directory and keep the old one for its record.
+  by default (it cannot be told apart from tampering) and say how to repair:
+  run `ovara run -repair-registry` once. It accepts the registry only if the
+  sole problem is that same-seq re-seal, signed by this gateway's own key,
+  seals it again at the next seq, and starts; later starts need no flag.
+  Tested by `tests/scenarios/run.sh upgrade`, which builds the last affected
+  commit and upgrades a deployment it made.
 - **A deployment that had approved anything could not be restarted.**
   Approving marks a paused request approved and queued in one step and
   writes one journal record (escalated → queued); the signed journal's

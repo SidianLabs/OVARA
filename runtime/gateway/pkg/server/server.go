@@ -50,6 +50,11 @@ import (
 
 // Run starts the gateway with the given config file and blocks until
 // shutdown. It is safe to call in a goroutine.
+// RepairIdentityRegistry makes the next Run accept an identity registry an
+// earlier build sealed twice at the same file_seq, then re-seal it (see
+// idregistry.OpenRepair). Set only by an explicit operator flag.
+var RepairIdentityRegistry bool
+
 func Run(configPath string) error {
 	if configPath == "" {
 		configPath = os.Getenv("OVARA_CONFIG")
@@ -718,11 +723,23 @@ func Run(configPath string) error {
 	// dies at restart — RC1 parity).
 	var idReg *idregistry.Registry
 	if cfg.IdentityRegistryFile != "" {
-		idReg, err = idregistry.Open(cfg.IdentityRegistryFile, bind("idregistry"))
+		if RepairIdentityRegistry {
+			idReg, err = idregistry.OpenRepair(cfg.IdentityRegistryFile, bind("idregistry"))
+		} else {
+			idReg, err = idregistry.Open(cfg.IdentityRegistryFile, bind("idregistry"))
+		}
 		if err != nil {
 			return fmt.Errorf("identity registry %s: %w", cfg.IdentityRegistryFile, err)
 		}
 		idReg.SetTipsSink(sinkFor("idregistry"))
+		if idReg.Repaired() {
+			if err := idReg.Reseal(); err != nil {
+				return fmt.Errorf("identity registry %s: repair: %w", cfg.IdentityRegistryFile, err)
+			}
+			log.Printf("identity registry REPAIRED: accepted a same-seq re-seal signed by this gateway's own key and sealed it again at seq %d", func() uint64 { s, _ := idReg.JournalTip(); return s }())
+		} else if RepairIdentityRegistry {
+			log.Printf("identity registry: -repair-registry given, nothing to repair")
+		}
 		postOpenRatchet("idregistry", idReg.JournalTip)
 		log.Printf("identity registry durable at %s", cfg.IdentityRegistryFile)
 	} else {

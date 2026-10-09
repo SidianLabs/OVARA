@@ -8,9 +8,10 @@
 #
 #   tests/scenarios/run.sh           the everyday scenarios
 #   tests/scenarios/run.sh ci-bot    Ovara in CI: nobody to approve, a job policy
+#   tests/scenarios/run.sh upgrade   a deployment made by an older build: refuse, repair, restart
 set -euo pipefail
 script="${1:-scenarios}"
-case "$script" in scenarios|ci-bot) ;; *) echo "usage: $0 [scenarios|ci-bot]" >&2; exit 2 ;; esac
+case "$script" in scenarios|ci-bot|upgrade) ;; *) echo "usage: $0 [scenarios|ci-bot|upgrade]" >&2; exit 2 ;; esac
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 # Git Bash on Windows: hand Docker a Windows path and stop MSYS rewriting /repo.

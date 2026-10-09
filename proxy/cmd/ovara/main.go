@@ -363,7 +363,9 @@ func cmdRun(args []string) error {
 	boundary := fs.String("boundary", "", "set up an egress boundary before starting: netns or docker (requires root)")
 	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
+	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
+	server.RepairIdentityRegistry = *repairRegistry
 	if err := os.Chdir(*dir); err != nil {
 		return err
 	}
