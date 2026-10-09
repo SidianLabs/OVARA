@@ -39,12 +39,18 @@ agents, and fix correctness bugs found in an in-depth review.
 - `docs/use-cases.md`: where Ovara fits (laptop, container, hosted sandbox, CI,
   your own harness), what is verified and what is not.
 
-- `tests/agents`: real opencode (installed from npm, driven by a scripted mock
-  model) run behind Ovara in cooperative and enforced mode, with 27 commands
-  covering normal work, blocks, policy-evasion tricks and proxy-evasion tricks,
-  plus a custom-agent-harness scenario against the gateway's decision API
-  (16 checks). All pass; the proxy-evasion bypasses succeed in cooperative mode
-  and are blocked in enforced mode, as documented.
+- `tests/agents`: real agents installed from npm (opencode, Anthropic's agent CLI, Codex
+  CLI), each driven by a scripted mock of its model API (OpenAI
+  chat-completions, Anthropic Messages, OpenAI Responses), run behind Ovara in
+  cooperative and enforced mode with the same 27 commands: normal work,
+  blocks, policy-evasion tricks and proxy-evasion tricks. 0 failed for every
+  agent in both modes; the proxy-evasion bypasses get out in cooperative mode
+  and are blocked in enforced mode (28 passed each), as documented. The
+  report lists every host each agent contacted on its own (opencode:
+  `models.opencode.ai`; Codex: `chatgpt.com`, `ab.chatgpt.com`). Plus a
+  custom-agent-harness scenario against the gateway's decision API (16
+  checks). `tests/agents/run.sh coop|enforced [opencode|anthropic|codex]` and
+  `run.sh harness`; CI runs the agent x mode matrix.
 - The default policy allows the two `npm audit` POSTs
   (`registry.npmjs.org/-/npm/v1/security/{advisories/bulk,audits/quick}`).
   `npm install` runs them automatically and they only read advisories; before,
@@ -74,6 +80,16 @@ that the unit suites had not:
   got an instant 403. They are now explicit denials with the reason shown.
 - **Receipts were written after the response.** An agent could hold a response
   before its receipt existed. The receipt is now written before the headers.
+- **The netns boundary failed on kernels without IPv6.** The setup wrote the
+  `disable_ipv6` sysctls unconditionally, so `ovara run --boundary netns`
+  exited with status 1 where `/proc/sys/net/ipv6` does not exist. Such a
+  kernel has no IPv6 egress to close; the step is skipped there and still
+  fails closed everywhere else. Found by running the real agents in a
+  minimal VM.
+- The CI scenario jobs could not have run: `tests/scenarios/run.sh` and the
+  red-team entry scripts were committed without the executable bit.
+- The agent test image no longer builds "successfully" without the agent in
+  it when `npm install -g` fails.
 
 ### Security (hardening pass)
 
