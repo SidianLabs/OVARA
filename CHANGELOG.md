@@ -35,6 +35,21 @@ agents, and fix correctness bugs found in an in-depth review.
   touched. Tested end to end (`tests/box`) and with opencode, Codex CLI and
   Anthropic's agent CLI running the full 27-command battery inside the box
   (`tests/agents/run.sh box <agent>`).
+- **The box's command gate.** Every program the agent starts, by any route
+  (`bash -c`, `python -c "os.system(...)"`, a subprocess from node), is
+  stopped at the moment its image is loaded and checked against policy
+  (`action_type: shell`, resource `shell:<command line>`): allowed, killed
+  before its first instruction, or held until a person answers. It is done
+  with ptrace from the launcher, so there is no same-user bypass and no
+  per-syscall cost. Default policy: development work is allowed and
+  recorded; `sudo`/`su`, `mount`, firewall and namespace changes and
+  running Ovara are refused; `rm -rf`, `git push`, `mkfs` and `dd` pause.
+  `-no-command-gate` turns it off. Tested: a refused `sudo` never runs,
+  even started from python; a refused `rm -rf` deletes nothing; the three
+  real agents run their whole battery under the gate (94–508 commands each,
+  none wrongly refused).
+- Commit-back writes into the real repository as its owner, so a launcher
+  under `sudo` leaves no root-owned objects.
 
 - **Policy precedence: the most specific rule decides.** `policy.json` takes
   `"precedence": "most-specific"` (what `ovara init` writes now): of the
@@ -86,6 +101,12 @@ agents, and fix correctness bugs found in an in-depth review.
   every agent `npm install` stalled for the whole approval window.
 
 ### Fixed (found by running the real binary the way a person uses it)
+
+- **A policy resource was taken for a URL whenever it contained `://`.** A
+  command line such as `shell:curl http://…` was parsed as an egress URL,
+  failed, matched no rule and fell to the default. A resource is a URL only
+  by shape now (`scheme://…` or `METHOD scheme://…`); everything else is a
+  plain glob. URL resources keep their strict handling.
 
 New end-to-end harness `tests/scenarios/` drives `pip`, `npm`, `git clone`,
 Node `fetch()`, `curl`, a human approving and denying, a real injected key, live

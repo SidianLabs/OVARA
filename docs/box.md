@@ -119,7 +119,7 @@ box in the first release (see tiers, §4.4).
 | Network | All traffic through the proxy; policy allow/escalate/deny; keys injected; responses scrubbed | **built, tested** (`proxy/`, `tests/scenarios`, `tests/agents`, `tests/redteam`) |
 | Files back to the real project | Workspace is a copy; "commit back" is a gated action with a diff preview | **built, tested** (`proxy/internal/workspace`, `tests/box`) |
 | Files anywhere else on the host | The box runs as another user; the host's files are reachable only where that user may read them (tier 1); not mounted at all in tier 2 | tier 1 built; tier 2 not built (§7) |
-| Commands | An exec gate between the agent and the shell: allow/pause/deny per command, by policy | API exists (`POST /v1/runtime/check`, action types `shell`/`exec`), no enforcement (§8) |
+| Commands | Every exec in the agent's tree is stopped and checked by policy: allow / pause / kill | **built, tested** (`proxy/internal/boxgate`, ptrace; `tests/box`, agents `mode: box`) |
 | Package installs | Through the proxy, with registry pins, install-script policy, new-dependency approval | partial (npm audit rule only) (§9) |
 | Secrets | Never present in the box; injected by the proxy; scrubbed on return | **built, tested** |
 | Process control (kill Ovara, edit policy, forge receipts) | Agent runs as a different unprivileged user with no access to Ovara's directory | **built, tested** (`tests/redteam/separate-user`, 19 attacks) |
@@ -334,20 +334,24 @@ writes; some of that must stay free (building, testing, reading files) and
 some must pause for a person (removing directories, changing permissions,
 anything that reaches the network by a path the proxy does not cover).
 
-### 8.1 Design
+### 8.1 Design (built in milestone 3)
 
-A small wrapper, `ovara-exec`, is the shell the agent's tools run. Each
-command is sent to the gateway's decision API (`POST /v1/runtime/check`,
-`action_type: "shell"`, the call the SDKs already wrap) with the command
-line and working directory. The decision is applied the same way the proxy
-applies network decisions:
+A shell wrapper was rejected: it runs as the same user as the agent, so
+whatever it can execute the agent can execute directly. Instead the
+launcher traces the agent's whole process tree with ptrace, asking only for
+exec stops: every program, by any route, is stopped at the moment its new
+image is loaded and before its first instruction (`internal/boxgate`). The
+launcher reads the real command line from the kernel (`/proc/<pid>/cmdline`;
+for a shell with `-c`, that string) and asks the gateway (`action_type:
+"shell"`, resource `shell:<line>`). A traced process cannot shed its tracer
+and a traced setuid program runs without its privilege. The decision is
+applied the same way the proxy applies network decisions:
 
 - **allow**: run it; stream input and output through untouched.
-- **escalate**: hold; the approval shows the command, the directory, and the
-  last few receipts (what the agent read just before it decided this). On
-  approval, run it; on denial or timeout, exit with status 126 and a
-  one-line reason the agent can read and act on.
-- **deny**: exit 126 with the reason.
+- **escalate**: the process stays stopped; the approval shows the command,
+  its program and directory. On approval it continues; on denial or timeout
+  it is killed (the tool sees exit 137 and a line on stderr).
+- **deny**: killed before its first instruction.
 
 Every command produces a receipt: command, directory, decision, exit
 status, duration, output size. Output itself is not recorded unless the
@@ -357,7 +361,8 @@ The gate is a second layer, not the first. The network and file boundaries
 hold whether or not a command reaches the gate; the gate's job is to give
 the person a say over actions *inside* the box that matter (destructive
 commands, anything that would make the box less isolated) and to make the
-command history part of the record.
+command history part of the record. Cost: the three real agents ran their
+battery under it (94–508 execs each) with no measurable slowdown.
 
 ### 8.2 Default command policy (box profile)
 
@@ -484,7 +489,7 @@ project extends.
 | approval page | `proxy/cmd/ovara/ui` | yes |
 | **launcher** `ovara box` | `proxy/cmd/ovara/box.go` | no |
 | **workspace + file gate** (snapshot, secret exclusion, diff preview, commit-back as a branch) | `proxy/internal/workspace` | no |
-| **command gate** `ovara-exec` | `proxy/cmd/ovara-exec` (static binary, copied into the box) | no |
+| **command gate** | `proxy/internal/boxgate` (ptrace, in the launcher) | yes |
 | **install policy** (registry pins, new-dependency pause) | `proxy/internal/proxy` + profile rules | partial |
 | **policy v2** evaluator + migrate + shadow check | `runtime/gateway/internal/{policy,evaluator}` | no |
 | **box image** (tier 2): agent runtimes, no secrets, read-only root | `box/Dockerfile` | no |
@@ -530,7 +535,7 @@ updated in the same change.
 | 0 | **Ship what exists**: push, CI green on GitHub for the first time, v0.9.1 with the `-repair-registry` note | all existing jobs green on `main` | days |
 | 1 | **Policy v2** | ci-bot C3 flips to "allowed write passes under catch-all deny"; shadow-rule validator test; v1 files migrate byte-for-byte in meaning | 1 week |
 | 2 | **`ovara box` tier 1 on Linux** (launcher + workspace snapshot + secret exclusion; no command gate yet) | **done**: agents matrix runs through `ovara box` (`mode: box`); `tests/box` plants `.env`/`id_rsa`/a committed `.pem` and finds them absent; commit-back lands on a branch with the diff in the approval; the `.github/workflows/*` change is kept out | done |
-| 3 | **Command gate** | battery adds destructive commands: `rm -rf` pauses, `sudo` denied, builds free; receipts hold the commands; agent cannot reach a shell that skips the gate (red-team checks) | 2–3 weeks |
+| 3 | **Command gate** | **done**: `tests/box` adds `sudo` (killed), `sudo` via python (killed), `rm -rf` (paused, refused, nothing deleted); the agents matrix runs under the gate; a program started by any route is seen (ptrace, no same-user bypass) | done |
 | 4 | **Tier 2 container** + docker boundary test finally run | boundary red team passes in docker mode; box image has no secret paths and a read-only root | 1–2 weeks |
 | 5 | **Install policy** | `strict`: a new dependency pauses once with name+version; a package from an unlisted registry pauses; npm audit still free | 1 week |
 | 6 | **macOS/Windows via VM** | the agents matrix on a macOS runner through Lima and on a Windows runner through WSL2, enforced mode numbers equal to Linux | 2–4 weeks |

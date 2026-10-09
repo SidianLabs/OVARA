@@ -60,7 +60,8 @@ ovara run -dir mydir             # starts the gateway and the proxy
 On Linux there is a one-command form that also contains the agent:
 `sudo ovara box ./myrepo -- claude` runs it in a network namespace, as a
 separate user, in a copy of the project with your keys and secrets left out,
-and brings its changes back as a branch after you have read the diff. See
+checks every command it runs against the policy, and brings its changes
+back as a branch after you have read the diff. See
 `docs/use-cases.md` scenario 2.
 
 `ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a

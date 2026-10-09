@@ -138,11 +138,16 @@ nowhere; its edits, new files, deletions and own commits come back on the
 branch, a workflow edit does not, a committed secret is never deleted, and
 the host's HEAD, branch and working tree are unchanged.
 
-Not yet in `ovara box`: a command gate (the agent's shell commands are not
-yet policy-checked; the network and file boundaries do not depend on it),
-the container tier, macOS/Windows. Commit-back runs as root under sudo, so
-the new branch's objects in your repository are root-owned until the next
-release fixes that.
+The box also checks every command the agent runs: each program is stopped
+as it starts and matched against the policy (`shell:` rules). By default
+development work runs freely and is counted, `sudo`, `mount`, firewall and
+namespace changes are refused before they run, and `rm -rf`, `git push`,
+`mkfs` and `dd` pause for you. The real agents ran their whole battery under
+the gate (94 to 508 commands each) with nothing wrongly refused.
+
+Not yet in `ovara box`: the container tier (the agent runs on your host's
+filesystem as another user; what that user may read, it can read),
+macOS/Windows, and a `strict` profile that pauses on unknown commands.
 
 Still yours to ensure: the agent is not root inside the boundary (root can
 remove the firewall rules), and nothing else gives it a way out (a second
