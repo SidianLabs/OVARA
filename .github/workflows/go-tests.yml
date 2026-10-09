@@ -56,6 +56,9 @@ jobs:
       - name: E2E Tests
         working-directory: runtime/gateway
         run: go test -v -run TestE2E ./cmd/e2e/
+      # every `ovara` command line in the quickstart names a real command and real flags
+      - name: Docs name real commands
+        run: bash tests/docs/check-commands.sh
 
   # The `ovara` binary is what users actually run, on their own laptops.
   # Prove it builds and its tests (including the end-to-end demo) pass on

@@ -75,7 +75,7 @@ codex` (also `claude`, `opencode`, `aider`); for anything else, extend the
 box image with your agent (`FROM` it). Details and limits are in
 `docs/box.md` section 6.4.
 
-Add `-profile strict` and a dependency the project's lockfiles do not pin
+Start with `docs/box-quickstart.md`. Add `-profile strict` and a dependency the project's lockfiles do not pin
 pauses once, by name and version, before it is downloaded.
 
 `ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a
