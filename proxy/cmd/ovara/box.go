@@ -76,6 +76,7 @@ const (
 	// profiles (docs/box.md §11.4)
 	boxProfileDev    = "dev"
 	boxProfileStrict = "strict"
+	boxProfileCI     = "ci"
 
 	// run outcomes
 	outcomeClean  = "clean"  // everything came back or nothing changed: the workspace is removed
@@ -132,7 +133,7 @@ func cmdBox(args []string) error {
 	pids := fs.Int("pids", 4096, "tier 2: most processes the box may have at once")
 	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
 	cpus := fs.String("cpus", "", "tier 2: CPU limit for the box (e.g. 2; default none)")
-	profile := fs.String("profile", boxProfileDev, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9)")
+	profile := fs.String("profile", boxProfileDev, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9); ci: strict, and no one answers: anything policy would pause (a request, a new package, a command, the commit-back) is refused at once")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "approval page address (loopback only; \"off\" to disable)")
 	approveTimeout := fs.Duration("approve-timeout", 10*time.Minute, "how long the commit-back waits for a person")
 	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
@@ -161,9 +162,10 @@ func cmdBox(args []string) error {
 	if *tier != 1 && *tier != 2 {
 		return fmt.Errorf("-tier %d: want 1 or 2", *tier)
 	}
-	if *profile != boxProfileDev && *profile != boxProfileStrict {
-		return fmt.Errorf("-profile %s: want dev or strict", *profile)
+	if *profile != boxProfileDev && *profile != boxProfileStrict && *profile != boxProfileCI {
+		return fmt.Errorf("-profile %s: want dev, strict or ci", *profile)
 	}
+	unattended := *profile == boxProfileCI
 	if os.Geteuid() != 0 {
 		return errors.New("ovara box needs root (tier 1: the network namespace; tier 2: handing the workspace to the box's user and keeping Ovara's sockets out of its reach): run it with sudo; the agent itself runs as an unprivileged user")
 	}
@@ -244,7 +246,7 @@ func cmdBox(args []string) error {
 	// strict installs: what the project has pinned goes through; anything
 	// else the agent adds pauses once (the proxy's package gate)
 	pinnedFile := ""
-	if *profile == boxProfileStrict {
+	if *profile == boxProfileStrict || *profile == boxProfileCI {
 		refs, files := lockfiles.Scan(ws.Dir)
 		pinnedFile = filepath.Join(runDir, "pinned-packages.txt")
 		if err := os.WriteFile(pinnedFile, []byte(strings.Join(refs, "\n")+"\n"), 0o600); err != nil {
@@ -253,7 +255,11 @@ func cmdBox(args []string) error {
 		if len(files) == 0 {
 			fmt.Fprintln(os.Stderr, "==> strict installs: no lockfile in the project, so every package the agent installs pauses once")
 		} else {
-			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through; any other package pauses once\n", len(refs), strings.Join(files, ", "))
+			other := "pauses once"
+			if unattended {
+				other = "is refused"
+			}
+			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through; any other package %s\n", len(refs), strings.Join(files, ", "), other)
 		}
 		if b, err := os.ReadFile(filepath.Join(*dir, "policy.json")); err == nil && !strings.Contains(string(b), `"package.install"`) {
 			fmt.Fprintln(os.Stderr, "    warning: policy.json has no package.install rule; without one a new package is refused, not paused (add {\"action_type\": \"package.install\", \"resource\": \"*\", \"escalate\": true})")
@@ -291,6 +297,10 @@ func cmdBox(args []string) error {
 	if pinnedFile != "" {
 		runArgs = append(runArgs, "-package-gate", pinnedFile)
 	}
+	if unattended {
+		runArgs = append(runArgs, "-unattended")
+		fmt.Fprintln(os.Stderr, "==> ci profile: no one answers; anything policy would pause is refused at once")
+	}
 	run := exec.Command(self, runArgs...) //nolint:gosec // the launcher re-executes itself with flags it validated
 	run.Stdout = os.Stderr
 	run.Stderr = os.Stderr
@@ -327,6 +337,7 @@ func cmdBox(args []string) error {
 	defer signal.Stop(sigs)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
 	gate := newCommandGate(gw, *dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !*noGate)
+	gate.unattended = unattended
 	a := &boxAgent{
 		dir: *dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: envs, cmd: agentCmd, gate: gate, noGate: *noGate, sigs: sigs,
@@ -402,6 +413,11 @@ func cmdBox(args []string) error {
 		outcome = outcomeKept
 		return nil
 	case decisionEscalate:
+		if unattended {
+			fmt.Fprintln(os.Stderr, "==> ci profile: the commit-back needs a person, and no one answers; the workspace is kept (allow fs.commit_back in policy to bring changes back unattended)")
+			outcome = outcomeKept
+			return nil
+		}
 		id, err := gw.CreateApprovalFor(ctx, d, "fs.commit_back", resource)
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
@@ -784,13 +800,14 @@ func isTerminal(f *os.File) bool {
 
 // commandGate decides each exec in the box through the gateway.
 type commandGate struct {
-	gw      *gateway.Client
-	dir     string
-	timeout time.Duration
-	on      bool
-	started bool // the agent itself has been exec'd; before that, our wrappers run
-	mu      sync.Mutex
-	counts  map[string]int
+	gw         *gateway.Client
+	dir        string
+	timeout    time.Duration
+	on         bool
+	unattended bool // ci profile: a pause is a refusal
+	started    bool // the agent itself has been exec'd; before that, our wrappers run
+	mu         sync.Mutex
+	counts     map[string]int
 }
 
 func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool) *commandGate {
@@ -830,6 +847,11 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		return boxgate.Allow
 	case decisionDeny:
 		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", line)
+		g.count(countDenied)
+		return boxgate.Deny
+	}
+	if g.unattended {
+		fmt.Fprintf(os.Stderr, "[ovara] command refused (needs a person; unattended run): %s\n", line)
 		g.count(countDenied)
 		return boxgate.Deny
 	}

@@ -116,6 +116,10 @@ func (s *Server) askPackage(ctx context.Context, ref, url string) (string, strin
 	case pkgAllow:
 		return pkgAllow, ""
 	case gwEscalate:
+		if s.unattended {
+			log.Printf("package gate: %s is not in the project's lockfiles; refused (unattended run)", ref)
+			return pkgDeny, ""
+		}
 		log.Printf("package gate: %s is not in the project's lockfiles; waiting for approval", ref)
 		outcome, id := s.holdForApproval(ctx, ref, func() (string, error) {
 			if d.ApprovalID != "" {

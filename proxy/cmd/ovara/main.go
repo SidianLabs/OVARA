@@ -375,6 +375,7 @@ func cmdRun(args []string) error {
 	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
 	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
+	unattended := fs.Bool("unattended", false, "no one will answer: refuse at once anything policy would pause (CI)")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
 	server.RepairIdentityRegistry = *repairRegistry
@@ -412,6 +413,10 @@ func cmdRun(args []string) error {
 	srv, _, err := wire(cfg)
 	if err != nil {
 		return err
+	}
+	if *unattended {
+		srv.SetUnattended(true)
+		log.Printf("unattended: anything policy would pause is refused at once")
 	}
 	if *packageGate != "" {
 		b, err := os.ReadFile(*packageGate)

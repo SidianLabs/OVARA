@@ -46,6 +46,7 @@ type Server struct {
 	unauthLimiter   *rateLimiter
 	escalateSem     chan struct{} // caps requests parked awaiting approval
 	pkgGate         *packageGate  // strict installs (packages.go); nil = off
+	unattended      bool          // no one answers: an escalation is refused at once
 }
 
 // maxPendingEscalations bounds how many requests may be held waiting for a
@@ -91,6 +92,10 @@ func (s *Server) SetEscalateWindow(timeout, poll time.Duration) {
 		s.escalatePoll = poll
 	}
 }
+
+// SetUnattended refuses every escalation at once instead of waiting for a
+// person who is not there (`ovara box -profile ci`).
+func (s *Server) SetUnattended(on bool) { s.unattended = on }
 
 // SetGitGate enables/disables git push (git-receive-pack) ref extraction for
 // policy evaluation. Enabled by default in New.
@@ -529,6 +534,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes})
 		return
 	case "escalate":
+		if s.unattended {
+			decision = "deny"
+			writeJSON(http.StatusForbidden, map[string]any{"error": "refused: unattended run, no one to approve", "decision_id": d.DecisionID, "reasons": d.ReasonCodes})
+			return
+		}
 		outcome, id := s.awaitEscalation(r.Context(), d, r.Method, url)
 		approvalID = id
 		switch outcome {

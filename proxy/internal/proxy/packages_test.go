@@ -204,3 +204,37 @@ func TestPackageGate_OffByDefault(t *testing.T) {
 		t.Fatalf("gate off: %d checks=%d", rec.Code, pg.pkgChecks.Load())
 	}
 }
+
+func TestUnattended_EscalationsAreRefusedAtOnce(t *testing.T) {
+	// a new package: refused without opening an approval
+	srv, pg, hits := newPkgServer(t, true)
+	srv.SetUnattended(true)
+	start := time.Now()
+	rec := do(srv, http.MethodGet, leftPad)
+	if rec.Code != http.StatusForbidden || hits.Load() != 0 || pg.creates.Load() != 0 {
+		t.Fatalf("unattended new package: %d hits=%d creates=%d", rec.Code, hits.Load(), pg.creates.Load())
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("unattended refusal waited %v", time.Since(start))
+	}
+	// a pinned one still goes through
+	srv2, _, hits2 := newPkgServer(t, true, "npm:left-pad@1.3.0")
+	srv2.SetUnattended(true)
+	if rec := do(srv2, http.MethodGet, leftPad); rec.Code != 200 || hits2.Load() != 1 {
+		t.Fatalf("unattended pinned package: %d", rec.Code)
+	}
+}
+
+func TestUnattended_EscalatedRequestRefusedWithoutApproval(t *testing.T) {
+	srv, sg, _ := newScripted(t, "escalate")
+	srv.SetUnattended(true)
+	up, hits := upstreamCounting(t)
+	start := time.Now()
+	rec := do(srv, http.MethodPost, up.URL+"/deploy")
+	if rec.Code != http.StatusForbidden || hits.Load() != 0 || sg.creates.Load() != 0 {
+		t.Fatalf("unattended escalate: %d hits=%d creates=%d", rec.Code, hits.Load(), sg.creates.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "unattended") || time.Since(start) > time.Second {
+		t.Fatalf("body %s, took %v", rec.Body, time.Since(start))
+	}
+}
