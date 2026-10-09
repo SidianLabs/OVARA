@@ -443,10 +443,11 @@ Consequences:
 - Existing policies keep their meaning except where a broad deny
   overlapped a specific allow, which was the bug.
 
-Versioned: `policy.json` gets `"version": 2`; v1 files are evaluated with
-v1 order and `ovara policy migrate` rewrites them. The validator refuses a
-v2 policy whose rules are shadowed (a rule no request can ever reach),
-which is the case that silently widens or narrows today.
+Selected per file: `"precedence": "most-specific"` (what `ovara init`
+writes now); files without it keep the order-based rule. `"default":
+"deny"` sets the no-match decision. The parser refuses a most-specific
+policy with two rules of identical scope and pattern but different effects
+(one could never decide). **Built in milestone 1.**
 
 ### 11.3 One language for three exits
 

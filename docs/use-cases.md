@@ -151,10 +151,13 @@ policy you actually want and leave nothing to a human:
 - set a short `escalate_timeout_sec` in `proxy.json` (for example 10), because
   every other write waits that long and then fails with 504.
 
-You cannot write "allow this one write, deny every other write": the gateway
-resolves **deny over allow**, so a catch-all `POST *` deny also blocks the write
-you allowed. Leave the catch-all as an escalation and keep the timeout short;
-the unexpected write still fails, it just takes the timeout to do so.
+"Allow this one write, deny every other write" is the natural CI policy:
+`POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *`
+deny. With `"precedence": "most-specific"` (what `ovara init` writes) the
+exact rule decides and every other write is refused at once. In an older
+policy file without that field any deny wins, so the catch-all would also
+block the allowed write; add the field, or keep the catch-all as an
+escalation with a short timeout.
 
 Run Ovara in the same job as a background step (`ovara run -dir d -ui off &`,
 wait for the proxy port, `eval "$(ovara env -dir d)"`). It stops on SIGTERM

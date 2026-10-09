@@ -59,9 +59,17 @@ setpolicy '{"action_type":"http.request","environment":"*","resource":"POST http
 t0=$(date +%s); c=$(code -X POST -d x https://httpbin.org/anything/ci/other); t1=$(date +%s)
 check "C1 any other write is refused immediately (403)" 403 "$c"
 [ $((t1 - t0)) -lt $TIMEOUT ] && ok "C2 without waiting for the timeout ($((t1 - t0))s)" || bad "C2 refusal was not immediate" "$((t1 - t0))s"
-# Deny beats allow in the gateway, so a catch-all deny also blocks the write
-# the job needs. docs/use-cases.md says so; this keeps the docs honest.
-check "C3 a catch-all deny also blocks the allowed write (deny beats allow)" 403 "$(code -X POST -d x https://httpbin.org/anything/ci/expected)"
+# The exact allow is more specific than the catch-all deny, so the one write
+# the job needs still passes (precedence most-specific, written by ovara init).
+check "C3 the allowed write still passes under the catch-all deny (most specific rule decides)" 200 "$(code -X POST -d x https://httpbin.org/anything/ci/expected)"
+# ...and an older policy file without the precedence field keeps the old rule
+python3 - <<'PY'
+import json
+p = json.load(open('/tmp/d/policy.json')); p.pop('precedence', None)
+json.dump(p, open('/tmp/d/policy.json', 'w'), indent=2)
+PY
+sleep 3
+check "C4 without the precedence field a catch-all deny wins (older files unchanged)" 403 "$(code -X POST -d x https://httpbin.org/anything/ci/expected)"
 
 echo "=== D. the record and the end of the job"
 ovara log -dir /tmp/d 2>&1 | grep -q "signed and unbroken" && ok "D1 the receipt chain verifies" || bad "D1 receipt chain" "not verified"

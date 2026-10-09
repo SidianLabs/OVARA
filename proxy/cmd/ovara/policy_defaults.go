@@ -4,9 +4,10 @@ import "net"
 
 // defaultPolicyRules is what `ovara init` writes to policy.json. The idea,
 // in one line: reading is free, writing needs a human, and a few known
-// data-dump sites are blocked outright. The gateway decides deny > allow >
-// escalate, so a more specific allow below also overrides the "writes
-// need approval" rules. Edit policy.json freely; changes are picked up
+// data-dump sites are blocked outright. `ovara init` sets precedence
+// "most-specific": the most specific matching rule decides, ties go
+// deny > allow > escalate, so the exact allows below override the
+// "writes need approval" catch-alls and a catch-all deny would not. Edit policy.json freely; changes are picked up
 // without a restart.
 func defaultPolicyRules() []map[string]any {
 	rule := func(resource, effect, desc string) map[string]any {

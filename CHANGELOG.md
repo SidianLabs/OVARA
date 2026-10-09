@@ -23,6 +23,18 @@ agents, and fix correctness bugs found in an in-depth review.
 
 ### Added
 
+- **Policy precedence: the most specific rule decides.** `policy.json` takes
+  `"precedence": "most-specific"` (what `ovara init` writes now): of the
+  rules that match a request, the one with the most literal characters in
+  its pattern wins, then an exact action type over `*`, then an exact
+  environment; equal rules resolve deny > allow > escalate. So
+  `POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *`
+  deny means exactly that one write, which the old any-deny-wins order could
+  not express. `"default": "deny"` makes an unmatched request fail instead
+  of pausing. Files without the field keep the old order. A most-specific
+  file with two rules of the same scope and pattern but different effects
+  is refused when loaded.
+
 - **The approver now sees what is being sent**, not just where. The query
   string, body size and type, and the first bytes of a text body (credentials
   masked, binary and oversized bodies never read) are shown in `ovara approvals`,

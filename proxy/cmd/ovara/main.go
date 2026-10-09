@@ -197,8 +197,12 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	}
 
 	policy := map[string]any{
-		"version": "v1-init",
-		"rules":   defaultPolicyRules(),
+		"version": "v2-init",
+		// The most specific matching rule decides, so "allow exactly this
+		// write, deny every other write" can be written. Files without
+		// this field keep the older deny > allow > escalate order.
+		"precedence": "most-specific",
+		"rules":      defaultPolicyRules(),
 	}
 
 	proxyCfg := &config.Config{

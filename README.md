@@ -135,7 +135,11 @@ query of a read can carry data out), even on a trusted host. To trust another
 host, add a rule for it to `policy.json`.
 
 `allow` lets it through, `escalate` pauses it for you, `deny` blocks it. If more
-than one rule matches, **deny beats allow, and allow beats escalate**. Anything not
+than one rule matches, **the most specific one decides** (more literal
+characters in its pattern; among equals deny beats allow beats escalate), so
+`POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *` deny
+means exactly that one write. (Policies without `"precedence":
+"most-specific"` keep the older rule: any deny wins.) Anything not
 matched is escalated. Edit the file; changes are picked up without a restart.
 
 Not sure what a rule will do? Ask:

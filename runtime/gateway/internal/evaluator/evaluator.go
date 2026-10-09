@@ -412,7 +412,7 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 	}
 
 	if decision == "" {
-		outcome := e.evaluateRules(actionRules, envRules, req)
+		outcome := e.evaluateWithStore(e.policyStore, actionRules, envRules, req)
 		if outcome.Denied {
 			reasons = append(reasons, outcome.Reason)
 			decision = models.DecisionDeny
@@ -675,7 +675,85 @@ func (e *Evaluator) markDelegationNonce(replayKey string, expiresAt time.Time) i
 func (e *Evaluator) evaluateRulesWithStore(store *policy.Store, req *models.ActionRequest) RuleOutcome {
 	actionRules := store.RulesForAction(string(req.ActionType))
 	envRules := store.RulesForEnvironment(string(req.Environment))
+	return e.evaluateWithStore(store, actionRules, envRules, req)
+}
+
+// evaluateWithStore picks the resolution the policy file asked for.
+func (e *Evaluator) evaluateWithStore(store *policy.Store, actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
+	if store.Precedence() == policy.PrecedenceMostSpecific {
+		return e.evaluateMostSpecific(store, req)
+	}
 	return e.evaluateRules(actionRules, envRules, req)
+}
+
+// evaluateMostSpecific: of every rule whose scope admits the request and
+// whose pattern matches its resource, the most specific one decides.
+// Specificity is (literal characters in the pattern, exact action_type,
+// exact environment); ties go deny > allow > escalate. No match → the
+// store's default (escalate, or deny when the file says so).
+func (e *Evaluator) evaluateMostSpecific(store *policy.Store, req *models.ActionRequest) RuleOutcome {
+	type scored struct {
+		rule policy.Rule
+		key  [4]int
+	}
+	rank := func(r policy.Rule) int {
+		switch {
+		case r.Deny:
+			return 3
+		case r.Allow:
+			return 2
+		case r.Escalate:
+			return 1
+		}
+		return 0
+	}
+	var best *scored
+	for _, r := range store.RulesFor(string(req.ActionType), string(req.Environment)) {
+		if !policy.MatchResource(r.Resource, req.Resource) {
+			continue
+		}
+		k := [4]int{policy.Specificity(r.Resource), b2i(r.ActionType != "*"), b2i(r.Environment != "*"), rank(r)}
+		if k[3] == 0 {
+			continue // a rule with no effect decides nothing
+		}
+		if best == nil || greater(k, best.key) {
+			best = &scored{r, k}
+		}
+	}
+	if best == nil {
+		if store.DefaultDecision() == policy.DefaultDeny {
+			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: "default: deny"}
+		}
+		return RuleOutcome{Escalate: true, Reason: models.ReasonEscalate}
+	}
+	r := best.rule
+	switch {
+	case r.Deny:
+		if req.Environment == models.EnvironmentProduction {
+			return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied, Rule: ruleLabel(r)}
+		}
+		return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: ruleLabel(r)}
+	case r.Allow:
+		return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
+	default:
+		return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(r)}
+	}
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func greater(a, b [4]int) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] > b[i]
+		}
+	}
+	return false
 }
 
 func (e *Evaluator) Simulate(req *models.ActionRequest, candidateStore *policy.Store) (*SimResult, error) {

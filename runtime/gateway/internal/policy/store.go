@@ -2,6 +2,7 @@ package policy
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	pathpkg "path"
 	"strings"
@@ -32,10 +33,64 @@ type Rule struct {
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	version  string
-	rules    []Rule
-	filePath string
+	mu              sync.RWMutex
+	version         string
+	precedence      string // "" = PrecedenceOrder
+	defaultDecision string // "" = DefaultEscalate
+	rules           []Rule
+	filePath        string
+}
+
+// How overlapping rules resolve.
+const (
+	// PrecedenceOrder is the original rule: any matching deny wins, then
+	// any matching allow, then escalate. A broad deny beats a narrow allow.
+	PrecedenceOrder = "order"
+	// PrecedenceMostSpecific: the most specific matching rule decides
+	// (more literal characters in the resource pattern, then an exact
+	// action_type over "*", then an exact environment over "*"); among
+	// equally specific rules deny beats allow beats escalate. This lets a
+	// policy say "allow exactly this write, deny every other write".
+	PrecedenceMostSpecific = "most-specific"
+
+	DefaultEscalate = "escalate"
+	DefaultDeny     = "deny"
+)
+
+// Specificity scores a resource pattern: the number of literal (non-'*')
+// characters. An empty pattern matches everything and scores 0.
+func Specificity(pattern string) int {
+	return len(pattern) - strings.Count(pattern, "*")
+}
+
+// checkShadowed refuses rules that share action_type, environment and
+// resource pattern but disagree on the effect.
+func checkShadowed(rules []Rule) error {
+	type key struct{ a, e, r string }
+	seen := map[key]int{}
+	for i, r := range rules {
+		k := key{r.ActionType, r.Environment, r.Resource}
+		if j, ok := seen[k]; ok {
+			if effect(rules[j]) != effect(r) {
+				return fmt.Errorf("rule[%d] and rule[%d] have the same scope and pattern (%s %s %q) but different effects; with most-specific precedence one of them can never decide, so remove one", j, i, r.ActionType, r.Environment, r.Resource)
+			}
+			continue
+		}
+		seen[k] = i
+	}
+	return nil
+}
+
+func effect(r Rule) string {
+	switch {
+	case r.Deny:
+		return "deny"
+	case r.Allow:
+		return "allow"
+	case r.Escalate:
+		return "escalate"
+	}
+	return ""
 }
 
 func NewStore(version string) *Store {
@@ -52,6 +107,54 @@ func (s *Store) Version() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.version
+}
+
+// Precedence is PrecedenceOrder unless the file set most-specific.
+func (s *Store) Precedence() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.precedence == "" {
+		return PrecedenceOrder
+	}
+	return s.precedence
+}
+
+// SetPrecedence is for tests and programmatic stores.
+func (s *Store) SetPrecedence(p string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.precedence = p
+}
+
+// DefaultDecision is what applies when no rule matches: escalate unless
+// the file set deny.
+func (s *Store) DefaultDecision() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.defaultDecision == "" {
+		return DefaultEscalate
+	}
+	return s.defaultDecision
+}
+
+func (s *Store) SetDefaultDecision(d string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.defaultDecision = d
+}
+
+// RulesFor returns every rule whose action_type and environment admit the
+// request (exact or "*"), in file order.
+func (s *Store) RulesFor(actionType, env string) []Rule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var matching []Rule
+	for _, r := range s.rules {
+		if (r.ActionType == actionType || r.ActionType == "*") && (r.Environment == env || r.Environment == "*") {
+			matching = append(matching, r)
+		}
+	}
+	return matching
 }
 
 func (s *Store) SetFilePath(path string) {
