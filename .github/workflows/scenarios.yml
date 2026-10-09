@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - name: Run user scenarios
@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - name: Ovara as a CI step (nobody to approve, a job policy)
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # builds the last pre-fix commit from history
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
@@ -57,7 +57,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - name: Agent attacks Ovara from another OS user
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - name: Egress-boundary red team (real netns deployment, privileged container)
@@ -84,7 +84,7 @@ jobs:
         agent: [opencode, anthropic, codex]
         mode: [coop, enforced, box]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       # enforced: a netns boundary, the agent as an unprivileged user; box: the same through ovara box (privileged container)
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - name: ovara box end to end (privileged container, netns)
@@ -105,7 +105,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - name: ovara box -profile strict (real npm and pip; new dependencies pause once)
@@ -117,7 +117,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - uses: actions/setup-go@v5
@@ -134,7 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - uses: actions/setup-go@v5
@@ -153,7 +153,7 @@ jobs:
       matrix:
         agent: [opencode, anthropic, codex]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - uses: actions/setup-go@v5
@@ -168,7 +168,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - name: Custom agent harness against the gateway decision API
