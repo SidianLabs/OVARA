@@ -56,6 +56,7 @@ import (
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/lockfiles"
+	"ovara.proxy/internal/runallow"
 	"ovara.proxy/internal/workspace"
 )
 
@@ -371,6 +372,12 @@ func cmdBox(args []string) error {
 	fmt.Fprintf(os.Stderr, "==> agent exited with status %d\n", exitCode)
 	printBoxSummary(inDir(*dir, cfg.ReceiptsFile), receiptsBefore)
 	gate.summary()
+	if allowed := runallow.List(filepath.Join(*dir, runallow.File)); len(allowed) > 0 {
+		fmt.Fprintf(os.Stderr, "==> allowed by you for the rest of this run (%d):\n", len(allowed))
+		for _, a := range allowed {
+			fmt.Fprintf(os.Stderr, "    %s (approval %s)\n", a.Resource, a.ApprovalID)
+		}
+	}
 
 	// 5. what comes back
 	if *noCommitBack {
@@ -889,6 +896,11 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", line)
 		g.count(countDenied)
 		return boxgate.Deny
+	}
+	if a, ok := runallow.Find(filepath.Join(g.dir, runallow.File), "shell", "shell:"+line); ok {
+		fmt.Fprintf(os.Stderr, "[ovara] command allowed for this run (approval %s): %s\n", a.ApprovalID, line)
+		g.count(countApproved)
+		return boxgate.Allow
 	}
 	if g.unattended {
 		fmt.Fprintf(os.Stderr, "[ovara] command refused (needs a person; unattended run): %s\n", line)

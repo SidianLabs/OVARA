@@ -17,6 +17,7 @@ import (
 	"ovara.proxy/internal/ca"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/receipts"
+	"ovara.proxy/internal/runallow"
 )
 
 // pkgGateway allows every URL and answers package.install with pkgDecision;
@@ -236,5 +237,31 @@ func TestUnattended_EscalatedRequestRefusedWithoutApproval(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "unattended") || time.Since(start) > time.Second {
 		t.Fatalf("body %s, took %v", rec.Body, time.Since(start))
+	}
+}
+
+func TestRunAllowance_ExactRequestSkipsTheQuestion(t *testing.T) {
+	srv, sg, _ := newScripted(t, "escalate")
+	up, hits := upstreamCounting(t)
+	p := filepath.Join(t.TempDir(), "run-allowances.json")
+	if err := runallow.Reset(p, "r"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runallow.Add(p, runallow.Allowance{ActionType: "http.request", Resource: "POST " + up.URL + "/deploy", ApprovalID: "apr_9"}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SetRunAllowances(p)
+	if rec := do(srv, http.MethodPost, up.URL+"/deploy"); rec.Code != 200 || hits.Load() != 1 || sg.creates.Load() != 0 {
+		t.Fatalf("allowed for the run: %d hits=%d creates=%d", rec.Code, hits.Load(), sg.creates.Load())
+	}
+	// anything else still asks (and, denied, never runs)
+	sg.status.Store("denied")
+	for _, req := range [][2]string{{http.MethodPost, up.URL + "/other"}, {http.MethodPut, up.URL + "/deploy"}} {
+		if rec := do(srv, req[0], req[1]); rec.Code != http.StatusForbidden {
+			t.Fatalf("%v: %d", req, rec.Code)
+		}
+	}
+	if sg.creates.Load() != 2 || hits.Load() != 1 {
+		t.Fatalf("creates=%d hits=%d", sg.creates.Load(), hits.Load())
 	}
 }

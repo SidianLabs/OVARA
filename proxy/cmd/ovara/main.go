@@ -28,6 +28,7 @@ import (
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/proxy"
 	"ovara.proxy/internal/receipts"
+	"ovara.proxy/internal/runallow"
 	"ovara.proxy/scripts"
 	"ovara.runtime.gateway/pkg/server"
 )
@@ -422,6 +423,14 @@ func cmdRun(args []string) error {
 	srv, _, err := wire(cfg)
 	if err != nil {
 		return err
+	}
+	// "approve for this run": a fresh, empty list each run
+	if abs, err := filepath.Abs(runallow.File); err == nil {
+		if err := runallow.Reset(abs, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			log.Printf("run allowances not available: %v", err)
+		} else {
+			srv.SetRunAllowances(abs)
+		}
 	}
 	if *unattended {
 		srv.SetUnattended(true)

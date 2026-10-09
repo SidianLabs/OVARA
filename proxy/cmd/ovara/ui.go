@@ -64,6 +64,9 @@ func (u *uiServer) handler() http.Handler {
 			// TrustHost is set when the request is a read from a named https
 			// host, i.e. when "approve and trust this host for reads" applies.
 			TrustHost string `json:"trust_host,omitempty"`
+			// RunAllow is set when "approve for this run" applies (a
+			// request or a command).
+			RunAllow bool `json:"run_allow,omitempty"`
 		}
 		out := []item{}
 		for _, a := range list {
@@ -71,7 +74,7 @@ func (u *uiServer) handler() http.Handler {
 				continue
 			}
 			th, _ := trustableHost(a.Resource)
-			out = append(out, item{a.ApprovalID, describe(a.Resource), a.Resource, a.AgentID, a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), contextLines(a), th})
+			out = append(out, item{a.ApprovalID, describe(a.Resource), a.Resource, a.AgentID, a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), contextLines(a), th, runAllowable(a)})
 		}
 		writeJSONResp(w, out)
 	}))
@@ -102,9 +105,34 @@ func (u *uiServer) handler() http.Handler {
 					return
 				}
 			}
+			// "Approve for this run": the request comes from the gateway's
+			// record, never from the browser.
+			var forRun *pendingApproval
+			if approve && r.URL.Query().Get("run") == "1" {
+				list, err := u.admin.pending()
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadGateway)
+					return
+				}
+				for i := range list {
+					if list[i].ApprovalID == id && runAllowable(list[i]) {
+						forRun = &list[i]
+					}
+				}
+				if forRun == nil {
+					http.Error(w, "approving for the run applies to a waiting request or command", http.StatusBadRequest)
+					return
+				}
+			}
 			if err := u.admin.resolve(id, approve, whoAmI()+" (browser)", reason); err != nil {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
+			}
+			if forRun != nil {
+				if err := allowForRun(u.admin.dir, *forRun, whoAmI()+" (browser)"); err != nil {
+					http.Error(w, "approved, but could not allow it for the run: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
 			}
 			if trustHost != "" {
 				if _, err := trustReadHost(u.admin.dir, trustHost); err != nil {

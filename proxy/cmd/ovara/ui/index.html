@@ -106,9 +106,9 @@
       var yes = el("button", "approve", "Approve");
       var no = el("button", "deny", "Deny");
       function setButtons(off) { Array.prototype.forEach.call(act.querySelectorAll("button"), function (b) { b.disabled = off; }); }
-      function decide(verb, trust) {
+      function decide(verb, trust, run) {
         busy[a.id] = true; setButtons(true);
-        api("POST", "/api/" + verb + "/" + encodeURIComponent(a.id) + (trust ? "?trust=1" : ""))
+        api("POST", "/api/" + verb + "/" + encodeURIComponent(a.id) + (trust ? "?trust=1" : run ? "?run=1" : ""))
           .then(function () { showBanner(""); refresh(); })
           .catch(function (e) { busy[a.id] = false; setButtons(false); showBanner(e.message); });
       }
@@ -116,6 +116,12 @@
       no.onclick = function () { decide("deny"); };
       if (busy[a.id]) setButtons(true);
       act.append(yes);
+      if (a.run_allow) {
+        var run = el("button", "approve", "Approve for this run");
+        run.title = "Lets this exact request or command through again, without asking, until Ovara stops. Each use is still recorded.";
+        run.onclick = function () { decide("approve", false, true); };
+        act.append(run);
+      }
       if (a.trust_host) {
         var always = el("button", "approve", "Approve and trust " + a.trust_host + " for reads");
         always.title = "Adds a read-only (GET/HEAD) rule for this one host to policy.json. Writes still ask.";

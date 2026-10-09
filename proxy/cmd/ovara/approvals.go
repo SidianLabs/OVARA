@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"ovara.proxy/internal/runallow"
 	"path/filepath"
 	"strings"
 	"time"
@@ -368,6 +369,7 @@ func cmdResolve(approve bool, args []string) error {
 	fs, dir := dirFlag(name)
 	reason := fs.String("reason", "", "optional reason, recorded in the audit trail")
 	trust := fs.Bool("trust-host", false, "with approve: also allow future reads (GET/HEAD) from this host without asking")
+	forRun := fs.Bool("for-run", false, "with approve: also allow this exact request or command again, without asking, until this ovara run ends")
 	// Accept the id before or after the flags: `ovara approve <id> -dir x`.
 	var id string
 	var rest []string
@@ -409,8 +411,30 @@ func cmdResolve(approve bool, args []string) error {
 			return fmt.Errorf("approval %s is not pending", id)
 		}
 	}
+	var runAllow *pendingApproval
+	if approve && *forRun {
+		list, err := c.pending()
+		if err != nil {
+			return err
+		}
+		for i := range list {
+			if list[i].ApprovalID == id {
+				runAllow = &list[i]
+			}
+		}
+		if runAllow == nil {
+			return fmt.Errorf("approval %s is not pending", id)
+		}
+	}
 	if err := c.resolve(id, approve, whoAmI(), *reason); err != nil {
 		return err
+	}
+	if runAllow != nil {
+		if err := allowForRun(c.dir, *runAllow, whoAmI()); err != nil {
+			fmt.Printf("approved, but could not allow it for the run: %v\n", err)
+		} else {
+			fmt.Printf("allowed for the rest of this run: %s\n", runAllow.Resource)
+		}
 	}
 	if host != "" {
 		if added, err := trustReadHost(c.dir, host); err != nil {
@@ -425,6 +449,21 @@ func cmdResolve(approve bool, args []string) error {
 		fmt.Printf("denied %s — the agent's request is blocked.\n", id)
 	}
 	return nil
+}
+
+// allowForRun records an approved request so the identical request does not
+// ask again until the run ends (internal/runallow).
+func allowForRun(dir string, a pendingApproval, who string) error {
+	return runallow.Add(filepath.Join(dir, runallow.File), runallow.Allowance{
+		ActionType: a.ActionType, Resource: a.Resource, ApprovalID: a.ApprovalID, By: who,
+	})
+}
+
+// runAllowable says whether "approve for this run" applies: a request or a
+// command (a package is already allowed for the run once approved; the
+// commit-back happens once).
+func runAllowable(a pendingApproval) bool {
+	return a.ActionType == "http.request" || a.ActionType == "shell"
 }
 
 // cmdWatch prompts for each pending approval as it arrives.
