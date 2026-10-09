@@ -1,6 +1,6 @@
 # Build context is the REPO ROOT (kept consistent with proxy/Dockerfile):
 #   docker build -f runtime/gateway/Dockerfile -t ovara/gateway .
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
 

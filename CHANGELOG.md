@@ -23,6 +23,79 @@ agents, and fix correctness bugs found in an in-depth review.
 
 ### Added
 
+- **`ovara box <project> -- <agent>`** (Linux, sudo): the agent runs in a
+  network namespace whose only route is Ovara, as an unprivileged system
+  user with a fresh home, in a copy of the project (a real clone with
+  history, the host's uncommitted changes carried over, secret-looking files
+  left out, origin pointed at a dead URL). It never holds a key. When it
+  exits, its changes come back as one commit on a new `ovara/box-<run>`
+  branch of the real repository, after each path has passed policy
+  (`.github/workflows/*` and `.git/*` are kept out by default) and a person
+  has read the diff in the approval. The real working tree is never
+  touched. Tested end to end (`tests/box`) and with opencode, Codex CLI and
+  Anthropic's agent CLI running the full 27-command battery inside the box
+  (`tests/agents/run.sh box <agent>`).
+- **The box's command gate.** Every program the agent starts, by any route
+  (`bash -c`, `python -c "os.system(...)"`, a subprocess from node), is
+  stopped at the moment its image is loaded and checked against policy
+  (`action_type: shell`, resource `shell:<command line>`): allowed, killed
+  before its first instruction, or held until a person answers. It is done
+  with ptrace from the launcher, so there is no same-user bypass and no
+  per-syscall cost. Default policy: development work is allowed and
+  recorded; `sudo`/`su`, `mount`, firewall and namespace changes and
+  running Ovara are refused; `rm -rf`, `git push`, `mkfs` and `dd` pause.
+  `-no-command-gate` turns it off. Tested: a refused `sudo` never runs,
+  even started from python; a refused `rm -rf` deletes nothing; the three
+  real agents run their whole battery under the gate (94–508 commands each,
+  none wrongly refused).
+- Commit-back writes into the real repository as its owner, so a launcher
+  under `sudo` leaves no root-owned objects.
+- **`ovara box -tier 2`: the box as a container.** The agent runs from a
+  box image (`box/Dockerfile`: Node, Python, git, an `ovara-agent` user)
+  with no network interface but loopback, no capabilities, a read-only
+  root, no-new-privileges, and nothing of the host inside but the
+  workspace, a fresh home and paths given with `-mount` (read-only; `/`,
+  system paths, credential locations and the Ovara deployment are
+  refused). PID 1 is `ovara box-init`: it relays loopback to the proxy and
+  asks the host's command gate about every exec, over two Unix sockets in
+  a directory only root can enter, then drops to the agent's uid and traces
+  it. If the host side goes away the box has no way out and every command
+  is refused. Flags: `-tier`, `-image`, `-mount`, `-pids`, `-memory`,
+  `-cpus`. Tested in CI on GitHub's runners: the box test with the
+  container's own checks, the boundary red team from inside the box, and
+  the three agents' battery in a tier 2 box.
+- **`ovara box -profile strict`: new dependencies pause once.** At box
+  start the launcher reads the project's lockfiles (npm, yarn, pnpm,
+  requirements pins, poetry, uv, Pipfile, go.sum, Cargo.lock). The proxy
+  names each package download on the pinned registries
+  (`npm:left-pad@1.3.0`, `pypi:six@1.16.0`, `go:…`, `crate:…`): a pinned one
+  goes through; any other asks policy (`action_type: package.install`,
+  escalate by default), so the person sees "install npm package is-number
+  7.0.0 (a new dependency…)" once, and an approved package is allowed for
+  the rest of the run. A refused one never downloads; npm audit and
+  metadata reads are not asked about; a registry outside the trusted list
+  pauses at its first request; npm install scripts are off. `dev`
+  (default) is unchanged. Tested end to end with real npm and pip
+  (`tests/box/strict.sh`, 23 checks).
+- **The docker boundary recipe is now tested.** `setup-egress-boundary.sh
+  docker` (`ovara run --boundary docker`) had never been run. The red team
+  now runs against it (`tests/redteam/boundary/docker.sh`) with a probe
+  image that has the tools the checks need, the CA mounted, and two new
+  probes in every mode: a DNS lookup of an outside name and a raw socket.
+
+- **Policy precedence: the most specific rule decides.** `policy.json` takes
+  `"precedence": "most-specific"` (what `ovara init` writes now): of the
+  rules that match a request, the one with the most literal characters in
+  its pattern wins, then an exact action type over `*`, then an exact
+  environment; equal rules resolve deny > allow > escalate. So
+  `POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *`
+  deny means exactly that one write, which the old any-deny-wins order could
+  not express. `"default": "deny"` makes an unmatched request fail instead
+  of pausing. Files without the field keep the old order. Two rules with the
+  same scope and pattern but different effects (a `POST *` deny added on top
+  of the default `POST *` escalate) resolve by the tie-break; `ovara policy
+  validate` names which one is in force.
+
 - **The approver now sees what is being sent**, not just where. The query
   string, body size and type, and the first bytes of a text body (credentials
   masked, binary and oversized bodies never read) are shown in `ovara approvals`,
@@ -39,18 +112,33 @@ agents, and fix correctness bugs found in an in-depth review.
 - `docs/use-cases.md`: where Ovara fits (laptop, container, hosted sandbox, CI,
   your own harness), what is verified and what is not.
 
-- `tests/agents`: real opencode (installed from npm, driven by a scripted mock
-  model) run behind Ovara in cooperative and enforced mode, with 27 commands
-  covering normal work, blocks, policy-evasion tricks and proxy-evasion tricks,
-  plus a custom-agent-harness scenario against the gateway's decision API
-  (16 checks). All pass; the proxy-evasion bypasses succeed in cooperative mode
-  and are blocked in enforced mode, as documented.
+- `tests/scenarios/ci-bot.sh` (`tests/scenarios/run.sh ci-bot`): Ovara as a
+  background CI step with nobody to approve: timeouts, a job policy that
+  allows exactly one write, deny-over-allow, receipts, and shutdown on SIGTERM.
+- `tests/agents`: real agents installed from npm (opencode, Anthropic's agent CLI, Codex
+  CLI), each driven by a scripted mock of its model API (OpenAI
+  chat-completions, Anthropic Messages, OpenAI Responses), run behind Ovara in
+  cooperative and enforced mode with the same 27 commands: normal work,
+  blocks, policy-evasion tricks and proxy-evasion tricks. 0 failed for every
+  agent in both modes; the proxy-evasion bypasses get out in cooperative mode
+  and are blocked in enforced mode (28 passed each), as documented. The
+  report lists every host each agent contacted on its own (opencode:
+  `models.opencode.ai`; Codex: `chatgpt.com`, `ab.chatgpt.com`). Plus a
+  custom-agent-harness scenario against the gateway's decision API (16
+  checks). `tests/agents/run.sh coop|enforced [opencode|anthropic|codex]` and
+  `run.sh harness`; CI runs the agent x mode matrix.
 - The default policy allows the two `npm audit` POSTs
   (`registry.npmjs.org/-/npm/v1/security/{advisories/bulk,audits/quick}`).
   `npm install` runs them automatically and they only read advisories; before,
   every agent `npm install` stalled for the whole approval window.
 
 ### Fixed (found by running the real binary the way a person uses it)
+
+- **A policy resource was taken for a URL whenever it contained `://`.** A
+  command line such as `shell:curl http://…` was parsed as an egress URL,
+  failed, matched no rule and fell to the default. A resource is a URL only
+  by shape now (`scheme://…` or `METHOD scheme://…`); everything else is a
+  plain glob. URL resources keep their strict handling.
 
 New end-to-end harness `tests/scenarios/` drives `pip`, `npm`, `git clone`,
 Node `fetch()`, `curl`, a human approving and denying, a real injected key, live
@@ -74,8 +162,65 @@ that the unit suites had not:
   got an instant 403. They are now explicit denials with the reason shown.
 - **Receipts were written after the response.** An agent could hold a response
   before its receipt existed. The receipt is now written before the headers.
+- **A deployment could not be restarted.** The identity registry's mutate step
+  carried the new contents back from its working copy but not the new
+  file_seq, so the second change at startup (operator tokens, then agent
+  tokens) sealed file_seq 1 twice with different contents. The next
+  `ovara run` refused the file as equivocation. Every deployment that had run
+  once was affected. Deployments created by an earlier build keep refusing
+  by default (it cannot be told apart from tampering) and say how to repair:
+  run `ovara run -repair-registry` once. It accepts the registry only if the
+  sole problem is that same-seq re-seal, signed by this gateway's own key,
+  seals it again at the next seq, and starts; later starts need no flag.
+  Tested by `tests/scenarios/run.sh upgrade`, which builds the last affected
+  commit and upgrades a deployment it made.
+- **A deployment that had approved anything could not be restarted.**
+  Approving marks a paused request approved and queued in one step and
+  writes one journal record (escalated → queued); the signed journal's
+  replay table only allowed queued after approved, so the next start refused
+  the journal. Replay now accepts that step when the record carries the
+  approval (who approved it and when), and still refuses it otherwise.
+- **`ovara run` ignored SIGTERM.** The embedded gateway took the signal,
+  closed its stores and returned, and the proxy kept serving without it. It
+  now stops the proxy too (paused requests are dropped after 5 seconds) and
+  exits 0, so `docker stop`, CI job ends and service managers work.
+- The user-scenario restart check passed against the old process, which had
+  ignored the stop signal. It now checks that the old process is gone and the
+  new one is serving.
+- **The netns boundary failed on kernels without IPv6.** The setup wrote the
+  `disable_ipv6` sysctls unconditionally, so `ovara run --boundary netns`
+  exited with status 1 where `/proc/sys/net/ipv6` does not exist. Such a
+  kernel has no IPv6 egress to close; the step is skipped there and still
+  fails closed everywhere else. Found by running the real agents in a
+  minimal VM.
+- The CI scenario jobs could not have run: `tests/scenarios/run.sh` and the
+  red-team entry scripts were committed without the executable bit.
+- The agent test image no longer builds "successfully" without the agent in
+  it when `npm install -g` fails.
 
 ### Security (hardening pass)
+
+- `integrations/mcp`: `@modelcontextprotocol/sdk` 1.30.0 → 1.32.1
+  (CVE-2026-104850, HIGH: OAuth credentials not bound to their server).
+  Found by the Trivy scan, which had never run: its action was pinned to a
+  tag that no longer exists. The action is now pinned by commit and the
+  scanner version is explicit.
+
+- CI and the test images build with Go 1.26: the standard library of Go 1.25
+  no longer receives fixes (`govulncheck` on 1.25.14 reports nine `net/http`,
+  `crypto/tls` and `net/textproto` advisories fixed only in 1.26.9).
+
+- **The tip ledger only moves forward.** Recording a store tip below the
+  floor, or the same seq with a different hash, is refused when it is
+  written. Before, it was accepted and ignored, and the problem surfaced only
+  as an unrecoverable "equivocation" at the next start.
+
+- **The approval-page link no longer carries the operator token.** `ovara run`
+  printed `http://127.0.0.1:9090/#t=<operator token>`, so the link in a log
+  file or terminal scrollback was the key to the gateway's whole admin API.
+  The page now gets its own random token per run, kept only in memory and
+  accepted only by the page's own endpoints; the page server calls the
+  gateway with the operator token itself.
 
 - **Rules with conditions the gateway does not evaluate are refused** at load
   and in the validator (only `depends_on` / `ref` are understood). They used

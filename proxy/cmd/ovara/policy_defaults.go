@@ -4,9 +4,10 @@ import "net"
 
 // defaultPolicyRules is what `ovara init` writes to policy.json. The idea,
 // in one line: reading is free, writing needs a human, and a few known
-// data-dump sites are blocked outright. The gateway decides deny > allow >
-// escalate, so a more specific allow below also overrides the "writes
-// need approval" rules. Edit policy.json freely; changes are picked up
+// data-dump sites are blocked outright. `ovara init` sets precedence
+// "most-specific": the most specific matching rule decides, ties go
+// deny > allow > escalate, so the exact allows below override the
+// "writes need approval" catch-alls and a catch-all deny would not. Edit policy.json freely; changes are picked up
 // without a restart.
 func defaultPolicyRules() []map[string]any {
 	rule := func(resource, effect, desc string) map[string]any {
@@ -16,6 +17,9 @@ func defaultPolicyRules() []map[string]any {
 		}
 		r[effect] = true
 		return r
+	}
+	fsRule := func(action, resource, effect, desc string) map[string]any {
+		return map[string]any{"action_type": action, "environment": "*", "resource": resource, "description": desc, effect: true}
 	}
 	rules := []map[string]any{}
 	// Reading is free, but only from places an agent legitimately needs:
@@ -50,6 +54,43 @@ func defaultPolicyRules() []map[string]any {
 		rule("*://transfer.sh/*", "deny", "Blocked: anonymous file drop"),
 		rule("*://webhook.site/*", "deny", "Blocked: request-capture site commonly used to leak data"),
 		rule("*://*.requestbin.com/*", "deny", "Blocked: request-capture site commonly used to leak data"),
+		// `ovara box`: what the agent changed comes back to the real
+		// repository only as a reviewed commit on a new branch. Each path is
+		// checked (fs.commit_back.path) so a policy can keep the agent out of
+		// what runs on the host or in CI, then the commit as a whole pauses
+		// for a person who sees the diff (fs.commit_back).
+		fsRule("fs.commit_back.path", "path:.github/workflows/*", "deny", "The agent may not change CI workflows without a person editing the policy"),
+		fsRule("fs.commit_back.path", "path:.git/*", "deny", "The agent may not change git hooks or config"),
+		fsRule("fs.commit_back.path", "path:*", "allow", "Other paths may come back for review"),
+		fsRule("fs.commit_back", "commit:*", "escalate", "Changes come back to the real repository only after a person reads the diff"),
+		// `ovara box` command gate: every program the agent starts is checked
+		// (action_type shell, resource "shell:<command line>"). Development
+		// work is free; what would make the box less of a box is refused;
+		// the classic destructive commands and anything that publishes pause
+		// for a person. Most-specific precedence: these beat "shell:*".
+		fsRule("shell", "shell:sudo*", "deny", "No privilege changes in the box"),
+		fsRule("shell", "shell:su *", "deny", "No privilege changes in the box"),
+		fsRule("shell", "shell:su", "deny", "No privilege changes in the box"),
+		fsRule("shell", "shell:mount*", "deny", "The box's mounts are not the agent's to change"),
+		fsRule("shell", "shell:umount*", "deny", "The box's mounts are not the agent's to change"),
+		fsRule("shell", "shell:nft*", "deny", "The box's network rules are not the agent's to change"),
+		fsRule("shell", "shell:iptables*", "deny", "The box's network rules are not the agent's to change"),
+		fsRule("shell", "shell:ip netns*", "deny", "The box's network is not the agent's to change"),
+		fsRule("shell", "shell:ip link*", "deny", "The box's network is not the agent's to change"),
+		fsRule("shell", "shell:ip route*", "deny", "The box's network is not the agent's to change"),
+		fsRule("shell", "shell:ovara*", "deny", "The agent may not operate Ovara"),
+		fsRule("shell", "shell:*rm -rf*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:*rm -fr*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:*git push*", "escalate", "Publishing pauses for a person (and changes come back through commit-back anyway)"),
+		fsRule("shell", "shell:*mkfs*", "escalate", "Destructive: pauses for a person"),
+		fsRule("shell", "shell:*dd if=*", "escalate", "Destructive: pauses for a person"),
+		fsRule("shell", "shell:*", "allow", "Everything else the agent runs in the box is allowed and recorded"),
+		// `ovara box -profile strict`: downloading a package the project's
+		// lockfiles did not pin when the box started (action_type
+		// package.install, resource "npm:name@version") pauses once; an
+		// approved one is allowed for the rest of the run. Allow trusted
+		// packages here, e.g. "npm:@types/*".
+		fsRule("package.install", "*", "escalate", "A new dependency pauses once with its name and version (strict profile)"),
 		// Anything that changes something out in the world needs a human.
 		// This covers git push, opening/merging PRs, deleting branches,
 		// triggering deploys and posting messages.

@@ -68,7 +68,7 @@
 </main>
 <script>
 (function () {
-  // The operator token arrives in the URL fragment, which is never sent to
+  // The page token arrives in the URL fragment, which is never sent to
   // any server; keep it for this tab only and clear it from the address bar.
   var m = location.hash.match(/t=([0-9a-fA-F]+)/);
   if (m) { sessionStorage.setItem("ovara-token", m[1]); history.replaceState(null, "", location.pathname); }

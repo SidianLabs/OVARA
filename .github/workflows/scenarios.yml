@@ -10,6 +10,8 @@ on:
       - "proxy/**"
       - "runtime/gateway/**"
       - "tests/scenarios/**"
+      - "tests/agents/**"
+      - "tests/box/**"
       - ".github/workflows/scenarios.yml"
   workflow_dispatch:
   schedule:
@@ -24,14 +26,40 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Run user scenarios
         run: tests/scenarios/run.sh
+
+  ci-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - name: Ovara as a CI step (nobody to approve, a job policy)
+        run: tests/scenarios/run.sh ci-bot
+
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # builds the last pre-fix commit from history
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - name: Upgrading a deployment made by an older build
+        run: tests/scenarios/run.sh upgrade
 
   separate-user-attacks:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Agent attacks Ovara from another OS user
         run: tests/redteam/separate-user/run.sh
 
@@ -40,5 +68,108 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Egress-boundary red team (real netns deployment, privileged container)
         run: tests/redteam/boundary/run-in-docker.sh
+
+  # Real agents (installed from npm, driven by a scripted mock model, so no
+  # API key is needed) behind the real binary.
+  agents:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [opencode, anthropic, codex]
+        mode: [coop, enforced, box]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      # enforced: a netns boundary, the agent as an unprivileged user; box: the same through ovara box (privileged container)
+      - name: Real ${{ matrix.agent }} behind Ovara (${{ matrix.mode }})
+        run: tests/agents/run.sh ${{ matrix.mode }} ${{ matrix.agent }}
+
+  box:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - name: ovara box end to end (privileged container, netns)
+        run: tests/box/run.sh
+
+  box-strict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - name: ovara box -profile strict (real npm and pip; new dependencies pause once)
+        run: tests/box/run.sh strict
+
+  # Tier 2 (`ovara box -tier 2`, a container) needs Docker, so these run on
+  # the runner itself as root (tests/box/host.sh), not in a test container.
+  box-tier2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: false
+      - name: ovara box -tier 2 end to end (the box test, plus the container's own checks)
+        run: OVARA_TEST_ON_HOST=1 tests/box/host.sh box
+      - name: Boundary red team from inside a tier 2 box
+        run: OVARA_TEST_ON_HOST=1 SKIP_IMAGE_BUILD=1 tests/box/host.sh redteam
+
+  boundary-redteam-docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: false
+      - name: Boundary red team in docker mode (setup-egress-boundary.sh docker)
+        run: OVARA_TEST_ON_HOST=1 tests/box/host.sh redteam-docker
+
+  agents-tier2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [opencode, anthropic, codex]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: false
+      - name: Real ${{ matrix.agent }} in a tier 2 box
+        run: OVARA_TEST_ON_HOST=1 tests/box/host.sh agent ${{ matrix.agent }}
+
+  agents-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - name: Custom agent harness against the gateway decision API
+        run: tests/agents/run.sh harness

@@ -6,8 +6,8 @@ import (
 )
 
 type ValidationResult struct {
-	Valid   bool     `json:"valid"`
-	Errors  []string `json:"errors,omitempty"`
+	Valid    bool     `json:"valid"`
+	Errors   []string `json:"errors,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -56,6 +56,9 @@ func (v *Validator) ValidateFilePolicy(fp *filePolicy) (*ValidationResult, error
 		result.Valid = false
 	}
 
+	if fp.Precedence == PrecedenceMostSpecific {
+		result.Warnings = append(result.Warnings, shadowedRules(fp.Rules)...)
+	}
 	if warns := v.checkContradictions(fp.Rules); len(warns) > 0 {
 		result.Warnings = append(result.Warnings, warns...)
 	}

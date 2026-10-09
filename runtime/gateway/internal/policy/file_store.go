@@ -9,6 +9,11 @@ import (
 
 type filePolicy struct {
 	Version string `json:"version"`
+	// Precedence selects how overlapping rules resolve (see Precedence*).
+	Precedence string `json:"precedence,omitempty"`
+	// Default is the decision when no rule matches: "escalate" (default)
+	// or "deny".
+	Default string `json:"default,omitempty"`
 	Rules   []Rule `json:"rules"`
 }
 
@@ -59,15 +64,24 @@ func ParseStore(data []byte, versionHint string) (*Store, error) {
 	if version == "" {
 		version = "v1-default"
 	}
-
-	return &Store{version: version, rules: fp.Rules}, nil
+	switch fp.Precedence {
+	case "", PrecedenceOrder, PrecedenceMostSpecific:
+	default:
+		return nil, fmt.Errorf("precedence %q: must be %q or %q", fp.Precedence, PrecedenceOrder, PrecedenceMostSpecific)
+	}
+	switch fp.Default {
+	case "", DefaultEscalate, DefaultDeny:
+	default:
+		return nil, fmt.Errorf("default %q: must be %q or %q", fp.Default, DefaultEscalate, DefaultDeny)
+	}
+	return &Store{version: version, precedence: fp.Precedence, defaultDecision: fp.Default, rules: fp.Rules}, nil
 }
 
 // WriteFile atomically persists the store in the canonical file format
 // ({version, rules}) — tmp file + rename so a crash mid-write never
 // leaves a truncated policy for the next LoadStoreFromFile to refuse.
 func (s *Store) WriteFile(filePath string) error {
-	fp := filePolicy{Version: s.Version(), Rules: s.ListRules()}
+	fp := filePolicy{Version: s.Version(), Precedence: s.Precedence(), Default: s.DefaultDecision(), Rules: s.ListRules()}
 	data, err := json.MarshalIndent(fp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal policy: %w", err)
@@ -94,15 +108,17 @@ func (s *Store) WriteFile(filePath string) error {
 // duplicates and nulls that encoding/json would otherwise erase.
 func parseFilePolicyStrict(data []byte) (*filePolicy, error) {
 	var raw struct {
-		Version string            `json:"version"`
-		Rules   []json.RawMessage `json:"rules"`
+		Version    string            `json:"version"`
+		Precedence string            `json:"precedence"`
+		Default    string            `json:"default"`
+		Rules      []json.RawMessage `json:"rules"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("failed to parse policy JSON: %w", err)
 	}
-	fp := &filePolicy{Version: raw.Version}
+	fp := &filePolicy{Version: raw.Version, Precedence: raw.Precedence, Default: raw.Default}
 	for i, rm := range raw.Rules {
 		if err := scanRuleStrict(rm, i); err != nil {
 			return nil, err

@@ -57,10 +57,30 @@ export ANTHROPIC_API_KEY=...
 ovara run -dir mydir             # starts the gateway and the proxy
 ```
 
+On Linux there is a one-command form that also contains the agent:
+`sudo ovara box ./myrepo -- claude` runs it in a network namespace, as a
+separate user, in a copy of the project with your keys and secrets left out,
+checks every command it runs against the policy, and brings its changes
+back as a branch after you have read the diff. See
+`docs/use-cases.md` scenario 2.
+
+For a stricter box, `sudo ovara box -tier 2 ./myrepo -- claude` runs the
+agent in a container instead: no network interface but a relay to Ovara,
+no capabilities, a read-only root, and nothing of your machine inside but
+the project's copy. Build the image once with `docker build -t ovara-box
+box/` and extend it with your agent. Details and limits are in
+`docs/box.md` section 6.4.
+
+Add `-profile strict` and a dependency the project's lockfiles do not pin
+pauses once, by name and version, before it is downloaded.
+
 `ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a
 **local approval page**: whatever the agent is waiting on, with Approve and Deny
 buttons, plus a live, integrity-checked history of what it did. The page is only
 served to your own machine, and only someone holding the link's token can approve.
+That token is made fresh each time `ovara run` starts and opens only this page,
+never the gateway's admin API, so a link left in a log or scrollback is worth
+little and stops working when Ovara stops.
 
 Prefer the terminal? Answer from a **second terminal** instead:
 
@@ -132,7 +152,11 @@ query of a read can carry data out), even on a trusted host. To trust another
 host, add a rule for it to `policy.json`.
 
 `allow` lets it through, `escalate` pauses it for you, `deny` blocks it. If more
-than one rule matches, **deny beats allow, and allow beats escalate**. Anything not
+than one rule matches, **the most specific one decides** (more literal
+characters in its pattern; among equals deny beats allow beats escalate), so
+`POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *` deny
+means exactly that one write. (Policies without `"precedence":
+"most-specific"` keep the older rule: any deny wins.) Anything not
 matched is escalated. Edit the file; changes are picked up without a restart.
 
 Not sure what a rule will do? Ask:

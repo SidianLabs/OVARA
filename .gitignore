@@ -22,6 +22,7 @@ runtime/gateway/server
 runtime/gateway/ovara-gateway
 /ovara
 /ovara.exe
+proxy/ovara
 tools/cli/ovara.tools.cli
 sdk/python/**/__pycache__/
 __pycache__/

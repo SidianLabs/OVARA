@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Build Gateway Image
         run: docker build -f runtime/gateway/Dockerfile -t ovara/gateway:latest .
       - name: Build ovara (gateway + proxy) image
@@ -22,8 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned by commit: this action's tags have been rewritten upstream
+        # before (the old 0.28.0 tag no longer exists at all).
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.75.0
           scan-type: fs
           scan-ref: .
           severity: CRITICAL,HIGH

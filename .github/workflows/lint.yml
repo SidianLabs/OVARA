@@ -29,7 +29,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.26"
+          check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
 
       # The action runs the linter itself in its own working-directory
       # (repo root by default) — pass the matrix module or it scans the
@@ -47,5 +48,9 @@ jobs:
           # repo carries preexisting lint debt. Gate only what the diff
           # introduces; whole-repo cleanup can come as its own change.
           only-new-issues: true
+          # `config verify` downloads the config schema from golangci-lint.run
+          # on every run; twice that download timed out and failed the job
+          # before any linting. The config is checked when it is loaded anyway.
+          verify: false
           args: --timeout=5m
 

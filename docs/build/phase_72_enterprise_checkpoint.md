@@ -46,5 +46,3 @@ Add enterprise-grade SSO authentication (OIDC + SAML) and compliance/audit expor
 
 ## Next Phase
 Phase 73 — Infrastructure & Deployment: Terraform manifests, regional topology, K8s operators
-
-Co-authored-by: CommandCodeBot <noreply@commandcode.ai>

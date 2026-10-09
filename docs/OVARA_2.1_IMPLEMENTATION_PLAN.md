@@ -2,7 +2,7 @@
 
 Phase A output: repository-grounded implementation decisions for the CBDA
 hardening program (adversarial-review conditions C1–C6). Analyzed tree:
-`devin/1790095116-ovara-21-cbda` = `main@000d70b` + anchor portability split
+the `ovara-21-cbda` working branch = `main@000d70b` + anchor portability split
 (verbatim Linux move; darwin `LOCAL_PEERCRED`; other platforms fail closed).
 
 This document was produced by inspecting the code paths enumerated in §3 of

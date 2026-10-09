@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -47,6 +48,10 @@ func main() {
 		return
 	case "init":
 		err = cmdInit(os.Args[2:])
+	case "box":
+		err = cmdBox(os.Args[2:])
+	case "box-init": // PID 1 of a tier 2 box; started by `ovara box -tier 2`, not by people
+		err = cmdBoxInit(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
 	case "demo":
@@ -82,6 +87,9 @@ func usage() {
   version               print the ovara version
   init [dir] [-force]   generate a working gateway+proxy deployment
   run [-dir .]          start the gateway and the executor proxy
+  box <dir> -- <agent>  run an agent in a box: a copy of the project, no keys,
+                        no network except through Ovara; changes come back as a
+                        reviewed branch (Linux, sudo)
   demo                  self-contained end-to-end demo (no network, no root)
   env [-dir .]          print the environment to run your agent through Ovara
   policy [-dir .]       explain the rules in plain English
@@ -196,8 +204,12 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	}
 
 	policy := map[string]any{
-		"version": "v1-init",
-		"rules":   defaultPolicyRules(),
+		"version": "v2-init",
+		// The most specific matching rule decides, so "allow exactly this
+		// write, deny every other write" can be written. Files without
+		// this field keep the older deny > allow > escalate order.
+		"precedence": "most-specific",
+		"rules":      defaultPolicyRules(),
 	}
 
 	proxyCfg := &config.Config{
@@ -362,7 +374,15 @@ func cmdRun(args []string) error {
 	boundary := fs.String("boundary", "", "set up an egress boundary before starting: netns or docker (requires root)")
 	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
+	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
+	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
+	server.RepairIdentityRegistry = *repairRegistry
+	if *packageGate != "" { // read after the chdir below: make it absolute now
+		if abs, err := filepath.Abs(*packageGate); err == nil {
+			*packageGate = abs
+		}
+	}
 	if err := os.Chdir(*dir); err != nil {
 		return err
 	}
@@ -375,10 +395,15 @@ func cmdRun(args []string) error {
 			return fmt.Errorf("boundary setup: %w", err)
 		}
 	}
+	// The gateway owns SIGINT/SIGTERM: on a signal it closes its stores and
+	// Run returns nil. The proxy must not outlive it (every check would fail
+	// and the process would ignore the signal), so that also stops the proxy.
+	gatewayDone := make(chan struct{})
 	go func() {
 		if err := server.Run("config.json"); err != nil {
 			log.Fatalf("gateway: %v", err)
 		}
+		close(gatewayDone)
 	}()
 	if err := waitForGateway(cfg.GatewayURL, 10*time.Second); err != nil {
 		return err
@@ -387,6 +412,15 @@ func cmdRun(args []string) error {
 	srv, _, err := wire(cfg)
 	if err != nil {
 		return err
+	}
+	if *packageGate != "" {
+		b, err := os.ReadFile(*packageGate)
+		if err != nil {
+			return fmt.Errorf("-package-gate: %w", err)
+		}
+		pinned := strings.Fields(string(b))
+		srv.SetPackageGate(pinned)
+		log.Printf("strict installs: %d pinned package(s) go through; any other package download asks policy (package.install)", len(pinned))
 	}
 	log.Printf("ovara executor proxy on %s (env=%s fail_open=%v)", cfg.ListenAddr, cfg.Environment, cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
@@ -408,11 +442,25 @@ func cmdRun(args []string) error {
 	} else if host, _, err := net.SplitHostPort(listenAddr); err == nil && !isLoopbackHost(host) {
 		log.Printf("WARNING: proxy listens on %s, reachable from the network. Anyone holding the proxy token can use it; set listen_addr to 127.0.0.1:PORT unless you meant this", listenAddr)
 	}
-	return proxy.NewHTTPServer(listenAddr, srv).ListenAndServe()
+	hs := proxy.NewHTTPServer(listenAddr, srv)
+	go func() {
+		<-gatewayDone
+		log.Printf("gateway stopped; stopping the proxy")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if hs.Shutdown(ctx) != nil {
+			hs.Close() // paused requests waiting on a human: drop them
+		}
+	}()
+	if err := hs.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 // startUI serves the local approval page and returns the link to open
-// (with the operator token in the fragment), or "" when disabled.
+// (with a per-run page token in the fragment, never the operator token),
+// or "" when disabled.
 func startUI(addr string, cfg *config.Config) (string, error) {
 	if addr == "" || addr == "off" {
 		return "", nil
@@ -428,13 +476,17 @@ func startUI(addr string, cfg *config.Config) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	pageToken, err := newPageToken()
+	if err != nil {
+		return "", err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return "", err
 	}
-	ui := &uiServer{admin: admin, receiptsFile: cfg.ReceiptsFile, pubFile: cfg.PubKeyFile}
+	ui := &uiServer{admin: admin, pageToken: pageToken, receiptsFile: cfg.ReceiptsFile, pubFile: cfg.PubKeyFile}
 	go http.Serve(ln, ui.handler())
-	return "http://" + ln.Addr().String() + "/#t=" + admin.token, nil
+	return "http://" + ln.Addr().String() + "/#t=" + pageToken, nil
 }
 
 // setupBoundary runs the embedded egress-boundary script so the agent

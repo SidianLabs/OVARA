@@ -385,7 +385,17 @@ func TestOrchestrator_SkipNoExecutor_UsesMarkRequeue(t *testing.T) {
 	cnt.MarkQueued()
 	store.Create(cnt)
 
-	time.Sleep(600 * time.Millisecond)
+	// The orchestrator claims (executing) and requeues on every poll, so the
+	// state oscillates while it runs. Wait for the skip to have happened,
+	// then stop the loop (Stop waits for it) and read the resting state.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if c, ok := store.Get(cnt.ContinuationID); ok && c.LastSkippedAt != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	orch.Stop()
 
 	updated, _ := store.Get(cnt.ContinuationID)
 	if updated.State != StateQueued {

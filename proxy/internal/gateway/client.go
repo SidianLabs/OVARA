@@ -16,13 +16,13 @@ import (
 )
 
 type Client struct {
-	baseURL string
-	token   string
-	env     string
-	subject    string
-	resolveMu  sync.Mutex
-	resolved   bool
-	hc         *http.Client
+	baseURL   string
+	token     string
+	env       string
+	subject   string
+	resolveMu sync.Mutex
+	resolved  bool
+	hc        *http.Client
 }
 
 // subjectID mirrors the gateway's credential-derived principal
@@ -117,9 +117,16 @@ func (c *Client) Check(ctx context.Context, method, url string) (*Decision, erro
 // records it with the evaluated request and shows it to the human who is asked
 // to approve; it takes no part in the policy decision.
 func (c *Client) CheckWithContext(ctx context.Context, method, url string, preview map[string]string) (*Decision, error) {
+	return c.CheckAction(ctx, "http.request", fmt.Sprintf("%s %s", method, url), preview)
+}
+
+// CheckAction asks for a decision on any action type (the box uses
+// fs.commit_back and fs.commit_back.path); the preview is shown to the
+// approver and takes no part in the decision.
+func (c *Client) CheckAction(ctx context.Context, actionType, resource string, preview map[string]string) (*Decision, error) {
 	payload := map[string]any{
-		"action_type": "http.request",
-		"resource":    fmt.Sprintf("%s %s", method, url),
+		"action_type": actionType,
+		"resource":    resource,
 		"environment": c.env,
 		"agent_identity": map[string]string{
 			"issuer":     "ovara-proxy",
@@ -158,10 +165,15 @@ func (c *Client) CheckWithContext(ctx context.Context, method, url string, previ
 // CreateApproval opens an approval request (+ continuation) for an escalated
 // decision. Returns the approval_id to poll.
 func (c *Client) CreateApproval(ctx context.Context, d *Decision, method, url string) (string, error) {
+	return c.CreateApprovalFor(ctx, d, "http.request", fmt.Sprintf("%s %s", method, url))
+}
+
+// CreateApprovalFor is CreateApproval for any action type.
+func (c *Client) CreateApprovalFor(ctx context.Context, d *Decision, actionType, resource string) (string, error) {
 	body, _ := json.Marshal(map[string]any{
 		"decision_id": d.DecisionID,
-		"action_type": "http.request",
-		"resource":    fmt.Sprintf("%s %s", method, url),
+		"action_type": actionType,
+		"resource":    resource,
 		"environment": c.env,
 		"agent_id":    c.resolvedSubject(),
 		"trust_score": d.TrustScore,

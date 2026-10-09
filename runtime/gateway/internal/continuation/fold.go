@@ -185,6 +185,13 @@ func checkTransition(prev, next *Continuation) error {
 		if prev.State == StateApproved || prev.State == StateExecuting {
 			return nil // MarkQueued, MarkRequeue
 		}
+		// ApplyApprovalDecision marks approved then queued and persists
+		// once, so the journal holds escalated (or resumed) → queued. Legal
+		// only when the record carries that approval.
+		if (prev.State == StateEscalated || prev.State == StateResumed) &&
+			next.ApprovedAt != nil && next.ResolvedBy != "" {
+			return nil
+		}
 	case StateExecuting:
 		if prev.State == StateApproved || prev.State == StateQueued ||
 			prev.State == StateResumed {

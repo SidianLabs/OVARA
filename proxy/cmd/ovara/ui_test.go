@@ -4,16 +4,20 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"ovara.proxy/internal/config"
 )
 
 func newUI(t *testing.T, pend ...pendingApproval) (*fakeGateway, http.Handler) {
 	t.Helper()
 	f, c := newFake(t, pend...)
 	_, chainFile, pubFile := writeChain(t)
-	return f, (&uiServer{admin: c, receiptsFile: chainFile, pubFile: pubFile}).handler()
+	return f, (&uiServer{admin: c, pageToken: "tok", receiptsFile: chainFile, pubFile: pubFile}).handler()
 }
 
 func call(h http.Handler, method, path, host, auth string) *httptest.ResponseRecorder {
@@ -95,5 +99,73 @@ func TestStartUI_RefusesNonLoopback(t *testing.T) {
 	}
 	if url, err := startUI("off", nil); err != nil || url != "" {
 		t.Fatalf("off: %q %v", url, err)
+	}
+}
+
+// The browser link must never carry the operator token: the page gets its
+// own random token that opens only the page's endpoints.
+func TestUI_PageTokenIsNotTheOperatorToken(t *testing.T) {
+	_, c := newFake(t)
+	_, chainFile, pubFile := writeChain(t)
+	h := (&uiServer{admin: c, pageToken: "page", receiptsFile: chainFile, pubFile: pubFile}).handler()
+	if got := call(h, "GET", "/api/pending", "127.0.0.1", "Bearer "+c.token).Code; got != 401 {
+		t.Fatalf("operator token opened the page API: %d", got)
+	}
+	if got := call(h, "GET", "/api/pending", "127.0.0.1", "Bearer page").Code; got != 200 {
+		t.Fatalf("page token refused: %d", got)
+	}
+	empty := (&uiServer{admin: c, receiptsFile: chainFile, pubFile: pubFile}).handler()
+	for _, auth := range []string{"", "Bearer ", "Bearer " + c.token} {
+		if got := call(empty, "GET", "/api/pending", "127.0.0.1", auth).Code; got != 401 {
+			t.Fatalf("server without a page token accepted %q: %d", auth, got)
+		}
+	}
+}
+
+func TestStartUI_LinkCarriesAFreshPageToken(t *testing.T) {
+	const operator = "0123456789abcdef0123456789abcdef"
+	dir := t.TempDir()
+	cfgJSON := `{"server_port":"1","listen_addr":"127.0.0.1","operator_tokens":["` + operator + `"]}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfgJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	links := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		url, err := startUI("127.0.0.1:0", &config.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(url, operator) {
+			t.Fatalf("link carries the operator token: %s", url)
+		}
+		i := strings.Index(url, "/#t=")
+		if i < 0 {
+			t.Fatalf("link has no page token: %s", url)
+		}
+		tok := url[i+4:]
+		if len(tok) != 64 || strings.Trim(tok, "0123456789abcdef") != "" {
+			t.Fatalf("page token %q is not 32 random bytes in hex", tok)
+		}
+		links[tok] = true
+		base := url[:i]
+		for _, c := range []struct {
+			auth string
+			want int
+		}{{"Bearer " + operator, 401}, {"Bearer " + tok, 502}} { // 502: auth passed, no gateway behind it
+			req, _ := http.NewRequest("GET", base+"/api/pending", nil)
+			req.Header.Set("Authorization", c.auth)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != c.want {
+				t.Fatalf("%s...: status %d, want %d", c.auth[:12], resp.StatusCode, c.want)
+			}
+		}
+	}
+	if len(links) != 2 {
+		t.Fatal("two runs got the same page token")
 	}
 }

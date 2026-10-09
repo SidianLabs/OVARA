@@ -61,5 +61,3 @@ Build the observability infrastructure: Go-side telemetry pipeline, OpenTelemetr
 
 ## Next Phase
 Phase 72 — Enterprise Features: SSO integration, compliance exports, audit pipelines
-
-Co-authored-by: CommandCodeBot <noreply@commandcode.ai>

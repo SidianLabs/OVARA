@@ -56,5 +56,3 @@ type CloudConfig struct {
 
 ## Next Phase
 Phase 71 — Observability Pipeline: OpenTelemetry ingestion, NATS event streaming, ClickHouse analytics schema
-
-Co-authored-by: CommandCodeBot <noreply@commandcode.ai>

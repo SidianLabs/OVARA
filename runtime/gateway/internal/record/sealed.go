@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 )
@@ -74,6 +75,24 @@ func SealFile(store string, s *Signer, payload, prev []byte, prevSeq uint64) ([]
 // (file_seq must dominate the ledger floor; equality requires the
 // whole-file hash to match). Returns payload, file_seq, file hash.
 // An unparseable or unsealed file fails closed.
+// ErrSameSeqEquivocation: the file is at the ledger floor's file_seq but
+// its hash is not the one the ledger recorded.
+var ErrSameSeqEquivocation = errors.New("same file_seq with different hash — equivocation")
+
+// SealedFileKeyRef returns the key a sealed file says it was signed with.
+// It verifies nothing; OpenSealedFile does.
+func SealedFileKeyRef(path string) (KeyRef, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return KeyRef{}, err
+	}
+	var sf SealedFile
+	if err := json.Unmarshal(data, &sf); err != nil {
+		return KeyRef{}, err
+	}
+	return sf.Sec.KeyRef, nil
+}
+
 func OpenSealedFile(store, path, domainID string, resolve ResolveFunc, floor Floor) (json.RawMessage, uint64, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -119,7 +138,7 @@ func OpenSealedFile(store, path, domainID string, resolve ResolveFunc, floor Flo
 			return nil, 0, "", fmt.Errorf("record %s: file_seq %d below ledger floor %d — rolled back", store, sf.Sec.FileSeq, floor.Seq)
 		}
 		if sf.Sec.FileSeq == floor.Seq && fileHash != floor.Hash {
-			return nil, 0, "", fmt.Errorf("record %s: same file_seq with different hash — equivocation", store)
+			return nil, 0, "", fmt.Errorf("record %s: %w", store, ErrSameSeqEquivocation)
 		}
 	}
 	return sf.Data, sf.Sec.FileSeq, fileHash, nil

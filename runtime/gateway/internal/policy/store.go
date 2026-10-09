@@ -2,6 +2,7 @@ package policy
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	pathpkg "path"
 	"strings"
@@ -9,33 +10,108 @@ import (
 )
 
 type Rule struct {
-	ActionType    string `json:"action_type"`
-	Environment   string `json:"environment"`
+	ActionType  string `json:"action_type"`
+	Environment string `json:"environment"`
 	// Resource restricts the rule to matching request resources. Resources
 	// are "METHOD scheme://host/path" for egress actions. The pattern is a
 	// simple glob: '*' matches any substring, all other characters are
 	// literal; an empty pattern matches every resource. Examples:
 	//   "*https://api.github.com/*"  — any method to that host
 	//   "GET https://pypi.org/*"     — GETs only
-	Resource      string `json:"resource,omitempty"`
-	Allow         bool   `json:"allow"`
-	Deny          bool   `json:"deny"`
-	Escalate      bool   `json:"escalate"`
+	Resource      string   `json:"resource,omitempty"`
+	Allow         bool     `json:"allow"`
+	Deny          bool     `json:"deny"`
+	Escalate      bool     `json:"escalate"`
 	MinTrustScore *float64 `json:"min_trust_score,omitempty"` // deny if trust score below this
-	MinTrustLevel string   `json:"min_trust_level,omitempty"`  // deny/escalate if trust level below this
+	MinTrustLevel string   `json:"min_trust_level,omitempty"` // deny/escalate if trust level below this
 	// RequireLease demands a valid capability lease bound to the
 	// authenticated principal for this rule to allow; without one the
 	// decision escalates instead of allowing.
-	RequireLease bool `json:"require_lease,omitempty"`
-	Conditions  map[string]interface{} `json:"conditions,omitempty"` // validator metadata (depends_on, ref)
-	Description string `json:"description,omitempty"` // operator annotation — never evaluated
+	RequireLease bool                   `json:"require_lease,omitempty"`
+	Conditions   map[string]interface{} `json:"conditions,omitempty"`  // validator metadata (depends_on, ref)
+	Description  string                 `json:"description,omitempty"` // operator annotation — never evaluated
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	version  string
-	rules    []Rule
-	filePath string
+	mu              sync.RWMutex
+	version         string
+	precedence      string // "" = PrecedenceOrder
+	defaultDecision string // "" = DefaultEscalate
+	rules           []Rule
+	filePath        string
+}
+
+// How overlapping rules resolve.
+const (
+	// PrecedenceOrder is the original rule: any matching deny wins, then
+	// any matching allow, then escalate. A broad deny beats a narrow allow.
+	PrecedenceOrder = "order"
+	// PrecedenceMostSpecific: the most specific matching rule decides
+	// (more literal characters in the resource pattern, then an exact
+	// action_type over "*", then an exact environment over "*"); among
+	// equally specific rules deny beats allow beats escalate. This lets a
+	// policy say "allow exactly this write, deny every other write".
+	PrecedenceMostSpecific = "most-specific"
+
+	DefaultEscalate = "escalate"
+	DefaultDeny     = "deny"
+)
+
+// Specificity scores a resource pattern: the number of literal (non-'*')
+// characters. An empty pattern matches everything and scores 0.
+func Specificity(pattern string) int {
+	return len(pattern) - strings.Count(pattern, "*")
+}
+
+// shadowedRules lists pairs of rules that share action_type, environment
+// and resource pattern but disagree on the effect. Under most-specific
+// precedence the tie-break (deny > allow > escalate) decides between
+// them, which is usually what a policy that adds "POST * deny" on top of
+// the default "POST * escalate" means; the validator reports it so the
+// author can see which one is in force.
+func shadowedRules(rules []Rule) []string {
+	type key struct{ a, e, r string }
+	seen := map[key]int{}
+	var out []string
+	for i, r := range rules {
+		k := key{r.ActionType, r.Environment, r.Resource}
+		if j, ok := seen[k]; ok {
+			if effect(rules[j]) != effect(r) {
+				winner := j
+				if rank(r) > rank(rules[j]) {
+					winner = i
+				}
+				out = append(out, fmt.Sprintf("rule[%d] (%s) and rule[%d] (%s) have the same scope and pattern (%s %s %q); under most-specific precedence rule[%d] decides (deny > allow > escalate)", j, effect(rules[j]), i, effect(r), r.ActionType, r.Environment, r.Resource, winner))
+			}
+			continue
+		}
+		seen[k] = i
+	}
+	return out
+}
+
+func rank(r Rule) int {
+	switch {
+	case r.Deny:
+		return 3
+	case r.Allow:
+		return 2
+	case r.Escalate:
+		return 1
+	}
+	return 0
+}
+
+func effect(r Rule) string {
+	switch {
+	case r.Deny:
+		return "deny"
+	case r.Allow:
+		return "allow"
+	case r.Escalate:
+		return "escalate"
+	}
+	return ""
 }
 
 func NewStore(version string) *Store {
@@ -52,6 +128,54 @@ func (s *Store) Version() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.version
+}
+
+// Precedence is PrecedenceOrder unless the file set most-specific.
+func (s *Store) Precedence() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.precedence == "" {
+		return PrecedenceOrder
+	}
+	return s.precedence
+}
+
+// SetPrecedence is for tests and programmatic stores.
+func (s *Store) SetPrecedence(p string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.precedence = p
+}
+
+// DefaultDecision is what applies when no rule matches: escalate unless
+// the file set deny.
+func (s *Store) DefaultDecision() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.defaultDecision == "" {
+		return DefaultEscalate
+	}
+	return s.defaultDecision
+}
+
+func (s *Store) SetDefaultDecision(d string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.defaultDecision = d
+}
+
+// RulesFor returns every rule whose action_type and environment admit the
+// request (exact or "*"), in file order.
+func (s *Store) RulesFor(actionType, env string) []Rule {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var matching []Rule
+	for _, r := range s.rules {
+		if (r.ActionType == actionType || r.ActionType == "*") && (r.Environment == env || r.Environment == "*") {
+			matching = append(matching, r)
+		}
+	}
+	return matching
 }
 
 func (s *Store) SetFilePath(path string) {
@@ -80,6 +204,8 @@ func (s *Store) Reload() error {
 	}
 	s.rules = newStore.rules
 	s.version = newStore.version
+	s.precedence = newStore.precedence
+	s.defaultDecision = newStore.defaultDecision
 	return nil
 }
 
@@ -140,6 +266,8 @@ func (s *Store) ReloadFromStore(other *Store) error {
 	defer s.mu.Unlock()
 	s.rules = other.ListRules()
 	s.version = other.Version()
+	s.precedence = other.precedence
+	s.defaultDecision = other.defaultDecision
 	return nil
 }
 
@@ -182,7 +310,7 @@ func MatchResource(pattern, resource string) bool {
 	if pattern == "" {
 		return true
 	}
-	if !strings.Contains(resource, "://") {
+	if !isURLResource(resource) {
 		return globMatch(pattern, resource) // non-URL resource: plain glob
 	}
 	canon, ok := CanonicalResource(resource)
@@ -274,6 +402,28 @@ func CanonicalResource(resource string) (string, bool) {
 // isMethodToken reports whether s is a bare HTTP-method-shaped token
 // (letters only — GET/POST/CONNECT/…). Anything containing ':', '/',
 // '@', or other punctuation is a URL fragment posing as a method.
+// isURLResource reports whether a resource has the egress shape
+// "scheme://..." or "METHOD scheme://...". A command line or a path that
+// merely contains "://" somewhere (shell:curl http://x) is not one; it is
+// matched as a plain glob.
+func isURLResource(resource string) bool {
+	rest := resource
+	if i := strings.IndexByte(resource, ' '); i > 0 && isMethodToken(resource[:i]) {
+		rest = resource[i+1:]
+	}
+	j := strings.Index(rest, "://")
+	if j <= 0 {
+		return false
+	}
+	for k := 0; k < j; k++ {
+		c := rest[k]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (k > 0 && ((c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'))) {
+			return false
+		}
+	}
+	return true
+}
+
 func isMethodToken(s string) bool {
 	if s == "" {
 		return false
@@ -447,4 +597,3 @@ func globMatch(pattern, s string) bool {
 	}
 	return true
 }
-
