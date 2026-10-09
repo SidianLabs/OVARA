@@ -26,6 +26,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Run user scenarios
         run: tests/scenarios/run.sh
 
@@ -34,6 +36,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Ovara as a CI step (nobody to approve, a job policy)
         run: tests/scenarios/run.sh ci-bot
 
@@ -42,6 +46,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
         with:
           fetch-depth: 0   # builds the last pre-fix commit from history
       - name: Upgrading a deployment made by an older build
@@ -52,6 +58,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Agent attacks Ovara from another OS user
         run: tests/redteam/separate-user/run.sh
 
@@ -60,6 +68,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Egress-boundary red team (real netns deployment, privileged container)
         run: tests/redteam/boundary/run-in-docker.sh
 
@@ -75,6 +85,8 @@ jobs:
         mode: [coop, enforced, box]
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       # enforced: a netns boundary, the agent as an unprivileged user; box: the same through ovara box (privileged container)
       - name: Real ${{ matrix.agent }} behind Ovara (${{ matrix.mode }})
         run: tests/agents/run.sh ${{ matrix.mode }} ${{ matrix.agent }}
@@ -84,6 +96,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: ovara box end to end (privileged container, netns)
         run: tests/box/run.sh
 
@@ -94,6 +108,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
@@ -109,6 +125,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
@@ -126,6 +144,8 @@ jobs:
         agent: [opencode, anthropic, codex]
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
@@ -139,5 +159,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Custom agent harness against the gateway decision API
         run: tests/agents/run.sh harness

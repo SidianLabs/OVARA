@@ -11,6 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
       - name: Build Gateway Image
         run: docker build -f runtime/gateway/Dockerfile -t ovara/gateway:latest .
       - name: Build ovara (gateway + proxy) image
