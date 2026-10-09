@@ -110,9 +110,10 @@ class H(BaseHTTPRequestHandler):
                 state["seen_tools"] = True
                 emit({"tools": names})
             msgs = body.get("messages", [])
-            last = msgs[-1] if msgs else {}
-            if last.get("role") == "user" and isinstance(last.get("content"), list):
-                for b in last["content"]:
+            for m in msgs:
+                if m.get("role") != "user" or not isinstance(m.get("content"), list):
+                    continue
+                for b in m["content"]:
                     if isinstance(b, dict) and b.get("type") == "tool_result":
                         tid = b.get("tool_use_id", "")
                         if tid not in state["logged"]:

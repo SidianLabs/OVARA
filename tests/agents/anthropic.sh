@@ -18,7 +18,7 @@ launch_agent() {
   # traffic (telemetry, update checks) is off so the run is deterministic.
   run_agent "export ANTHROPIC_BASE_URL=http://127.0.0.1:9100 ANTHROPIC_API_KEY=sk-ant-mock IS_SANDBOX=1 \
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 BASH_DEFAULT_TIMEOUT_MS=120000; \
-timeout 900 claude -p 'run the commands' --model claude-mock --permission-mode bypassPermissions --max-turns 100"
+timeout 900 claude -p 'run the commands' --model mock --permission-mode bypassPermissions --max-turns 100"
 }
 
 source <(tr -d '\r' < /repo/tests/agents/battery.sh)
