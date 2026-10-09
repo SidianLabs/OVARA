@@ -30,7 +30,7 @@ jobs:
       # Test exactly what will be built: the pushed tag, or the tag a manual
       # run names. Without `ref`, a manual run would test the default branch
       # and then ship a different commit.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-go@v5
@@ -61,7 +61,7 @@ jobs:
           - { goos: darwin,  goarch: arm64 }
           - { goos: windows, goarch: amd64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/setup-go@v5
@@ -97,7 +97,7 @@ jobs:
       id-token: write      # sign build provenance
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: actions/download-artifact@v4
