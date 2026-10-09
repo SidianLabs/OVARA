@@ -1,7 +1,7 @@
 # OVARA 2.1 — Implementation Report
 
 Date: 2026-09-22
-Branch: `devin/1790095116-ovara-21-cbda` (on top of `fb1debc` = main@000d70b + PR #5 macOS anchor fix)
+Branch: the `ovara-21-cbda` working branch (on top of `fb1debc` = main@000d70b + PR #5 macOS anchor fix)
 Scope: adversarial-review conditions C1, C3, C4, C5, C6. C2 deferred (not approved). `policy_epoch` not implemented by instruction.
 
 ## STATUS

@@ -28,6 +28,7 @@ Branch: `test/real-agents`, 7 commits ahead of `main`, **not pushed**. The owner
 - Memories skill + pointer + commit: not done (0.2 step 6).
 
 ### 0.4 Blockers waiting on the owner
+- **Rewriting `main` history** to drop AI-tool attribution: 49 commits carry assistant co-author lines and `000d70b` a third-party bot's; two merge subjects name that bot's branches. Needs a force-push of public `main` (all later SHAs, tags and PR links change) and GitHub keeps old commits reachable through PR refs. Owner has not decided. File-level traces were removed on `test/real-agents`; README product copy and the `.gitignore` tool-folder entries were kept on purpose.
 - OK to push `test/real-agents` and open a PR? (Owner said no for now.)
 - OK to commit `MEMORIES.md`?
 - Startup credits (links in §8), fork permission, and any `git rm` of tracked dirs: the classifier has blocked these before, so give the owner the exact command.

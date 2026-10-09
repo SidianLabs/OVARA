@@ -59,5 +59,3 @@ Establish the hosted control plane foundation: TypeScript API server, tenant mod
 
 ## Next Phase
 Phase 70 — Gateway Enrollment Protocol & Policy Sync Service
-
-Co-authored-by: CommandCodeBot <noreply@commandcode.ai>
