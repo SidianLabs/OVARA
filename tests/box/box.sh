@@ -47,7 +47,7 @@ r REALKEY "$( printenv | grep -c REALSECRET )"
 r CFG "$( cat /etc/ovara-box-dir/config.json >/dev/null 2>&1 && echo readable || echo denied )"
 r N1 "$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://pypi.org/simple/)"
 r S1 "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://pastebin.com/)"
-r B1 "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 8 https://pastebin.com/ || echo 000)"
+r B1 "$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' --max-time 8 https://pastebin.com/; true)"
 r B2 "$(timeout 6 getent hosts example.com >/dev/null 2>&1 && echo OPEN || echo 000)"
 # the work
 echo "changed by the agent" >> README.md

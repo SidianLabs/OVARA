@@ -87,6 +87,27 @@ func contextLines(a pendingApproval) []string {
 			out = append(out, o.label+": "+strings.NewReplacer("\r\n", " ⏎ ", "\n", " ⏎ ").Replace(v))
 		}
 	}
+	// `ovara box` commit-back: what comes back, what policy kept out, the diff
+	if v := a.Context["files"]; v != "" {
+		out = append(out, "files: "+v)
+	}
+	if v := a.Context["kept_out"]; v != "" {
+		out = append(out, "kept out by policy: "+v)
+	}
+	if v := a.Context["branch"]; v != "" {
+		out = append(out, "lands on branch: "+v)
+	}
+	if v := a.Context["diff"]; v != "" {
+		lines := strings.Split(strings.TrimRight(v, "\n"), "\n")
+		const max = 80
+		if len(lines) > max {
+			lines = append(lines[:max], fmt.Sprintf("... (%d more lines; the full diff is in the workspace)", len(lines)-max))
+		}
+		out = append(out, "diff:")
+		for _, l := range lines {
+			out = append(out, "  "+l)
+		}
+	}
 	return out
 }
 
@@ -174,6 +195,9 @@ func (c *adminClient) resolve(id string, approve bool, who, reason string) error
 // describe turns a policy resource string into one plain-English line.
 // Resources look like "POST https://github.com/org/repo.git/git-receive-pack refs/heads/main".
 func describe(resource string) string {
+	if rest, ok := strings.CutPrefix(resource, "commit:"); ok {
+		return "bring the agent's changes back to " + rest + " as a new branch"
+	}
 	method, rest, ok := strings.Cut(resource, " ")
 	if !ok {
 		return resource
