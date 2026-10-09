@@ -39,13 +39,12 @@ import (
 	"ovara.runtime.gateway/internal/metrics"
 	"ovara.runtime.gateway/internal/policy"
 	"ovara.runtime.gateway/internal/receipt"
-	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/receipts"
+	"ovara.runtime.gateway/internal/record"
 	"ovara.runtime.gateway/internal/replay"
 	"ovara.runtime.gateway/internal/revocation"
 	"ovara.runtime.gateway/internal/sandbox"
 	"ovara.runtime.gateway/internal/trust"
-
 )
 
 // Run starts the gateway with the given config file and blocks until
@@ -1114,12 +1113,12 @@ func reconcileAnchor(cfg *config.Config, reg *gwidentity.Registry, priv ed25519.
 			log.Printf("anchor: gateway_anchor_catchup=auto no longer auto-pushes (P2.3.3 remediation) — operator catch-up required")
 		}
 		log.Printf("anchor: unanchored tail (local seq %d > oracle %d) — degraded mode continuing WITHOUT anchoring; run gwctl anchor-catchup", seq, acp.Seq)
-			// Do not install the pusher: with it set, the very next
-			// mutation (even the startup tip ratchet) would commit a
-			// checkpoint at the local seq and make the unverified tail
-			// authoritative. Anchoring resumes after the operator's
-			// catch-up and a restart.
-			return nil
+		// Do not install the pusher: with it set, the very next
+		// mutation (even the startup tip ratchet) would commit a
+		// checkpoint at the local seq and make the unverified tail
+		// authoritative. Anchoring resumes after the operator's
+		// catch-up and a restart.
+		return nil
 	}
 	return reg.SetAnchor(pusher, signer)
 }

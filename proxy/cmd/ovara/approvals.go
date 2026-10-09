@@ -135,7 +135,7 @@ func newAdminClient(dir string) (*adminClient, error) {
 		host = "127.0.0.1"
 	}
 	return &adminClient{
-		base:  "http://" + host + ":" + cfg.Port,
+		base:    "http://" + host + ":" + cfg.Port,
 		token:   cfg.Tokens[0],
 		hc:      &http.Client{Timeout: 10 * time.Second},
 		maxWait: proxyWait(dir),

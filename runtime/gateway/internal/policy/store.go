@@ -10,26 +10,26 @@ import (
 )
 
 type Rule struct {
-	ActionType    string `json:"action_type"`
-	Environment   string `json:"environment"`
+	ActionType  string `json:"action_type"`
+	Environment string `json:"environment"`
 	// Resource restricts the rule to matching request resources. Resources
 	// are "METHOD scheme://host/path" for egress actions. The pattern is a
 	// simple glob: '*' matches any substring, all other characters are
 	// literal; an empty pattern matches every resource. Examples:
 	//   "*https://api.github.com/*"  — any method to that host
 	//   "GET https://pypi.org/*"     — GETs only
-	Resource      string `json:"resource,omitempty"`
-	Allow         bool   `json:"allow"`
-	Deny          bool   `json:"deny"`
-	Escalate      bool   `json:"escalate"`
+	Resource      string   `json:"resource,omitempty"`
+	Allow         bool     `json:"allow"`
+	Deny          bool     `json:"deny"`
+	Escalate      bool     `json:"escalate"`
 	MinTrustScore *float64 `json:"min_trust_score,omitempty"` // deny if trust score below this
-	MinTrustLevel string   `json:"min_trust_level,omitempty"`  // deny/escalate if trust level below this
+	MinTrustLevel string   `json:"min_trust_level,omitempty"` // deny/escalate if trust level below this
 	// RequireLease demands a valid capability lease bound to the
 	// authenticated principal for this rule to allow; without one the
 	// decision escalates instead of allowing.
-	RequireLease bool `json:"require_lease,omitempty"`
-	Conditions  map[string]interface{} `json:"conditions,omitempty"` // validator metadata (depends_on, ref)
-	Description string `json:"description,omitempty"` // operator annotation — never evaluated
+	RequireLease bool                   `json:"require_lease,omitempty"`
+	Conditions   map[string]interface{} `json:"conditions,omitempty"`  // validator metadata (depends_on, ref)
+	Description  string                 `json:"description,omitempty"` // operator annotation — never evaluated
 }
 
 type Store struct {
@@ -597,4 +597,3 @@ func globMatch(pattern, s string) bool {
 	}
 	return true
 }
-

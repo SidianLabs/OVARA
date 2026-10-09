@@ -11,6 +11,9 @@ for i in $(seq 1 60); do (echo > /dev/tcp/127.0.0.1/9443) 2>/dev/null && break; 
 cat > /tmp/deny.py <<'PY'
 import json
 p = json.load(open('/tmp/d/policy.json'))
+# a harness of your own writes its own shell policy: drop the box's
+# "everything else is allowed" rule so unlisted commands pause, and add a deny
+p['rules'] = [r for r in p['rules'] if r.get('resource') != 'shell:*']
 p['rules'].insert(0, {"action_type": "shell", "environment": "*", "resource": "shell:rm -rf*", "deny": True, "description": "no recursive deletes"})
 json.dump(p, open('/tmp/d/policy.json', 'w'), indent=2)
 PY

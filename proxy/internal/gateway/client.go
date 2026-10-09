@@ -16,13 +16,13 @@ import (
 )
 
 type Client struct {
-	baseURL string
-	token   string
-	env     string
-	subject    string
-	resolveMu  sync.Mutex
-	resolved   bool
-	hc         *http.Client
+	baseURL   string
+	token     string
+	env       string
+	subject   string
+	resolveMu sync.Mutex
+	resolved  bool
+	hc        *http.Client
 }
 
 // subjectID mirrors the gateway's credential-derived principal

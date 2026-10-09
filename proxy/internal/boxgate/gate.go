@@ -66,6 +66,16 @@ func (t *Tracer) Run(cmd *exec.Cmd) (int, error) {
 	// and must make every later request.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	// The tracer reaps the process itself, so os/exec's copy goroutines (used
+	// when a stream is not a file) would never be joined: require files.
+	for _, w := range []any{cmd.Stdin, cmd.Stdout, cmd.Stderr} {
+		if w == nil {
+			continue
+		}
+		if _, ok := w.(*os.File); !ok {
+			return 0, errors.New("the command gate needs *os.File streams (or nil) for Stdin, Stdout and Stderr")
+		}
+	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}

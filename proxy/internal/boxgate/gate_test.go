@@ -32,8 +32,12 @@ func TestTracer_SeesEveryExecAndKillsDenied(t *testing.T) {
 	// a shell, a subshell, a python child that execs a shell, and the denied touch
 	script := `echo one; (echo two); python3 -c "import os; os.system('echo three')"; touch ` + marker + `; echo four; exit 7`
 	cmd := exec.Command("bash", "-c", script)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	outFile, err := os.Create(filepath.Join(t.TempDir(), "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outFile.Close()
+	cmd.Stdout, cmd.Stderr = outFile, outFile
 	code, err := tr.Run(cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +48,8 @@ func TestTracer_SeesEveryExecAndKillsDenied(t *testing.T) {
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the denied program ran")
 	}
-	o := out.String()
+	ob, _ := os.ReadFile(outFile.Name())
+	o := string(ob)
 	for _, w := range []string{"one", "two", "three", "four"} {
 		if !strings.Contains(o, w) {
 			t.Fatalf("output missing %q:\n%s", w, o)
@@ -76,6 +81,16 @@ func TestTracer_KilledRootReportsSignal(t *testing.T) {
 	}
 	if code != 128+9 {
 		t.Fatalf("exit status %d, want 137", code)
+	}
+}
+
+// A buffer stream is refused: the tracer could not join exec's copy goroutines.
+func TestTracer_RefusesNonFileStreams(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := exec.Command("true")
+	cmd.Stdout = &buf
+	if _, err := (&Tracer{}).Run(cmd); err == nil {
+		t.Fatal("buffer stream accepted")
 	}
 }
 
