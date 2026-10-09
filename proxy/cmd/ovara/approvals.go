@@ -11,6 +11,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -382,6 +383,11 @@ func cmdResolve(approve bool, args []string) error {
 		rest = append(rest, a)
 	}
 	if id == "" {
+		if approve {
+			return errors.New("usage: ovara approve <approval-id> [-dir .] [-reason ...] [-trust-host] [-for-run]\n" +
+				"  -trust-host  also allow future reads (GET/HEAD) from this host (edits policy.json)\n" +
+				"  -for-run     also allow this exact request or command again until this ovara run ends")
+		}
 		return fmt.Errorf("usage: ovara %s <approval-id> [-dir .] [-reason ...]", name)
 	}
 	if err := fs.Parse(rest); err != nil {
