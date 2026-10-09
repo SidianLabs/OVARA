@@ -39,6 +39,17 @@ agents, and fix correctness bugs found in an in-depth review.
 - `docs/use-cases.md`: where Ovara fits (laptop, container, hosted sandbox, CI,
   your own harness), what is verified and what is not.
 
+- `tests/agents`: real opencode (installed from npm, driven by a scripted mock
+  model) run behind Ovara in cooperative and enforced mode, with 27 commands
+  covering normal work, blocks, policy-evasion tricks and proxy-evasion tricks,
+  plus a custom-agent-harness scenario against the gateway's decision API
+  (16 checks). All pass; the proxy-evasion bypasses succeed in cooperative mode
+  and are blocked in enforced mode, as documented.
+- The default policy allows the two `npm audit` POSTs
+  (`registry.npmjs.org/-/npm/v1/security/{advisories/bulk,audits/quick}`).
+  `npm install` runs them automatically and they only read advisories; before,
+  every agent `npm install` stalled for the whole approval window.
+
 ### Fixed (found by running the real binary the way a person uses it)
 
 New end-to-end harness `tests/scenarios/` drives `pip`, `npm`, `git clone`,

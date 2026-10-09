@@ -48,8 +48,22 @@ Ovara's keys and edit `policy.json`. Treat this mode as a seatbelt against
 mistakes and runaway tool use. `ovara log` tells you whether the traffic you
 expected is actually passing through.
 
-*Not tested:* the specific agent products themselves (their proxy and
-certificate handling varies). If one ignores `HTTPS_PROXY`, you will see it as
+**opencode is tested for real** (`tests/agents/opencode.sh`, driven by a scripted
+stand-in for the model so no API key is needed): through Ovara it installed its
+own provider packages, and its bash tool ran `pip`, `git clone` and `npm install`
+normally, was stopped at the paste site and the capture site, timed out on an
+unapproved POST, and never saw the real key. Every attempt to evade the *policy*
+through the proxy (trailing-dot and uppercase hosts, `user@host` URLs, odd ports,
+decimal and IPv6 loopback, plain http, a mismatched Host header, method override,
+a raw smuggled request line) was refused. Attempts to evade the *proxy*
+(`curl --noproxy`, unsetting the proxy variables, Node `fetch` without the proxy,
+raw TCP, `git` without the proxy) **did get out in this cooperative mode**, which
+is exactly the limit described above, and were all blocked in enforced mode.
+opencode also contacts `models.opencode.ai` on its own; Ovara pauses that as an
+unknown host, which is harmless but visible in `ovara log`.
+
+*Not tested:* other agent products (Claude Code, Codex, Aider). Their proxy and
+certificate handling varies; if one ignores `HTTPS_PROXY` you will see it as
 missing entries in `ovara log`.
 
 ## 2. An agent in a container or VM you control  — *tested (netns); docker mode scripted*
