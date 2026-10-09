@@ -117,8 +117,8 @@ box in the first release (see tiers, §4.4).
 | Exit | How it is gated | Status |
 |---|---|---|
 | Network | All traffic through the proxy; policy allow/escalate/deny; keys injected; responses scrubbed | **built, tested** (`proxy/`, `tests/scenarios`, `tests/agents`, `tests/redteam`) |
-| Files back to the real project | Workspace is a copy; "commit back" is a gated action with a diff preview | not built (§7) |
-| Files anywhere else on the host | Not mounted; the box sees only its workspace and a scratch dir | not built (§7) |
+| Files back to the real project | Workspace is a copy; "commit back" is a gated action with a diff preview | **built, tested** (`proxy/internal/workspace`, `tests/box`) |
+| Files anywhere else on the host | The box runs as another user; the host's files are reachable only where that user may read them (tier 1); not mounted at all in tier 2 | tier 1 built; tier 2 not built (§7) |
 | Commands | An exec gate between the agent and the shell: allow/pause/deny per command, by policy | API exists (`POST /v1/runtime/check`, action types `shell`/`exec`), no enforcement (§8) |
 | Package installs | Through the proxy, with registry pins, install-script policy, new-dependency approval | partial (npm audit rule only) (§9) |
 | Secrets | Never present in the box; injected by the proxy; scrubbed on return | **built, tested** |
@@ -181,8 +181,9 @@ gateway + proxy + approval page). The Box adds:
 
 - a **launcher** (`ovara box`) that creates the box, the workspace copy, the
   agent user, the boundary, and starts the agent inside with the right
-  environment (§6);
-- a **file gate** that owns the workspace copy and gates commit-back (§7);
+  environment (§6) — **built, milestone 2**;
+- a **file gate** that owns the workspace copy and gates commit-back (§7) —
+  **built, milestone 2** (`proxy/internal/workspace`);
 - an **exec gate** the agent cannot bypass, in front of the shell (§8);
 - **install policy** in the proxy for package registries (§9);
 - a **policy model v2** that can express "allow these, deny the rest" (§11).
@@ -528,7 +529,7 @@ updated in the same change.
 |---|---|---|---|
 | 0 | **Ship what exists**: push, CI green on GitHub for the first time, v0.9.1 with the `-repair-registry` note | all existing jobs green on `main` | days |
 | 1 | **Policy v2** | ci-bot C3 flips to "allowed write passes under catch-all deny"; shadow-rule validator test; v1 files migrate byte-for-byte in meaning | 1 week |
-| 2 | **`ovara box` tier 1 on Linux** (launcher + workspace snapshot + secret exclusion; no command gate yet) | agents matrix runs through `ovara box` instead of the hand-built netns; a planted `.env`/`id_rsa` in the project is absent in the box; commit-back lands on a branch with the diff in the approval; `.github/workflows/*` change is denied | 2 weeks |
+| 2 | **`ovara box` tier 1 on Linux** (launcher + workspace snapshot + secret exclusion; no command gate yet) | **done**: agents matrix runs through `ovara box` (`mode: box`); `tests/box` plants `.env`/`id_rsa`/a committed `.pem` and finds them absent; commit-back lands on a branch with the diff in the approval; the `.github/workflows/*` change is kept out | done |
 | 3 | **Command gate** | battery adds destructive commands: `rm -rf` pauses, `sudo` denied, builds free; receipts hold the commands; agent cannot reach a shell that skips the gate (red-team checks) | 2–3 weeks |
 | 4 | **Tier 2 container** + docker boundary test finally run | boundary red team passes in docker mode; box image has no secret paths and a read-only root | 1–2 weeks |
 | 5 | **Install policy** | `strict`: a new dependency pauses once with name+version; a package from an unlisted registry pauses; npm audit still free | 1 week |

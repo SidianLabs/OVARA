@@ -92,7 +92,7 @@ so the scripted battery needs a different driver), Cursor, and agents that are
 not installed from npm. If an agent ignores `HTTPS_PROXY` you
 will see it as missing entries in `ovara log`.
 
-## 2. An agent in a container or VM you control  — *tested (netns); docker mode scripted*
+## 2. An agent in a container or VM you control  — *tested (netns, `ovara box`); docker mode scripted*
 
 This is the setup to use when you do not fully trust the agent: an untrusted
 tool, a model you are evaluating, a long unattended run.
@@ -100,6 +100,18 @@ tool, a model you are evaluating, a long unattended run.
 The agent runs in a network that has **no route to the internet except to
 Ovara**, so there is nothing for it to ignore. Run the agent as an unprivileged
 user that is not the user running Ovara, in a directory it cannot read.
+
+```bash
+sudo ovara box ./myrepo -- claude        # one command: copy, box, agent, review
+```
+
+`ovara box` does the whole setup: it copies the project into a workspace
+(history kept, `.env`/keys/certificates left out), starts Ovara with the
+namespace boundary, runs the agent inside as an unprivileged user with a
+fresh home and no keys, and when the agent exits brings its changes back as
+a commit on a new `ovara/box-<run>` branch of your repository, after you have
+read the diff. Paths the policy keeps out (`.github/workflows/*` by default)
+never come back. Your working tree is not touched. Or do it by hand:
 
 ```bash
 sudo ovara run -dir ~/ovara --boundary netns     # or: --boundary docker
@@ -118,7 +130,19 @@ not open the approvals API), or stop the process (`tests/redteam/separate-user`)
 Real agents (opencode, Anthropic's agent CLI, Codex CLI) run inside the boundary as an
 unprivileged user with the same 27 commands as scenario 1: normal work goes
 through, and all seven proxy-evasion attempts that succeed in cooperative mode
-are blocked (`tests/agents/run.sh enforced <agent>`: 28 passed, 0 failed for each).
+are blocked (`tests/agents/run.sh enforced <agent>` and, through `ovara box`,
+`tests/agents/run.sh box <agent>`: 28 passed, 0 failed for each). `tests/box`
+checks the box itself: the agent sees no `.env`, no keys, no committed
+certificate; it cannot read Ovara's directory; `git push` from inside goes
+nowhere; its edits, new files, deletions and own commits come back on the
+branch, a workflow edit does not, a committed secret is never deleted, and
+the host's HEAD, branch and working tree are unchanged.
+
+Not yet in `ovara box`: a command gate (the agent's shell commands are not
+yet policy-checked; the network and file boundaries do not depend on it),
+the container tier, macOS/Windows. Commit-back runs as root under sudo, so
+the new branch's objects in your repository are root-owned until the next
+release fixes that.
 
 Still yours to ensure: the agent is not root inside the boundary (root can
 remove the firewall rules), and nothing else gives it a way out (a second

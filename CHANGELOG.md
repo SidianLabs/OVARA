@@ -23,6 +23,19 @@ agents, and fix correctness bugs found in an in-depth review.
 
 ### Added
 
+- **`ovara box <project> -- <agent>`** (Linux, sudo): the agent runs in a
+  network namespace whose only route is Ovara, as an unprivileged system
+  user with a fresh home, in a copy of the project (a real clone with
+  history, the host's uncommitted changes carried over, secret-looking files
+  left out, origin pointed at a dead URL). It never holds a key. When it
+  exits, its changes come back as one commit on a new `ovara/box-<run>`
+  branch of the real repository, after each path has passed policy
+  (`.github/workflows/*` and `.git/*` are kept out by default) and a person
+  has read the diff in the approval. The real working tree is never
+  touched. Tested end to end (`tests/box`) and with opencode, Codex CLI and
+  Anthropic's agent CLI running the full 27-command battery inside the box
+  (`tests/agents/run.sh box <agent>`).
+
 - **Policy precedence: the most specific rule decides.** `policy.json` takes
   `"precedence": "most-specific"` (what `ovara init` writes now): of the
   rules that match a request, the one with the most literal characters in
