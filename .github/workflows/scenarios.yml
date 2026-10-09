@@ -87,6 +87,53 @@ jobs:
       - name: ovara box end to end (privileged container, netns)
         run: tests/box/run.sh
 
+  # Tier 2 (`ovara box -tier 2`, a container) needs Docker, so these run on
+  # the runner itself as root (tests/box/host.sh), not in a test container.
+  box-tier2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: false
+      - name: ovara box -tier 2 end to end (the box test, plus the container's own checks)
+        run: OVARA_TEST_ON_HOST=1 tests/box/host.sh box
+      - name: Boundary red team from inside a tier 2 box
+        run: OVARA_TEST_ON_HOST=1 SKIP_IMAGE_BUILD=1 tests/box/host.sh redteam
+
+  boundary-redteam-docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: false
+      - name: Boundary red team in docker mode (setup-egress-boundary.sh docker)
+        run: OVARA_TEST_ON_HOST=1 tests/box/host.sh redteam-docker
+
+  agents-tier2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [opencode, anthropic, codex]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: false
+      - name: Real ${{ matrix.agent }} in a tier 2 box
+        run: OVARA_TEST_ON_HOST=1 tests/box/host.sh agent ${{ matrix.agent }}
+
   agents-harness:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -50,6 +50,8 @@ func main() {
 		err = cmdInit(os.Args[2:])
 	case "box":
 		err = cmdBox(os.Args[2:])
+	case "box-init": // PID 1 of a tier 2 box; started by `ovara box -tier 2`, not by people
+		err = cmdBoxInit(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
 	case "demo":

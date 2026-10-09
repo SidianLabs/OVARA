@@ -3,9 +3,16 @@ set -u
 # an "agent" (a shell script) that checks what it can see and reach, changes
 # files, and tries to push; then the commit-back with a simulated person.
 # Runs as root in a privileged container (the box needs a network namespace).
+#
+# TIER=2 runs the same through a tier 2 box (a container from BOX_IMAGE,
+# default ovara-box-test, built from tests/box/Dockerfile). It needs Docker,
+# so it runs on the host as root (a disposable machine: CI), not inside the
+# test container; it adds the container's own checks.
+TIER="${TIER:-1}"
+BOX_IMAGE="${BOX_IMAGE:-ovara-box-test}"
 export PATH=$PATH:/usr/local/go/bin
 git config --global --add safe.directory '*'
-git clone -q /repo /work
+rm -rf /work; git clone -q /repo /work
 (cd /work/proxy && CGO_ENABLED=0 go build -o /usr/local/bin/ovara ./cmd/ovara) || { echo "BUILD FAILED"; exit 1; }
 
 pass=0; fail=0
@@ -30,8 +37,8 @@ HOST_HEAD=$(git rev-parse HEAD); HOST_STATUS=$(git status --porcelain | sort)
 
 # --- the "agent": a script that records what it finds --------------------------
 cat > /tmp/agent.sh <<'EOF'
-R=/tmp/agent-results.txt; : > $R
-r() { echo "$1 $2" >> $R; }
+# each result goes to stdout (the box's output) as "AGENTRESULT NAME value"
+r() { echo "AGENTRESULT $1 $2"; }
 r WHO "$(id -un)"
 r HOME_IS "$HOME"
 r PWD_IS "$PWD"
@@ -62,6 +69,28 @@ sudo id >/tmp/sudo.out 2>&1; r SUDO "exit=$? $(head -c 40 /tmp/sudo.out | tr '\n
 rm -rf /tmp/victim; r RMRF "exit=$? victim=$( [ -e /tmp/victim/file ] && echo survived || echo gone )"
 python3 -c "import os; os.system('sudo id > /tmp/sudo2.out 2>&1')"; r SUDO2 "$( [ -s /tmp/sudo2.out ] && grep -q uid= /tmp/sudo2.out && echo ran || echo refused )"
 r LS "$(ls /nonexistent >/dev/null 2>&1; echo exit=$?)"
+# tier 2: what the container itself must guarantee
+if [ "${OVARA_BOX_TIER:-1}" = 2 ]; then
+  r T2_CAPEFF "$(awk '/^CapEff/{print $2}' /proc/self/status)"
+  r T2_CAPPRM "$(awk '/^CapPrm/{print $2}' /proc/self/status)"
+  r T2_NNP "$(awk '/^NoNewPrivs/{print $2}' /proc/self/status)"
+  r T2_ROOTFS "$(touch /usr/ovara-probe 2>/dev/null && echo writable || echo readonly)"
+  r T2_ETC "$( (echo x >> /etc/hosts) 2>/dev/null && echo writable || echo readonly)"
+  r T2_IFACES "$(ls /sys/class/net | tr '\n' ' ' | sed 's/ $//')"
+  r T2_SOCKDIR "$(ls /run/ovara >/dev/null 2>&1 && echo listable || echo denied)"
+  r T2_PROXYSOCK "$(python3 -c "import socket;s=socket.socket(socket.AF_UNIX);s.connect('/run/ovara/proxy.sock')" 2>/dev/null && echo open || echo denied)"
+  r T2_GATESOCK "$(python3 -c "import socket;s=socket.socket(socket.AF_UNIX);s.connect('/run/ovara/gate.sock')" 2>/dev/null && echo open || echo denied)"
+  r T2_DOCKERSOCK "$( { [ -e /var/run/docker.sock ] || [ -e /run/docker.sock ]; } && echo present || echo absent)"
+  r T2_HOSTRUNS "$( [ -e /var/lib/ovara ] && echo present || echo absent)"
+  r T2_HOSTPROJ "$( [ -e /tmp/proj ] && echo present || echo absent)"
+  r T2_KILL1 "$(kill -9 1 2>/dev/null && echo killed || echo refused)"
+  r T2_TCP "$(timeout 4 bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null && echo OPEN || echo BLOCKED)"
+  r T2_HOSTGW "$(timeout 4 bash -c '</dev/tcp/172.17.0.1/22' 2>/dev/null && echo OPEN || echo BLOCKED)"
+  r T2_META "$(timeout 4 bash -c '</dev/tcp/169.254.169.254/80' 2>/dev/null && echo OPEN || echo BLOCKED)"
+  r T2_UDP "$(timeout 3 bash -c 'echo x >/dev/udp/1.1.1.1/53' 2>/dev/null && echo OPEN || echo BLOCKED)"
+  r T2_SECRETS "$(ls -d /root/.ssh /root/.aws $HOME/.ssh $HOME/.aws $HOME/.netrc $HOME/.npmrc $HOME/.git-credentials $HOME/.docker 2>/dev/null | wc -l)"
+  r T2_PROCS "$(ps -eo user= | sort -u | tr '\n' ' ' | sed 's/ $//')"
+fi
 r DONE yes
 EOF
 chmod 755 /tmp/agent.sh
@@ -94,20 +123,29 @@ PY
   done ) &
 HUMAN=$!
 
-echo "=== the box"
+echo "=== the box (tier $TIER)"
+if [ "$TIER" = 2 ]; then
+  BOXFLAGS=(-tier 2 -image "$BOX_IMAGE" -mount /tmp/agent.sh:/tmp/agent.sh)
+else
+  BOXFLAGS=(-user ovara-agent)
+fi
 # config.json is a readability probe: the agent must not be able to read it
-timeout 600 ovara box -dir $D -ui off -approve-timeout 150s -user ovara-agent $P -- bash /tmp/agent.sh > /tmp/box.out 2>&1
+timeout 600 ovara box -dir $D -ui off -approve-timeout 150s "${BOXFLAGS[@]}" $P -- bash /tmp/agent.sh > /tmp/box.out 2>&1
 BOX_EXIT=$?
 wait $HUMAN
-echo "--- ovara box output (tail)"; tail -20 /tmp/box.out
-val() { grep -E "^$1 " /tmp/agent-results.txt | head -1 | cut -d' ' -f2- ; }
+echo "--- ovara box output (tail)"; grep -v '^AGENTRESULT ' /tmp/box.out | tail -20
+val() { grep -E "^AGENTRESULT $1 " /tmp/box.out | head -1 | cut -d' ' -f3- ; }
 check "box ran the agent to the end" yes "$(val DONE)"
 check "box exit status" 0 "$BOX_EXIT"
 
 echo "=== inside the box"
 check "runs as the unprivileged agent user" ovara-agent "$(val WHO)"
 [ "$(val HOME_IS)" != "/root" ] && ok "a fresh home, not root's ($(val HOME_IS))" || bad "home" "$(val HOME_IS)"
-case "$(val PWD_IS)" in /var/lib/ovara/runs/*/work) ok "working directory is the workspace copy";; *) bad "working directory" "$(val PWD_IS)";; esac
+if [ "$TIER" = 2 ]; then
+  check "working directory is the workspace copy, at /work" /work "$(val PWD_IS)"
+else
+  case "$(val PWD_IS)" in /var/lib/ovara/runs/*/work) ok "working directory is the workspace copy";; *) bad "working directory" "$(val PWD_IS)";; esac
+fi
 check "untracked .env is absent" absent "$(val ENV_FILE)"
 check "committed secret.pem is absent" absent "$(val PEM_FILE)"
 check "key-looking file is absent" absent "$(val KEY_FILE)"
@@ -123,6 +161,29 @@ check "a paste site is refused by policy" 403 "$(val S1)"
 check "ignoring the proxy gets nothing (boundary)" 000 "$(val B1)"
 check "no direct DNS (boundary)" 000 "$(val B2)"
 check "git push from the box is refused" refused "$(val PUSH)"
+
+if [ "$TIER" = 2 ]; then
+  echo "=== tier 2: the container"
+  check "the agent holds no capabilities (effective)" 0000000000000000 "$(val T2_CAPEFF)"
+  check "the agent holds no capabilities (permitted)" 0000000000000000 "$(val T2_CAPPRM)"
+  check "no-new-privileges: set-uid programs give nothing" 1 "$(val T2_NNP)"
+  check "the root filesystem is read-only" readonly "$(val T2_ROOTFS)"
+  check "/etc is read-only" readonly "$(val T2_ETC)"
+  check "the only network interface is loopback" lo "$(val T2_IFACES)"
+  check "Ovara's socket directory is closed to the agent" denied "$(val T2_SOCKDIR)"
+  check "the agent cannot open the proxy socket directly" denied "$(val T2_PROXYSOCK)"
+  check "the agent cannot open the command-gate socket" denied "$(val T2_GATESOCK)"
+  check "no Docker socket in the box" absent "$(val T2_DOCKERSOCK)"
+  check "the host's run directory is not in the box" absent "$(val T2_HOSTRUNS)"
+  check "the host's project is not in the box (only its copy)" absent "$(val T2_HOSTPROJ)"
+  check "the agent cannot kill the box's init (the gate)" refused "$(val T2_KILL1)"
+  check "direct TCP to the internet: no route" BLOCKED "$(val T2_TCP)"
+  check "the Docker host gateway: no route" BLOCKED "$(val T2_HOSTGW)"
+  check "cloud metadata: no route" BLOCKED "$(val T2_META)"
+  check "UDP out: no route" BLOCKED "$(val T2_UDP)"
+  check "no credential files in the box" 0 "$(val T2_SECRETS)"
+  check "processes in the box: the gate (root) and the agent only" "ovara-agent root" "$(val T2_PROCS)"
+fi
 
 echo "=== the command gate"
 case "$(val SUDO)" in exit=137*) ok "sudo is refused by policy: the program is killed before it runs ($(val SUDO))";; *) bad "sudo" "$(val SUDO)";; esac
@@ -159,10 +220,13 @@ ls /var/lib/ovara/runs/ 2>/dev/null | grep -q . && bad "workspace not removed af
 
 echo "=== a second run with nothing changed, interrupted by the person"
 ( sleep 8; pkill -INT -f 'ovara box' ) &
-timeout 120 ovara box -dir $D -ui off $P -- bash -c 'sleep 60' > /tmp/box2.out 2>&1; E2=$?
+timeout 120 ovara box -dir $D -ui off "${BOXFLAGS[@]}" $P -- bash -c 'sleep 60' > /tmp/box2.out 2>&1; E2=$?
 grep -q 'stopping the agent' /tmp/box2.out && ok "Ctrl-C stops the agent" || bad "interrupt" "$(tail -3 /tmp/box2.out)"
 grep -q 'changed nothing' /tmp/box2.out && ok "no changes → nothing comes back" || bad "no-change run" "$(tail -3 /tmp/box2.out)"
 pgrep -f 'ovara run' >/dev/null && bad "ovara run still running after the box" "" || ok "ovara run stopped with the box"
+if [ "$TIER" = 2 ]; then
+  check "no box container left behind" "" "$(docker ps -aq --filter label=ovara.box)"
+fi
 
 echo; echo "RESULT: $pass passed, $fail failed"
 echo "BOX_DONE"

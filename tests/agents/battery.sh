@@ -8,12 +8,14 @@ set -u
 #   MODE=coop       cooperative: the agent is only ASKED to use the proxy
 #   MODE=enforced   netns boundary, agent runs as an unprivileged user inside it
 #   MODE=box        the same through `ovara box` (workspace copy, box user, netns)
+#   MODE=box2       through `ovara box -tier 2` (a container from BOX_IMAGE,
+#                   default ovara-box-test); runs on the host (tests/box/host.sh)
 MODE="${MODE:-coop}"
 AGENT="${AGENT:-agent}"
 export DEBIAN_FRONTEND=noninteractive
 export PATH=$PATH:/usr/local/go/bin
 git config --global --add safe.directory '*'
-git clone -q /repo /work
+rm -rf /work; git clone -q /repo /work
 (cd /work/proxy && CGO_ENABLED=0 go build -o /usr/local/bin/ovara ./cmd/ovara) || { echo "BUILD FAILED"; exit 1; }
 cd /tmp && rm -rf d && ovara init d >/dev/null 2>&1
 cat > /tmp/cfg.py <<'PY'
@@ -29,10 +31,12 @@ if [ "$MODE" = enforced ]; then
   GITHUB_TOKEN="$REALKEY" ovara run -dir d --boundary netns --boundary-name audit-ns -ui off >/tmp/run.log 2>&1 &
 elif [ "$MODE" = box ]; then
   useradd -m agent >/dev/null 2>&1   # `ovara box` starts Ovara itself, later
+elif [ "$MODE" = box2 ]; then
+  :                                  # the box image has its own agent user
 else
   GITHUB_TOKEN="$REALKEY" ovara run -dir d -ui off >/tmp/run.log 2>&1 &
 fi
-[ "$MODE" = box ] || for i in $(seq 1 90); do (echo > /dev/tcp/127.0.0.1/9443) 2>/dev/null && break; sleep 0.5; done
+[ "$MODE" = box ] || [ "$MODE" = box2 ] || for i in $(seq 1 90); do (echo > /dev/tcp/127.0.0.1/9443) 2>/dev/null && break; sleep 0.5; done
 
 # --- the commands the "model" asks the agent to run (one tool call each) ------
 cat > /tmp/cmds.txt <<'EOF'
@@ -74,18 +78,18 @@ if [ "$MODE" = enforced ]; then
   echo "boundary proxy address: ${PIP:-NOT FOUND}"
   ovara env -dir /tmp/d -host "$PIP" > /tmp/agent.env
   chmod 644 /tmp/cmds.txt; chmod -R a+rX /tmp/proj; chown -R agent:agent /tmp/proj /tmp/home; touch /tmp/mock.log; chown agent /tmp/mock.log
-elif [ "$MODE" = box ]; then
+elif [ "$MODE" = box ] || [ "$MODE" = box2 ]; then
   # the box copies the project (a git repo) into its workspace; the agent's
   # config files in /tmp/proj ride along as untracked files, /tmp/home is
   # copied into the box's fresh home by the command below
   (cd /tmp/proj && git init -q -b main && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init)
-  chmod 644 /tmp/cmds.txt; chmod -R a+rX /tmp/proj /tmp/home; touch /tmp/mock.log; chown agent /tmp/mock.log
+  chmod 644 /tmp/cmds.txt; chmod -R a+rX /tmp/proj /tmp/home; touch /tmp/mock.log; [ "$MODE" = box2 ] || chown agent /tmp/mock.log
 fi
 # The mock model listens on loopback inside the agent's network (NO_PROXY: the
 # proxy refuses loopback destinations, as it should).
 MOCK=""
 start_mock() {
-  if [ "$MODE" = box ]; then MOCK="$1"; return; fi   # started inside the box by run_agent
+  if [ "$MODE" = box ] || [ "$MODE" = box2 ]; then MOCK="$1"; return; fi   # started inside the box by run_agent
   if [ "$MODE" = enforced ]; then
     ip netns exec audit-ns runuser -u agent -- python3 "/repo/tests/agents/$1" 9100 /tmp/cmds.txt /tmp/mock.log &
   else
@@ -99,6 +103,17 @@ start_mock() {
 }
 # Run the agent with Ovara's agent environment, its output in /tmp/agent.out.
 run_agent() {
+  if [ "$MODE" = box2 ]; then
+    # nothing of the host is in a tier 2 box: the mock, its commands and the
+    # agent's config come in read-only; the mock's log goes out through the
+    # workspace, which -no-commit-back keeps
+    GITHUB_TOKEN="$REALKEY" timeout 900 ovara box -tier 2 -image "${BOX_IMAGE:-ovara-box-test}" -dir /tmp/d -ui off -no-commit-back \
+      -mount /tmp/home:/tmp/home -mount /repo/tests/agents:/repo/tests/agents -mount /tmp/cmds.txt:/tmp/cmds.txt /tmp/proj -- \
+      bash -c "cp -r /tmp/home/. \$HOME/ 2>/dev/null; python3 /repo/tests/agents/$MOCK 9100 /tmp/cmds.txt /tmp/mock.log & sleep 1; $1; cp /tmp/mock.log /work/.ovara-test-mock.log" >/tmp/agent.out 2>&1
+    W=$(sed -n 's/^==> workspace kept at //p' /tmp/agent.out | tail -1)
+    [ -n "$W" ] && cp "$W/.ovara-test-mock.log" /tmp/mock.log 2>/dev/null
+    return
+  fi
   if [ "$MODE" = box ]; then
     GITHUB_TOKEN="$REALKEY" timeout 900 ovara box -dir /tmp/d -ui off -user agent /tmp/proj -- \
       bash -c "cp -r /tmp/home/. \$HOME/ 2>/dev/null; python3 /repo/tests/agents/$MOCK 9100 /tmp/cmds.txt /tmp/mock.log & sleep 1; $1" >/tmp/agent.out 2>&1
