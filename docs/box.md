@@ -225,12 +225,13 @@ flags (built)
   -ui ADDR|off      approval page (default 127.0.0.1:9090)
   -approve-timeout  how long the commit-back waits for a person (default 10m)
 
-  -profile dev|strict  dev (default): installs free; strict: a dependency the
-                    project's lockfiles do not pin pauses once (§9)
+  -profile dev|strict|ci  dev (default): installs free; strict: a dependency the
+                    project's lockfiles do not pin pauses once (§9); ci: strict,
+                    and anything that would pause is refused at once (§11.4)
 
 planned
   -tier 3           microVM (§4.4)
-  -profile ci, -policy FILE  (§11.4)
+  -policy FILE      a policy for this run only (§11.4)
 ```
 
 ### 6.2 What it does, in order
@@ -579,10 +580,17 @@ box adds `fs.commit_back`. Resources per type:
 | `strict` | deny | trusted list free, others pause | pause | read/build/test free, everything else pause | new deps pause | 60 s |
 | `ci` | deny | trusted list free, others deny | only the listed ones | listed ones only | lockfile only | 10 s |
 
-As built (milestone 5): `-profile dev` (default) and `-profile strict`
-differ in installs only (strict: new dependencies pause once, npm install
-scripts off; §9). The rest of the `strict` row (default deny, commands
-beyond read/build/test pausing) and the `ci` profile are not built yet.
+As built: `-profile dev` (default) and `-profile strict` differ in installs
+only (strict: new dependencies pause once, npm install scripts off; §9).
+`-profile ci` is strict for an unattended run: anything the policy would
+pause (a request to a host outside the trusted list, a package the
+lockfiles do not pin, a command such as `rm -rf`, the commit-back) is
+refused at once instead of waiting for a person, and no approval is
+opened (`ovara run -unattended`). The commit-back needs a person by
+default, so in `ci` the workspace is kept unless the policy allows
+`fs.commit_back` outright. Tested in `tests/box/strict.sh` (refusals take
+seconds; no approval, no branch). The rest of the `strict` row (default
+deny, commands beyond read/build/test pausing) is not built.
 
 Profiles are ordinary policy files shipped in the binary (`policy_defaults.go`
 grows two siblings); `-policy` overrides, `.ovara/policy.json` in the

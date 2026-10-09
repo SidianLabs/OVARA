@@ -77,6 +77,11 @@ agents, and fix correctness bugs found in an in-depth review.
   pauses at its first request; npm install scripts are off. `dev`
   (default) is unchanged. Tested end to end with real npm and pip
   (`tests/box/strict.sh`, 23 checks).
+- **`ovara box -profile ci`: nothing waits for a person.** Strict installs
+  plus an unattended run (`ovara run -unattended`): anything policy would
+  pause (a request to an untrusted host, an unpinned package, a command
+  like `rm -rf`, the commit-back) is refused at once, and no approval is
+  opened. Tested in `tests/box/strict.sh`.
 - **The docker boundary recipe is now tested.** `setup-egress-boundary.sh
   docker` (`ovara run --boundary docker`) had never been run. The red team
   now runs against it (`tests/redteam/boundary/docker.sh`) with a probe
