@@ -73,13 +73,10 @@ commands run for each agent:
   the limit described above. In enforced mode (scenario 2) all seven are
   blocked.
 
-Results (2026-10-09): enforced 28 passed, 0 failed for each agent. Cooperative,
-0 failed for each agent; opencode on an open network (Docker Desktop) scored 21
-passed and 8 informational (the seven bypasses plus one judged by receipts).
-Anthropic's agent CLI and Codex were measured where the host's own egress filter
-intercepts direct TLS, so four of the bypasses (`curl --noproxy`, unset proxy,
-Python and Node direct) failed for that reason, not because of Ovara (25 passed,
-4 informational); raw TCP, direct DNS and `git` without the proxy got out.
+Results on GitHub's runners (2026-10-09, PR #39): for each of the three
+agents, cooperative mode 21 passed, 0 failed, 8 informational (the seven
+proxy-evasion attempts that get out, plus one judged by receipts); enforced
+mode and `ovara box` 28 passed, 0 failed.
 The agents' own traffic is visible in `ovara log`: opencode fetches
 `models.opencode.ai` and installs provider packages from npm; Codex contacts
 `chatgpt.com` and posts to `ab.chatgpt.com`; Anthropic's agent CLI, with its

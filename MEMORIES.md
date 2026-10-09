@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-09 (cloud session). Read this first, then `README.md`, `docs/threat-model.md`, `docs/use-cases.md`.
 
-Branch: `test/real-agents`, pushed to GitHub on 2026-10-09 (owner said "try again" and the push went through); PR being opened. CI on GitHub runs for the first time on it: fix what the runners show.
+Branch: `test/real-agents`, pushed to GitHub on 2026-10-09 (owner said "try again" and the push went through); PR being opened. PR #39 open; on `b48e434` 40 of 41 checks are green (coop agents show 21/8 on a normal runner, as predicted); the only red is `security-scan` (`docker.yml`, `trivy-action@0.28.0` unresolvable), red on `main` too, needs a maintainer re-pin.
 `hardening/path-to-10` is finished: merged into `main` as PR #27 (`97cafe1`). Do not reuse it.
 Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never mention Claude (or other AI tools) in commit messages or branch names (§5).
 
