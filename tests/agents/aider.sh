@@ -20,7 +20,10 @@ launch_agent() {
 yes y | timeout 900 aider --model openai/gpt-4o --message 'run the checks' --no-pretty --no-stream \
   --no-check-update --no-show-model-warnings --no-analytics --no-auto-commits --no-git --map-tokens 0 \
   --chat-history-file /tmp/aider.chat.md --input-history-file /tmp/aider.input --no-restore-chat-history"
-  python3 - <<'PY' >> /tmp/mock.log
+  # /tmp/mock.log may belong to the agent's user; with fs.protected_regular
+  # (GitHub's runners) root may not open another user's file in sticky /tmp
+  # with O_CREAT, so append without it
+  python3 - <<'PY' | dd of=/tmp/mock.log oflag=append conv=notrunc,nocreat status=none
 import json, re
 out = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', open('/tmp/agent.out', errors='replace').read())
 lines = [l.strip() for l in out.splitlines() if re.match(r'^\s*[A-Z]\d+ \S', l)]
