@@ -2,7 +2,7 @@
 
 Last updated: 2026-10-09 (cloud session). Read this first, then `README.md`, `docs/threat-model.md`, `docs/use-cases.md`.
 
-Branch: `test/real-agents`, 18 commits ahead of `main`, **not pushed**. The owner said do not push yet.
+Branch: `test/real-agents`, 22 commits ahead of `main`, **not pushed**. The owner said do not push yet.
 `hardening/path-to-10` is finished: merged into `main` as PR #27 (`97cafe1`). Do not reuse it.
 Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never mention Claude (or other AI tools) in commit messages or branch names (§5).
 
@@ -16,7 +16,8 @@ Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never 
 - **Deployments started by an older build** refuse to start ("same file_seq with different hash"); the error names the fix: `ovara run -repair-registry` once (accepts only a same-seq re-seal signed by the gateway's own key, re-seals at seq+1). `tests/scenarios/upgrade.sh` builds the last affected commit (found by the subject `fix: deployments restart`) and upgrades a deployment it made. Keep that subject if history is rewritten.
 
 ### 0.2 Next steps, in order
-0. **The Box plan is `docs/box.md`** (design only, nothing built): the owner wants Ovara to become a sandbox for agents whose boundary is intent (network + files + commands + secrets, default deny, one command `ovara box`). Milestones with acceptance tests are in its §14; policy v2 (most-specific rule wins) in §11; open questions to decide before building in §15. Build order: ship v0.9.1 → policy v2 → `ovara box` tier 1 → command gate → tier 2 → installs → macOS/Windows via VM → real-key soak → external review.
+0. **Milestone 1 (policy v2) is DONE** (`723e1e5`, `cee70f1`, `0854cd5`): `"precedence": "most-specific"` + `"default": "deny"` in policy.json, written by `ovara init` (version `v2-init`); evaluator path `evaluateMostSpecific`; validator warns on same-pattern conflicts; reload carries the fields. ci-bot 16/0 incl. C3/C4. Next milestone: 2, `ovara box` tier 1 (§14 of box.md).
+0b. **The Box plan is `docs/box.md`** (design only, nothing built): the owner wants Ovara to become a sandbox for agents whose boundary is intent (network + files + commands + secrets, default deny, one command `ovara box`). Milestones with acceptance tests are in its §14; policy v2 (most-specific rule wins) in §11; open questions to decide before building in §15. Build order: ship v0.9.1 → policy v2 → `ovara box` tier 1 → command gate → tier 2 → installs → macOS/Windows via VM → real-key soak → external review.
 1. **Owner is rewriting `main` history** (drop AI co-author lines; keep the `v0.9.0` release): PowerShell steps were given in chat, with `clean_msg.py` (byte-exact, only changes messages that mention the tools), checks: same tree, 318 commits, `ef2fbb2` still an ancestor, 1 remaining mention (`165857e`, kept for v0.9.0). After they push it: rebase `test/real-agents` onto the new `main` (`git rebase --onto origin/main <old-main-sha> test/real-agents`), re-run §6, then ask before pushing. Other GitHub branches still hold the old commits.
 2. **Ask the owner, then push and open a PR** for `test/real-agents`. Watch CI: `scenarios`, `separate-user-attacks`, `boundary-redteam`, `agents` (matrix), `agents-harness`. (`ci-bot` job added too.) Coop agent jobs on a normal runner should show 21 passed / 8 info (§3.10).
 3. Aider: needs a different driver (`aider --message "/run <cmd>"` per command, or a flag that runs suggested commands unattended). Verify before claiming.
@@ -111,7 +112,8 @@ Layout:
 - **The scenarios restart check was vacuous**: `pkill` did nothing (SIGTERM ignored), so the old process answered. Now checks the old one is gone and the new one serves.
 - **Approval-page link carried the operator token** (`30f3d65`): now a random per-run page token that only opens the page API.
 - **Repair path** (`2f9c707`): `ovara run -repair-registry`, `idregistry.OpenRepair`/`Reseal`, `record.ErrSameSeqEquivocation`; tests in `internal/idregistry/repair_test.go` and `tests/scenarios/upgrade.sh`.
-- **Deny beats allow**: "allow this write, deny all other writes" cannot be expressed; documented in use-cases §4, asserted by `ci-bot.sh` C3.
+- **Policy v2 bugs found while building it**: a load-time refusal of same-pattern conflicts blocked the normal "add POST * deny on top of the defaults" composition (now a validator warning); hot reload copied rules+version but not precedence/default (fixed in `Reload`/`ReloadFromStore`).
+- **Deny beats allow** (fixed by policy v2; older files keep it): "allow this write, deny all other writes" cannot be expressed; documented in use-cases §4, asserted by `ci-bot.sh` C3.
 - **netns boundary failed on kernels without IPv6** (`20dd08a`): `setup-egress-boundary.sh` wrote `net.ipv6.conf.*.disable_ipv6` unconditionally, so `ovara run --boundary netns` exited 1. It is now skipped only when `/proc/sys/net/ipv6` is absent.
 - **CI entry scripts not executable** (`148e91e`): `tests/scenarios/run.sh`, `tests/redteam/separate-user/run.sh` and `tests/redteam/boundary/run-in-docker.sh` were 100644 (committed from Windows). All `scenarios.yml` jobs failed instantly on GitHub.
 - **Agent image built without the agent** (`7b2043d`): `tests/agents/Dockerfile` used `;` and `>/dev/null`, so a failed `npm install -g` still produced an image. It now uses `&&` plus `--version` checks.
