@@ -17,7 +17,7 @@ Git identity for commits: `BHAWESHBHASKAR <bhaskarabhawesh09@gmail.com>`. Never 
 
 ### 0.2 Next steps, in order
 1. **Owner is rewriting `main` history** (drop AI co-author lines; keep the `v0.9.0` release): PowerShell steps were given in chat, with `clean_msg.py` (byte-exact, only changes messages that mention the tools), checks: same tree, 318 commits, `ef2fbb2` still an ancestor, 1 remaining mention (`165857e`, kept for v0.9.0). After they push it: rebase `test/real-agents` onto the new `main` (`git rebase --onto origin/main <old-main-sha> test/real-agents`), re-run §6, then ask before pushing. Other GitHub branches still hold the old commits.
-2. **Ask the owner, then push and open a PR** for `test/real-agents`. Watch CI: `scenarios`, `separate-user-attacks`, `boundary-redteam`, `agents` (matrix), `agents-harness`. Add a `ci-bot` job (`tests/scenarios/run.sh ci-bot`) to `scenarios.yml`. Coop agent jobs on a normal runner should show 21 passed / 8 info (§3.10).
+2. **Ask the owner, then push and open a PR** for `test/real-agents`. Watch CI: `scenarios`, `separate-user-attacks`, `boundary-redteam`, `agents` (matrix), `agents-harness`. (`ci-bot` job added too.) Coop agent jobs on a normal runner should show 21 passed / 8 info (§3.10).
 3. Aider: needs a different driver (`aider --message "/run <cmd>"` per command, or a flag that runs suggested commands unattended). Verify before claiming.
 4. Other scenarios: hosted-sandbox pattern, `tests/boundary/docker_test.sh` (never run).
 5. Product: pin GitHub Actions to SHAs (dependabot #29 wants checkout v7); consider a policy form for "allow X, deny other writes" (deny beats allow today, §3.11); Phase 3/4/7 items.

@@ -28,6 +28,14 @@ jobs:
       - name: Run user scenarios
         run: tests/scenarios/run.sh
 
+  ci-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ovara as a CI step (nobody to approve, a job policy)
+        run: tests/scenarios/run.sh ci-bot
+
   separate-user-attacks:
     runs-on: ubuntu-latest
     timeout-minutes: 20
