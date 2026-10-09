@@ -25,7 +25,7 @@ launch_agent() {
   start_mock mock_responses.py
   # Codex's own sandbox is turned off: this measures what Ovara does, so the
   # agent's commands must actually be allowed to try.
-  run_agent "export CODEX_HOME=/tmp/home/.codex MOCK_API_KEY=x; \
+  run_agent "export CODEX_HOME=\$HOME/.codex MOCK_API_KEY=x; \
 timeout 900 codex exec --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox 'run the commands'"
 }
 
