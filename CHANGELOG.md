@@ -187,6 +187,12 @@ that the unit suites had not:
 
 ### Security (hardening pass)
 
+- `integrations/mcp`: `@modelcontextprotocol/sdk` 1.30.0 → 1.32.1
+  (CVE-2026-104850, HIGH: OAuth credentials not bound to their server).
+  Found by the Trivy scan, which had never run: its action was pinned to a
+  tag that no longer exists. The action is now pinned by commit and the
+  scanner version is explicit.
+
 - CI and the test images build with Go 1.26: the standard library of Go 1.25
   no longer receives fixes (`govulncheck` on 1.25.14 reports nine `net/http`,
   `crypto/tls` and `net/textproto` advisories fixed only in 1.26.9).

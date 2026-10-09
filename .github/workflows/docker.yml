@@ -24,8 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned by commit: this action's tags have been rewritten upstream
+        # before (the old 0.28.0 tag no longer exists at all).
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
+          version: v0.75.0
           scan-type: fs
           scan-ref: .
           severity: CRITICAL,HIGH
