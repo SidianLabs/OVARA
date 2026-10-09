@@ -162,9 +162,15 @@ do_netns() {
   fi
 
   # Hard-disable IPv6 inside the namespace. Simpler than mirroring every
-  # rule into ip6tables; honest about the tradeoff.
-  ip netns exec "${NS_NAME}" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
-  ip netns exec "${NS_NAME}" sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+  # rule into ip6tables; honest about the tradeoff. A kernel built without
+  # IPv6 has no such sysctl and no IPv6 egress to close, so that is not an
+  # error; anything else that stops the sysctl still is.
+  if ip netns exec "${NS_NAME}" test -d /proc/sys/net/ipv6; then
+    ip netns exec "${NS_NAME}" sysctl -qw net.ipv6.conf.all.disable_ipv6=1
+    ip netns exec "${NS_NAME}" sysctl -qw net.ipv6.conf.default.disable_ipv6=1
+  else
+    echo "    kernel has no IPv6; nothing to disable"
+  fi
 
   # Host-side INPUT: two-direction hardening, idempotent.
   # (a) Many hosts end INPUT with a catch-all REJECT — open the proxy port
