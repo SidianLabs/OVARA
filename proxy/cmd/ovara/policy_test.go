@@ -39,8 +39,8 @@ func TestExplainPolicy_DefaultPolicyGrouped(t *testing.T) {
 // (the path and query of a read carry data just like a POST body).
 func TestDefaultPolicyHasNoHostlessAllow(t *testing.T) {
 	for _, r := range defaultPolicyRules() {
-		if r["allow"] != true {
-			continue
+		if r["allow"] != true || r["action_type"] != "http.request" {
+			continue // the commit-back path rules are not network rules
 		}
 		res, _ := r["resource"].(string)
 		_, target, _ := strings.Cut(res, " ")

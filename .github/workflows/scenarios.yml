@@ -11,6 +11,7 @@ on:
       - "runtime/gateway/**"
       - "tests/scenarios/**"
       - "tests/agents/**"
+      - "tests/box/**"
       - ".github/workflows/scenarios.yml"
   workflow_dispatch:
   schedule:
@@ -77,6 +78,14 @@ jobs:
       # enforced: a netns boundary, the agent as an unprivileged user (privileged container)
       - name: Real ${{ matrix.agent }} behind Ovara (${{ matrix.mode }})
         run: tests/agents/run.sh ${{ matrix.mode }} ${{ matrix.agent }}
+
+  box:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: ovara box end to end (privileged container, netns)
+        run: tests/box/run.sh
 
   agents-harness:
     runs-on: ubuntu-latest

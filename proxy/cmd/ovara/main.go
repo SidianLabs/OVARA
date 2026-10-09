@@ -48,6 +48,8 @@ func main() {
 		return
 	case "init":
 		err = cmdInit(os.Args[2:])
+	case "box":
+		err = cmdBox(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
 	case "demo":
@@ -83,6 +85,9 @@ func usage() {
   version               print the ovara version
   init [dir] [-force]   generate a working gateway+proxy deployment
   run [-dir .]          start the gateway and the executor proxy
+  box <dir> -- <agent>  run an agent in a box: a copy of the project, no keys,
+                        no network except through Ovara; changes come back as a
+                        reviewed branch (Linux, sudo)
   demo                  self-contained end-to-end demo (no network, no root)
   env [-dir .]          print the environment to run your agent through Ovara
   policy [-dir .]       explain the rules in plain English

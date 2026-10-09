@@ -18,6 +18,9 @@ func defaultPolicyRules() []map[string]any {
 		r[effect] = true
 		return r
 	}
+	fsRule := func(action, resource, effect, desc string) map[string]any {
+		return map[string]any{"action_type": action, "environment": "*", "resource": resource, "description": desc, effect: true}
+	}
 	rules := []map[string]any{}
 	// Reading is free, but only from places an agent legitimately needs:
 	// package registries, code hosts and documentation. A blanket "GET *"
@@ -51,6 +54,15 @@ func defaultPolicyRules() []map[string]any {
 		rule("*://transfer.sh/*", "deny", "Blocked: anonymous file drop"),
 		rule("*://webhook.site/*", "deny", "Blocked: request-capture site commonly used to leak data"),
 		rule("*://*.requestbin.com/*", "deny", "Blocked: request-capture site commonly used to leak data"),
+		// `ovara box`: what the agent changed comes back to the real
+		// repository only as a reviewed commit on a new branch. Each path is
+		// checked (fs.commit_back.path) so a policy can keep the agent out of
+		// what runs on the host or in CI, then the commit as a whole pauses
+		// for a person who sees the diff (fs.commit_back).
+		fsRule("fs.commit_back.path", "path:.github/workflows/*", "deny", "The agent may not change CI workflows without a person editing the policy"),
+		fsRule("fs.commit_back.path", "path:.git/*", "deny", "The agent may not change git hooks or config"),
+		fsRule("fs.commit_back.path", "path:*", "allow", "Other paths may come back for review"),
+		fsRule("fs.commit_back", "commit:*", "escalate", "Changes come back to the real repository only after a person reads the diff"),
 		// Anything that changes something out in the world needs a human.
 		// This covers git push, opening/merging PRs, deleting branches,
 		// triggering deploys and posting messages.
