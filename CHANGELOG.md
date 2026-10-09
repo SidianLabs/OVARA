@@ -82,6 +82,11 @@ agents, and fix correctness bugs found in an in-depth review.
   provenance), and a released `ovara` defaults to it by digest, so tier 2
   needs no local build. The release's Docker actions are pinned by commit;
   every pull request builds the image for both architectures.
+- **Approve for this run.** `ovara approve <id> -for-run` (or the
+  approval page's "Approve for this run") allows the exact same request or
+  command again, without asking, until this `ovara run` ends. Kept in the
+  deployment (Ovara's user only), emptied at each start, every use still
+  a receipt; `ovara box` lists them when it exits.
 - **Ready-made agent images and `ovara box -agent`.** Releases publish
   `ghcr.io/sidianlabs/ovara-box-<agent>` for claude, codex, opencode and
   aider (`box/agents/Dockerfile`); `sudo ovara box -agent codex ./repo --

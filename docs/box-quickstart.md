@@ -56,6 +56,14 @@ sudo ovara approve apr_... -dir ~/.ovara/box
 sudo ovara deny apr_... -dir ~/.ovara/box
 ```
 
+If the agent will repeat the same request or command, approve it for the
+rest of the run so it does not ask again (exact match only; the page has
+an "Approve for this run" button too):
+
+```bash
+sudo ovara approve apr_... -dir ~/.ovara/box -for-run
+```
+
 Or answer each one as it comes:
 
 ```bash

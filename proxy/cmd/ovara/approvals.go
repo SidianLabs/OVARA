@@ -19,10 +19,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"ovara.proxy/internal/runallow"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"ovara.proxy/internal/runallow"
 )
 
 // adminClient talks to the local gateway as the operator.

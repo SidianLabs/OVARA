@@ -742,7 +742,7 @@ func agentImage(agent string) (string, error) {
 	if !boxAgents[agent] {
 		return "", fmt.Errorf("-agent %q: want claude, codex, opencode or aider (or -image for your own image)", agent)
 	}
-	if repo, _, ok := strings.Cut(boxImage, "@"); ok && repo != "" && version != "dev" {
+	if repo, _, ok := strings.Cut(boxImage, "@"); ok && repo != "" && version != devVersion {
 		return repo + "-" + agent + ":" + version, nil
 	}
 	return boxDefaultImage + "-" + agent, nil

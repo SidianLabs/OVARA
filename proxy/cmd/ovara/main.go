@@ -34,7 +34,10 @@ import (
 )
 
 // version is stamped by release builds: -ldflags "-X main.version=v0.10.0".
-var version = "dev"
+var version = devVersion
+
+// devVersion is the version of a build that no release stamped.
+const devVersion = "dev"
 
 // boxImage is stamped by release builds: the box image this ovara was
 // released with, by digest (ghcr.io/sidianlabs/ovara-box@sha256:...), so

@@ -684,10 +684,13 @@ Order matters: 0 before anything (today's release cannot restart); 1 before
    overlay mount. Overlay is fastest and still a copy-on-write boundary;
    it needs root or a user namespace. Default proposal: shared clone,
    overlay as a tier-2 option.
-2. **Approval fatigue**: should "approve" offer "and allow this command
-   pattern for the rest of the run"? Proposal: yes, run-scoped only, shown
-   in the exit summary; persistent rules only through "trust host" (reads)
-   and explicit policy edits.
+2. **Approval fatigue** — *decided and built*: "approve for this run"
+   (`ovara approve <id> -for-run`, or the page's button) allows the exact
+   same request or command line again, without asking, until `ovara run`
+   ends; each use is still a receipt carrying the original approval, and
+   `ovara box` lists them in its exit summary. Exact match only, not a
+   pattern: a pattern is a policy, and policy changes stay explicit
+   ("trust host" for reads, or editing the policy).
 3. **Where the model API key lives for Aider/opencode-style agents that
    want it in a config file**: placeholder in the file, substituted at the
    proxy, same as env vars. Needs a test per agent.
