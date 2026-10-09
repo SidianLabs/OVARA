@@ -97,7 +97,7 @@ const leftPad = "http://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz"
 
 func TestPackageGate_PinnedPackagePassesWithoutAQuestion(t *testing.T) {
 	srv, pg, hits := newPkgServer(t, true, "npm:left-pad@1.3.0")
-	if rec := do(srv, "GET", leftPad); rec.Code != 200 {
+	if rec := do(srv, http.MethodGet, leftPad); rec.Code != 200 {
 		t.Fatalf("pinned package: %d %s", rec.Code, rec.Body)
 	}
 	if pg.pkgChecks.Load() != 0 || hits.Load() != 1 {
@@ -114,10 +114,10 @@ func TestPackageGate_NewPackagePausesOnceThenIsAllowed(t *testing.T) {
 		}
 		pg.approvalStatus.Store("approved")
 	}()
-	if rec := do(srv, "GET", leftPad); rec.Code != 200 {
+	if rec := do(srv, http.MethodGet, leftPad); rec.Code != 200 {
 		t.Fatalf("approved package: %d %s", rec.Code, rec.Body)
 	}
-	if rec := do(srv, "GET", leftPad); rec.Code != 200 {
+	if rec := do(srv, http.MethodGet, leftPad); rec.Code != 200 {
 		t.Fatalf("second download: %d", rec.Code)
 	}
 	if pg.creates.Load() != 1 || pg.pkgChecks.Load() != 1 || hits.Load() != 2 {
@@ -131,12 +131,12 @@ func TestPackageGate_NewPackagePausesOnceThenIsAllowed(t *testing.T) {
 func TestPackageGate_RefusedPackageNeverDownloads(t *testing.T) {
 	srv, pg, hits := newPkgServer(t, true)
 	pg.approvalStatus.Store("denied")
-	rec := do(srv, "GET", leftPad)
+	rec := do(srv, http.MethodGet, leftPad)
 	if rec.Code != http.StatusForbidden || hits.Load() != 0 || !strings.Contains(rec.Body.String(), "npm:left-pad@1.3.0") {
 		t.Fatalf("refused: %d hits=%d %s", rec.Code, hits.Load(), rec.Body)
 	}
 	// a refusal is not remembered as an allowance: asking again asks again
-	do(srv, "GET", leftPad)
+	do(srv, http.MethodGet, leftPad)
 	if pg.creates.Load() != 2 || hits.Load() != 0 {
 		t.Fatalf("creates=%d hits=%d", pg.creates.Load(), hits.Load())
 	}
@@ -145,11 +145,11 @@ func TestPackageGate_RefusedPackageNeverDownloads(t *testing.T) {
 func TestPackageGate_PolicyDenyAndAllow(t *testing.T) {
 	srv, pg, hits := newPkgServer(t, true)
 	pg.pkgDecision.Store("deny")
-	if rec := do(srv, "GET", leftPad); rec.Code != http.StatusForbidden || pg.creates.Load() != 0 {
+	if rec := do(srv, http.MethodGet, leftPad); rec.Code != http.StatusForbidden || pg.creates.Load() != 0 {
 		t.Fatalf("policy deny: %d creates=%d", rec.Code, pg.creates.Load())
 	}
 	pg.pkgDecision.Store("allow")
-	if rec := do(srv, "GET", leftPad); rec.Code != 200 || hits.Load() != 1 {
+	if rec := do(srv, http.MethodGet, leftPad); rec.Code != 200 || hits.Load() != 1 {
 		t.Fatalf("policy allow: %d", rec.Code)
 	}
 }
@@ -162,7 +162,7 @@ func TestPackageGate_ParallelDownloadsAskOnce(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			codes[i] = do(srv, "GET", leftPad).Code
+			codes[i] = do(srv, http.MethodGet, leftPad).Code
 		}(i)
 	}
 	time.Sleep(150 * time.Millisecond)
@@ -185,9 +185,9 @@ func TestPackageGate_MetadataAndAuditAreNotAsked(t *testing.T) {
 		"http://registry.npmjs.org/-/npm/v1/security/advisories/bulk",
 		"http://pypi.org/simple/six/",
 	} {
-		method := "GET"
+		method := http.MethodGet
 		if strings.Contains(u, "advisories") {
-			method = "POST"
+			method = http.MethodPost
 		}
 		if rec := do(srv, method, u); rec.Code != 200 {
 			t.Fatalf("%s: %d", u, rec.Code)
@@ -200,7 +200,7 @@ func TestPackageGate_MetadataAndAuditAreNotAsked(t *testing.T) {
 
 func TestPackageGate_OffByDefault(t *testing.T) {
 	srv, pg, hits := newPkgServer(t, false)
-	if rec := do(srv, "GET", leftPad); rec.Code != 200 || pg.pkgChecks.Load() != 0 || hits.Load() != 1 {
+	if rec := do(srv, http.MethodGet, leftPad); rec.Code != 200 || pg.pkgChecks.Load() != 0 || hits.Load() != 1 {
 		t.Fatalf("gate off: %d checks=%d", rec.Code, pg.pkgChecks.Load())
 	}
 }

@@ -26,6 +26,8 @@ const (
 	pkgTimeout  = "timeout"
 	pkgAborted  = "aborted"
 	pkgError    = "error"
+
+	gwEscalate = "escalate" // the gateway's decision string
 )
 
 type pkgResult struct {
@@ -111,9 +113,9 @@ func (s *Server) askPackage(ctx context.Context, ref, url string) (string, strin
 		return pkgError, ""
 	}
 	switch d.Decision {
-	case "allow":
+	case pkgAllow:
 		return pkgAllow, ""
-	case "escalate":
+	case gwEscalate:
 		log.Printf("package gate: %s is not in the project's lockfiles; waiting for approval", ref)
 		outcome, id := s.holdForApproval(ctx, ref, func() (string, error) {
 			if d.ApprovalID != "" {
@@ -122,12 +124,8 @@ func (s *Server) askPackage(ctx context.Context, ref, url string) (string, strin
 			return s.gw.CreateApprovalFor(ctx, d, actionPackageInstall, ref)
 		})
 		switch outcome {
-		case "approved":
-			return pkgApproved, id
-		case "timeout":
-			return pkgTimeout, id
-		case "aborted":
-			return pkgAborted, id
+		case pkgApproved, pkgTimeout, pkgAborted: // holdForApproval's outcomes share these names
+			return outcome, id
 		}
 		return pkgDeny, id
 	}

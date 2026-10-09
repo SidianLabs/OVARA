@@ -115,7 +115,7 @@ func npmLock(path string) []string {
 	if json.Unmarshal(b, &lock) != nil {
 		return nil
 	}
-	var out []string
+	out := make([]string, 0, len(lock.Packages))
 	for key, p := range lock.Packages {
 		i := strings.LastIndex(key, "node_modules/")
 		if key == "" || p.Link || p.Version == "" || i < 0 {

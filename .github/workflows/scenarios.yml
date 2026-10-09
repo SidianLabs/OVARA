@@ -101,6 +101,16 @@ jobs:
       - name: ovara box end to end (privileged container, netns)
         run: tests/box/run.sh
 
+  box-strict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - name: ovara box -profile strict (real npm and pip; new dependencies pause once)
+        run: tests/box/run.sh strict
+
   # Tier 2 (`ovara box -tier 2`, a container) needs Docker, so these run on
   # the runner itself as root (tests/box/host.sh), not in a test container.
   box-tier2:

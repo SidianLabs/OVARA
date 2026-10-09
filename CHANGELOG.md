@@ -64,6 +64,19 @@ agents, and fix correctness bugs found in an in-depth review.
   `-cpus`. Tested in CI on GitHub's runners: the box test with the
   container's own checks, the boundary red team from inside the box, and
   the three agents' battery in a tier 2 box.
+- **`ovara box -profile strict`: new dependencies pause once.** At box
+  start the launcher reads the project's lockfiles (npm, yarn, pnpm,
+  requirements pins, poetry, uv, Pipfile, go.sum, Cargo.lock). The proxy
+  names each package download on the pinned registries
+  (`npm:left-pad@1.3.0`, `pypi:six@1.16.0`, `go:…`, `crate:…`): a pinned one
+  goes through; any other asks policy (`action_type: package.install`,
+  escalate by default), so the person sees "install npm package is-number
+  7.0.0 (a new dependency…)" once, and an approved package is allowed for
+  the rest of the run. A refused one never downloads; npm audit and
+  metadata reads are not asked about; a registry outside the trusted list
+  pauses at its first request; npm install scripts are off. `dev`
+  (default) is unchanged. Tested end to end with real npm and pip
+  (`tests/box/strict.sh`, 23 checks).
 - **The docker boundary recipe is now tested.** `setup-egress-boundary.sh
   docker` (`ovara run --boundary docker`) had never been run. The red team
   now runs against it (`tests/redteam/boundary/docker.sh`) with a probe

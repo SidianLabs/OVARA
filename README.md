@@ -71,6 +71,9 @@ the project's copy. Build the image once with `docker build -t ovara-box
 box/` and extend it with your agent. Details and limits are in
 `docs/box.md` section 6.4.
 
+Add `-profile strict` and a dependency the project's lockfiles do not pin
+pauses once, by name and version, before it is downloaded.
+
 `ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a
 **local approval page**: whatever the agent is waiting on, with Approve and Deny
 buttons, plus a live, integrity-checked history of what it did. The page is only

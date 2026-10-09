@@ -120,7 +120,7 @@ box in the first release (see tiers, §4.4).
 | Files back to the real project | Workspace is a copy; "commit back" is a gated action with a diff preview | **built, tested** (`proxy/internal/workspace`, `tests/box`) |
 | Files anywhere else on the host | The box runs as another user; the host's files are reachable only where that user may read them (tier 1); not mounted at all in tier 2 | tier 1 built; **tier 2 built, tested** (`tests/box` with `TIER=2`: host paths, Docker socket and credential files absent, root read-only) (§6.4) |
 | Commands | Every exec in the agent's tree is stopped and checked by policy: allow / pause / kill | **built, tested** (`proxy/internal/boxgate`, ptrace; `tests/box`, agents `mode: box`) |
-| Package installs | Through the proxy, with registry pins, install-script policy, new-dependency approval | partial (npm audit rule only) (§9) |
+| Package installs | Through the proxy, with registry pins, install-script policy, new-dependency approval | **built, tested** (`-profile strict`; `tests/box/strict.sh` with real npm and pip) (§9) |
 | Secrets | Never present in the box; injected by the proxy; scrubbed on return | **built, tested** |
 | Process control (kill Ovara, edit policy, forge receipts) | Agent runs as a different unprivileged user with no access to Ovara's directory | **built, tested** (`tests/redteam/separate-user`, 19 attacks) |
 | Non-HTTP protocols (SSH, raw TCP, DNS to the outside) | Dropped by the boundary (no route); tier 2 has no interface but loopback | **built, tested**: netns (27 checks), from inside a tier 2 box (28) and the docker recipe (29) (`tests/redteam/boundary`; docker mode run for the first time in milestone 4) |
@@ -225,9 +225,12 @@ flags (built)
   -ui ADDR|off      approval page (default 127.0.0.1:9090)
   -approve-timeout  how long the commit-back waits for a person (default 10m)
 
+  -profile dev|strict  dev (default): installs free; strict: a dependency the
+                    project's lockfiles do not pin pauses once (§9)
+
 planned
   -tier 3           microVM (§4.4)
-  -policy, -profile a named policy profile: dev | ci | strict (§11.4, milestone 5)
+  -profile ci, -policy FILE  (§11.4)
 ```
 
 ### 6.2 What it does, in order
@@ -436,6 +439,50 @@ already fuzzed), so one policy language covers all three exits.
 
 ## 9. Package installs
 
+**Built in milestone 5** (`ovara box -profile strict`; `proxy/internal/lockfiles`,
+`proxy/internal/proxy/packages.go`). How it works, as built:
+
+- When the box starts, the launcher reads the project's lockfiles in the
+  workspace: `package-lock.json`/`npm-shrinkwrap.json`, `yarn.lock` (classic
+  and berry), `pnpm-lock.yaml`, `requirements*.txt` pins, `poetry.lock`,
+  `uv.lock`, `Pipfile.lock`, `go.sum`, `Cargo.lock`. Lockfiles inside
+  `node_modules`, `vendor` and the like are not the project's and are not
+  read. It hands the pinned packages to Ovara (`ovara run -package-gate`).
+- The proxy names every package **download** on the pinned registries:
+  `npm:left-pad@1.3.0`, `pypi:six@1.16.0`, `go:module@v1.2.3`,
+  `crate:serde@1.0.200`. Metadata reads (an npm packument, a PyPI index, a
+  Go `.info`) are not downloads of code and are not asked about.
+- After the URL policy has allowed a download, a pinned package goes
+  through. Any other asks the gateway: `action_type: "package.install"`,
+  resource `npm:name@version`, which the default policy escalates. The
+  person sees "install npm package is-number 7.0.0 (a new dependency: not in
+  the project's lockfiles)". Approved, it is allowed for the rest of the
+  run, so each new dependency pauses **once**; parallel downloads of one
+  package ask once; refused, it never downloads (npm reports a 403). A
+  policy can allow trusted names outright (`npm:@types/*`).
+- A registry that is not in the trusted list is not read freely, so a
+  package manager pointed at it pauses at its first request (tested with
+  `--registry https://registry.npmmirror.com/`).
+- `npm audit` stays free (exact-path rules); strict sets
+  `npm_config_ignore_scripts=true` for the agent.
+
+Tested (`tests/box/strict.sh`, CI job `box-strict`): `npm ci` and `pip
+install -r` of pinned packages ask no one; a new npm and a new pip package
+each pause once by name and version, then install; installing the first
+again after clearing npm's cache asks no one; a refused package never
+arrives; the unlisted registry pauses and, refused, gives nothing; npm
+audit needs no one; the receipts agree; the dev profile asks nothing.
+
+Limits: a dependency that comes as a git URL or a tarball from another
+host is not a registry download and goes through the URL policy only (a
+new host pauses anyway); in a project with no lockfile every package pauses
+once, including each transitive dependency, so commit the lockfile first.
+Policies written before milestone 5 have no `package.install` rule; the
+launcher warns, and without the rule new packages are refused rather than
+paused.
+
+The design as first written:
+
 Installs are the supply-chain exit: a package can run code at install time,
 and the agent chooses packages from what it reads. The proxy already sees
 every registry request, so the policy lives there, not in the package
@@ -532,6 +579,11 @@ box adds `fs.commit_back`. Resources per type:
 | `strict` | deny | trusted list free, others pause | pause | read/build/test free, everything else pause | new deps pause | 60 s |
 | `ci` | deny | trusted list free, others deny | only the listed ones | listed ones only | lockfile only | 10 s |
 
+As built (milestone 5): `-profile dev` (default) and `-profile strict`
+differ in installs only (strict: new dependencies pause once, npm install
+scripts off; §9). The rest of the `strict` row (default deny, commands
+beyond read/build/test pausing) and the `ci` profile are not built yet.
+
 Profiles are ordinary policy files shipped in the binary (`policy_defaults.go`
 grows two siblings); `-policy` overrides, `.ovara/policy.json` in the
 project extends.
@@ -548,7 +600,7 @@ project extends.
 | **launcher** `ovara box` (tiers 1 and 2) | `proxy/cmd/ovara/box.go`, `boxinit.go` | yes |
 | **workspace + file gate** (snapshot, secret exclusion, diff preview, commit-back as a branch) | `proxy/internal/workspace` | yes |
 | **command gate** | `proxy/internal/boxgate` (ptrace, in the launcher) | yes |
-| **install policy** (registry pins, new-dependency pause) | `proxy/internal/proxy` + profile rules | partial |
+| **install policy** (registry pins, new-dependency pause) | `proxy/internal/lockfiles`, `proxy/internal/proxy/packages.go`, `-profile strict` | yes |
 | **policy v2** evaluator + migrate + shadow check | `runtime/gateway/internal/{policy,evaluator}` | yes |
 | **box image** (tier 2): agent runtimes, no secrets, read-only root | `box/Dockerfile` | yes |
 | **VM driver** (Lima / WSL2) | `proxy/internal/vm` | no |
@@ -595,7 +647,7 @@ updated in the same change.
 | 2 | **`ovara box` tier 1 on Linux** (launcher + workspace snapshot + secret exclusion; no command gate yet) | **done**: agents matrix runs through `ovara box` (`mode: box`); `tests/box` plants `.env`/`id_rsa`/a committed `.pem` and finds them absent; commit-back lands on a branch with the diff in the approval; the `.github/workflows/*` change is kept out | done |
 | 3 | **Command gate** | **done**: `tests/box` adds `sudo` (killed), `sudo` via python (killed), `rm -rf` (paused, refused, nothing deleted); the agents matrix runs under the gate; a program started by any route is seen (ptrace, no same-user bypass) | done |
 | 4 | **Tier 2 container** + docker boundary test finally run | **done**: the boundary red team passes in docker mode and from inside a tier 2 box; `tests/box` with `TIER=2` passes the tier 1 checks plus the container's own (no capabilities, read-only root, loopback only, sockets closed to the agent, no host paths or credential files, init unkillable); the three agents run their battery in a tier 2 box | done |
-| 5 | **Install policy** | `strict`: a new dependency pauses once with name+version; a package from an unlisted registry pauses; npm audit still free | 1 week |
+| 5 | **Install policy** | **done**: `strict`: a new dependency pauses once with name+version; a package from an unlisted registry pauses; npm audit still free (`tests/box/strict.sh`, 23 checks, real npm and pip) | done |
 | 6 | **macOS/Windows via VM** | the agents matrix on a macOS runner through Lima and on a Windows runner through WSL2, enforced mode numbers equal to Linux | 2–4 weeks |
 | 7 | **Real-key soak**: real model APIs, 3 agents, multi-day unattended runs, receipt chain verifying throughout | a nightly job that runs 8 hours and reports the host table and chain status | 2 weeks, then ongoing |
 | 8 | **External review** of tiers 1–2 before the word "sandbox" appears in the README | findings fixed or documented | external |
