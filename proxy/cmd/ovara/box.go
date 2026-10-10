@@ -30,7 +30,6 @@ package main
 // Both need root on the host today.
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,6 +55,8 @@ import (
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/lockfiles"
+	"ovara.proxy/internal/receipts"
+	"ovara.proxy/internal/runallow"
 	"ovara.proxy/internal/workspace"
 )
 
@@ -76,6 +77,7 @@ const (
 	// profiles (docs/box.md §11.4)
 	boxProfileDev    = "dev"
 	boxProfileStrict = "strict"
+	boxProfileCI     = "ci"
 
 	// run outcomes
 	outcomeClean  = "clean"  // everything came back or nothing changed: the workspace is removed
@@ -128,11 +130,12 @@ func cmdBox(args []string) error {
 	tier := fs.Int("tier", 1, "isolation: 1 = separate user in a network namespace; 2 = a container (no network but Ovara, no capabilities, read-only root, no host files)")
 	name := fs.String("name", "ovara-box", "tier 1: network namespace name (one box per name at a time)")
 	agentUser := fs.String("user", boxDefaultUser, "tier 1: unprivileged user the agent runs as (created if missing)")
-	image := fs.String("image", boxDefaultImage, "tier 2: the box image (build it from box/Dockerfile; extend it with your agent)")
+	image := fs.String("image", defaultBoxImage(), "tier 2: the box image (a release pins its own published image by digest; extend it with your agent)")
+	agentName := fs.String("agent", "", "tier 2: use the published box image with this agent installed: claude, codex, opencode or aider (implies -tier 2)")
 	pids := fs.Int("pids", 4096, "tier 2: most processes the box may have at once")
 	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
 	cpus := fs.String("cpus", "", "tier 2: CPU limit for the box (e.g. 2; default none)")
-	profile := fs.String("profile", boxProfileDev, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9)")
+	profile := fs.String("profile", boxProfileDev, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9); ci: strict, and no one answers: anything policy would pause (a request, a new package, a command, the commit-back) is refused at once")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "approval page address (loopback only; \"off\" to disable)")
 	approveTimeout := fs.Duration("approve-timeout", 10*time.Minute, "how long the commit-back waits for a person")
 	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
@@ -158,12 +161,28 @@ func cmdBox(args []string) error {
 	if runtime.GOOS != "linux" {
 		return errors.New("ovara box needs Linux (a network namespace); on macOS/Windows run it inside a Linux VM")
 	}
+	if *agentName != "" {
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		img, err := agentImage(*agentName)
+		if err != nil {
+			return err
+		}
+		if set["image"] {
+			return errors.New("-agent and -image both name the image: use one")
+		}
+		if set["tier"] && *tier != 2 {
+			return errors.New("-agent is for tier 2 (a container image)")
+		}
+		*tier, *image = 2, img
+	}
 	if *tier != 1 && *tier != 2 {
 		return fmt.Errorf("-tier %d: want 1 or 2", *tier)
 	}
-	if *profile != boxProfileDev && *profile != boxProfileStrict {
-		return fmt.Errorf("-profile %s: want dev or strict", *profile)
+	if *profile != boxProfileDev && *profile != boxProfileStrict && *profile != boxProfileCI {
+		return fmt.Errorf("-profile %s: want dev, strict or ci", *profile)
 	}
+	unattended := *profile == boxProfileCI
 	if os.Geteuid() != 0 {
 		return errors.New("ovara box needs root (tier 1: the network namespace; tier 2: handing the workspace to the box's user and keeping Ovara's sockets out of its reach): run it with sudo; the agent itself runs as an unprivileged user")
 	}
@@ -244,7 +263,7 @@ func cmdBox(args []string) error {
 	// strict installs: what the project has pinned goes through; anything
 	// else the agent adds pauses once (the proxy's package gate)
 	pinnedFile := ""
-	if *profile == boxProfileStrict {
+	if *profile == boxProfileStrict || *profile == boxProfileCI {
 		refs, files := lockfiles.Scan(ws.Dir)
 		pinnedFile = filepath.Join(runDir, "pinned-packages.txt")
 		if err := os.WriteFile(pinnedFile, []byte(strings.Join(refs, "\n")+"\n"), 0o600); err != nil {
@@ -253,7 +272,11 @@ func cmdBox(args []string) error {
 		if len(files) == 0 {
 			fmt.Fprintln(os.Stderr, "==> strict installs: no lockfile in the project, so every package the agent installs pauses once")
 		} else {
-			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through; any other package pauses once\n", len(refs), strings.Join(files, ", "))
+			other := "pauses once"
+			if unattended {
+				other = "is refused"
+			}
+			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through; any other package %s\n", len(refs), strings.Join(files, ", "), other)
 		}
 		if b, err := os.ReadFile(filepath.Join(*dir, "policy.json")); err == nil && !strings.Contains(string(b), `"package.install"`) {
 			fmt.Fprintln(os.Stderr, "    warning: policy.json has no package.install rule; without one a new package is refused, not paused (add {\"action_type\": \"package.install\", \"resource\": \"*\", \"escalate\": true})")
@@ -291,6 +314,10 @@ func cmdBox(args []string) error {
 	if pinnedFile != "" {
 		runArgs = append(runArgs, "-package-gate", pinnedFile)
 	}
+	if unattended {
+		runArgs = append(runArgs, "-unattended")
+		fmt.Fprintln(os.Stderr, "==> ci profile: no one answers; anything policy would pause is refused at once")
+	}
 	run := exec.Command(self, runArgs...) //nolint:gosec // the launcher re-executes itself with flags it validated
 	run.Stdout = os.Stderr
 	run.Stderr = os.Stderr
@@ -319,7 +346,7 @@ func cmdBox(args []string) error {
 			_ = os.WriteFile(caPub, b, 0o644) //nolint:gosec // the PUBLIC certificate: the agent must be able to read it
 		}
 	}
-	receiptsBefore := countLines(inDir(*dir, cfg.ReceiptsFile))
+	receiptsBefore := receipts.Count(inDir(*dir, cfg.ReceiptsFile))
 
 	// 4. the agent, inside
 	sigs := make(chan os.Signal, 2)
@@ -327,6 +354,7 @@ func cmdBox(args []string) error {
 	defer signal.Stop(sigs)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
 	gate := newCommandGate(gw, *dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !*noGate)
+	gate.unattended = unattended
 	a := &boxAgent{
 		dir: *dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: envs, cmd: agentCmd, gate: gate, noGate: *noGate, sigs: sigs,
@@ -344,6 +372,12 @@ func cmdBox(args []string) error {
 	fmt.Fprintf(os.Stderr, "==> agent exited with status %d\n", exitCode)
 	printBoxSummary(inDir(*dir, cfg.ReceiptsFile), receiptsBefore)
 	gate.summary()
+	if allowed := runallow.List(filepath.Join(*dir, runallow.File)); len(allowed) > 0 {
+		fmt.Fprintf(os.Stderr, "==> allowed by you for the rest of this run (%d):\n", len(allowed))
+		for _, a := range allowed {
+			fmt.Fprintf(os.Stderr, "    %s (approval %s)\n", a.Resource, a.ApprovalID)
+		}
+	}
 
 	// 5. what comes back
 	if *noCommitBack {
@@ -402,6 +436,11 @@ func cmdBox(args []string) error {
 		outcome = outcomeKept
 		return nil
 	case decisionEscalate:
+		if unattended {
+			fmt.Fprintln(os.Stderr, "==> ci profile: the commit-back needs a person, and no one answers; the workspace is kept (allow fs.commit_back in policy to bring changes back unattended)")
+			outcome = outcomeKept
+			return nil
+		}
 		id, err := gw.CreateApprovalFor(ctx, d, "fs.commit_back", resource)
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
@@ -694,6 +733,30 @@ func serveGate(ln net.Listener, gate *commandGate) {
 	}
 }
 
+// boxAgents are the agents with a published image (box/agents/Dockerfile).
+var boxAgents = map[string]bool{"claude": true, "codex": true, "opencode": true, "aider": true}
+
+// agentImage names the box image with agent installed: the release's
+// published image for this version, or the local development build.
+func agentImage(agent string) (string, error) {
+	if !boxAgents[agent] {
+		return "", fmt.Errorf("-agent %q: want claude, codex, opencode or aider (or -image for your own image)", agent)
+	}
+	if repo, _, ok := strings.Cut(boxImage, "@"); ok && repo != "" && version != devVersion {
+		return repo + "-" + agent + ":" + version, nil
+	}
+	return boxDefaultImage + "-" + agent, nil
+}
+
+// defaultBoxImage is the image this build was released with, or the local
+// development image.
+func defaultBoxImage() string {
+	if boxImage != "" {
+		return boxImage
+	}
+	return boxDefaultImage
+}
+
 // ensureImage makes sure the box image is there, pulling it when it names a
 // registry.
 func ensureImage(image string) error {
@@ -784,13 +847,14 @@ func isTerminal(f *os.File) bool {
 
 // commandGate decides each exec in the box through the gateway.
 type commandGate struct {
-	gw      *gateway.Client
-	dir     string
-	timeout time.Duration
-	on      bool
-	started bool // the agent itself has been exec'd; before that, our wrappers run
-	mu      sync.Mutex
-	counts  map[string]int
+	gw         *gateway.Client
+	dir        string
+	timeout    time.Duration
+	on         bool
+	unattended bool // ci profile: a pause is a refusal
+	started    bool // the agent itself has been exec'd; before that, our wrappers run
+	mu         sync.Mutex
+	counts     map[string]int
 }
 
 func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool) *commandGate {
@@ -830,6 +894,16 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		return boxgate.Allow
 	case decisionDeny:
 		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", line)
+		g.count(countDenied)
+		return boxgate.Deny
+	}
+	if a, ok := runallow.Find(filepath.Join(g.dir, runallow.File), "shell", "shell:"+line); ok {
+		fmt.Fprintf(os.Stderr, "[ovara] command allowed for this run (approval %s): %s\n", a.ApprovalID, line)
+		g.count(countApproved)
+		return boxgate.Allow
+	}
+	if g.unattended {
+		fmt.Fprintf(os.Stderr, "[ovara] command refused (needs a person; unattended run): %s\n", line)
 		g.count(countDenied)
 		return boxgate.Deny
 	}
@@ -886,23 +960,16 @@ func waitApproval(ctx context.Context, gw *gateway.Client, id string, timeout ti
 }
 
 // printBoxSummary tallies the receipts this run added.
-func printBoxSummary(receipts string, skip int) {
-	f, err := os.Open(receipts)
-	if err != nil {
-		return
-	}
-	defer f.Close()
+func printBoxSummary(receiptsPath string, skip int) {
 	counts := map[string]int{}
 	hosts := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	n := 0
-	for sc.Scan() {
+	_ = receipts.ForEachLine(receiptsPath, func(b []byte) error {
 		n++
 		if n <= skip {
-			continue
+			return nil
 		}
-		line := sc.Text()
+		line := string(b)
 		dec := jsonField(line, "decision")
 		counts[dec]++
 		if u := jsonField(line, "url"); u != "" {
@@ -915,7 +982,8 @@ func printBoxSummary(receipts string, skip int) {
 			}
 			hosts[h] = true
 		}
-	}
+		return nil
+	})
 	fmt.Fprintf(os.Stderr, "==> %d request(s) through Ovara: %d allowed, %d paused, %d denied; %d host(s)\n",
 		n-skip, counts[decisionAllow], counts[decisionEscalate], counts[decisionDeny], len(hosts))
 }
@@ -930,14 +998,6 @@ func jsonField(line, key string) string {
 		return rest[:j]
 	}
 	return ""
-}
-
-func countLines(path string) int {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	return strings.Count(string(b), "\n")
 }
 
 func waitPort(addr string, timeout time.Duration, proc *exec.Cmd) error {

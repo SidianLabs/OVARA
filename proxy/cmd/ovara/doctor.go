@@ -302,7 +302,7 @@ func looksLikeSecret(v string) bool {
 func auditReceipts(dir string, cfg *config.Config) []check {
 	chainPath := filepath.Join(dir, cfg.ReceiptsFile)
 	pubPath := filepath.Join(dir, cfg.PubKeyFile)
-	if _, err := os.Stat(chainPath); err != nil {
+	if _, err := os.Stat(chainPath); err != nil && len(receipts.Segments(chainPath)) == 0 {
 		return []check{{"receipt chain", "PASS", "no receipts yet — nothing to verify"}}
 	}
 	pubRaw, err := os.ReadFile(pubPath)
@@ -317,5 +317,35 @@ func auditReceipts(dir string, cfg *config.Config) []check {
 	if !res.Valid {
 		return []check{{"receipt chain", "FAIL", fmt.Sprintf("verification failed at %d: %s", res.FailAt, res.Reason)}}
 	}
-	return []check{{"receipt chain", "PASS", fmt.Sprintf("%d receipts verified", res.Total)}}
+	out := []check{{"receipt chain", "PASS", fmt.Sprintf("%d receipts verified", res.Total)}}
+	if res.Partial {
+		out[0] = check{"receipt chain", "WARN", fmt.Sprintf("%d receipts verified, from the earliest segment kept: older segments were moved away", res.Total)}
+	}
+	// size: segments are compressed, never deleted by Ovara
+	total, segs := receipts.Size(chainPath)
+	size := fmt.Sprintf("%s on disk (%d compressed segment(s) + the current file)", humanBytes(total), segs)
+	switch {
+	case total > cfg.ReceiptsWarnBytes:
+		out = append(out, check{"receipt size", "WARN", size + "; over receipts_warn_bytes. Move older " +
+			filepath.Base(chainPath[:len(chainPath)-len(filepath.Ext(chainPath))]) + ".NNNNNN.jsonl.gz segments to archive storage: the chain still verifies from the earliest one kept"})
+	case cfg.ReceiptsSegmentBytes < 0:
+		out = append(out, check{"receipt size", "WARN", size + "; rotation is off (receipts_segment_bytes < 0), so the current file grows without limit"})
+	default:
+		out = append(out, check{"receipt size", "PASS", size})
+	}
+	return out
+}
+
+// humanBytes is n in B, KiB, MiB or GiB, one decimal.
+func humanBytes(n int64) string {
+	const k = 1024
+	switch {
+	case n >= k*k*k:
+		return fmt.Sprintf("%.1f GiB", float64(n)/(k*k*k))
+	case n >= k*k:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(k*k))
+	case n >= k:
+		return fmt.Sprintf("%.1f KiB", float64(n)/k)
+	}
+	return fmt.Sprintf("%d B", n)
 }

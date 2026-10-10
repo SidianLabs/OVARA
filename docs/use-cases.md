@@ -84,12 +84,17 @@ nonessential traffic switched off, sent nothing of its own. Unknown
 hosts are paused, which is harmless but shows up as approvals to answer or
 let time out.
 
-*Not tested:* Aider (it proposes shell commands and asks before running them,
-so the scripted battery needs a different driver), Cursor, and agents that are
-not installed from npm. If an agent ignores `HTTPS_PROXY` you
-will see it as missing entries in `ovara log`.
+Aider runs the same battery (`tests/agents/aider.sh`). It reads shell
+commands from the model's reply and asks before running each one;
+`--yes-always` deliberately does not cover them, so the test answers yes as
+a person would. With update checks and analytics off it still made one read
+of its own, from `raw.githubusercontent.com`.
 
-## 2. An agent in a container or VM you control  — *tested (netns, `ovara box`); docker mode scripted*
+*Not tested:* Cursor, and agents that are not installed from npm or pip. If
+an agent ignores `HTTPS_PROXY` you will see it as missing entries in
+`ovara log`.
+
+## 2. An agent in a container or VM you control  — *tested (netns, `ovara box` tiers 1 and 2, the docker recipe)*
 
 This is the setup to use when you do not fully trust the agent: an untrusted
 tool, a model you are evaluating, a long unattended run.

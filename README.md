@@ -67,11 +67,15 @@ back as a branch after you have read the diff. See
 For a stricter box, `sudo ovara box -tier 2 ./myrepo -- claude` runs the
 agent in a container instead: no network interface but a relay to Ovara,
 no capabilities, a read-only root, and nothing of your machine inside but
-the project's copy. Build the image once with `docker build -t ovara-box
-box/` and extend it with your agent. Details and limits are in
+the project's copy. A release pulls its own published image
+(`ghcr.io/sidianlabs/ovara-box`, pinned by digest, signed provenance); a
+build from source uses `docker build -t ovara-box box/`. For the common
+agents there are ready images: `sudo ovara box -agent codex ./myrepo --
+codex` (also `claude`, `opencode`, `aider`); for anything else, extend the
+box image with your agent (`FROM` it). Details and limits are in
 `docs/box.md` section 6.4.
 
-Add `-profile strict` and a dependency the project's lockfiles do not pin
+Start with `docs/box-quickstart.md`. Add `-profile strict` and a dependency the project's lockfiles do not pin
 pauses once, by name and version, before it is downloaded.
 
 `ovara run` prints a link like `http://127.0.0.1:9090/#t=…`. Open it to get a

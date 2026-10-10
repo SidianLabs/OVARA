@@ -81,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [opencode, anthropic, codex]
+        agent: [opencode, anthropic, codex, aider]
         mode: [coop, enforced, box]
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +151,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [opencode, anthropic, codex]
+        agent: [opencode, anthropic, codex, aider]
     steps:
       - uses: actions/checkout@v4
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)

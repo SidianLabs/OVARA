@@ -225,12 +225,13 @@ flags (built)
   -ui ADDR|off      approval page (default 127.0.0.1:9090)
   -approve-timeout  how long the commit-back waits for a person (default 10m)
 
-  -profile dev|strict  dev (default): installs free; strict: a dependency the
-                    project's lockfiles do not pin pauses once (§9)
+  -profile dev|strict|ci  dev (default): installs free; strict: a dependency the
+                    project's lockfiles do not pin pauses once (§9); ci: strict,
+                    and anything that would pause is refused at once (§11.4)
 
 planned
   -tier 3           microVM (§4.4)
-  -profile ci, -policy FILE  (§11.4)
+  -policy FILE      a policy for this run only (§11.4)
 ```
 
 ### 6.2 What it does, in order
@@ -272,7 +273,7 @@ encode today:
 | Anthropic's agent CLI | `ANTHROPIC_BASE_URL` (default api.anthropic.com, allowed by policy) | `Bash` | `IS_SANDBOX=1` to run as a non-tty user; nonessential traffic off |
 | Codex CLI | `~/.codex/config.toml` provider (api.openai.com allowed) | `exec_command` | its own sandbox off: Ovara is the sandbox |
 | opencode | `opencode.json` provider | `bash` | `permission.external_directory: allow` |
-| Aider | `OPENAI_API_BASE` / `ANTHROPIC_BASE_URL` | proposes `/run` commands | needs `--yes-always`; exec gate decides |
+| Aider | `OPENAI_API_BASE` / `ANTHROPIC_BASE_URL` | shell blocks in its reply, run after a yes | `--yes-always` does not cover shell commands: a person answers (tests pipe `yes`); exec gate decides; tested in every mode (`tests/agents/aider.sh`) |
 | anything else | user-supplied | whatever it has | the boundary still holds; the exec gate works for any `sh`/`bash` |
 
 The agent's *own* traffic (telemetry, model lists, update checks) is
@@ -297,6 +298,20 @@ properties, each checked by `tests/box/box.sh` with `TIER=2`:
 | The agent cannot stop the gate | PID 1 runs as root inside the container; the agent has no capability to signal or trace it | `kill -9 1` is refused; the processes in the box are root (the gate) and the agent only |
 | Fails closed | if Ovara or the launcher goes away, the relay has nowhere to go and every exec is refused; the container is removed on exit (`--rm`, then `docker rm -f`) | no box container left after a run |
 | Bounded | `--pids-limit` (default 4096), optional `-memory` and `-cpus`, `--ipc private` | — |
+
+Each release publishes the image as `ghcr.io/sidianlabs/ovara-box:<tag>`
+(amd64 and arm64, SBOM and signed provenance:
+`gh attestation verify oci://ghcr.io/sidianlabs/ovara-box@<digest> --repo
+SidianLabs/OVARA`), and the released binary defaults to it by digest
+(`ovara version` prints it). Builds from source default to a local
+`ovara-box`.
+
+Each release also publishes one image per agent,
+`ghcr.io/sidianlabs/ovara-box-<agent>:<tag>` for `claude`, `codex`,
+`opencode` and `aider`, built FROM the box image by digest
+(`box/agents/Dockerfile`). `ovara box -agent codex` picks it (and implies
+tier 2). The tier 2 agent tests run from these images, so what users get
+is what is tested.
 
 The box image (`box/Dockerfile`) is Node 24 on Debian slim with git,
 Python, curl and an `ovara-agent` user (uid 10001); npm and pip install into
@@ -579,10 +594,17 @@ box adds `fs.commit_back`. Resources per type:
 | `strict` | deny | trusted list free, others pause | pause | read/build/test free, everything else pause | new deps pause | 60 s |
 | `ci` | deny | trusted list free, others deny | only the listed ones | listed ones only | lockfile only | 10 s |
 
-As built (milestone 5): `-profile dev` (default) and `-profile strict`
-differ in installs only (strict: new dependencies pause once, npm install
-scripts off; §9). The rest of the `strict` row (default deny, commands
-beyond read/build/test pausing) and the `ci` profile are not built yet.
+As built: `-profile dev` (default) and `-profile strict` differ in installs
+only (strict: new dependencies pause once, npm install scripts off; §9).
+`-profile ci` is strict for an unattended run: anything the policy would
+pause (a request to a host outside the trusted list, a package the
+lockfiles do not pin, a command such as `rm -rf`, the commit-back) is
+refused at once instead of waiting for a person, and no approval is
+opened (`ovara run -unattended`). The commit-back needs a person by
+default, so in `ci` the workspace is kept unless the policy allows
+`fs.commit_back` outright. Tested in `tests/box/strict.sh` (refusals take
+seconds; no approval, no branch). The rest of the `strict` row (default
+deny, commands beyond read/build/test pausing) is not built.
 
 Profiles are ordinary policy files shipped in the binary (`policy_defaults.go`
 grows two siblings); `-policy` overrides, `.ovara/policy.json` in the
@@ -662,16 +684,25 @@ Order matters: 0 before anything (today's release cannot restart); 1 before
    overlay mount. Overlay is fastest and still a copy-on-write boundary;
    it needs root or a user namespace. Default proposal: shared clone,
    overlay as a tier-2 option.
-2. **Approval fatigue**: should "approve" offer "and allow this command
-   pattern for the rest of the run"? Proposal: yes, run-scoped only, shown
-   in the exit summary; persistent rules only through "trust host" (reads)
-   and explicit policy edits.
+2. **Approval fatigue** — *decided and built*: "approve for this run"
+   (`ovara approve <id> -for-run`, or the page's button) allows the exact
+   same request or command line again, without asking, until `ovara run`
+   ends; each use is still a receipt carrying the original approval, and
+   `ovara box` lists them in its exit summary. Exact match only, not a
+   pattern: a pattern is a policy, and policy changes stay explicit
+   ("trust host" for reads, or editing the policy).
 3. **Where the model API key lives for Aider/opencode-style agents that
    want it in a config file**: placeholder in the file, substituted at the
    proxy, same as env vars. Needs a test per agent.
-4. **Receipt retention and size** for long runs: compaction exists
-   (`record.compactSigned`); the box needs a retention knob and a size
-   warning in `ovara doctor`.
+4. **Receipt retention and size** — *decided and built*: the proxy's
+   receipt chain rotates into gzip-compressed, numbered segments
+   (`receipts.NNNNNN.jsonl.gz`) at `receipts_segment_bytes` (default 64
+   MiB), and the next file continues the same chain. Ovara never deletes a
+   receipt; the log, the approval page and the verifier walk every
+   segment. A person may move old segments to archive storage: the chain
+   then verifies from the earliest one kept, and says so. `ovara doctor`
+   reports the size and warns over `receipts_warn_bytes` (default 1 GiB).
+   Tested at 100k receipts (46 MB raw, 12 MB on disk).
 5. **Multi-agent / sub-agent runs**: one box per top-level run; sub-agents
    share it and the receipts tag them by process. Decide whether sub-agents
    get their own agent tokens (traceability) or share one (simplicity).

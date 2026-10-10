@@ -56,6 +56,14 @@ jobs:
       - name: E2E Tests
         working-directory: runtime/gateway
         run: go test -v -run TestE2E ./cmd/e2e/
+      # 100k receipts: rotation into compressed segments, end-to-end
+      # verification, doctor's size warning (too slow under -race)
+      - name: Receipt retention at 100k receipts
+        working-directory: proxy
+        run: OVARA_LONG_TESTS=1 go test -count=1 -run TestReceipts_100kRotateCompressWarn ./cmd/ovara
+      # every `ovara` command line in the quickstart names a real command and real flags
+      - name: Docs name real commands
+        run: bash tests/docs/check-commands.sh
 
   # The `ovara` binary is what users actually run, on their own laptops.
   # Prove it builds and its tests (including the end-to-end demo) pass on

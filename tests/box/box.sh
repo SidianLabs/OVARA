@@ -69,6 +69,12 @@ sudo id >/tmp/sudo.out 2>&1; r SUDO "exit=$? $(head -c 40 /tmp/sudo.out | tr '\n
 rm -rf /tmp/victim; r RMRF "exit=$? victim=$( [ -e /tmp/victim/file ] && echo survived || echo gone )"
 python3 -c "import os; os.system('sudo id > /tmp/sudo2.out 2>&1')"; r SUDO2 "$( [ -s /tmp/sudo2.out ] && grep -q uid= /tmp/sudo2.out && echo ran || echo refused )"
 r LS "$(ls /nonexistent >/dev/null 2>&1; echo exit=$?)"
+# "approve for this run": the person allows the first of each pair for the
+# run; the identical second one must not ask again
+dd if=/dev/zero of=/tmp/dd1 bs=1 count=1 2>/dev/null; r RUNDD1 "exit=$?"
+dd if=/dev/zero of=/tmp/dd1 bs=1 count=1 2>/dev/null; r RUNDD2 "exit=$?"
+r RUNPOST1 "$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -X POST -d x https://example.org/ovara-run-allow)"
+r RUNPOST2 "$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -X POST -d x https://example.org/ovara-run-allow)"
 # tier 2: what the container itself must guarantee
 if [ "${OVARA_BOX_TIER:-1}" = 2 ]; then
   r T2_CAPEFF "$(awk '/^CapEff/{print $2}' /proc/self/status)"
@@ -89,6 +95,10 @@ if [ "${OVARA_BOX_TIER:-1}" = 2 ]; then
   r T2_META "$(timeout 4 bash -c '</dev/tcp/169.254.169.254/80' 2>/dev/null && echo OPEN || echo BLOCKED)"
   r T2_UDP "$(timeout 3 bash -c 'echo x >/dev/udp/1.1.1.1/53' 2>/dev/null && echo OPEN || echo BLOCKED)"
   r T2_SECRETS "$(ls -d /root/.ssh /root/.aws $HOME/.ssh $HOME/.aws $HOME/.netrc $HOME/.npmrc $HOME/.git-credentials $HOME/.docker 2>/dev/null | wc -l)"
+  # Python's normal workflow works in the box: a virtualenv's pip installs
+  # (no index here, so it fails for want of a package, not for its config)
+  python3 -m venv /tmp/t2venv >/dev/null 2>&1
+  r T2_VENVPIP "$(/tmp/t2venv/bin/pip install --no-index six 2>&1 | grep -q -- "--user" && echo broken || echo ok)"
   r T2_PROCS "$(ps -eo user= | sort -u | tr '\n' ' ' | sed 's/ $//')"
   # the whole image, not a list of places: nothing credential-shaped anywhere
   # (npm packages' own test fixtures are not the image's secrets)
@@ -115,13 +125,19 @@ for b in blocks:
     m = re.search(r'id: (apr_[0-9a-f-]+)', b); raw = re.search(r'raw request:\s+(.*)', b)
     if not m or not raw: continue
     r = raw.group(1).strip()
-    print(('deny' if r.startswith('shell:') and 'rm -rf' in r else 'approve') + ' ' + m.group(1) + ' ' + r)
+    if r.startswith('shell:') and 'rm -rf' in r: what = 'deny'
+    elif r.startswith('shell:dd if=') or r.startswith('POST https://example.org'): what = 'approve-run'
+    else: what = 'approve'
+    print(what + ' ' + m.group(1) + ' ' + r)
 PY
     while read -r what id raw; do
       [ -n "$id" ] || continue
       echo "$what $id $raw" >> /tmp/human.log
       case "$raw" in commit:*) cat /tmp/approvals.now > /tmp/approval-seen.txt; commit_done=1;; esac
-      ovara $what "$id" -dir $D >/dev/null 2>&1
+      case "$what" in
+        approve-run) ovara approve "$id" -dir $D -for-run >/dev/null 2>&1 ;;
+        *) ovara $what "$id" -dir $D >/dev/null 2>&1 ;;
+      esac
     done < /tmp/human.cmds
   done ) &
 HUMAN=$!
@@ -185,6 +201,7 @@ if [ "$TIER" = 2 ]; then
   check "cloud metadata: no route" BLOCKED "$(val T2_META)"
   check "UDP out: no route" BLOCKED "$(val T2_UDP)"
   check "no credential files in the box" 0 "$(val T2_SECRETS)"
+  check "pip in a virtualenv works in the box" ok "$(val T2_VENVPIP)"
   check "processes in the box: the gate (root) and the agent only" "ovara-agent root" "$(val T2_PROCS)"
   check "no credential-shaped file anywhere in the image" "" "$(val T2_IMAGE_SECRETS)"
 fi
@@ -195,6 +212,12 @@ check "a sudo started from python (os.system) is refused too" refused "$(val SUD
 case "$(val RMRF)" in "exit=137 victim=survived") ok "rm -rf paused for the person, who refused it: nothing was deleted";; *) bad "rm -rf" "$(val RMRF)";; esac
 check "ordinary commands run and report their own exit status" "exit=2" "$(val LS)"
 grep -q 'deny apr_.* shell:rm -rf /tmp/victim' /tmp/human.log && ok "the person saw the exact command (shell:rm -rf /tmp/victim)" || bad "rm -rf approval not seen" "$(cat /tmp/human.log)"
+check "approve for this run: the first dd ran after approval" "exit=0" "$(val RUNDD1)"
+check "approve for this run: the identical second dd ran without asking" "exit=0" "$(val RUNDD2)"
+check "the person was asked about dd once" 1 "$(grep -c 'approve-run .* shell:dd if=' /tmp/human.log)"
+case "$(val RUNPOST1) $(val RUNPOST2)" in *504*|*403*|*000*) bad "approve for this run (POST)" "$(val RUNPOST1) $(val RUNPOST2)";; *) ok "approve for this run: the identical second POST went through ($(val RUNPOST1) then $(val RUNPOST2))";; esac
+check "the person was asked about the POST once" 1 "$(grep -c 'approve-run .* POST https://example.org' /tmp/human.log)"
+grep -q 'allowed by you for the rest of this run (2)' /tmp/box.out && ok "the box's summary lists what was allowed for the run" || bad "run allowances summary" "$(grep -A3 'allowed by you' /tmp/box.out)"
 grep -qE 'command\(s\) checked: [0-9]+ allowed' /tmp/box.out && ok "box reports the commands it checked: $(grep -oE '[0-9]+ command\(s\) checked.*' /tmp/box.out)" || bad "no command summary" ""
 
 echo "=== commit-back"

@@ -28,12 +28,22 @@ import (
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/proxy"
 	"ovara.proxy/internal/receipts"
+	"ovara.proxy/internal/runallow"
 	"ovara.proxy/scripts"
 	"ovara.runtime.gateway/pkg/server"
 )
 
 // version is stamped by release builds: -ldflags "-X main.version=v0.10.0".
-var version = "dev"
+var version = devVersion
+
+// devVersion is the version of a build that no release stamped.
+const devVersion = "dev"
+
+// boxImage is stamped by release builds: the box image this ovara was
+// released with, by digest (ghcr.io/sidianlabs/ovara-box@sha256:...), so
+// `ovara box -tier 2` pulls exactly that image. Development builds leave it
+// empty and use a locally built "ovara-box".
+var boxImage = ""
 
 func main() {
 	log.SetFlags(0)
@@ -45,6 +55,9 @@ func main() {
 	switch os.Args[1] {
 	case "version", "-version", "--version":
 		fmt.Println("ovara", version)
+		if boxImage != "" {
+			fmt.Println("box image", boxImage)
+		}
 		return
 	case "init":
 		err = cmdInit(os.Args[2:])
@@ -314,6 +327,9 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 		return nil, nil, fmt.Errorf("ca: %w", err)
 	}
 	chain, err := receipts.LoadOrCreate(cfg.ReceiptsFile, cfg.ReceiptKeyFile, cfg.PubKeyFile)
+	if err == nil {
+		chain.SetRotation(cfg.ReceiptsSegmentBytes)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("receipts: %w", err)
 	}
@@ -375,6 +391,7 @@ func cmdRun(args []string) error {
 	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
 	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
+	unattended := fs.Bool("unattended", false, "no one will answer: refuse at once anything policy would pause (CI)")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
 	server.RepairIdentityRegistry = *repairRegistry
@@ -412,6 +429,18 @@ func cmdRun(args []string) error {
 	srv, _, err := wire(cfg)
 	if err != nil {
 		return err
+	}
+	// "approve for this run": a fresh, empty list each run
+	if abs, err := filepath.Abs(runallow.File); err == nil {
+		if err := runallow.Reset(abs, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			log.Printf("run allowances not available: %v", err)
+		} else {
+			srv.SetRunAllowances(abs)
+		}
+	}
+	if *unattended {
+		srv.SetUnattended(true)
+		log.Printf("unattended: anything policy would pause is refused at once")
 	}
 	if *packageGate != "" {
 		b, err := os.ReadFile(*packageGate)

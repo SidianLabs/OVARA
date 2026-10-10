@@ -17,6 +17,7 @@ import (
 	"ovara.proxy/internal/ca"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/receipts"
+	"ovara.proxy/internal/runallow"
 )
 
 // pkgGateway allows every URL and answers package.install with pkgDecision;
@@ -202,5 +203,65 @@ func TestPackageGate_OffByDefault(t *testing.T) {
 	srv, pg, hits := newPkgServer(t, false)
 	if rec := do(srv, http.MethodGet, leftPad); rec.Code != 200 || pg.pkgChecks.Load() != 0 || hits.Load() != 1 {
 		t.Fatalf("gate off: %d checks=%d", rec.Code, pg.pkgChecks.Load())
+	}
+}
+
+func TestUnattended_EscalationsAreRefusedAtOnce(t *testing.T) {
+	// a new package: refused without opening an approval
+	srv, pg, hits := newPkgServer(t, true)
+	srv.SetUnattended(true)
+	start := time.Now()
+	rec := do(srv, http.MethodGet, leftPad)
+	if rec.Code != http.StatusForbidden || hits.Load() != 0 || pg.creates.Load() != 0 {
+		t.Fatalf("unattended new package: %d hits=%d creates=%d", rec.Code, hits.Load(), pg.creates.Load())
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("unattended refusal waited %v", time.Since(start))
+	}
+	// a pinned one still goes through
+	srv2, _, hits2 := newPkgServer(t, true, "npm:left-pad@1.3.0")
+	srv2.SetUnattended(true)
+	if rec := do(srv2, http.MethodGet, leftPad); rec.Code != 200 || hits2.Load() != 1 {
+		t.Fatalf("unattended pinned package: %d", rec.Code)
+	}
+}
+
+func TestUnattended_EscalatedRequestRefusedWithoutApproval(t *testing.T) {
+	srv, sg, _ := newScripted(t, "escalate")
+	srv.SetUnattended(true)
+	up, hits := upstreamCounting(t)
+	start := time.Now()
+	rec := do(srv, http.MethodPost, up.URL+"/deploy")
+	if rec.Code != http.StatusForbidden || hits.Load() != 0 || sg.creates.Load() != 0 {
+		t.Fatalf("unattended escalate: %d hits=%d creates=%d", rec.Code, hits.Load(), sg.creates.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "unattended") || time.Since(start) > time.Second {
+		t.Fatalf("body %s, took %v", rec.Body, time.Since(start))
+	}
+}
+
+func TestRunAllowance_ExactRequestSkipsTheQuestion(t *testing.T) {
+	srv, sg, _ := newScripted(t, "escalate")
+	up, hits := upstreamCounting(t)
+	p := filepath.Join(t.TempDir(), "run-allowances.json")
+	if err := runallow.Reset(p, "r"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runallow.Add(p, runallow.Allowance{ActionType: "http.request", Resource: "POST " + up.URL + "/deploy", ApprovalID: "apr_9"}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SetRunAllowances(p)
+	if rec := do(srv, http.MethodPost, up.URL+"/deploy"); rec.Code != 200 || hits.Load() != 1 || sg.creates.Load() != 0 {
+		t.Fatalf("allowed for the run: %d hits=%d creates=%d", rec.Code, hits.Load(), sg.creates.Load())
+	}
+	// anything else still asks (and, denied, never runs)
+	sg.status.Store("denied")
+	for _, req := range [][2]string{{http.MethodPost, up.URL + "/other"}, {http.MethodPut, up.URL + "/deploy"}} {
+		if rec := do(srv, req[0], req[1]); rec.Code != http.StatusForbidden {
+			t.Fatalf("%v: %d", req, rec.Code)
+		}
+	}
+	if sg.creates.Load() != 2 || hits.Load() != 1 {
+		t.Fatalf("creates=%d hits=%d", sg.creates.Load(), hits.Load())
 	}
 }

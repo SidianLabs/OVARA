@@ -5,7 +5,6 @@ package main
 // the whole chain. The same data feeds the browser page (ui.go).
 
 import (
-	"bufio"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -88,43 +87,34 @@ var outcomeOrder = []string{"allowed", "approved", "BLOCKED", "not approved", "t
 
 func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
 	act := &activity{Counts: map[string]int{}}
-	f, err := os.Open(receiptsFile)
-	if os.IsNotExist(err) {
-		return act, nil
-	}
+	// every segment, oldest first; only the last n are kept in memory
+	var shown []receipts.Receipt
+	total := 0
+	err := receipts.ForEachLine(receiptsFile, func(line []byte) error {
+		var r receipts.Receipt
+		if json.Unmarshal(line, &r) != nil || r.ReceiptID == "" {
+			return nil // anchor or other non-receipt lines
+		}
+		total++
+		shown = append(shown, r)
+		if n > 0 && len(shown) > 2*n {
+			shown = append(shown[:0], shown[len(shown)-n:]...)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	var all []receipts.Receipt
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var r receipts.Receipt
-		if json.Unmarshal([]byte(line), &r) != nil || r.ReceiptID == "" {
-			continue // anchor or other non-receipt lines
-		}
-		all = append(all, r)
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	act.Total = len(all)
-	shown := all
-	if n > 0 && len(all) > n {
-		shown = all[len(all)-n:]
+	act.Total = total
+	if n > 0 && len(shown) > n {
+		shown = shown[len(shown)-n:]
 	}
 	for _, r := range shown {
 		o := outcome(r)
 		act.Counts[o]++
 		act.Entries = append(act.Entries, activityEntry{When: r.Timestamp, Outcome: o, What: describe(r.Method + " " + r.URL)})
 	}
-	if len(all) == 0 {
+	if total == 0 {
 		return act, nil
 	}
 
@@ -143,6 +133,8 @@ func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
 	act.Valid = res.Valid
 	if !res.Valid {
 		act.Problem = fmt.Sprintf("receipt chain breaks at entry %d (%s)", res.FailAt, res.Reason)
+	} else if res.Partial {
+		act.Problem = "the oldest receipt segments were moved away; the chain verifies from the earliest one kept"
 	}
 	return act, nil
 }

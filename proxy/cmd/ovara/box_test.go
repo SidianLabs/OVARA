@@ -65,3 +65,32 @@ func TestMergeEnv(t *testing.T) {
 		t.Fatalf("got %v, want %s", got, want)
 	}
 }
+
+func TestDefaultBoxImage(t *testing.T) {
+	saved := boxImage
+	defer func() { boxImage = saved }()
+	boxImage = ""
+	if got := defaultBoxImage(); got != boxDefaultImage {
+		t.Fatalf("dev build: %q", got)
+	}
+	boxImage = "ghcr.io/sidianlabs/ovara-box@sha256:abc"
+	if got := defaultBoxImage(); got != boxImage {
+		t.Fatalf("release build: %q", got)
+	}
+}
+
+func TestAgentImage(t *testing.T) {
+	savedImg, savedVer := boxImage, version
+	defer func() { boxImage, version = savedImg, savedVer }()
+	boxImage, version = "", "dev"
+	if got, err := agentImage("codex"); err != nil || got != "ovara-box-codex" {
+		t.Fatalf("dev: %q %v", got, err)
+	}
+	boxImage, version = "ghcr.io/sidianlabs/ovara-box@sha256:abc", "v0.10.0"
+	if got, err := agentImage("claude"); err != nil || got != "ghcr.io/sidianlabs/ovara-box-claude:v0.10.0" {
+		t.Fatalf("release: %q %v", got, err)
+	}
+	if _, err := agentImage("cursor"); err == nil {
+		t.Fatal("unknown agent accepted")
+	}
+}

@@ -135,5 +135,42 @@ dval() { grep -E "^AGENTRESULT $1 " /tmp/d-box.out | head -1 | cut -d' ' -f3- ; 
 check "dev profile: a new package installs without a question" "exit=0 installed" "$(dval DEV)"
 check "dev profile is the default" dev "$(dval DEVPROFILE)"
 
+echo "=== the ci profile: no one answers, so nothing waits"
+cat > /tmp/cagent.sh <<'A'
+r() { echo "AGENTRESULT $1 $2"; }
+r PROFILE "${OVARA_BOX_PROFILE:-unset}"
+npm ci --no-fund >/dev/null 2>&1; r LOCKED "exit=$? $( [ -f node_modules/left-pad/package.json ] && echo installed || echo missing)"
+t0=$(date +%s)
+mkdir -p /tmp/c1 && cd /tmp/c1 && npm init -y >/dev/null 2>&1
+npm install --no-fund --no-audit --fetch-retries=0 is-number@7.0.0 >/tmp/c-new.out 2>&1; r NEW "exit=$? $( [ -e node_modules/is-number ] && echo installed || echo absent)"
+r NEWSECS "$(( $(date +%s) - t0 ))"
+t0=$(date +%s)
+r HOST "$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 https://example.org/)"
+r HOSTSECS "$(( $(date +%s) - t0 ))"
+mkdir -p /tmp/cvictim && echo keep > /tmp/cvictim/f
+t0=$(date +%s)
+rm -rf /tmp/cvictim; r RMRF "exit=$? $( [ -e /tmp/cvictim/f ] && echo survived || echo gone)"
+r RMSECS "$(( $(date +%s) - t0 ))"
+cd "$OVARA_WORKSPACE" && echo "changed in ci" >> README.ci && r DONE yes
+A
+chmod 755 /tmp/cagent.sh
+timeout 300 ovara box -dir $D -ui off -profile ci -user ovara-agent $P -- bash /tmp/cagent.sh > /tmp/c-box.out 2>&1
+C_EXIT=$?
+cval() { grep -E "^AGENTRESULT $1 " /tmp/c-box.out | head -1 | cut -d' ' -f3- ; }
+echo "--- ovara box output (tail)"; grep -v '^AGENTRESULT ' /tmp/c-box.out | grep -vE '^(APPROVAL|SKIP) ' | tail -12
+check "ci: box ran the agent to the end" yes "$(cval DONE)"
+check "ci: box exit status" 0 "$C_EXIT"
+check "ci: the agent sees the ci profile" ci "$(cval PROFILE)"
+check "ci: pinned packages still install" "exit=0 installed" "$(cval LOCKED)"
+case "$(cval NEW)" in "exit=0"*) bad "ci: a new package installed" "$(cval NEW)";; *" absent") ok "ci: a new package is refused ($(cval NEW))";; *) bad "ci: new package" "$(cval NEW)";; esac
+[ "$(cval NEWSECS)" -lt 30 ] 2>/dev/null && ok "ci: ...at once ($(cval NEWSECS)s, no waiting for a person)" || bad "ci: new package waited" "$(cval NEWSECS)s"
+check "ci: a host outside the trusted list is refused" 403 "$(cval HOST)"
+[ "$(cval HOSTSECS)" -lt 5 ] 2>/dev/null && ok "ci: ...at once ($(cval HOSTSECS)s)" || bad "ci: host waited" "$(cval HOSTSECS)s"
+check "ci: rm -rf is refused, nothing deleted" "exit=137 survived" "$(cval RMRF)"
+[ "$(cval RMSECS)" -lt 5 ] 2>/dev/null && ok "ci: ...at once ($(cval RMSECS)s)" || bad "ci: rm -rf waited" "$(cval RMSECS)s"
+grep -q 'ci profile: the commit-back needs a person' /tmp/c-box.out && ok "ci: the commit-back is not made without a person; the workspace is kept" || bad "ci: commit-back" "$(tail -5 /tmp/c-box.out)"
+check "ci: no approval was ever opened" 0 "$(grep -c 'APPROVAL created' /tmp/c-box.out)"
+(cd $P && git branch --list 'ovara/box-*' | grep -q .) && bad "ci: a branch came back" "" || ok "ci: no branch came back"
+
 echo; echo "RESULT: $pass passed, $fail failed"
 echo "STRICT_DONE"
