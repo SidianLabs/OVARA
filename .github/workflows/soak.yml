@@ -1,0 +1,76 @@
+name: Soak
+
+# Milestone 7: the agents against the real model APIs, each in a tier 2 box
+# with the ci profile, for hours, unattended (tests/soak/soak.sh). It spends
+# real money, so it runs only where the repository has the keys as secrets
+# (ANTHROPIC_API_KEY, OPENAI_API_KEY; a spend cap on them is advised), and
+# never on pull requests, whose code could read them.
+
+on:
+  schedule:
+    - cron: "41 1 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long to keep starting rounds"
+        default: "120"
+      agents:
+        description: "Agents (empty: every one a key is set for)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Keys present?
+        id: keys
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY$OPENAI_API_KEY" ]; then
+            echo "::notice::No ANTHROPIC_API_KEY or OPENAI_API_KEY secret: the soak is skipped."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.keys.outputs.run == 'true'
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        if: steps.keys.outputs.run == 'true'
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - uses: actions/setup-go@v5
+        if: steps.keys.outputs.run == 'true'
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: false
+      - name: Soak
+        if: steps.keys.outputs.run == 'true'
+        env:
+          SOAK_MINUTES: ${{ inputs.minutes || '120' }}
+          SOAK_AGENTS: ${{ inputs.agents }}
+          SOAK_REPORT: ${{ runner.temp }}/soak-report.md
+        run: |
+          rc=0
+          OVARA_TEST_ON_HOST=1 tests/soak/soak.sh || rc=$?
+          [ -f "$SOAK_REPORT" ] && cat "$SOAK_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+      - name: Keep the report and the agents' output (keys redacted)
+        if: always() && steps.keys.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak
+          path: |
+            ${{ runner.temp }}/soak-report.md
+            /tmp/soak/out-*.txt
+            /tmp/soak/rounds.tsv
+          retention-days: 30

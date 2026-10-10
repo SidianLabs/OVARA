@@ -46,7 +46,7 @@ Exit: v0.10 tagged; README's first paragraph says "beta" and "Linux".
 
 | Work | Who | Exit test |
 |---|---|---|
-| **Milestone 7, real-key soak**: a nightly job runs the three agents against the real model APIs for hours, unattended, and reports the host table and the receipt chain | job built here; **owner adds API keys as repository secrets** (spend cap advised) | 7 consecutive green nights |
+| **Milestone 7, real-key soak**: a nightly job runs the agents against the real model APIs for hours, unattended, and reports the host table and the receipt chain | **built** (`tests/soak/soak.sh`, `.github/workflows/soak.yml`: each agent in a tier 2 box, ci profile, fixing a planted bug, round after round; skipped while no key is set); **owner adds `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` as repository secrets** (spend cap advised) | 7 consecutive green nights |
 | Rootless tier 2 (no root on the host: user namespaces, the socket directory owned by the invoking user's mapping) | here | box tests pass as a non-root user in the docker group |
 | Close the command gate's argv gap (`docs/box.md` §8) | **narrowed** (re-read before resume, kill on change; tier 2 refuses `process_vm_writev`; Yama warning). Closing it fully means freezing the agent's tree for the length of every approval, which deadlocks agents that stream output | the rewrite test: a program whose argv is rewritten during the decision never runs |
 | A tighter seccomp profile for tier 2 than Docker's default | **built** (socket families limited to the four the box needs) | box (76/0) and the four agents (28/0) pass under it; box.sh probes the refused families |

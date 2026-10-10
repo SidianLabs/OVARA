@@ -91,6 +91,13 @@ agents, and fix correctness bugs found in an in-depth review.
   `socket()` limited to AF_UNIX, AF_INET, AF_INET6 and netlink routing
   (`tools/seccomp/gen-box-profile.py`); some thirty other families,
   several with kernel CVEs, are refused inside the box.
+- **Real-key soak** (`tests/soak/soak.sh`, nightly `Soak` workflow): the
+  agents against the real model APIs, each in a tier 2 box with the ci
+  profile, fixing a planted bug round after round for hours. Every round
+  must reach its API through Ovara, keep the real key out of the agent's
+  output and workspace, and leave the tests alone; the report lists every
+  host and decision, and the receipt chain must verify. Skipped until the
+  repository has `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` secrets.
 - **Fuzzing** of the lockfile reader, package-download naming, receipt
   verification and command lines; it found two malformed-name bugs
   (fixed, kept as regression inputs).
