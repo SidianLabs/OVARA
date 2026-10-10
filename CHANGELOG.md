@@ -82,6 +82,13 @@ agents, and fix correctness bugs found in an in-depth review.
   provenance), and a released `ovara` defaults to it by digest, so tier 2
   needs no local build. The release's Docker actions are pinned by commit;
   every pull request builds the image for both architectures.
+- **Tier 2: a tighter seccomp profile.** Docker's default profile with
+  `socket()` limited to AF_UNIX, AF_INET, AF_INET6 and netlink routing
+  (`tools/seccomp/gen-box-profile.py`); some thirty other families,
+  several with kernel CVEs, are refused inside the box.
+- **Fuzzing** of the lockfile reader, package-download naming, receipt
+  verification and command lines; it found two malformed-name bugs
+  (fixed, kept as regression inputs).
 - **Receipt retention for long runs.** The receipt chain rotates into
   compressed, numbered segments (`receipts_segment_bytes`, default 64 MiB)
   and continues the same chain in a new file; nothing is deleted. `ovara

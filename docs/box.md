@@ -298,6 +298,7 @@ properties, each checked by `tests/box/box.sh` with `TIER=2`:
 | The agent cannot stop the gate | PID 1 runs as root inside the container; the agent has no capability to signal or trace it | `kill -9 1` is refused; the processes in the box are root (the gate) and the agent only |
 | Fails closed | if Ovara or the launcher goes away, the relay has nowhere to go and every exec is refused; the container is removed on exit (`--rm`, then `docker rm -f`) | no box container left after a run |
 | Bounded | `--pids-limit` (default 4096), optional `-memory` and `-cpus`, `--ipc private` | — |
+| Kernel surface | a seccomp profile derived from Docker's default (`tools/seccomp/gen-box-profile.py`) that allows `socket()` only for AF_UNIX, AF_INET, AF_INET6 and netlink routing; Docker's default allows some thirty families (TIPC, RDS, CAN, Bluetooth, KCM, netlink XFRM and netfilter, ...), several loadable on demand and with a history of kernel bugs | every other family returns EPERM inside the box; the four agents run unchanged |
 
 Each release publishes the image as `ghcr.io/sidianlabs/ovara-box:<tag>`
 (amd64 and arm64, SBOM and signed provenance:
