@@ -191,20 +191,27 @@ func (c *Chain) Record(method, url, decision string, status int, approvalID stri
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	if _, err := f.Write(append(line, '\n')); err != nil {
+		f.Close()
+		return nil, err
+	}
+	var size int64
+	if st, err := f.Stat(); err == nil {
+		size = st.Size()
+	}
+	// closed before any rotation: Windows will not truncate a file this
+	// process still holds open for writing
+	if err := f.Close(); err != nil {
 		return nil, err
 	}
 	c.prevHash = r.hash()
 	c.seq++
 	c.emitAnchor()
-	if c.segmentBytes > 0 {
-		if st, err := f.Stat(); err == nil && st.Size() >= c.segmentBytes {
-			if err := c.rotateLocked(); err != nil {
-				// the receipt is written; a failed rotation only means a
-				// bigger file, never a lost or unchained receipt
-				log.Printf("receipts: rotation failed (the chain continues in %s): %v", c.path, err)
-			}
+	if c.segmentBytes > 0 && size >= c.segmentBytes {
+		if err := c.rotateLocked(); err != nil {
+			// the receipt is written; a failed rotation only means a
+			// bigger file, never a lost or unchained receipt
+			log.Printf("receipts: rotation failed (the chain continues in %s): %v", c.path, err)
 		}
 	}
 	return r, nil
