@@ -139,7 +139,7 @@ func TestTracer_ArgvChangedDuringDecisionIsKilled(t *testing.T) {
 		},
 		Changed: func(decided, now Exec) { changed = append(changed, CommandLine(decided)+" -> "+CommandLine(now)) },
 	}
-	cmd := exec.Command("bash", "-c", "true; touch "+good+"; exit 0")
+	cmd := exec.Command("bash", "-c", "true; touch "+good+"; exit 0") //nolint:gosec // the test's own temp path
 	code, err := tr.Run(cmd)
 	if err != nil {
 		t.Fatal(err)
