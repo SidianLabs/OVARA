@@ -82,6 +82,11 @@ agents, and fix correctness bugs found in an in-depth review.
   provenance), and a released `ovara` defaults to it by digest, so tier 2
   needs no local build. The release's Docker actions are pinned by commit;
   every pull request builds the image for both architectures.
+- **Command gate: arguments re-read before a program resumes.** A program
+  whose command line changed while the decision was being made (another
+  process wrote its memory) is killed, and the box says what was decided
+  and what it became. Tier 2 also refuses `process_vm_writev`, and `ovara
+  box` warns when `kernel.yama.ptrace_scope` is 0.
 - **Tier 2: a tighter seccomp profile.** Docker's default profile with
   `socket()` limited to AF_UNIX, AF_INET, AF_INET6 and netlink routing
   (`tools/seccomp/gen-box-profile.py`); some thirty other families,

@@ -48,7 +48,7 @@ Exit: v0.10 tagged; README's first paragraph says "beta" and "Linux".
 |---|---|---|
 | **Milestone 7, real-key soak**: a nightly job runs the three agents against the real model APIs for hours, unattended, and reports the host table and the receipt chain | job built here; **owner adds API keys as repository secrets** (spend cap advised) | 7 consecutive green nights |
 | Rootless tier 2 (no root on the host: user namespaces, the socket directory owned by the invoking user's mapping) | here | box tests pass as a non-root user in the docker group |
-| Close the command gate's argv gap (`docs/box.md` §8): stop the whole tree, or read argv by `process_vm_readv` while every sibling is stopped | here | a test where a sibling rewrites argv after the exec stop cannot change what runs |
+| Close the command gate's argv gap (`docs/box.md` §8) | **narrowed** (re-read before resume, kill on change; tier 2 refuses `process_vm_writev`; Yama warning). Closing it fully means freezing the agent's tree for the length of every approval, which deadlocks agents that stream output | the rewrite test: a program whose argv is rewritten during the decision never runs |
 | A tighter seccomp profile for tier 2 than Docker's default | **built** (socket families limited to the four the box needs) | box (76/0) and the four agents (28/0) pass under it; box.sh probes the refused families |
 | Fuzzing of the proxy's request parsing and the lockfile and download parsers, in CI | **built** (4 new targets in the weekly Fuzz workflow; they found and fixed two malformed-name bugs) | fuzz jobs run without findings |
 | Performance: proxy latency and the gate's overhead measured per release (`docs/BENCHMARKS.md`) | here | numbers published; a regression fails the job |

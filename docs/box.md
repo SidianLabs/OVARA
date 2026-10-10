@@ -422,13 +422,17 @@ applied the same way the proxy applies network decisions:
 In tier 2 the tracer is the container's PID 1 and the decision is made on
 the host; the policy, the approvals and the receipts are the same.
 
-Limit, in both tiers: the gate reads the command line from the stopped
-process's memory. Another process of the same agent could rewrite that
-memory before the program reads its arguments, so the line the person
-approved is not a hard guarantee of the arguments the program used. The
-program itself (the executable) cannot change, every further exec is
-stopped again, and the network and file boundaries do not depend on the
-gate.
+Limit, in both tiers, narrowed: the gate reads the command line from the
+stopped process's memory, and with Yama (`kernel.yama.ptrace_scope` 1, the
+usual default) only an ancestor of that process may write it. The gate
+reads the command line again just before the program resumes and kills it
+if it changed while the decision was made (tested by rewriting a stopped
+program's argv through `/proc/<pid>/mem`); tier 2's seccomp profile also
+refuses `process_vm_writev`; `ovara box` warns when `ptrace_scope` is 0.
+What remains is the instant between that last read and the program reading
+its own arguments, through `/proc/<pid>/mem` from an ancestor. The program
+itself (the executable) cannot change, every further exec is stopped
+again, and the network and file boundaries do not depend on the gate.
 
 Every command produces a receipt: command, directory, decision, exit
 status, duration, output size. Output itself is not recorded unless the
