@@ -38,7 +38,7 @@ Make the box installable by someone who has never seen the repository.
 | Ready-made agent images (`ovara-box-claude`, `-codex`, `-opencode`, `-aider`) built FROM the box image | **built** (`box/agents/Dockerfile`, `ovara box -agent`, release job) | the agents matrix runs from the published images (tier 2 jobs build them the same way) |
 | `ovara box --help` and a one-page quickstart (`docs/box-quickstart.md`): tiers, profiles, approving, what comes back | **built**; `tests/docs/check-commands.sh` (CI) fails when the page names a command or flag the binary lacks | a reader runs a first box from the page alone |
 | Approval fatigue: "approve and allow this for the rest of the run" (`docs/box.md` §15.2) | **built** (`-for-run`, page button, `internal/runallow`) | box tests (both tiers): a second identical request or command does not pause; the summary lists them |
-| Receipt retention and size warning in `ovara doctor` (§15.4) | here | test: a 100k-receipt deployment warns and compacts |
+| Receipt retention and size warning in `ovara doctor` (§15.4) | **built** (compressed segments, never deleted; doctor size check) | 100k receipts rotate, compress 3.7x, verify end to end, and doctor warns (CI e2e job) |
 
 Exit: v0.10 tagged; README's first paragraph says "beta" and "Linux".
 

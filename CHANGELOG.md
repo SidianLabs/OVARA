@@ -82,6 +82,14 @@ agents, and fix correctness bugs found in an in-depth review.
   provenance), and a released `ovara` defaults to it by digest, so tier 2
   needs no local build. The release's Docker actions are pinned by commit;
   every pull request builds the image for both architectures.
+- **Receipt retention for long runs.** The receipt chain rotates into
+  compressed, numbered segments (`receipts_segment_bytes`, default 64 MiB)
+  and continues the same chain in a new file; nothing is deleted. `ovara
+  log`, the approval page and verification walk every segment; with old
+  segments moved away the chain verifies from the earliest one kept and
+  says so. `ovara doctor` reports the size and warns over
+  `receipts_warn_bytes` (default 1 GiB). 100k receipts: 46 MB raw, 12 MB on
+  disk, verified end to end.
 - **Approve for this run.** `ovara approve <id> -for-run` (or the
   approval page's "Approve for this run") allows the exact same request or
   command again, without asking, until this `ovara run` ends. Kept in the

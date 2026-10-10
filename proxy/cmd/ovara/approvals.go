@@ -11,9 +11,9 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"

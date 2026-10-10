@@ -327,6 +327,9 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 		return nil, nil, fmt.Errorf("ca: %w", err)
 	}
 	chain, err := receipts.LoadOrCreate(cfg.ReceiptsFile, cfg.ReceiptKeyFile, cfg.PubKeyFile)
+	if err == nil {
+		chain.SetRotation(cfg.ReceiptsSegmentBytes)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("receipts: %w", err)
 	}

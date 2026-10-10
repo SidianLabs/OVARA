@@ -6,13 +6,13 @@
 package receipts
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +65,8 @@ type Chain struct {
 	anchorFile  string
 	anchorURL   string
 	anchorEvery int
+
+	segmentBytes int64 // rotate the current file at this size (segments.go); 0 = never
 }
 
 // LoadOrCreate opens (or creates) the receipt chain and signing key.
@@ -87,12 +89,9 @@ func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
 	}
 	c := &Chain{key: key, sessionID: newID(), path: path}
 	// Resume chain head and length so restarts continue the chain rather
-	// than fork it.
+	// than fork it: the head is the last receipt of the current file, or,
+	// right after a rotation, of the newest segment.
 	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-		c.seq = bytes.Count(data, []byte{'\n'})
-		if data[len(data)-1] != '\n' {
-			c.seq++
-		}
 		var last Receipt
 		// An unparseable tail means corruption or truncation; forking a new
 		// chain over it would hide that. Refuse instead.
@@ -100,7 +99,21 @@ func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
 			return nil, fmt.Errorf("receipts %s: unparseable last line: %w (refusing to fork chain)", path, err)
 		}
 		c.prevHash = last.hash()
+	} else if segs := Segments(path); len(segs) > 0 {
+		var lastLine []byte
+		if err := eachLineOf(segs[len(segs)-1], true, func(l []byte) error {
+			lastLine = append(lastLine[:0], l...)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("receipts %s: %w (refusing to fork chain)", segs[len(segs)-1], err)
+		}
+		var last Receipt
+		if err := json.Unmarshal(lastLine, &last); err != nil {
+			return nil, fmt.Errorf("receipts %s: unparseable last receipt: %w (refusing to fork chain)", segs[len(segs)-1], err)
+		}
+		c.prevHash = last.hash()
 	}
+	c.seq = Count(path)
 	return c, nil
 }
 
@@ -185,6 +198,15 @@ func (c *Chain) Record(method, url, decision string, status int, approvalID stri
 	c.prevHash = r.hash()
 	c.seq++
 	c.emitAnchor()
+	if c.segmentBytes > 0 {
+		if st, err := f.Stat(); err == nil && st.Size() >= c.segmentBytes {
+			if err := c.rotateLocked(); err != nil {
+				// the receipt is written; a failed rotation only means a
+				// bigger file, never a lost or unchained receipt
+				log.Printf("receipts: rotation failed (the chain continues in %s): %v", c.path, err)
+			}
+		}
+	}
 	return r, nil
 }
 
@@ -196,6 +218,9 @@ type VerifyResult struct {
 	Reason       string `json:"reason,omitempty"`
 	Anchors      int  `json:"anchors,omitempty"`
 	AnchorsValid bool `json:"anchors_valid,omitempty"`
+	// Partial: the earliest receipt kept is not the chain's first (older
+	// segments were moved away); the rest verifies from there.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // VerifyFile re-verifies a chain file offline: signatures, linkage, order.
@@ -207,38 +232,48 @@ func VerifyFile(path string, pubKey ed25519.PublicKey) *VerifyResult {
 // verifyChain walks the file, returning the result plus each head hash
 // (heads[i] is the chain head after i+1 receipts) for anchor checks.
 func verifyChain(path string, pubKey ed25519.PublicKey) (*VerifyResult, []string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if _, err := os.Stat(path); err != nil && len(Segments(path)) == 0 {
 		return &VerifyResult{Reason: err.Error()}, nil
 	}
 	var prevHash string
 	var heads []string
 	total := 0
-	start := 0
-	for i := 0; i <= len(data); i++ {
-		if i < len(data) && data[i] != '\n' {
-			continue
-		}
-		line := data[start:i]
-		start = i + 1
-		if len(line) == 0 {
-			continue
-		}
+	partial := false
+	var bad *VerifyResult
+	errStop := fmt.Errorf("stop")
+	err := ForEachLine(path, func(line []byte) error {
 		var r Receipt
 		if err := json.Unmarshal(line, &r); err != nil {
-			return &VerifyResult{Total: total, FailAt: total, Reason: "unparseable receipt"}, heads
+			bad = &VerifyResult{Total: total, FailAt: total, Reason: "unparseable receipt"}
+			return errStop
+		}
+		// the earliest receipt kept may follow segments a person moved
+		// away: verify from there, and say so
+		if total == 0 && r.PrevHash != "" {
+			partial = true
+			prevHash = r.PrevHash
 		}
 		if r.PrevHash != prevHash {
-			return &VerifyResult{Total: total, FailAt: total, Reason: "chain link broken (prev_hash mismatch)"}, heads
+			bad = &VerifyResult{Total: total, FailAt: total, Reason: "chain link broken (prev_hash mismatch)"}
+			return errStop
 		}
 		if !strings.HasPrefix(r.Signature, "sig_v1:") || !ed25519.Verify(pubKey, []byte(r.canonical()), mustHex(r.Signature[7:])) {
-			return &VerifyResult{Total: total, FailAt: total, Reason: "signature invalid"}, heads
+			bad = &VerifyResult{Total: total, FailAt: total, Reason: "signature invalid"}
+			return errStop
 		}
 		prevHash = r.hash()
 		heads = append(heads, prevHash)
 		total++
+		return nil
+	})
+	if bad != nil {
+		bad.Partial = partial
+		return bad, heads
 	}
-	return &VerifyResult{Total: total, Valid: true}, heads
+	if err != nil {
+		return &VerifyResult{Total: total, FailAt: total, Reason: err.Error(), Partial: partial}, heads
+	}
+	return &VerifyResult{Total: total, Valid: true, Partial: partial}, heads
 }
 
 func mustHex(s string) []byte {

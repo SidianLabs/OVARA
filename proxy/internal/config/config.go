@@ -32,7 +32,13 @@ type Config struct {
 
 	ReceiptKeyFile string `json:"receipt_key_file"` // ed25519 private key (hex) for receipt signing
 	ReceiptsFile   string `json:"receipts_file"`    // JSONL append-only receipt chain
-	PubKeyFile     string `json:"pubkey_file"`      // where to write the receipt verify pubkey
+	// ReceiptsSegmentBytes: the current receipt file is compressed into a
+	// numbered segment at this size and the chain continues in a new file
+	// (0 = 64 MiB, negative = never). ReceiptsWarnBytes: `ovara doctor`
+	// warns when the whole chain takes more (0 = 1 GiB).
+	ReceiptsSegmentBytes int64  `json:"receipts_segment_bytes,omitempty"`
+	ReceiptsWarnBytes    int64  `json:"receipts_warn_bytes,omitempty"`
+	PubKeyFile           string `json:"pubkey_file"` // where to write the receipt verify pubkey
 
 	FailOpen bool `json:"fail_open"` // DANGEROUS: allow when gateway unreachable
 
@@ -80,6 +86,12 @@ func Load(path string) (*Config, error) {
 	}
 	if c.PubKeyFile == "" {
 		c.PubKeyFile = "var/receipt_pubkey.hex"
+	}
+	if c.ReceiptsSegmentBytes == 0 {
+		c.ReceiptsSegmentBytes = 64 << 20
+	}
+	if c.ReceiptsWarnBytes <= 0 {
+		c.ReceiptsWarnBytes = 1 << 30
 	}
 	if c.EscalateTimeoutSec <= 0 {
 		c.EscalateTimeoutSec = 60

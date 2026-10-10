@@ -30,7 +30,6 @@ package main
 // Both need root on the host today.
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,6 +55,7 @@ import (
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/lockfiles"
+	"ovara.proxy/internal/receipts"
 	"ovara.proxy/internal/runallow"
 	"ovara.proxy/internal/workspace"
 )
@@ -346,7 +346,7 @@ func cmdBox(args []string) error {
 			_ = os.WriteFile(caPub, b, 0o644) //nolint:gosec // the PUBLIC certificate: the agent must be able to read it
 		}
 	}
-	receiptsBefore := countLines(inDir(*dir, cfg.ReceiptsFile))
+	receiptsBefore := receipts.Count(inDir(*dir, cfg.ReceiptsFile))
 
 	// 4. the agent, inside
 	sigs := make(chan os.Signal, 2)
@@ -960,23 +960,16 @@ func waitApproval(ctx context.Context, gw *gateway.Client, id string, timeout ti
 }
 
 // printBoxSummary tallies the receipts this run added.
-func printBoxSummary(receipts string, skip int) {
-	f, err := os.Open(receipts)
-	if err != nil {
-		return
-	}
-	defer f.Close()
+func printBoxSummary(receiptsPath string, skip int) {
 	counts := map[string]int{}
 	hosts := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	n := 0
-	for sc.Scan() {
+	_ = receipts.ForEachLine(receiptsPath, func(b []byte) error {
 		n++
 		if n <= skip {
-			continue
+			return nil
 		}
-		line := sc.Text()
+		line := string(b)
 		dec := jsonField(line, "decision")
 		counts[dec]++
 		if u := jsonField(line, "url"); u != "" {
@@ -989,7 +982,8 @@ func printBoxSummary(receipts string, skip int) {
 			}
 			hosts[h] = true
 		}
-	}
+		return nil
+	})
 	fmt.Fprintf(os.Stderr, "==> %d request(s) through Ovara: %d allowed, %d paused, %d denied; %d host(s)\n",
 		n-skip, counts[decisionAllow], counts[decisionEscalate], counts[decisionDeny], len(hosts))
 }
@@ -1004,14 +998,6 @@ func jsonField(line, key string) string {
 		return rest[:j]
 	}
 	return ""
-}
-
-func countLines(path string) int {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	return strings.Count(string(b), "\n")
 }
 
 func waitPort(addr string, timeout time.Duration, proc *exec.Cmd) error {

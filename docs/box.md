@@ -694,9 +694,15 @@ Order matters: 0 before anything (today's release cannot restart); 1 before
 3. **Where the model API key lives for Aider/opencode-style agents that
    want it in a config file**: placeholder in the file, substituted at the
    proxy, same as env vars. Needs a test per agent.
-4. **Receipt retention and size** for long runs: compaction exists
-   (`record.compactSigned`); the box needs a retention knob and a size
-   warning in `ovara doctor`.
+4. **Receipt retention and size** — *decided and built*: the proxy's
+   receipt chain rotates into gzip-compressed, numbered segments
+   (`receipts.NNNNNN.jsonl.gz`) at `receipts_segment_bytes` (default 64
+   MiB), and the next file continues the same chain. Ovara never deletes a
+   receipt; the log, the approval page and the verifier walk every
+   segment. A person may move old segments to archive storage: the chain
+   then verifies from the earliest one kept, and says so. `ovara doctor`
+   reports the size and warns over `receipts_warn_bytes` (default 1 GiB).
+   Tested at 100k receipts (46 MB raw, 12 MB on disk).
 5. **Multi-agent / sub-agent runs**: one box per top-level run; sub-agents
    share it and the receipts tag them by process. Decide whether sub-agents
    get their own agent tokens (traceability) or share one (simplicity).
