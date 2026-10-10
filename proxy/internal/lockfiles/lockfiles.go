@@ -29,6 +29,14 @@ const (
 	Crate = "crate"
 )
 
+// wellFormed: ecosystem:name@version with a non-empty name and version and
+// no whitespace (the version is after the last "@": npm scopes start with one).
+func wellFormed(ref string) bool {
+	_, nv, ok := strings.Cut(ref, ":")
+	i := strings.LastIndex(nv, "@")
+	return ok && i > 0 && i < len(nv)-1 && !strings.ContainsAny(ref, " \t\r\n")
+}
+
 // Ref names one package version: "npm:left-pad@1.3.0".
 func Ref(ecosystem, name, version string) string {
 	if ecosystem == PyPI {
@@ -87,7 +95,9 @@ func Scan(root string) (refs, files []string) {
 		}
 		files = append(files, filepath.ToSlash(rel))
 		for _, r := range got {
-			set[r] = true
+			if wellFormed(r) {
+				set[r] = true
+			}
 		}
 		return nil
 	})

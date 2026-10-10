@@ -23,6 +23,10 @@ jobs:
           - { module: proxy,           pkg: ./internal/proxy,           target: FuzzNormalizeHost }
           - { module: runtime/gateway, pkg: ./internal/policy,          target: FuzzMatchCanonicalResource }
           - { module: runtime/gateway, pkg: ./internal/record,          target: FuzzOpenNeverPanics }
+          - { module: proxy,           pkg: ./internal/lockfiles,       target: FuzzDownload }
+          - { module: proxy,           pkg: ./internal/lockfiles,       target: FuzzScan }
+          - { module: proxy,           pkg: ./internal/receipts,        target: FuzzVerifyNeverPanics }
+          - { module: proxy,           pkg: ./internal/boxgate,         target: FuzzCommandLine }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

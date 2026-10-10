@@ -21,6 +21,14 @@ func Download(host, path string) (string, bool) {
 	if p, err := url.PathUnescape(path); err == nil {
 		path = p
 	}
+	ref, ok := download(host, path)
+	if !ok || !wellFormed(ref) {
+		return "", false
+	}
+	return ref, true
+}
+
+func download(host, path string) (string, bool) {
 	switch host {
 	case "registry.npmjs.org", "registry.yarnpkg.com":
 		return npmTarball(path)
