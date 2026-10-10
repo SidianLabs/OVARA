@@ -110,6 +110,14 @@ def t(fam, typ, proto=0):
         return str(e.errno)
 print(" ".join([t(1, 1), t(2, 1), t(16, 3, 0), t(16, 3, 6), t(16, 3, 12), t(30, 5), t(21, 5), t(29, 3, 1), t(31, 1, 3), t(41, 2)]))
 ')"
+  # process_vm_writev (write another process's memory) is not in the profile
+  r T2_VMWRITE "$(python3 -c '
+import ctypes, os, platform
+nr = {"x86_64": 311, "aarch64": 270}.get(platform.machine())
+libc = ctypes.CDLL(None, use_errno=True)
+rc = libc.syscall(nr, os.getpid(), None, 0, None, 0, 0) if nr else -2
+print("allowed" if rc == 0 else "errno=%d" % ctypes.get_errno())
+')"
   r T2_INET6 "$(python3 -c 'import socket
 try:
     socket.socket(10, 1).close(); print("open")
@@ -219,6 +227,7 @@ if [ "$TIER" = 2 ]; then
   check "no credential files in the box" 0 "$(val T2_SECRETS)"
   check "pip in a virtualenv works in the box" ok "$(val T2_VENVPIP)"
   check "seccomp: unix, inet and netlink routing open; xfrm, netfilter, tipc, rds, can, bluetooth, kcm refused" "open open open 1 1 1 1 1 1 1" "$(val T2_SOCKETS)"
+  check "seccomp: process_vm_writev refused (EPERM)" "errno=1" "$(val T2_VMWRITE)"
   case "$(val T2_INET6)" in open|97) ok "seccomp: IPv6 sockets allowed ($(val T2_INET6): 97 = no IPv6 in this kernel)";; *) bad "IPv6 sockets" "$(val T2_INET6)";; esac
   check "processes in the box: the gate (root) and the agent only" "ovara-agent root" "$(val T2_PROCS)"
   check "no credential-shaped file anywhere in the image" "" "$(val T2_IMAGE_SECRETS)"

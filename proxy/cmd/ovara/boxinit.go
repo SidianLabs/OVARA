@@ -109,7 +109,7 @@ func cmdBoxInit(args []string) error {
 			return fmt.Errorf("box-init: command gate: %w (refusing to start the agent without it)", err)
 		}
 		g := &remoteGate{enc: json.NewEncoder(gc), dec: json.NewDecoder(gc)}
-		tr := &boxgate.Tracer{Decide: g.decide}
+		tr := &boxgate.Tracer{Decide: g.decide, Changed: argvChanged}
 		code, err = tr.Run(cmd)
 		if err != nil {
 			return fmt.Errorf("box-init: %w", err)

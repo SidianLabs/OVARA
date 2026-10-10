@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -112,4 +113,76 @@ func TestCommandLine(t *testing.T) {
 			t.Errorf("%v: %q, want %q", c.argv, got, c.want)
 		}
 	}
+}
+
+// A program's arguments rewritten while the decision is being made (as
+// another process of the agent could, through /proc/<pid>/mem): the gate
+// reads them again before the program resumes and kills it.
+func TestTracer_ArgvChangedDuringDecisionIsKilled(t *testing.T) {
+	if _, err := os.Stat("/proc/self/exe"); err != nil {
+		t.Skip("needs Linux /proc")
+	}
+	dir := t.TempDir()
+	good := filepath.Join(dir, "goodgood")
+	evil := filepath.Join(dir, "evilevil") // same length, so it fits in place
+	var changed []string
+	tr := &Tracer{
+		Decide: func(e Exec) Verdict {
+			if len(e.Argv) > 0 && filepath.Base(e.Argv[0]) == "touch" {
+				// the attacker's move: overwrite the argument in the stopped
+				// process's memory after the gate has read it
+				if err := overwriteArg(e.PID, good, evil); err != nil {
+					t.Errorf("could not rewrite argv: %v", err)
+				}
+			}
+			return Allow
+		},
+		Changed: func(decided, now Exec) { changed = append(changed, CommandLine(decided)+" -> "+CommandLine(now)) },
+	}
+	cmd := exec.Command("bash", "-c", "true; touch "+good+"; exit 0")
+	code, err := tr.Run(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(evil); err == nil {
+		t.Fatal("the rewritten command ran")
+	}
+	if _, err := os.Stat(good); err == nil {
+		t.Fatal("the program ran although its arguments changed")
+	}
+	if len(changed) != 1 || !strings.Contains(changed[0], evil) {
+		t.Fatalf("change not reported: %v", changed)
+	}
+	if code != 0 {
+		t.Fatalf("bash exit %d", code)
+	}
+}
+
+// overwriteArg replaces old with neu (same length) in the argument area of
+// a stopped process, through /proc/<pid>/mem.
+func overwriteArg(pid int, old, neu string) error {
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return err
+	}
+	// fields after the command name in parentheses; arg_start is field 48
+	rest := string(stat[bytes.LastIndexByte(stat, ')')+2:])
+	fields := strings.Fields(rest)
+	start, _ := strconv.ParseInt(fields[45], 10, 64)
+	end, _ := strconv.ParseInt(fields[46], 10, 64)
+	mem, err := os.OpenFile("/proc/"+strconv.Itoa(pid)+"/mem", os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer mem.Close()
+	buf := make([]byte, end-start)
+	if _, err := mem.ReadAt(buf, start); err != nil {
+		return err
+	}
+	i := bytes.Index(buf, []byte(old))
+	if i < 0 {
+		return os.ErrNotExist
+	}
+	_, err = mem.WriteAt([]byte(neu), start+int64(i))
+	return err
 }

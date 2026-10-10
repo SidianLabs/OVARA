@@ -428,7 +428,6 @@
   {
    "names": [
     "process_vm_readv",
-    "process_vm_writev",
     "ptrace"
    ],
    "action": "SCMP_ACT_ALLOW",
@@ -738,7 +737,6 @@
     "pidfd_getfd",
     "process_madvise",
     "process_vm_readv",
-    "process_vm_writev",
     "ptrace"
    ],
    "action": "SCMP_ACT_ALLOW",

@@ -56,6 +56,46 @@ type Tracer struct {
 	// Skip, when set, exempts an exec from Decide (the launcher's own
 	// wrappers before the agent starts).
 	Skip func(Exec) bool
+	// Changed, when set, is told about a program killed because its
+	// command line changed while the decision was being made (another
+	// process wrote its memory): what was decided, and what it became.
+	Changed func(decided, now Exec)
+}
+
+// decide runs Decide for an exec stop and, if it allows, reads the command
+// line again just before the program resumes: a program whose arguments
+// changed while the decision was being made does not run (it is killed
+// before its first instruction). This narrows the window in which another
+// process of the agent could swap the arguments to the instant between this
+// read and the program reading them itself.
+func (t *Tracer) decide(pid int, e Exec) Verdict {
+	if t.Decide == nil {
+		return Allow
+	}
+	v := t.Decide(e)
+	if v != Allow {
+		return v
+	}
+	now := describe(pid)
+	if !sameArgv(e.Argv, now.Argv) {
+		if t.Changed != nil {
+			t.Changed(e, now)
+		}
+		return Deny
+	}
+	return Allow
+}
+
+func sameArgv(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Run starts cmd traced and follows its whole tree until the root process
@@ -106,7 +146,7 @@ func (t *Tracer) Run(cmd *exec.Cmd) (int, error) {
 	}
 	// the root's own exec is this first stop, not a PTRACE_EVENT_EXEC: gate
 	// it the same way
-	if e := describe(root); !(t.Skip != nil && t.Skip(e)) && t.Decide != nil && t.Decide(e) == Deny {
+	if e := describe(root); !(t.Skip != nil && t.Skip(e)) && t.decide(root, e) == Deny {
 		_ = unix.Kill(root, unix.SIGKILL) // SIGKILL ends a stopped tracee at once; the cont below then fails harmlessly
 	}
 	if err := unix.PtraceCont(root, 0); err != nil && err != unix.ESRCH {
@@ -151,7 +191,7 @@ func (t *Tracer) Run(cmd *exec.Cmd) (int, error) {
 				_ = unix.PtraceCont(pid, 0)
 				continue
 			}
-			if t.Decide != nil && t.Decide(e) == Deny {
+			if t.decide(pid, e) == Deny {
 				_ = unix.Kill(pid, unix.SIGKILL)
 			}
 			_ = unix.PtraceCont(pid, 0)

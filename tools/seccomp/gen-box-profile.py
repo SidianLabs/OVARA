@@ -6,7 +6,10 @@ lets socket() open some thirty address families, several with a history of
 kernel bugs (TIPC, RDS, CAN, Bluetooth, XDP, KCM, Phonet, ...). An agent in
 an ovara box needs four: AF_UNIX, AF_INET and AF_INET6 (its traffic and the
 relay to the proxy), and AF_NETLINK with protocol NETLINK_ROUTE (listing
-interfaces). Everything else in Docker's profile is kept as it is.
+interfaces). And process_vm_writev is removed: it writes another process's
+memory, the move that could swap a program's arguments after the command
+gate has read them (the gate itself needs only ptrace). Everything else in
+Docker's profile is kept as it is.
 
   python3 tools/seccomp/gen-box-profile.py default.json > proxy/cmd/ovara/box-seccomp.json
 """
@@ -18,6 +21,9 @@ NETLINK_ROUTE = 0
 
 src = json.load(open(sys.argv[1]))
 rules = [r for r in src["syscalls"] if "socket" not in r["names"]]
+for r in rules:
+    r["names"] = [n for n in r["names"] if n != "process_vm_writev"]
+rules = [r for r in rules if r["names"]]
 # a rule naming socket together with other syscalls would lose them: refuse
 for r in src["syscalls"]:
     if "socket" in r["names"] and r["names"] != ["socket"]:

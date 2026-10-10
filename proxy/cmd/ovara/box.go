@@ -228,6 +228,9 @@ func cmdBox(args []string) error {
 	if err != nil {
 		return fmt.Errorf("%s/proxy.json: %w", *dir, err)
 	}
+	if !*noGate {
+		warnPtraceScope()
+	}
 	uid, gid := boxContainerUID, boxContainerUID
 	if *tier == 1 {
 		if uid, gid, err = ensureUser(*agentUser); err != nil {
@@ -564,7 +567,7 @@ func runTier1(a *boxAgent) (int, error) {
 	}
 	// the gate traces the tree from the launcher's own process; a signal
 	// to us is forwarded to the agent's process group
-	tr := &boxgate.Tracer{Decide: a.gate.decide, Skip: a.gate.skip}
+	tr := &boxgate.Tracer{Decide: a.gate.decide, Skip: a.gate.skip, Changed: argvChanged}
 	type res struct {
 		code int
 		err  error
@@ -857,6 +860,22 @@ func checkMounts(mounts []string, ovaraDir string) error {
 func isTerminal(f *os.File) bool {
 	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
 	return err == nil
+}
+
+// argvChanged reports a program the gate killed because its arguments
+// changed while it was being checked.
+func argvChanged(decided, now boxgate.Exec) {
+	fmt.Fprintf(os.Stderr, "[ovara] command refused: its arguments changed while it was being checked (was %q, now %q)\n",
+		boxgate.CommandLine(decided), boxgate.CommandLine(now))
+}
+
+// warnPtraceScope: with kernel.yama.ptrace_scope 0 any process of the
+// agent's user may write another's memory, not only an ancestor's.
+func warnPtraceScope() {
+	b, err := os.ReadFile("/proc/sys/kernel/yama/ptrace_scope")
+	if err != nil || strings.TrimSpace(string(b)) == "0" {
+		fmt.Fprintln(os.Stderr, "==> warning: kernel.yama.ptrace_scope is 0 (or Yama is off): any process of the agent's user can write another's memory; set it to 1 or higher (sysctl kernel.yama.ptrace_scope=1)")
+	}
 }
 
 // commandGate decides each exec in the box through the gateway.
