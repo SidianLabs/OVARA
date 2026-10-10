@@ -99,6 +99,22 @@ if [ "${OVARA_BOX_TIER:-1}" = 2 ]; then
   # (no index here, so it fails for want of a package, not for its config)
   python3 -m venv /tmp/t2venv >/dev/null 2>&1
   r T2_VENVPIP "$(/tmp/t2venv/bin/pip install --no-index six 2>&1 | grep -q -- "--user" && echo broken || echo ok)"
+  # the box's seccomp profile: only AF_UNIX, AF_INET(6) and netlink routing;
+  # errno 1 (EPERM) is seccomp refusing, not a missing kernel module
+  r T2_SOCKETS "$(python3 -c '
+import socket
+def t(fam, typ, proto=0):
+    try:
+        socket.socket(fam, typ, proto).close(); return "open"
+    except OSError as e:
+        return str(e.errno)
+print(" ".join([t(1, 1), t(2, 1), t(16, 3, 0), t(16, 3, 6), t(16, 3, 12), t(30, 5), t(21, 5), t(29, 3, 1), t(31, 1, 3), t(41, 2)]))
+')"
+  r T2_INET6 "$(python3 -c 'import socket
+try:
+    socket.socket(10, 1).close(); print("open")
+except OSError as e:
+    print(e.errno)')"
   r T2_PROCS "$(ps -eo user= | sort -u | tr '\n' ' ' | sed 's/ $//')"
   # the whole image, not a list of places: nothing credential-shaped anywhere
   # (npm packages' own test fixtures are not the image's secrets)
@@ -202,6 +218,8 @@ if [ "$TIER" = 2 ]; then
   check "UDP out: no route" BLOCKED "$(val T2_UDP)"
   check "no credential files in the box" 0 "$(val T2_SECRETS)"
   check "pip in a virtualenv works in the box" ok "$(val T2_VENVPIP)"
+  check "seccomp: unix, inet and netlink routing open; xfrm, netfilter, tipc, rds, can, bluetooth, kcm refused" "open open open 1 1 1 1 1 1 1" "$(val T2_SOCKETS)"
+  case "$(val T2_INET6)" in open|97) ok "seccomp: IPv6 sockets allowed ($(val T2_INET6): 97 = no IPv6 in this kernel)";; *) bad "IPv6 sockets" "$(val T2_INET6)";; esac
   check "processes in the box: the gate (root) and the agent only" "ovara-agent root" "$(val T2_PROCS)"
   check "no credential-shaped file anywhere in the image" "" "$(val T2_IMAGE_SECRETS)"
 fi

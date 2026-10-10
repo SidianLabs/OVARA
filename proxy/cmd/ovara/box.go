@@ -49,6 +49,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "embed"
+
 	"golang.org/x/sys/unix"
 
 	"ovara.proxy/internal/boxgate"
@@ -633,12 +635,17 @@ func runTier2(a *boxAgent) (int, error) {
 	if err := os.WriteFile(envFile, []byte(strings.Join(env, "\n")+"\n"), 0o600); err != nil {
 		return 0, err
 	}
+	seccompFile := filepath.Join(a.runDir, "seccomp.json")
+	if err := os.WriteFile(seccompFile, boxSeccomp, 0o600); err != nil {
+		return 0, err
+	}
 	cname := boxContainerName + a.runID
 	args := []string{
 		"run", "--rm", "-i", "--name", cname, "--label", "ovara.box=" + a.runID,
 		"--network", "none",
 		"--cap-drop", "ALL", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "KILL",
 		"--security-opt", "no-new-privileges",
+		"--security-opt", "seccomp=" + seccompFile,
 		"--read-only",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=4g,mode=1777",
 		"--tmpfs", "/scratch:rw,nosuid,nodev,exec,size=8g,mode=0755,uid=" + strconv.Itoa(boxContainerUID) + ",gid=" + strconv.Itoa(boxContainerUID),
@@ -732,6 +739,13 @@ func serveGate(ln net.Listener, gate *commandGate) {
 		}
 	}
 }
+
+// boxSeccomp is the tier 2 box's seccomp profile: Docker's default with
+// socket() limited to AF_UNIX, AF_INET, AF_INET6 and AF_NETLINK/NETLINK_ROUTE
+// (tools/seccomp/gen-box-profile.py).
+//
+//go:embed box-seccomp.json
+var boxSeccomp []byte
 
 // boxAgents are the agents with a published image (box/agents/Dockerfile).
 var boxAgents = map[string]bool{"claude": true, "codex": true, "opencode": true, "aider": true}
