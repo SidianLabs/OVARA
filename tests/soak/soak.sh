@@ -57,6 +57,13 @@ fi
 ovcmd=(ovara)
 [ -z "$SUDO" ] || ovcmd=("$SUDO" --preserve-env=ANTHROPIC_API_KEY,OPENAI_API_KEY env "PATH=$PATH" ovara)
 ov() { "${ovcmd[@]}" "$@"; }
+# another Ovara on this machine would take the box's ports and every round
+# would fail for a reason that has nothing to do with the agents
+for port in 9443 8080; do
+  if (echo > "/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    echo "port $port is in use (another ovara run or box?): stop it first" >&2; exit 2
+  fi
+done
 $SUDO rm -rf "$work"; mkdir -p "$work"
 ov init "$d" >/dev/null || exit 1
 
