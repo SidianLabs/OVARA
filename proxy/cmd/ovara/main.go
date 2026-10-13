@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"hash/crc32"
@@ -378,6 +379,7 @@ func cmdRun(args []string) error {
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
 	noUI := fs.Bool("no-ui", false, "run without the approval page (same as -ui off); without it, a page address that cannot be used stops ovara run")
 	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
+	allowUnhardened := fs.Bool("allow-unhardened-boundary", false, "with --boundary: go on when the host side of the boundary cannot be firewalled (neither iptables nor nft on the host); the agent can then reach every service on the host's boundary address")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
 	server.RepairIdentityRegistry = *repairRegistry
@@ -411,8 +413,9 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	boundaryIP := ""
 	if *boundary != "" {
-		if err := setupBoundary(*boundary, *boundaryName, cfg); err != nil {
+		if boundaryIP, err = setupBoundary(*boundary, *boundaryName, cfg, *allowUnhardened); err != nil {
 			return fmt.Errorf("boundary setup: %w", err)
 		}
 	}
@@ -451,15 +454,22 @@ func cmdRun(args []string) error {
 	}
 	log.Printf("risky requests pause until you answer them (browser page above, or `ovara watch`)")
 	listenAddr := cfg.ListenAddr
-	if *boundary != "" {
-		// The agent sits in a separate namespace/network and reaches the
-		// proxy over the boundary link, not over loopback.
-		if host, port, err := net.SplitHostPort(listenAddr); err == nil && isLoopbackHost(host) {
-			listenAddr = net.JoinHostPort("0.0.0.0", port)
-			log.Printf("--boundary %s: listening on %s so the isolated agent can reach the proxy", *boundary, listenAddr)
-		}
+	addrs := proxyListenAddrs(listenAddr, boundaryIP)
+	if len(addrs) > 1 {
+		log.Printf("--boundary %s: listening on %s too, the host's side of the boundary, so the isolated agent can reach the proxy", *boundary, addrs[1])
 	} else if host, _, err := net.SplitHostPort(listenAddr); err == nil && !isLoopbackHost(host) {
 		log.Printf("WARNING: proxy listens on %s, reachable from the network. Anyone holding the proxy token can use it; set listen_addr to 127.0.0.1:PORT unless you meant this", listenAddr)
+	}
+	var lns []net.Listener
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			for _, l := range lns {
+				l.Close()
+			}
+			return fmt.Errorf("proxy: %w", err)
+		}
+		lns = append(lns, ln)
 	}
 	hs := proxy.NewHTTPServer(listenAddr, srv)
 	go func() {
@@ -471,7 +481,14 @@ func cmdRun(args []string) error {
 			hs.Close() // paused requests waiting on a human: drop them
 		}
 	}()
-	if err := hs.ListenAndServe(); err != http.ErrServerClosed {
+	for _, ln := range lns[1:] {
+		go func(ln net.Listener) {
+			if err := hs.Serve(ln); err != http.ErrServerClosed {
+				log.Printf("proxy on %s: %v", ln.Addr(), err)
+			}
+		}(ln)
+	}
+	if err := hs.Serve(lns[0]); err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -524,29 +541,32 @@ func startUI(addr string, cfg *config.Config) (string, error) {
 }
 
 // setupBoundary runs the embedded egress-boundary script so the agent
-// environment has no path around the proxy. Requires root (or passwordless
-// sudo); the script is idempotent-ish and safe to re-run.
-func setupBoundary(mode, name string, cfg *config.Config) error {
+// environment has no path around the proxy, and returns the host's address
+// on the boundary (where the proxy must listen for the agent). Requires
+// root (or passwordless sudo); the script is idempotent-ish and safe to
+// re-run. It fails when the host side cannot be firewalled, unless
+// allowUnhardened.
+func setupBoundary(mode, name string, cfg *config.Config, allowUnhardened bool) (string, error) {
 	if mode != "netns" && mode != "docker" {
-		return fmt.Errorf("--boundary must be netns or docker, got %q", mode)
+		return "", fmt.Errorf("--boundary must be netns or docker, got %q", mode)
 	}
 	f, err := os.CreateTemp("", "ovara-boundary-*.sh")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.Remove(f.Name())
 	if _, err := f.WriteString(scripts.EgressBoundary); err != nil {
 		f.Close()
-		return err
+		return "", err
 	}
 	f.Close()
 	if err := os.Chmod(f.Name(), 0o755); err != nil {
-		return err
+		return "", err
 	}
 
 	_, proxyPort, err := net.SplitHostPort(cfg.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("proxy listen_addr %q: %w", cfg.ListenAddr, err)
+		return "", fmt.Errorf("proxy listen_addr %q: %w", cfg.ListenAddr, err)
 	}
 	args := []string{f.Name(), mode, "--proxy-port", proxyPort}
 	ns := name
@@ -566,6 +586,16 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 			args = append(args, "--net", name)
 		}
 	}
+	// the script's switches: DNS from the boundary is off unless the
+	// operator turns it on (OVARA_BOUNDARY_DNS=1, with a deny-by-default
+	// resolver); an unfirewalled host side is an error unless allowed
+	var scriptEnv []string
+	if v := os.Getenv("OVARA_BOUNDARY_DNS"); v != "" {
+		scriptEnv = append(scriptEnv, "OVARA_BOUNDARY_DNS="+v)
+	}
+	if allowUnhardened {
+		scriptEnv = append(scriptEnv, "OVARA_ALLOW_UNHARDENED=1")
+	}
 	var cmd *exec.Cmd
 	if os.Geteuid() == 0 {
 		cmd = exec.Command("bash", args...)
@@ -574,19 +604,26 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 		// command form (transiently in argv; the token only buys proxy
 		// transit, not a privilege). `sudo -E` is the alternative but is
 		// denied on strict sudoers policies.
-		sudoArgs := []string{"bash"}
+		sudoArgs := append(append([]string(nil), scriptEnv...), "bash")
 		if cfg.AgentToken != "" {
 			sudoArgs = append([]string{"OVARA_AGENT_TOKEN=" + cfg.AgentToken}, sudoArgs...)
 		}
 		cmd = exec.Command("sudo", append(sudoArgs, args...)...)
 	}
-	if os.Geteuid() == 0 && cfg.AgentToken != "" {
-		cmd.Env = append(os.Environ(), "OVARA_AGENT_TOKEN="+cfg.AgentToken)
+	if os.Geteuid() == 0 {
+		cmd.Env = append(os.Environ(), scriptEnv...)
+		if cfg.AgentToken != "" {
+			cmd.Env = append(cmd.Env, "OVARA_AGENT_TOKEN="+cfg.AgentToken)
+		}
 	}
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	log.Printf("setting up %s egress boundary (requires root)...", mode)
 	if err := cmd.Run(); err != nil {
-		return err
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == boundaryExitUnhardened {
+			return "", errors.New("the host side of the boundary could not be firewalled (no iptables or nft on the host): the agent could reach every service on the host's boundary address. Install iptables or nftables, or pass -allow-unhardened-boundary to go on without it")
+		}
+		return "", err
 	}
 	if mode == "netns" {
 		userinfo := ""
@@ -599,11 +636,36 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 		log.Printf("  sudo install -m 644 %s/var/ca.pem /usr/local/share/ovara-ca.pem   # the PUBLIC cert; the agent needs only this", mustGetwd())
 		log.Printf("  sudo ip netns exec %s sudo -u ovara-agent env HTTPS_PROXY=http://%s%s:%s SSL_CERT_FILE=/usr/local/share/ovara-ca.pem <agent>", ns, userinfo, boundaryProxyIP(subnetIdx), proxyPort)
 		log.Printf("and keep that user out of this directory:  chmod 700 %s", mustGetwd())
-	} else {
-		log.Printf("boundary network ready — launch the agent per the docker recipe above")
+		return boundaryProxyIP(subnetIdx), nil
 	}
-	return nil
+	log.Printf("boundary network ready — launch the agent per the docker recipe above")
+	return boundaryDockerIP, nil
 }
+
+// proxyListenAddrs is where the proxy listens: listen_addr, and with a
+// boundary (boundaryIP set) and a loopback listen_addr, also the host's
+// address on the boundary link, on the same port. The agent sits in a
+// separate namespace or network and cannot reach the host's loopback; the
+// boundary address is the only other place the proxy is offered, never
+// every interface.
+func proxyListenAddrs(listenAddr, boundaryIP string) []string {
+	addrs := []string{listenAddr}
+	if boundaryIP == "" {
+		return addrs
+	}
+	if host, port, err := net.SplitHostPort(listenAddr); err == nil && isLoopbackHost(host) {
+		addrs = append(addrs, net.JoinHostPort(boundaryIP, port))
+	}
+	return addrs
+}
+
+// boundaryExitUnhardened is setup-egress-boundary.sh's exit status when
+// it cannot firewall the host side.
+const boundaryExitUnhardened = 3
+
+// boundaryDockerIP is the host's address on the docker boundary network
+// (the bridge gateway of the script's 172.30.0.0/24).
+const boundaryDockerIP = "172.30.0.1"
 
 // boundarySubnetIdx maps a namespace name to a stable third octet (1..250)
 // for the 10.200.N.0/24 boundary subnet, so two boundaries never collide.
