@@ -132,7 +132,15 @@ func (s *Server) SetConnectPort443Only(on bool) { s.connectPort443 = on }
 // Proxy-Authorization (Basic password or Bearer — what tools send when the
 // proxy URL carries credentials). Without it the proxy is an open
 // credential dispenser for anyone who can reach the listener.
-func (s *Server) SetClientAuth(token string) { s.agentToken = token }
+// Once set, client authentication stays on for the life of the Server.
+func (s *Server) SetClientAuth(token string) {
+	s.ids.mu.Lock()
+	s.agentToken = token
+	if token != "" {
+		s.ids.authOn = true
+	}
+	s.ids.mu.Unlock()
+}
 
 func matchHostGlob(globs []string, host string) bool {
 	host = normalizeHost(host)
@@ -518,6 +526,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if s.refuseStopped(w, r, agentOf(r.Context())) {
 		return
 	}
+	// So does one whose agent has been removed (or given a new token).
+	if s.refuseRemoved(w, r, agentOf(r.Context())) {
+		return
+	}
 	// Query strings can carry secrets (tokens, SAS sigs) — the gateway and
 	// the receipt log get host+path only.
 	url := redactURL(r.URL)
@@ -895,7 +907,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	resp, err := s.transport.RoundTrip(r)
+	// A response still arriving when its agent is stopped or removed is
+	// cut: the upstream request is cancelled, which ends the copy below.
+	upCtx, cancelUp := context.WithCancel(r.Context())
+	defer cancelUp()
+	resp, err := s.transport.RoundTrip(r.WithContext(upCtx))
 	if err != nil {
 		decision = "error"
 		log.Printf("upstream %s %s: %v", r.Method, url, err)
@@ -967,8 +983,21 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	usage := s.watchModelUsage(r, resp, &body)
+	stopWatch, wasCut := s.cutWhenAgentGone(r.Context(), cancelUp)
 	copyFlush(w, body)
+	stopWatch()
 	usage.finish()
+	if wasCut() {
+		// The client must not take a cut body for a whole one.
+		log.Printf("%s %s: response cut, its agent was stopped or removed", r.Method, url)
+		if _, err := s.chain.Append(receipts.Entry{
+			Method: r.Method, URL: url, Decision: gwDeny, Status: status,
+			Agent: facts.agent.label, Reasons: []string{"agent_stopped_mid_response"},
+		}, false); err != nil {
+			log.Printf("CRITICAL: receipt record failed for cut response %s %s: %v", r.Method, url, err)
+		}
+		panic(http.ErrAbortHandler)
+	}
 	if verify != nil && errors.Is(verify.err, errDigestMismatch) {
 		// The client has everything but the last bytes; abort the
 		// connection so it cannot take a cut body for a whole one.

@@ -119,7 +119,7 @@ func agentAdd(w io.Writer, dir, name string) error {
 }
 
 func agentRemove(w io.Writer, dir, name string) error {
-	agents, _, err := config.ReadAgents(proxyJSONPath(dir))
+	agents, legacy, err := config.ReadAgents(proxyJSONPath(dir))
 	if err != nil {
 		return err
 	}
@@ -130,7 +130,10 @@ func agentRemove(w io.Writer, dir, name string) error {
 	if err := config.WriteAgents(proxyJSONPath(dir), agents); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "removed agent %q: a running Ovara refuses its token within a second\n", name)
+	fmt.Fprintf(w, "removed agent %q: a running Ovara refuses its token within a second, also in connections it already has open\n", name)
+	if len(agents) == 0 && legacy == "" {
+		fmt.Fprintf(w, "warning: that was the last agent token. A running Ovara now refuses every client until an agent is added; started again without one, it runs without client authentication where its listen address allows that\n")
+	}
 	return nil
 }
 

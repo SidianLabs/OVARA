@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,5 +243,133 @@ func TestBrokenRevokedFileKeepsAgentsStopped(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if rec := send(srv, "GET", up.URL+"/a", "", nil, asAgent(tokAlpha)); rec.Code != http.StatusForbidden {
 		t.Fatalf("broken file let a stopped agent back in: %d", rec.Code)
+	}
+}
+
+// ASI03: a proxy whose only client credentials are named agents keeps
+// authentication on when the last agent is removed while it runs: it then
+// refuses everyone, it never accepts anonymous clients.
+func TestRemovingTheLastAgentKeepsAuthOn(t *testing.T) {
+	srv, _, _ := newActionServer(t, "allow")
+	up := newRecorder(t)
+	proxyJSON, _ := watchFiles(t, srv, map[string]string{agentAlpha: tokAlpha})
+	waitCode(t, srv, up.URL+"/a", tokAlpha, 200)
+	if rec := send(srv, "GET", up.URL+"/a", "", nil, nil); rec.Code != http.StatusProxyAuthRequired {
+		t.Fatalf("anonymous before: %d", rec.Code)
+	}
+	if err := config.WriteAgents(proxyJSON, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	waitCode(t, srv, up.URL+"/a", tokAlpha, http.StatusProxyAuthRequired)
+	if rec := send(srv, "GET", up.URL+"/a", "", nil, nil); rec.Code != http.StatusProxyAuthRequired {
+		t.Fatalf("anonymous after removing the last agent: %d", rec.Code)
+	}
+	hits := up.hits.Load()
+	// Adding an agent back lets that agent, and only it, in.
+	if err := config.WriteAgents(proxyJSON, map[string]string{"beta": tokBeta}); err != nil {
+		t.Fatal(err)
+	}
+	waitCode(t, srv, up.URL+"/b", tokBeta, 200)
+	if rec := send(srv, "GET", up.URL+"/a", "", nil, nil); rec.Code != http.StatusProxyAuthRequired {
+		t.Fatalf("anonymous after re-adding: %d", rec.Code)
+	}
+	if up.hits.Load() != hits+1 {
+		t.Fatalf("hits %d, want %d", up.hits.Load(), hits+1)
+	}
+}
+
+// ASI03/ASI10: a tunnel opened by an agent that has since been removed (or
+// given a new token) carries no more requests, and the refusal is receipted.
+func TestRemovedAgentsOpenTunnelCarriesNoMore(t *testing.T) {
+	srv, _, chainFile := newActionServer(t, "allow")
+	up := newRecorder(t)
+	srv.SetAgents(map[string]string{agentAlpha: tokAlpha, "beta": tokBeta})
+	alpha := agentIdentity{name: agentAlpha, label: agentAlpha, token: tokAlpha}
+	inTunnel := func(id agentIdentity) int {
+		r := httptest.NewRequest("GET", up.URL+"/x", nil)
+		rec := httptest.NewRecorder()
+		srv.handleRequest(rec, withAgent(r, id))
+		return rec.Code
+	}
+	if code := inTunnel(alpha); code != 200 {
+		t.Fatalf("registered agent in a tunnel: %d", code)
+	}
+	srv.SetAgents(map[string]string{"beta": tokBeta}) // alpha removed
+	if code := inTunnel(alpha); code != http.StatusForbidden {
+		t.Fatalf("removed agent's tunnel: %d", code)
+	}
+	r := lastReceiptOf(t, chainFile)
+	if r.Decision != gwDeny || r.Agent != agentAlpha || len(r.Reasons) != 1 || r.Reasons[0] != "agent_removed" {
+		t.Fatalf("receipt %+v", r)
+	}
+	// The same name with a new token: the old tunnel is still refused.
+	srv.SetAgents(map[string]string{agentAlpha: tokLegacy, "beta": tokBeta})
+	if code := inTunnel(alpha); code != http.StatusForbidden {
+		t.Fatalf("old token's tunnel after a new token: %d", code)
+	}
+	// An identity without a token (taken while authentication was off) is
+	// refused once authentication is on.
+	if code := inTunnel(agentIdentity{name: agentAlpha, label: agentAlpha}); code != http.StatusForbidden {
+		t.Fatalf("tokenless identity: %d", code)
+	}
+	if up.hits.Load() != 1 {
+		t.Fatalf("hits %d", up.hits.Load())
+	}
+}
+
+// ASI10: a response still streaming when its agent is stopped or removed
+// is cut within about a second, and the cut is receipted.
+func TestAgentsStreamingResponseIsCutWhenStoppedOrRemoved(t *testing.T) {
+	for _, how := range []string{"stopped", "removed"} {
+		t.Run(how, func(t *testing.T) {
+			srv, _, chainFile := newActionServer(t, "allow")
+			srv.SetAgents(map[string]string{agentAlpha: tokAlpha, "beta": tokBeta})
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: first\n\n")
+				w.(http.Flusher).Flush()
+				for i := 0; i < 100; i++ {
+					select {
+					case <-r.Context().Done():
+						return
+					case <-time.After(100 * time.Millisecond):
+					}
+					_, _ = io.WriteString(w, ": keep-alive\n\n")
+					w.(http.Flusher).Flush()
+				}
+			}))
+			t.Cleanup(up.Close)
+			px := httptest.NewServer(srv)
+			t.Cleanup(px.Close)
+			pu, _ := url.Parse(px.URL)
+			pu.User = url.UserPassword("x", tokAlpha)
+			client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
+			resp, err := client.Get(up.URL + "/events")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			first := make([]byte, len("data: first\n\n"))
+			if _, err := io.ReadFull(resp.Body, first); err != nil {
+				t.Fatalf("first event: %v", err)
+			}
+			if how == "stopped" {
+				srv.SetStoppedAgents([]string{agentAlpha})
+			} else {
+				srv.SetAgents(map[string]string{"beta": tokBeta})
+			}
+			start := time.Now()
+			_, err = io.ReadAll(resp.Body)
+			if err == nil {
+				t.Fatal("the cut stream looked complete")
+			}
+			if el := time.Since(start); el > 2*time.Second {
+				t.Fatalf("stream cut after %v", el)
+			}
+			r := lastReceiptOf(t, chainFile)
+			if r.Decision != gwDeny || len(r.Reasons) != 1 || r.Reasons[0] != "agent_stopped_mid_response" {
+				t.Fatalf("receipt %+v", r)
+			}
+		})
 	}
 }

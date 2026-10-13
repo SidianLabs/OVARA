@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ovara.proxy/internal/config"
@@ -31,6 +32,10 @@ type agentIdentity struct {
 	// label is what receipts record: the name, or for agent_token the
 	// hash of the token ("pt_..."), as before named agents existed.
 	label string
+	// token is the credential the client presented. It is kept (in
+	// memory only) so that requests inside a tunnel can be re-checked
+	// against the agents configured now, not those of when it opened.
+	token string
 }
 
 type agentCtxKey struct{}
@@ -53,6 +58,11 @@ type agentRegistry struct {
 	mu      sync.RWMutex
 	tokens  map[string]string // name -> token
 	stopped map[string]bool   // names, or config.AllAgents
+	// authOn says client authentication is required. It is set as soon as
+	// any client credential is configured (agent_token or an agent) and
+	// never cleared while the proxy runs: removing the last agent leaves
+	// a proxy that refuses everyone, never one that accepts anyone.
+	authOn bool
 	// refusals bounds the receipts a stopped agent's retries can write.
 	refusals *rateLimiter
 }
@@ -70,7 +80,35 @@ func (s *Server) SetAgents(agents map[string]string) {
 	}
 	s.ids.mu.Lock()
 	s.ids.tokens = m
+	if len(m) > 0 {
+		s.ids.authOn = true
+	}
+	refuseAll := s.ids.authOn && len(m) == 0 && s.agentToken == ""
 	s.ids.mu.Unlock()
+	if refuseAll {
+		log.Printf("CRITICAL: agents: no agent token is configured any more; client authentication stays on and every client is refused until an agent is added (ovara agent add NAME)")
+	}
+}
+
+// accepted reports whether id is still a client the proxy accepts: with
+// authentication on, its token must still be the one configured for its
+// name. A tunnel outlives the check made when it was opened; this is the
+// check for each request inside it.
+func (s *Server) accepted(id agentIdentity) bool {
+	s.ids.mu.RLock()
+	defer s.ids.mu.RUnlock()
+	if !s.ids.authOn {
+		return true
+	}
+	if id.token == "" {
+		return false
+	}
+	if id.name == config.DefaultAgentName && s.agentToken != "" &&
+		subtle.ConstantTimeCompare([]byte(id.token), []byte(s.agentToken)) == 1 {
+		return true
+	}
+	t, ok := s.ids.tokens[id.name]
+	return ok && subtle.ConstantTimeCompare([]byte(id.token), []byte(t)) == 1
 }
 
 // SetStoppedAgents replaces the set of stopped agent names.
@@ -111,24 +149,26 @@ func proxyCredential(r *http.Request) string {
 // authenticate checks the client credential and says who presented it.
 // Every configured token is compared, in constant time, whatever matched
 // first: the time taken does not say which agent a guess was close to.
-// With no token configured at all, client authentication is off.
+// Client authentication is off only while no client credential has ever
+// been configured; once on, it stays on (an empty set refuses everyone).
 func (s *Server) authenticate(r *http.Request) (agentIdentity, bool) {
 	s.ids.mu.RLock()
 	tokens := s.ids.tokens
+	authOn := s.ids.authOn
 	s.ids.mu.RUnlock()
-	if s.agentToken == "" && len(tokens) == 0 {
+	if !authOn {
 		return agentIdentity{}, true
 	}
 	tok := []byte(proxyCredential(r))
 	var id agentIdentity
 	found := 0
 	if s.agentToken != "" && subtle.ConstantTimeCompare(tok, []byte(s.agentToken)) == 1 {
-		id = agentIdentity{name: config.DefaultAgentName, label: agentLabel(s.agentToken)}
+		id = agentIdentity{name: config.DefaultAgentName, label: agentLabel(s.agentToken), token: s.agentToken}
 		found++
 	}
 	for name, t := range tokens {
 		if subtle.ConstantTimeCompare(tok, []byte(t)) == 1 {
-			id = agentIdentity{name: name, label: name}
+			id = agentIdentity{name: name, label: name, token: t}
 			found++
 		}
 	}
@@ -148,6 +188,27 @@ func (s *Server) refuseStopped(w http.ResponseWriter, r *http.Request, id agentI
 	if !s.ids.isStopped(id.name) {
 		return false
 	}
+	s.refuseAgent(w, r, id, "agent_stopped", agentStoppedMessage)
+	return true
+}
+
+// agentRemovedMessage is what a client whose token was taken away is told.
+const agentRemovedMessage = "this agent's token is no longer accepted"
+
+// refuseRemoved answers a request inside a tunnel whose agent has since
+// been removed (or whose token changed) with 403 and a receipt, and closes
+// the tunnel. It reports whether it did.
+func (s *Server) refuseRemoved(w http.ResponseWriter, r *http.Request, id agentIdentity) bool {
+	if s.accepted(id) {
+		return false
+	}
+	w.Header().Set("Connection", "close")
+	s.refuseAgent(w, r, id, "agent_removed", agentRemovedMessage)
+	return true
+}
+
+// refuseAgent writes the refusal and its (rate-limited) receipt.
+func (s *Server) refuseAgent(w http.ResponseWriter, r *http.Request, id agentIdentity, reason, msg string) {
 	target := r.Host
 	if r.Method != http.MethodConnect && r.URL != nil && r.URL.Host != "" {
 		target = redactURL(r.URL)
@@ -155,21 +216,61 @@ func (s *Server) refuseStopped(w http.ResponseWriter, r *http.Request, id agentI
 	if s.ids.refusals.allow() {
 		if _, err := s.chain.Append(receipts.Entry{
 			Method: r.Method, URL: target, Decision: "deny", Status: http.StatusForbidden,
-			Agent: id.label, Reasons: []string{"agent_stopped"},
+			Agent: id.label, Reasons: []string{reason},
 		}, false); err != nil {
-			log.Printf("CRITICAL: receipt record failed for stopped agent %q %s %s: %v", id.name, r.Method, target, err)
+			log.Printf("CRITICAL: receipt record failed for refused agent %q %s %s: %v", id.name, r.Method, target, err)
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": agentStoppedMessage, "reasons": []string{"agent_stopped"}})
-	return true
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": msg, "reasons": []string{reason}})
+}
+
+// agentGone reports whether the agent behind ctx has been stopped or
+// removed since its request was let through.
+func (s *Server) agentGone(ctx context.Context) bool {
+	id := agentOf(ctx)
+	return s.ids.isStopped(id.name) || !s.accepted(id)
 }
 
 // agentStopped reports whether the agent behind ctx has been stopped (a
 // request parked on a person stops waiting).
 func (s *Server) agentStopped(ctx context.Context) bool {
 	return s.ids.isStopped(agentOf(ctx).name)
+}
+
+// agentWatchInterval is how often a response in flight checks whether its
+// agent is still let through.
+var agentWatchInterval = 250 * time.Millisecond
+
+// cutWhenAgentGone calls cancel once the agent behind ctx is stopped or
+// removed. Call stop when the response is done; cut reports whether cancel
+// was called for that reason.
+func (s *Server) cutWhenAgentGone(ctx context.Context, cancel context.CancelFunc) (stop func(), cut func() bool) {
+	done := make(chan struct{})
+	var gone atomic.Bool
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(agentWatchInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+			if s.agentGone(ctx) {
+				gone.Store(true)
+				cancel()
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done); <-finished }) }, gone.Load
 }
 
 // withAgentPreview adds the agent's name to what the approver sees (and
