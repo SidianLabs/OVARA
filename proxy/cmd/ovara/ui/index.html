@@ -93,14 +93,30 @@
   }
 
   var busy = {};
+  // Cards are only rebuilt when the list actually changes (the server sends it
+  // oldest first), and after any change the buttons stay disabled for a
+  // moment: a click aimed at one card must never land on another that just
+  // moved under the pointer.
+  var lastSig = "", armedAt = 0, ARM_MS = 800;
   function renderPending(list) {
     var box = document.getElementById("pending");
+    var sig = JSON.stringify(list.map(function (a) { return [a.id, a.what, a.raw, a.details, a.trust_host]; }));
+    if (sig === lastSig) {
+      Array.prototype.forEach.call(box.querySelectorAll("[data-created]"), function (m) { m.textContent = m.dataset.prefix + ago(m.dataset.created) + m.dataset.suffix; });
+      return;
+    }
+    lastSig = sig;
+    armedAt = Date.now() + ARM_MS;
+    setTimeout(function () { Array.prototype.forEach.call(box.querySelectorAll("button[data-arming]"), function (b) { b.removeAttribute("data-arming"); if (!busy[b.dataset.id]) b.disabled = false; }); }, ARM_MS);
     box.replaceChildren();
     if (!list.length) { box.appendChild(el("div", "card empty", "Nothing is waiting. Your agent hasn't asked for anything risky.")); return; }
     list.forEach(function (a) {
       var c = el("div", "card pending");
       c.appendChild(el("div", "what", "The agent wants to " + a.what));
-      c.appendChild(el("div", "meta", a.raw + "  ·  " + ago(a.created_at) + (a.agent ? "  ·  " + a.agent : "")));
+      var meta = el("div", "meta");
+      meta.dataset.prefix = a.raw + "  ·  "; meta.dataset.created = a.created_at; meta.dataset.suffix = a.agent ? "  ·  " + a.agent : "";
+      meta.textContent = meta.dataset.prefix + ago(a.created_at) + meta.dataset.suffix;
+      c.appendChild(meta);
       (a.details || []).forEach(function (d) { c.appendChild(el("div", "detail", d)); });
       var act = el("div", "actions");
       var yes = el("button", "approve", "Approve");
@@ -109,17 +125,20 @@
       function decide(verb, trust) {
         busy[a.id] = true; setButtons(true);
         api("POST", "/api/" + verb + "/" + encodeURIComponent(a.id) + (trust ? "?trust=1" : ""))
-          .then(function () { showBanner(""); refresh(); })
+          .then(function () { showBanner(""); lastSig = ""; refresh(); })
           .catch(function (e) { busy[a.id] = false; setButtons(false); showBanner(e.message); });
       }
       yes.onclick = function () { decide("approve"); };
       no.onclick = function () { decide("deny"); };
       if (busy[a.id]) setButtons(true);
+      function arm(b) { b.dataset.id = a.id; if (Date.now() < armedAt) { b.disabled = true; b.setAttribute("data-arming", "1"); } return b; }
+      arm(yes); arm(no);
       act.append(yes);
       if (a.trust_host) {
         var always = el("button", "approve", "Approve and trust " + a.trust_host + " for reads");
         always.title = "Adds a read-only (GET/HEAD) rule for this one host to policy.json. Writes still ask.";
         always.onclick = function () { decide("approve", true); };
+        arm(always);
         act.append(always);
       }
       act.append(no);

@@ -36,8 +36,8 @@ func TestDoctor_FreshInit(t *testing.T) {
 		t.Errorf("a fresh init is file-backed; durable-state should PASS, got %s", checks["durable state"])
 	}
 	// No off-host anchor exists on a fresh local init, and doctor says so.
-	if checks["anchor"] != "WARN" {
-		t.Errorf("expected an anchor WARN on a fresh init, got %s", checks["anchor"])
+	if checks["off-host anchor"] != "WARN" {
+		t.Errorf("expected an anchor WARN on a fresh init, got %s", checks["off-host anchor"])
 	}
 }
 

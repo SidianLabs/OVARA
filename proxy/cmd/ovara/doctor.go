@@ -165,14 +165,25 @@ func auditDeployment(dir string) []check {
 	// An anchor keeps a copy of the log's head somewhere the agent's user
 	// cannot write. Without one, anyone who can write this directory can
 	// roll the log back or rewrite it, and nothing here would notice.
-	if str("gateway_anchor_url") == "" {
-		out = append(out, check{"anchor", "WARN", "no off-host anchor (gateway_anchor_url): a user who can write this directory can rewrite the log undetected"})
-	} else {
-		out = append(out, check{"anchor", "PASS", "log head is anchored at " + str("gateway_anchor_url")})
+	// Two different things get anchored. The local anchors next to the
+	// receipt log (checked under "receipt chain" below) catch a log that is
+	// cut short, but they live in the same directory, so whoever can write
+	// here can rewrite both. The gateway anchor keeps the gateway's own
+	// state heads off this host, and only when gateway_anchor_mode turns it
+	// on: a URL alone does nothing.
+	switch mode := str("gateway_anchor_mode"); {
+	case mode == "" || mode == "off":
+		detail := "off-host anchoring is off (gateway_anchor_mode): a user who can write this directory can rewrite the logs undetected"
+		if str("gateway_anchor_url") != "" {
+			detail = "gateway_anchor_url is set but gateway_anchor_mode is off, so nothing is anchored: set gateway_anchor_mode to strict or degraded"
+		}
+		out = append(out, check{"off-host anchor", "WARN", detail})
+	case str("gateway_anchor_url") == "" || str("gateway_anchor_pin") == "":
+		out = append(out, check{"off-host anchor", "FAIL", "gateway_anchor_mode=" + mode + " needs gateway_anchor_url and gateway_anchor_pin; the gateway will refuse to start"})
+	default:
+		out = append(out, check{"off-host anchor", "PASS", "gateway state is anchored at " + str("gateway_anchor_url") + " (mode " + mode + "); the proxy receipt log is anchored locally only"})
 	}
-	if b("fail_open") || b("unsafe_no_agent_auth") {
-		out = append(out, check{"unsafe flags", "FAIL", "fail_open / unsafe_no_agent_auth is set: requests can bypass the checkpoint"})
-	}
+
 	if b("journal_signing_required") {
 		out = append(out, check{"journal signing", "PASS", "journal_signing_required=true"})
 	} else {
@@ -186,6 +197,12 @@ func auditDeployment(dir string) []check {
 		return out
 	}
 	out = append(out, check{"proxy.json", "PASS", "parses"})
+	// These two live in proxy.json (they configure the proxy, not the gateway).
+	if pcfg.FailOpen || pcfg.UnsafeNoAgentAuth {
+		out = append(out, check{"unsafe flags", "FAIL", "fail_open / unsafe_no_agent_auth is set in proxy.json: requests can bypass the checkpoint"})
+	} else {
+		out = append(out, check{"unsafe flags", "PASS", "fail_open and unsafe_no_agent_auth are off"})
+	}
 	out = append(out, auditCredentials(pcfg)...)
 
 	// --- CA / keys ----------------------------------------------------------
@@ -313,9 +330,12 @@ func auditReceipts(dir string, cfg *config.Config) []check {
 	if err != nil || len(pub) != ed25519.PublicKeySize {
 		return []check{{"receipt chain", "FAIL", cfg.PubKeyFile + " is not a valid ed25519 key"}}
 	}
-	res := receipts.VerifyFile(chainPath, ed25519.PublicKey(pub))
+	res, anchored := receipts.VerifyWithAnchors(chainPath, receipts.AnchorPathFor(chainPath), ed25519.PublicKey(pub))
 	if !res.Valid {
 		return []check{{"receipt chain", "FAIL", fmt.Sprintf("verification failed at %d: %s", res.FailAt, res.Reason)}}
 	}
-	return []check{{"receipt chain", "PASS", fmt.Sprintf("%d receipts verified", res.Total)}}
+	if !anchored {
+		return []check{{"receipt chain", "WARN", fmt.Sprintf("%d receipts verified, but no anchors: a log cut short at the end would not be noticed", res.Total)}}
+	}
+	return []check{{"receipt chain", "PASS", fmt.Sprintf("%d receipts verified against %d local anchors", res.Total, res.Anchors)}}
 }

@@ -115,3 +115,23 @@ func VerifyAnchorFile(anchorPath, chainPath string, pubKey ed25519.PublicKey) *V
 	}
 	return res
 }
+
+// AnchorPathFor is where `ovara run` keeps the local anchors for a chain:
+// anchors.jsonl next to the chain file.
+func AnchorPathFor(chainPath string) string {
+	return filepath.Join(filepath.Dir(chainPath), "anchors.jsonl")
+}
+
+// VerifyWithAnchors verifies the chain and, when an anchor file exists,
+// checks the chain against every anchor in it. A chain that was cut short,
+// had entries removed, or was cut and then continued no longer matches the
+// anchors written while it grew, so it fails here even though each
+// remaining entry is correctly signed and linked. anchored reports whether
+// anchors were found at all: without them, truncation cannot be detected.
+func VerifyWithAnchors(chainPath, anchorPath string, pubKey ed25519.PublicKey) (res *VerifyResult, anchored bool) {
+	if _, err := os.Stat(anchorPath); err != nil {
+		return VerifyFile(chainPath, pubKey), false
+	}
+	res = VerifyAnchorFile(anchorPath, chainPath, pubKey)
+	return res, res.Anchors > 0
+}

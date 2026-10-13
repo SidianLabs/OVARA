@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -75,6 +76,7 @@ type pendingApproval struct {
 // contextLines renders a.Context as short labelled lines, in a stable order.
 func contextLines(a pendingApproval) []string {
 	order := []struct{ key, label string }{
+		{"warning", "⚠ WARNING"},
 		{"query", "query string"},
 		{"content_type", "body type"},
 		{"body_bytes", "body size"},
@@ -183,6 +185,18 @@ func (c *adminClient) pending() ([]pendingApproval, error) {
 	}
 	if err := c.do("GET", "/v1/approval/pending", nil, &resp); err != nil {
 		return nil, err
+	}
+	// Oldest first, always: a list that reorders between polls invites
+	// answering the wrong request.
+	sort.SliceStable(resp.Approvals, func(i, j int) bool {
+		a, b := resp.Approvals[i], resp.Approvals[j]
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ApprovalID < b.ApprovalID
+	})
+	for i := range resp.Approvals {
+		resp.Approvals[i] = sanitizeApproval(resp.Approvals[i])
 	}
 	return resp.Approvals, nil
 }

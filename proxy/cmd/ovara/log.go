@@ -82,6 +82,9 @@ type activity struct {
 	Checked bool            `json:"checked"` // integrity was verified
 	Valid   bool            `json:"valid"`   // ...and the chain is intact
 	Problem string          `json:"problem"` // why it is not, if not
+	// Anchored: the chain was also checked against the anchors written as
+	// it grew, so a log cut short or cut and continued fails too.
+	Anchored bool `json:"anchored"`
 }
 
 var outcomeOrder = []string{"allowed", "approved", "BLOCKED", "not approved", "timed out", "no token", "error"}
@@ -125,7 +128,11 @@ func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
 		act.Entries = append(act.Entries, activityEntry{When: r.Timestamp, Outcome: o, What: describe(r.Method + " " + r.URL)})
 	}
 	if len(all) == 0 {
-		return act, nil
+		// An empty log is only "no activity" if nothing was ever anchored:
+		// a log emptied after the fact must not read as a fresh one.
+		if fi, err := os.Stat(receipts.AnchorPathFor(receiptsFile)); err != nil || fi.Size() == 0 {
+			return act, nil
+		}
 	}
 
 	pubHex, err := os.ReadFile(pubFile)
@@ -138,9 +145,10 @@ func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
 		act.Problem = pubFile + " is not a valid public key"
 		return act, nil
 	}
-	res := receipts.VerifyFile(receiptsFile, ed25519.PublicKey(pub))
+	res, anchored := receipts.VerifyWithAnchors(receiptsFile, receipts.AnchorPathFor(receiptsFile), ed25519.PublicKey(pub))
 	act.Checked = true
 	act.Valid = res.Valid
+	act.Anchored = anchored
 	if !res.Valid {
 		act.Problem = fmt.Sprintf("receipt chain breaks at entry %d (%s)", res.FailAt, res.Reason)
 	}
@@ -152,7 +160,7 @@ func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
 	if err != nil {
 		return err
 	}
-	if act.Total == 0 {
+	if act.Total == 0 && !act.Checked {
 		fmt.Fprintln(w, "no activity yet — nothing has gone through the proxy.")
 		return nil
 	}
@@ -161,7 +169,7 @@ func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
 	}
 	fmt.Fprintf(w, "%-19s  %-12s  %s\n", "WHEN", "OUTCOME", "WHAT THE AGENT DID")
 	for _, e := range act.Entries {
-		fmt.Fprintf(w, "%-19s  %-12s  %s\n", e.When.Local().Format("2006-01-02 15:04:05"), e.Outcome, e.What)
+		fmt.Fprintf(w, "%-19s  %-12s  %s\n", e.When.Local().Format("2006-01-02 15:04:05"), termSafe(e.Outcome), termSafe(e.What))
 	}
 	var parts []string
 	for _, k := range outcomeOrder {
@@ -176,8 +184,10 @@ func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
 	case !act.Valid:
 		fmt.Fprintf(w, "integrity: ✗ TAMPERED — %s\n", act.Problem)
 		return fmt.Errorf("receipt chain failed verification")
+	case act.Anchored:
+		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed, unbroken and match their anchors — this log has not been edited or cut short\n", act.Total)
 	default:
-		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken — this log has not been edited\n", act.Total)
+		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken (no anchors found, so a log cut short at the end would not be noticed)\n", act.Total)
 	}
 	return nil
 }

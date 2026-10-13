@@ -140,7 +140,7 @@ type remoteGate struct {
 
 func (g *remoteGate) decide(e boxgate.Exec) boxgate.Verdict {
 	if err := g.enc.Encode(gateRequest{Argv: e.Argv, Exe: e.Exe, Cwd: e.Cwd}); err != nil {
-		fmt.Fprintf(os.Stderr, "[ovara] command gate gone, refusing: %s\n", boxgate.CommandLine(e))
+		fmt.Fprintf(os.Stderr, "[ovara] command gate gone, refusing: %s\n", termSafe(boxgate.CommandLine(e)))
 		return boxgate.Deny
 	}
 	var r gateReply

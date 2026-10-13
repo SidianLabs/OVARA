@@ -233,7 +233,7 @@ func cmdBox(args []string) error {
 		return err
 	}
 	for _, p := range ws.Excluded {
-		fmt.Fprintf(os.Stderr, "    left out: %s\n", p)
+		fmt.Fprintf(os.Stderr, "    left out: %s\n", termSafe(p))
 	}
 	if err := chownAll(ws.Dir, uid, gid); err != nil {
 		return err
@@ -374,7 +374,7 @@ func cmdBox(args []string) error {
 		}
 	}
 	for _, p := range denied {
-		fmt.Fprintf(os.Stderr, "    policy keeps out: %s\n", p)
+		fmt.Fprintf(os.Stderr, "    policy keeps out: %s\n", termSafe(p))
 	}
 	if len(allowed) == 0 {
 		fmt.Fprintln(os.Stderr, "==> every changed path is kept out by policy; nothing comes back")
@@ -493,6 +493,7 @@ func runTier1(a *boxAgent) (int, error) {
 	agent.Stdin, agent.Stdout, agent.Stderr = os.Stdin, os.Stdout, os.Stderr
 	agent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	fmt.Fprintf(os.Stderr, "==> tier 1: running as %s in %s (network only through Ovara at %s:%s)\n", a.user, a.ws.Dir, proxyIP, a.port)
+	fmt.Fprintf(os.Stderr, "==> tier 1 isolates the network, not the file system: %s can read any host file it has permission to (including %s). Use -tier 2 on a machine with secrets.\n", a.user, a.ws.Project)
 	if a.noGate {
 		if err := agent.Start(); err != nil {
 			return 0, fmt.Errorf("starting the agent: %w", err)
@@ -819,8 +820,9 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 	line := boxgate.CommandLine(e)
 	preview := map[string]string{"program": e.Exe, "directory": e.Cwd}
 	d, err := g.gw.CheckAction(context.Background(), "shell", "shell:"+line, preview)
+	shown := termSafe(line) // what is printed; policy and approvals get the real bytes
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[ovara] command gate: gateway unreachable, refusing: %s (%v)\n", line, err)
+		fmt.Fprintf(os.Stderr, "[ovara] command gate: gateway unreachable, refusing: %s (%v)\n", shown, err)
 		g.count(countDenied)
 		return boxgate.Deny
 	}
@@ -829,23 +831,23 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		g.count(countAllowed)
 		return boxgate.Allow
 	case decisionDeny:
-		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", line)
+		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", shown)
 		g.count(countDenied)
 		return boxgate.Deny
 	}
 	id, err := g.gw.CreateApprovalFor(context.Background(), d, "shell", "shell:"+line)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[ovara] command gate: could not open an approval, refusing: %s (%v)\n", line, err)
+		fmt.Fprintf(os.Stderr, "[ovara] command gate: could not open an approval, refusing: %s (%v)\n", shown, err)
 		g.count(countDenied)
 		return boxgate.Deny
 	}
-	fmt.Fprintf(os.Stderr, "[ovara] command paused for your approval (%s): %s\n", id, line)
+	fmt.Fprintf(os.Stderr, "[ovara] command paused for your approval (%s): %s\n", id, shown)
 	status, err := waitApproval(context.Background(), g.gw, id, g.timeout)
 	if err != nil || status != approvalApproved {
 		if status == "" {
 			status = approvalError
 		}
-		fmt.Fprintf(os.Stderr, "[ovara] command %s: %s\n", status, line)
+		fmt.Fprintf(os.Stderr, "[ovara] command %s: %s\n", status, shown)
 		g.count(countDenied)
 		return boxgate.Deny
 	}
