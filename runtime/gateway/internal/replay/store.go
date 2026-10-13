@@ -110,7 +110,7 @@ func OpenFile(path string, maxBytes int64, bindings ...*record.Binding) (*FileSt
 	}
 	if binding != nil {
 		s := &FileStore{seen: make(map[string]time.Time), maxBytes: maxBytes}
-		j, err := record.Open("replay", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, s.foldEnvelope)
+		j, err := record.OpenBinding("replay", path, binding, s.foldEnvelope)
 		if err != nil {
 			return nil, fmt.Errorf("replay store: fold: %w", err)
 		}

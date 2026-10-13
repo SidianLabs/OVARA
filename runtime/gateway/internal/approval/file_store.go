@@ -36,7 +36,7 @@ func NewFileBackedStore(path string, bindings ...*record.Binding) (*FileBackedSt
 		binding = bindings[0]
 	}
 	if binding != nil {
-		j, err := record.Open("approval", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		j, err := record.OpenBinding("approval", path, binding, store.foldEvent)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fold approval journal: %w", err)
 		}

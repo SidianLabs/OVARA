@@ -203,6 +203,45 @@ func (rr RegistryResolver) RevokedAt(gatewayID, keyID string) (time.Time, bool) 
 	return time.Time{}, false
 }
 
+// SigningBound reports the time after which (gatewayID, keyID) may sign
+// nothing more: the earliest of its revocation or destruction and the end
+// of its rotation grace. A rotated-out key still verifies what it signed
+// while in use, never anything dated later. Implements KeySigningBound and
+// has the shape of record.KeyBoundFunc.
+func (rr RegistryResolver) SigningBound(gatewayID, keyID string) (time.Time, bool) {
+	if rr.Reg == nil {
+		return time.Time{}, false
+	}
+	recs, err := rr.Reg.Lookup(gatewayID)
+	if err != nil {
+		return time.Time{}, false
+	}
+	var bound time.Time
+	set := func(t time.Time) {
+		if !t.IsZero() && (bound.IsZero() || t.Before(bound)) {
+			bound = t
+		}
+	}
+	for _, rec := range recs {
+		if rec.KeyID != keyID {
+			continue
+		}
+		switch rec.State {
+		case gwidentity.KeyRevoked, gwidentity.KeyDestroyed:
+			set(rec.RetiredAt)
+		case gwidentity.KeyRotating, gwidentity.KeySuperseded:
+			set(rec.RotatingUntil)
+		}
+	}
+	return bound, !bound.IsZero()
+}
+
+// KeySigningBound is optionally implemented by a KeyResolver that knows
+// when a key stopped being allowed to sign (revoked or rotated out).
+type KeySigningBound interface {
+	SigningBound(gatewayID, keyID string) (time.Time, bool)
+}
+
 // VerifySignature is the single authoritative receipt-signature
 // check: parse → resolve the historical key via the registry →
 // reconstruct the canonical payload → ed25519.Verify. A public key
@@ -239,6 +278,14 @@ func VerifySignature(res KeyResolver, r *models.Receipt) (bool, error) {
 	if kr, ok := res.(KeyRevocation); ok {
 		if at, revoked := kr.RevokedAt(r.GatewayID, r.GatewayKeyID); revoked && r.IssuedAt.After(at) {
 			return false, fmt.Errorf("%w: issued %s, key revoked %s", ErrSignedAfterRevocation,
+				r.IssuedAt.UTC().Format(time.RFC3339), at.UTC().Format(time.RFC3339))
+		}
+	}
+	// Likewise a key that was rotated out vouches for nothing issued
+	// after its rotation grace ended.
+	if kb, ok := res.(KeySigningBound); ok {
+		if at, bounded := kb.SigningBound(r.GatewayID, r.GatewayKeyID); bounded && r.IssuedAt.After(at) {
+			return false, fmt.Errorf("%w: issued %s, key retired %s", ErrSignedAfterRevocation,
 				r.IssuedAt.UTC().Format(time.RFC3339), at.UTC().Format(time.RFC3339))
 		}
 	}

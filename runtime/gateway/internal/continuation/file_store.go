@@ -68,7 +68,7 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		binding = bindings[0]
 	}
 	if binding != nil {
-		j, err := record.Open("continuation", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		j, err := record.OpenBinding("continuation", path, binding, store.foldEvent)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fold continuation journal: %w", err)
 		}

@@ -152,10 +152,14 @@ func Run(configPath string) error {
 	}
 	var jsigner *record.Signer
 	var jresolve record.ResolveFunc
+	var jbound record.KeyBoundFunc
 	if durableSigning {
 		jsigner = record.NewSigner(gwTrust.priv, gwTrust.registry.DomainID(), gwTrust.record.GatewayID, gwTrust.record.KeyID)
 		resolver := receipt.RegistryResolver{Reg: gwTrust.registry}
 		jresolve = resolver.ResolvePublicKey
+		// Journal entries signed by a key after it was revoked or rotated
+		// out fail to open, like receipts do.
+		jbound = resolver.SigningBound
 		log.Printf("journal signing active: domain=%s key=%s — authority stores signed+chained+tip-ledgered", gwTrust.registry.DomainID(), gwTrust.record.KeyID)
 	} else {
 		log.Printf("journal signing inactive — authority stores unsigned (set gateway_registry_file+gateway_key_file, or journal_signing_required=true to enforce)")
@@ -172,7 +176,7 @@ func Run(configPath string) error {
 		if t, ok := boundTips[storeName]; ok {
 			floor = record.Floor{Known: true, Seq: t.Seq, Hash: t.Hash}
 		}
-		return &record.Binding{Signer: jsigner, Resolve: jresolve, Floor: floor}
+		return &record.Binding{Signer: jsigner, Resolve: jresolve, Floor: floor, Bound: jbound}
 	}
 	// sinkFor returns the committed-floor hook: every fsynced journal
 	// write ratchets the store's tip inside the anchored gwidentity
@@ -527,7 +531,7 @@ func Run(configPath string) error {
 		log.Printf("WARNING: receipt_signing_key not configured; using a random per-process key. Set receipt_signing_key for cross-restart receipt verification.")
 	}
 	h.SetReceiptSigner(receipt.NewSigner([]byte(signingKey)))
-	log.Printf("receipt signer configured (sig_v1, hmac-sha256)")
+	log.Printf("receipt signer configured (hmac_v1, hmac-sha256)")
 	// P2.3.5 asymmetric receipt signatures: the gateway's registered
 	// Ed25519 key signs every receipt. gwTrust.record is the admitted,
 	// durably-registered (gateway_id, key_id) — key registration
