@@ -2,10 +2,11 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
+
+	"ovara.proxy/internal/canonjson"
 )
 
 // Model-provider APIs are the one write channel an agent needs without asking:
@@ -70,51 +71,62 @@ func modelAskable(why string) bool {
 	return false
 }
 
+// modelAmbiguous: the body is JSON to a lenient reader, but readers do not
+// agree on it (two members of the same name, invalid UTF-8). The provider
+// could act on a value the gate never saw, so it is refused, not asked.
+const modelAmbiguous = "model_request_ambiguous"
+
 // modelRequestRefusal returns why a request to a model host must not be
-// forwarded without a further answer, or "". hb is its held body.
-func (s *Server) modelRequestRefusal(r *http.Request, hb *heldBody) string {
+// forwarded without a further answer, or "". hb is its held body. When the
+// body was read as JSON, canonical is its canonical encoding, which is what
+// must be sent (see readBody); nil means the body goes as it is.
+func (s *Server) modelRequestRefusal(r *http.Request, hb *heldBody) (why string, canonical []byte) {
 	if s.modelGateOff || !s.isModelHost(r.URL.Hostname()) {
-		return ""
+		return "", nil
 	}
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		return ""
+		return "", nil
 	}
 	if hb == nil {
-		return ""
+		return "", nil
 	}
 	if ce := r.Header.Values("Content-Encoding"); len(ce) > 0 {
 		for _, v := range ce {
 			if !strings.EqualFold(strings.TrimSpace(v), "identity") {
-				return "model_request_encoded"
+				return "model_request_encoded", nil
 			}
 		}
 	}
 	if hb.size > maxModelBody {
-		return "model_request_too_large"
+		return "model_request_too_large", nil
 	}
 	body, err := io.ReadAll(hb.reader())
 	if err != nil {
-		return "model_request_unreadable"
+		return "model_request_unreadable", nil
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return ""
+		return "", nil
 	}
 	ct := strings.ToLower(r.Header.Get("Content-Type"))
 	if ct != "" && !strings.Contains(ct, "json") {
 		// Multipart uploads (files, audio) and anything else that is not a
 		// JSON model call: not something the agent needs to do unasked.
-		return modelNotJSON
+		return modelNotJSON, nil
 	}
-	var v any
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	if err := dec.Decode(&v); err != nil {
-		return modelNotJSON
+	// Strictly: one value, UTF-8, no NaN, no duplicate member names,
+	// numbers as written.
+	v, err := canonjson.Decode(body, canonjson.Options{})
+	if canonjson.Ambiguous(err) {
+		return modelAmbiguous, nil
 	}
-	if why := modelValueRefusal(v); why != "" {
-		return why
+	if err != nil {
+		return modelNotJSON, nil
 	}
-	return ""
+	canonical, err = canonjson.Encode(v)
+	if err != nil {
+		return "model_request_unreadable", nil
+	}
+	return modelValueRefusal(v), canonical
 }
 
 // serverToolPrefixes are tool "type" values that make the provider reach the

@@ -81,6 +81,12 @@ type Event struct {
 	Name    string // "event:" field ("" means "message")
 	Data    string
 	HasData bool
+	// ID is the "id:" field (HasID set when there is one a client would
+	// take: one without a NUL).
+	ID    string
+	HasID bool
+	// Retry is the "retry:" field, when it is all digits.
+	Retry string
 }
 
 // ParseEvent reads the fields of one raw event.
@@ -114,6 +120,14 @@ func ParseEvent(raw []byte) Event {
 			ev.HasData = true
 		case "event":
 			ev.Name = value
+		case "id":
+			if !strings.ContainsRune(value, 0) {
+				ev.ID, ev.HasID = value, true
+			}
+		case "retry":
+			if value != "" && strings.Trim(value, "0123456789") == "" {
+				ev.Retry = value
+			}
 		}
 	}
 	ev.Data = strings.TrimSuffix(data.String(), "\n")
@@ -123,4 +137,23 @@ func ParseEvent(raw []byte) Event {
 // MessageEvent is an event carrying one JSON-RPC message.
 func MessageEvent(msg []byte) []byte {
 	return append(append([]byte("event: message\ndata: "), msg...), '\n', '\n')
+}
+
+// Rebuild is the event as a client would act on it, with data (one line:
+// the canonical encoding of what was checked) as its data: its event name,
+// id and retry fields are kept, and comments and fields no client reads
+// are left out.
+func (ev Event) Rebuild(data []byte) []byte {
+	var b []byte
+	if ev.Name != "" {
+		b = append(append(append(b, "event: "...), ev.Name...), '\n')
+	}
+	if ev.HasID {
+		b = append(append(append(b, "id: "...), ev.ID...), '\n')
+	}
+	if ev.Retry != "" {
+		b = append(append(append(b, "retry: "...), ev.Retry...), '\n')
+	}
+	b = append(append(b, "data: "...), data...)
+	return append(b, '\n', '\n')
 }

@@ -103,7 +103,7 @@ func TestSSEEventReader(t *testing.T) {
 	want := []Event{
 		{Name: "message", Data: `{"a":1}`, HasData: true},
 		{Data: "one\ntwo", HasData: true},
-		{Data: "no-space", HasData: true},
+		{Data: "no-space", HasData: true, ID: "3", HasID: true}, // the id field is kept for Rebuild
 		{Data: "unterminated", HasData: true},
 	}
 	if len(got) != len(want) {

@@ -570,6 +570,13 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// not forwarded unseen.
 	hb, holdErr := holdBody(r, s.bodyLimit(r))
 	defer hb.close()
+	// A body the model or MCP gate reads as JSON is replaced by the
+	// canonical form of what it read, before anything else sees it: what
+	// is asked about, receipted and sent is what is checked (canonical.go).
+	br := &bodyRead{}
+	if holdErr == nil {
+		br = s.readBody(r, hb)
+	}
 	// Git push gating: if this is a git-receive-pack request, append the
 	// target ref names to the resource string used for policy evaluation
 	// and receipts.
@@ -704,7 +711,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		} else if why := s.allowedGitRefusal(r, hb, url); why != "" {
 			d.Decision = gwDeny
 			d.ReasonCodes = append(d.ReasonCodes, why)
-		} else if why := s.modelRequestRefusal(r, hb); why != "" {
+		} else if why := br.modelWhy; why != "" {
 			if s.modelGateNoAsk || !modelAskable(why) {
 				d.Decision = gwDeny
 				d.ReasonCodes = append(d.ReasonCodes, why)
@@ -777,7 +784,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var mx *mcpExchange
 	if !failedOpen {
 		var ref *mcpRefusal
-		if mx, ref = s.mcpRequest(r.Context(), r, hb); ref != nil {
+		if mx, ref = s.mcpRequest(r.Context(), r, br.mcp); ref != nil {
 			decision, status = ref.write(w)
 			if ref.approvalID != "" {
 				noteApproval(ref.approvalID)

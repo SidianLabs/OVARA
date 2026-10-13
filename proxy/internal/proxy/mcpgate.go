@@ -13,10 +13,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
+	"ovara.proxy/internal/canonjson"
 	"ovara.proxy/internal/mcp"
 )
 
@@ -209,10 +211,115 @@ func isMCPSession(r *http.Request) bool {
 	return r.Header.Get("Mcp-Session-Id") != "" || r.Header.Get("Mcp-Protocol-Version") != ""
 }
 
-// mcpRequest reads an allowed request's held body. It returns what it
-// learned if the body is MCP, and a refusal if a tool call in it may not go
-// out.
-func (s *Server) mcpRequest(ctx context.Context, r *http.Request, hb *heldBody) (*mcpExchange, *mcpRefusal) {
+// mcpPrep is what was read of a request body before the request was
+// decided: the MCP body in it, or the refusal it gets once allowed.
+type mcpPrep struct {
+	server  string
+	body    *mcp.Body   // set when the body is MCP (forwarded canonical)
+	refusal *mcpRefusal // set when it may not go out, whatever policy says
+}
+
+// mcpPrepare reads a held request body as MCP before anyone is asked
+// about the request. An MCP body is replaced by its canonical encoding
+// (mcp.Canonical), so the hash in the approval context, the tool-call
+// questions and the receipt, and the bytes the server receives, are all
+// of the message as it was checked. A body that cannot be read strictly
+// gets a refusal, returned by mcpRequest once the URL policy has let the
+// request through. It returns nil for a body that is not MCP.
+func (s *Server) mcpPrepare(r *http.Request, hb *heldBody) *mcpPrep {
+	m := s.mcp
+	if m == nil || hb == nil || s.isModelHost(r.URL.Hostname()) {
+		return nil
+	}
+	server := m.server(r.URL)
+	p := &mcpPrep{server: server}
+	// An MCP context: the client says it is in an MCP session, or the
+	// server is known to speak MCP. There, anything that cannot be read
+	// strictly is refused.
+	mcpCtx := isMCPSession(r) || m.isKnown(server)
+	if hb.size > mcp.MaxMessageBytes {
+		// Too large to read whole. If it could be JSON-RPC it is refused:
+		// a tool call must not go out unchecked for being big.
+		if mcpCtx || heldLooksLikeJSONRPC(hb) {
+			v := mcp.Refused("the MCP message is too large to check", "mcp_message_too_large")
+			p.refusal = &mcpRefusal{status: http.StatusRequestEntityTooLarge, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
+			return p
+		}
+		return nil
+	}
+	data, err := io.ReadAll(hb.reader())
+	if err != nil {
+		return nil
+	}
+	switch encs := contentEncodings(r.Header.Values("Content-Encoding")); {
+	case len(encs) == 1 && (encs[0] == "gzip" || encs[0] == "x-gzip"):
+		zr, err := gzip.NewReader(bytes.NewReader(data))
+		if err == nil {
+			data, err = io.ReadAll(io.LimitReader(zr, mcp.MaxMessageBytes+1))
+		}
+		if err != nil || len(data) > mcp.MaxMessageBytes {
+			p.refusal = s.mcpUnreadable(server)
+			return p
+		}
+	case len(encs) > 0:
+		// An encoding Ovara does not decode. Whatever could be JSON-RPC is
+		// refused: a server that decodes it would act on a call nobody
+		// decided.
+		if mcpCtx || jsonContentType(r.Header) || mcp.LooksLikeJSONRPC(data) {
+			p.refusal = s.mcpUnreadable(server)
+			return p
+		}
+		return nil
+	}
+	canon, cerr := mcp.Canonical(data)
+	if cerr == nil {
+		body, err := mcp.Parse(canon)
+		if err != nil || !body.IsMCP() {
+			// Valid JSON that is not MCP: not read any further, and sent
+			// as it came.
+			return nil
+		}
+		// What goes out is what is checked below: the canonical bytes,
+		// plain (a gzip body was decoded above).
+		hb.replace(r, canon)
+		body.SHA256 = hb.sha256Hex()
+		p.body = body
+		return p
+	}
+	body, err := mcp.Parse(data)
+	// Not valid JSON, yet a lenient reader (NaN, UTF-16/32, a second
+	// value) could take it for JSON-RPC.
+	if errors.Is(err, mcp.ErrUnparseable) {
+		p.refusal = s.mcpUnparseable(server)
+		return p
+	}
+	if canonjson.Ambiguous(cerr) {
+		// JSON to a lenient reader, but readers disagree on it (which of
+		// two members named alike wins, what invalid UTF-8 reads as). If
+		// it could be JSON-RPC at all, it is refused whole.
+		if !(mcpCtx || (err == nil && body.IsMCP()) || mcp.LooksLikeJSONRPC(data)) {
+			return nil
+		}
+		v := mcp.RefusedAmbiguous()
+		if err != nil {
+			p.refusal = &mcpRefusal{status: http.StatusBadRequest, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
+			return p
+		}
+		p.refusal = refuseMessages(body, nil, v, server)
+		return p
+	}
+	// Anything at all that is not valid JSON sent in an MCP context.
+	if mcpCtx && !strictJSONOrEmpty(data) {
+		p.refusal = s.mcpUnparseable(server)
+		return p
+	}
+	return nil
+}
+
+// mcpRequest decides an allowed request whose body mcpPrepare read. It
+// returns what it learned if the body is MCP, and a refusal if a tool call
+// in it may not go out.
+func (s *Server) mcpRequest(ctx context.Context, r *http.Request, p *mcpPrep) (*mcpExchange, *mcpRefusal) {
 	m := s.mcp
 	if m == nil || s.isModelHost(r.URL.Hostname()) {
 		return nil, nil
@@ -225,60 +332,13 @@ func (s *Server) mcpRequest(ctx context.Context, r *http.Request, hb *heldBody) 
 		r.Header.Del("Range")
 		r.Header.Del("If-Range")
 	}
-	if hb == nil {
+	if p == nil {
 		return nil, nil
 	}
-	server := m.server(r.URL)
-	// An MCP context: the client says it is in an MCP session, or the
-	// server is known to speak MCP. There, anything that cannot be read
-	// strictly is refused.
-	mcpCtx := isMCPSession(r) || m.isKnown(server)
-	if hb.size > mcp.MaxMessageBytes {
-		// Too large to read whole. If it could be JSON-RPC it is refused:
-		// a tool call must not go out unchecked for being big.
-		if mcpCtx || heldLooksLikeJSONRPC(hb) {
-			v := mcp.Refused("the MCP message is too large to check", "mcp_message_too_large")
-			return nil, &mcpRefusal{status: http.StatusRequestEntityTooLarge, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
-		}
-		return nil, nil
+	if p.refusal != nil {
+		return nil, p.refusal
 	}
-	data, err := io.ReadAll(hb.reader())
-	if err != nil {
-		return nil, nil
-	}
-	switch encs := contentEncodings(r.Header.Values("Content-Encoding")); {
-	case len(encs) == 1 && (encs[0] == "gzip" || encs[0] == "x-gzip"):
-		zr, err := gzip.NewReader(bytes.NewReader(data))
-		if err == nil {
-			data, err = io.ReadAll(io.LimitReader(zr, mcp.MaxMessageBytes+1))
-		}
-		if err != nil || len(data) > mcp.MaxMessageBytes {
-			return nil, s.mcpUnreadable(server)
-		}
-	case len(encs) > 0:
-		// An encoding Ovara does not decode. Whatever could be JSON-RPC is
-		// refused: a server that decodes it would act on a call nobody
-		// decided.
-		if mcpCtx || jsonContentType(r.Header) || mcp.LooksLikeJSONRPC(data) {
-			return nil, s.mcpUnreadable(server)
-		}
-		return nil, nil
-	}
-	body, err := mcp.Parse(data)
-	if err != nil {
-		// Not valid JSON, yet a lenient reader (NaN, UTF-16/32, a second
-		// value) could take it for JSON-RPC; or anything at all that is
-		// not valid JSON sent in an MCP context.
-		if errors.Is(err, mcp.ErrUnparseable) || (mcpCtx && !strictJSONOrEmpty(data)) {
-			return nil, s.mcpUnparseable(server)
-		}
-		return nil, nil
-	}
-	if !body.IsMCP() {
-		return nil, nil
-	}
-	// The approval of a tool call stands for the bytes sent, as held.
-	body.SHA256 = hb.sha256Hex()
+	body, server := p.body, p.server
 	m.markKnown(server)
 	r.Header.Del("Accept-Encoding")
 	r.Header.Del("Range")
@@ -307,8 +367,15 @@ func (s *Server) mcpRequest(ctx context.Context, r *http.Request, hb *heldBody) 
 	if first == nil {
 		return x, nil
 	}
-	// One refused call stops the whole request: an HTTP request goes out
-	// whole or not at all. Every request in it gets an error.
+	return nil, refuseMessages(body, refused, *first, server)
+}
+
+// refuseMessages answers a refused request body: every request in it gets
+// an error, the refused calls with their own reason (all of them with
+// first's when refused is nil), the rest because they came in the same
+// batch. One refused call stops the whole request: an HTTP request goes
+// out whole or not at all.
+func refuseMessages(body *mcp.Body, refused map[int]mcp.Verdict, first mcp.Verdict, server string) *mcpRefusal {
 	notSent := mcp.Verdict{Outcome: mcp.OutcomeDeny, Reasons: []string{"mcp_batch_refused"}, Detail: "not sent: another call in the same batch was refused"}
 	parts := make([][]byte, 0, len(body.Messages))
 	for i, msg := range body.Messages {
@@ -318,6 +385,9 @@ func (s *Server) mcpRequest(ctx context.Context, r *http.Request, hb *heldBody) 
 		v, ok := refused[i]
 		if !ok {
 			v = notSent
+			if refused == nil {
+				v = first
+			}
 		}
 		parts = append(parts, mcp.ErrorResponse(msg.ID, v.Detail, v.ErrorData(server)))
 	}
@@ -329,7 +399,7 @@ func (s *Server) mcpRequest(ctx context.Context, r *http.Request, hb *heldBody) 
 		ref.status = http.StatusBadGateway
 	}
 	ref.body = joinMessages(parts, body.Batch)
-	return nil, ref
+	return ref
 }
 
 func (s *Server) mcpUnreadable(server string) *mcpRefusal {
@@ -501,11 +571,19 @@ func (s *Server) mcpResponse(ctx context.Context, r *http.Request, x *mcpExchang
 		// might still read a tool list in it.
 		return mcpUnparseableResponse(server)
 	}
-	res := m.gate.ServerBody(ctx, server, data)
-	if res.Verdict.Allowed() {
-		return nil
+	// The client gets the canonical encoding of what was checked, not the
+	// server's bytes (see canonical.go). A 2xx answer readers disagree on
+	// (duplicate or case-variant keys, invalid UTF-8) is refused.
+	res, canonical := m.gate.CheckServerBody(ctx, server, data, resp.StatusCode/100 == 2)
+	if !res.Verdict.Allowed() {
+		return refusalFor(res, server)
 	}
-	return refusalFor(res, server)
+	if canonical != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(canonical))
+		resp.ContentLength = int64(len(canonical))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(canonical)))
+	}
+	return nil
 }
 
 // emptyBody reports a response with no body bytes at all, reading at most
@@ -634,7 +712,7 @@ func (f *sseFilter) check(raw []byte) []byte {
 		// looked at
 		return raw
 	}
-	res := f.m.gate.ServerBody(f.ctx, f.server, []byte(ev.Data))
+	res, canonical := f.m.gate.CheckServerBody(f.ctx, f.server, []byte(ev.Data), f.mcpStream)
 	if res.IsMCP {
 		if !f.mcpStream {
 			f.m.markKnown(f.server)
@@ -646,10 +724,16 @@ func (f *sseFilter) check(raw []byte) []byte {
 			f.answered[idKey(id)] = true
 		}
 	}
-	if res.Verdict.Allowed() {
+	if !res.Verdict.Allowed() {
+		return f.refuse(res)
+	}
+	if canonical == nil {
+		// not JSON at all: no JSON reader takes it for a message
 		return raw
 	}
-	return f.refuse(res)
+	// What was checked is what the client reads: the event rebuilt around
+	// the canonical encoding (one data line; see canonical.go).
+	return ev.Rebuild(canonical)
 }
 
 // refuse records a refused event and returns what is relayed in its place.
