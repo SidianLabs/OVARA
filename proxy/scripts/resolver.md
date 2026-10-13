@@ -1,6 +1,11 @@
 # Deny-by-Default DNS for the Egress Boundary
 
-The egress boundary redirects all `:53` traffic to a resolver you control.
+By default the egress boundary gives the agent no DNS at all: `:53` is
+dropped, and the agent reaches the proxy by IP, which is all it needs.
+Only when you turn DNS on (`OVARA_BOUNDARY_DNS=1` in the environment of
+`ovara run --boundary`, or `--allow-dns` to the script) does the boundary
+redirect all `:53` traffic to a resolver you control, and you must run that
+resolver yourself (Ovara does not start one).
 That resolver is part of the enforcement surface, not a convenience: if it
 answers arbitrary queries, the agent has a working exfiltration channel
 (DNS tunneling — data in QNAMEs/TXT answers — needs nothing but a resolver

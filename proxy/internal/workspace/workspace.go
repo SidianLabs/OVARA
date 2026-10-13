@@ -43,6 +43,9 @@ var secretPatterns = []string{
 	".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore",
 	"id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*", "*.ppk",
 	".netrc", "_netrc", ".npmrc", ".pypirc", ".yarnrc", ".docker/config.json",
+	".git-credentials", ".config/git/credentials", ".pgpass", ".my.cnf", ".vault-token",
+	".terraformrc", "terraform.rc", ".databrickscfg", ".cargo/credentials", ".cargo/credentials.toml",
+	".huggingface/token", ".config/huggingface/token", "kubeconfig", "*.kubeconfig",
 	".aws/*", ".ssh/*", ".gnupg/*", ".config/gh/*", ".config/gcloud/*", ".kube/config",
 	"*.tfvars", "*.tfstate", "*.tfstate.backup",
 	"credentials", "credentials.*", "secrets.*", "*.secret", "*.secrets", "secret.*",
@@ -52,12 +55,18 @@ var secretPatterns = []string{
 
 // Workspace is one agent run's copy of a project.
 type Workspace struct {
-	Dir      string    `json:"dir"`       // the copy the agent works in
-	Project  string    `json:"project"`   // the real repository (its top level)
-	HostHead string    `json:"host_head"` // the project's HEAD when the copy was made
-	Baseline string    `json:"baseline"`  // the commit in Dir that CommitBack diffs against
-	Excluded []string  `json:"excluded"`  // secret-looking paths left out of the copy
-	Created  time.Time `json:"created"`
+	Dir      string   `json:"dir"`       // the copy the agent works in
+	Project  string   `json:"project"`   // the real repository (its top level)
+	HostHead string   `json:"host_head"` // the project's HEAD when the copy was made
+	Baseline string   `json:"baseline"`  // the commit in Dir that CommitBack diffs against
+	Excluded []string `json:"excluded"`  // secret-looking paths left out of the copy
+	// SecretContent are the files left out for what they hold (a key
+	// format, see secretscan.go), with what they looked like.
+	SecretContent map[string]string `json:"secret_content,omitempty"`
+	// GitConfigScrubbed is set when credentials were taken out of URLs in
+	// the copy's .git/config.
+	GitConfigScrubbed bool      `json:"git_config_scrubbed,omitempty"`
+	Created           time.Time `json:"created"`
 	// Control is the launcher's own bare repository, next to Dir and never
 	// inside it. It holds the baseline and every tree a person reviews.
 	Control string `json:"control"`
@@ -165,6 +174,22 @@ func Create(project, dir string, opts Options) (*Workspace, error) {
 		ws.Excluded = append(ws.Excluded, p)
 	}
 	sort.Strings(ws.Excluded)
+	// then by content: whatever its name, a file holding a key is left out
+	for p, what := range scanSecrets(dir) {
+		if err := os.Remove(filepath.Join(dir, p)); err != nil {
+			cleanup()
+			return nil, fmt.Errorf("leaving out %s: %w", p, err)
+		}
+		if ws.SecretContent == nil {
+			ws.SecretContent = map[string]string{}
+		}
+		ws.SecretContent[p] = what
+	}
+	// and no credentials in the copy's git configuration
+	if ws.GitConfigScrubbed, err = scrubGitConfig(dir); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("git config: %w", err)
+	}
 
 	// 4. the baseline the agent's changes are measured against
 	if _, err := gitOut(dir, "add", "-A"); err != nil {

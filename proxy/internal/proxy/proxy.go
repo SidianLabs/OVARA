@@ -674,7 +674,14 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Strict installs: downloading a package the project has not pinned is
 	// a second question, about the package (packages.go). Only a download
 	// the URL policy itself allowed is asked; one a person already approved
-	// as a URL needs no second answer.
+	// as a URL needs no second answer. Either way, a package whose lockfile
+	// records a digest must arrive with that digest.
+	var pkgDigests []string
+	if !failedOpen && r.Method == http.MethodGet {
+		if ref, ok := s.packageDownload(r.URL.Hostname(), r.URL.Path); ok {
+			pkgDigests = s.packageDigests(ref)
+		}
+	}
 	if d.Decision == "allow" && !failedOpen {
 		if ref, ok := s.packageDownload(r.URL.Hostname(), r.URL.Path); ok {
 			outcome, id := s.checkPackage(r.Context(), ref, url)
@@ -749,6 +756,14 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	stripMethodOverride(r.Header)
+	if len(pkgDigests) > 0 {
+		// The digest is of the whole file as published: no fragment, no
+		// encoding the client asked for (the transport still negotiates
+		// gzip and decodes it).
+		r.Header.Del("Range")
+		r.Header.Del("If-Range")
+		r.Header.Del("Accept-Encoding")
+	}
 	if len(injected) > 0 {
 		// The response is scrubbed for reflected credentials, which only
 		// works on the whole, plain body. An agent-chosen Accept-Encoding
@@ -810,13 +825,27 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	record()
 	w.WriteHeader(resp.StatusCode)
 	body := io.Reader(resp.Body)
+	var verify *digestReader
+	if len(pkgDigests) > 0 && resp.StatusCode == http.StatusOK {
+		verify = newDigestReader(resp.Body, pkgDigests)
+		body = verify
+	}
 	if len(injected) > 0 {
-		body = newScrubReader(resp.Body, injected)
+		body = newScrubReader(body, injected)
 		if textualType(resp.Header.Get("Content-Type")) {
 			body = newSignedParamReader(body)
 		}
 	}
 	copyFlush(w, body)
+	if verify != nil && errors.Is(verify.err, errDigestMismatch) {
+		// The client has everything but the last bytes; abort the
+		// connection so it cannot take a cut body for a whole one.
+		log.Printf("CRITICAL: %s %s does not match the digest in the project's lockfile; the download was cut", r.Method, url)
+		if _, err := s.chain.Record(r.Method, url, "deny", http.StatusBadGateway, ""); err != nil {
+			log.Printf("CRITICAL: receipt record failed for cut download %s %s: %v", r.Method, url, err)
+		}
+		panic(http.ErrAbortHandler)
+	}
 	// resp.Trailer values populate after body read; forward them properly.
 	// Scrub here too — a reflector can echo injected credentials in
 	// trailers just as well as in headers or the body.

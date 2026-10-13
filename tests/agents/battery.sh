@@ -115,8 +115,13 @@ run_agent() {
     return
   fi
   if [ "$MODE" = box ]; then
-    GITHUB_TOKEN="$REALKEY" timeout 900 ovara box -dir /tmp/d -ui off -user agent /tmp/proj -- \
-      bash -c "cp -r /tmp/home/. \$HOME/ 2>/dev/null; python3 /repo/tests/agents/$MOCK 9100 /tmp/cmds.txt /tmp/mock.log & sleep 1; $1" >/tmp/agent.out 2>&1
+    # a tier 1 box has its own root too (its /tmp is empty): the same
+    # read-only mounts as tier 2, the mock's log out through the workspace
+    GITHUB_TOKEN="$REALKEY" timeout 900 ovara box -dir /tmp/d -ui off -no-commit-back -user agent \
+      -mount /tmp/home:/tmp/home -mount /repo/tests/agents:/repo/tests/agents -mount /tmp/cmds.txt:/tmp/cmds.txt /tmp/proj -- \
+      bash -c "cp -r /tmp/home/. \$HOME/ 2>/dev/null; python3 /repo/tests/agents/$MOCK 9100 /tmp/cmds.txt /tmp/mock.log & sleep 1; $1; cp /tmp/mock.log \$OVARA_WORKSPACE/.ovara-test-mock.log" >/tmp/agent.out 2>&1
+    W=$(sed -n 's/^==> workspace kept at //p' /tmp/agent.out | tail -1)
+    [ -n "$W" ] && cp "$W/.ovara-test-mock.log" /tmp/mock.log 2>/dev/null
     pkill -f "tests/agents/$MOCK" 2>/dev/null
     return
   fi
