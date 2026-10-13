@@ -38,6 +38,7 @@ type gwCheck struct {
 // report status.
 type actionGateway struct {
 	urlDecision atomic.Value // string
+	matchedRule atomic.Value // string: the rule named in http.request decisions
 	status      atomic.Value // string
 	creates     atomic.Int32
 	mu          sync.Mutex
@@ -92,7 +93,11 @@ func newActionServer(t *testing.T, urlDecision string) (*Server, *actionGateway,
 			} else if !ok {
 				dec = "allow"
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"decision": dec, "decision_id": "d1"})
+			resp := map[string]any{"decision": dec, "decision_id": "d1"}
+			if mr, _ := ag.matchedRule.Load().(string); mr != "" && body.ActionType == "http.request" {
+				resp["matched_rule"] = mr
+			}
+			_ = json.NewEncoder(w).Encode(resp)
 		case r.URL.Path == "/v1/approval/create":
 			n := ag.creates.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]string{"approval_id": fmt.Sprintf("apr_%d", n)})

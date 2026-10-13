@@ -27,6 +27,40 @@ agents, and fix correctness bugs found in an in-depth review.
   required fields, the variables, and that the key file is an owner-only
   RSA key.
 
+### Agents: untrusted input, model budget, names and a stop switch
+
+- **Writes after an untrusted read pause.** For 30 minutes
+  (`taint.taint_window_minutes` in `proxy.json`) after an agent reads
+  content anyone can write, every write the policy would allow on its own
+  pauses with the source and its age in front of the person (action type
+  `taint.write`, resource `taint:<METHOD> <url>`). Untrusted reads are: a
+  read a person approved, a read from a host trusted from an approval
+  prompt, GitHub and GitLab issues, pull request comments and discussions
+  (`taint.untrusted_reads`), and a model request whose provider-side fetch
+  was let through. Writes the policy already pauses or blocks, model calls
+  and git fetches are unchanged; a git push allowed by a ref rule is a
+  write. Receipts record `untrusted_read` and `tainted_by:<source>`.
+  `"taint": {"on": false}` turns it off. **Breaking:** an agent that reads
+  an issue and then opens a pull request on a repository where the policy
+  allows that now pauses once.
+- **Model budget.** Model requests, and the tokens their responses report
+  (JSON `usage` or streamed usage events, read within fixed bounds), are
+  counted per agent for the run. Past 2000 requests, 50M input or 10M output
+  tokens (`model_budget`) a person is asked once (`model.budget`); approving
+  doubles the allowance.
+- **Named agents.** `ovara agent add NAME` gives an agent its own proxy
+  token in `proxy.json` (`agents`, owner-only, never printed); `ovara env
+  -agent NAME` sets up a shell for it; `ovara init -agents a,b` creates them
+  with the deployment; `ovara agent list` and `ovara agent remove NAME`
+  manage them, and a running Ovara picks up changes within a second. The
+  single `agent_token` keeps working as the agent `default`. Receipts
+  record the agent's name in `agent`, and approvals show it.
+- **`ovara kill [-agent NAME]`** stops an agent (every agent without
+  `-agent`): the running proxy refuses its requests within a second with
+  403 "this agent was stopped by its operator" and a receipt, its waiting
+  requests stop waiting, and its pending approvals are denied. It stays
+  stopped across restarts until `ovara agent restore NAME` (or `-all`).
+
 ### Security hardening (October 2026)
 
 A review of the whole product found ways around several promises. They are

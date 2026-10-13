@@ -102,6 +102,13 @@ func contextLines(a pendingApproval) []string {
 	if v := a.Context["download"]; v != "" {
 		out = append(out, "download: "+v)
 	}
+	// proxy follow-up questions: untrusted input before a write, model use
+	if v := a.Context["taint"]; v != "" {
+		out = append(out, "⚠ untrusted input: "+v)
+	}
+	if v := a.Context["model_use"]; v != "" {
+		out = append(out, "model use: "+v)
+	}
 	if v := a.Context["why"]; v != "" {
 		out = append(out, "asked because: "+v)
 	}
@@ -250,6 +257,13 @@ func (c *adminClient) resolve(id string, approve bool, who, reason string) error
 // describe turns a policy resource string into one plain-English line.
 // Resources look like "POST https://github.com/org/repo.git/git-receive-pack refs/heads/main".
 func describe(resource string) string {
+	// proxy follow-up questions
+	if rest, ok := strings.CutPrefix(resource, "taint:"); ok {
+		return describe(rest) + " (soon after reading untrusted content)"
+	}
+	if rest, ok := strings.CutPrefix(resource, "model-budget:"); ok {
+		return "keep using the model at " + rest + " past its budget for this run"
+	}
 	if rest, ok := strings.CutPrefix(resource, "commit:"); ok {
 		return "bring the agent's changes back to " + rest + " as a new branch"
 	}
@@ -395,8 +409,8 @@ func printApproval(w io.Writer, a pendingApproval) {
 	for _, l := range contextLines(a) {
 		fmt.Fprintf(w, "│ %s\n", l)
 	}
-	if a.AgentID != "" {
-		fmt.Fprintf(w, "│ agent:          %s\n", a.AgentID)
+	if who := approvalAgentLabel(a); who != "" {
+		fmt.Fprintf(w, "│ agent:          %s\n", who)
 	}
 	fmt.Fprintf(w, "│ waiting:        %s   id: %s\n", age, a.ApprovalID)
 	fmt.Fprintln(w, "└───────────────────────────────────────────────────────")
@@ -671,4 +685,14 @@ func askAndResolve(c *adminClient, a pendingApproval, rd *answerReader, out io.W
 		}
 		return true
 	}
+}
+
+// approvalAgentLabel names the agent an approval is for: the name the
+// proxy gave (a named agent, or "default" for agent_token), else the
+// gateway's identity for the proxy.
+func approvalAgentLabel(a pendingApproval) string {
+	if n := approvalAgent(a); n != "" {
+		return n
+	}
+	return a.AgentID
 }

@@ -6,9 +6,7 @@ package proxy
 
 import (
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +51,11 @@ type Server struct {
 	modelGateNoAsk  bool          // model-gate findings are refused, not asked
 	limits          limits        // body, push and read size bounds (limits.go)
 	budget          *egressBudget // per-host allowance for allowed traffic; nil = off
+
+	// per-agent state
+	ids         *agentRegistry // named agents and stopped agents (agents.go)
+	taint       *taintTracker  // untrusted read, then write (taint.go); nil = off
+	modelBudget *modelBudget   // per-agent model use (modelbudget.go); nil = off
 }
 
 // maxPendingEscalations bounds how many requests may be held waiting for a
@@ -73,6 +76,9 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 		escalateSem:    make(chan struct{}, maxPendingEscalations),
 		limits:         defaultLimits(),
 		budget:         newEgressBudget(0, 0),
+		ids:            newAgentRegistry(),
+		taint:          newTaintTracker(),
+		modelBudget:    newModelBudget(0, 0, 0),
 		dialer:         &net.Dialer{Timeout: 10 * time.Second},
 		transport: &http.Transport{
 			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
@@ -124,27 +130,6 @@ func (s *Server) SetConnectPort443Only(on bool) { s.connectPort443 = on }
 // proxy URL carries credentials). Without it the proxy is an open
 // credential dispenser for anyone who can reach the listener.
 func (s *Server) SetClientAuth(token string) { s.agentToken = token }
-
-// authorized checks the client credential when agentToken is set.
-// Compare in constant time: the token authenticates credential injection.
-func (s *Server) authorized(r *http.Request) bool {
-	if s.agentToken == "" {
-		return true
-	}
-	tok := ""
-	if h := r.Header.Get("Proxy-Authorization"); h != "" {
-		if f, ok := strings.CutPrefix(h, "Bearer "); ok {
-			tok = f
-		} else if f, ok := strings.CutPrefix(h, "Basic "); ok {
-			if b, err := base64.StdEncoding.DecodeString(f); err == nil {
-				if _, p, ok := strings.Cut(string(b), ":"); ok {
-					tok = p
-				}
-			}
-		}
-	}
-	return subtle.ConstantTimeCompare([]byte(tok), []byte(s.agentToken)) == 1
-}
 
 func matchHostGlob(globs []string, host string) bool {
 	host = normalizeHost(host)
@@ -334,7 +319,8 @@ func stripHopHeaders(h http.Header) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Client authentication FIRST — before CONNECT/receipt/policy anything.
 	// An unauthenticated request must not even reach the policy engine.
-	if !s.authorized(r) {
+	id, ok := s.authenticate(r)
+	if !ok {
 		// Rate-limited: probes leave evidence, but anyone who can reach the
 		// port must not be able to grow the receipt log without bound.
 		if s.unauthLimiter == nil || s.unauthLimiter.allow() {
@@ -344,6 +330,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 		return
 	}
+	if s.refuseStopped(w, r, id) {
+		return
+	}
+	r = withAgent(r, id)
 	r.Method = strings.ToUpper(r.Method)
 	if r.Method == http.MethodConnect {
 		s.handleConnect(w, r)
@@ -352,7 +342,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Plain proxy request (absolute URI). An https:// one is TLS to the
 	// upstream just like a CONNECT tunnel, so the same port rule holds.
 	if p := r.URL.Port(); s.connectPort443 && strings.EqualFold(r.URL.Scheme, "https") && p != "" && p != "443" {
-		s.recordDenied(r.Method, r.URL.Scheme+"://"+r.URL.Host)
+		s.recordDeniedBy(id, r.Method, r.URL.Scheme+"://"+r.URL.Host)
 		http.Error(w, "https requests are limited to port 443", http.StatusForbidden)
 		return
 	}
@@ -361,6 +351,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleConnect hijacks the tunnel and MITMs the TLS inside it.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	id := agentOf(r.Context())
 	hostname, port, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		// CONNECT authority without a port is TLS by convention.
@@ -372,7 +363,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Tunnel-layer rejects are receipted too: a probing agent must leave
 	// evidence, not just an invisible 403.
 	if s.connectPort443 && port != "443" {
-		s.recordDenied("CONNECT", r.Host)
+		s.recordDeniedBy(id, "CONNECT", r.Host)
 		http.Error(w, "CONNECT limited to port 443", http.StatusForbidden)
 		return
 	}
@@ -383,7 +374,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// answers checked) at dial time, after the policy decision.
 	if err := s.checkLiteralDestination(hostname); err != nil {
 		log.Printf("connect: destination %s rejected: %v", hostname, err)
-		s.recordDenied("CONNECT", r.Host)
+		s.recordDeniedBy(id, "CONNECT", r.Host)
 		http.Error(w, "destination not allowed", http.StatusForbidden)
 		return
 	}
@@ -442,7 +433,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r.URL.Scheme = "https"
 			r.URL.Host = net.JoinHostPort(hostname, port)
-			s.handleRequest(w, r)
+			s.handleRequest(w, withAgent(r, id))
 		}),
 	}
 	go srv.Serve(listener)
@@ -456,6 +447,15 @@ func (s *Server) recordDenied(method, target string) {
 	if !strings.HasSuffix(method, " UNAUTH") {
 		agent = agentLabel(s.agentToken)
 	}
+	s.recordDeniedAs(agent, method, target)
+}
+
+// recordDeniedBy is recordDenied for a request from a known agent.
+func (s *Server) recordDeniedBy(id agentIdentity, method, target string) {
+	s.recordDeniedAs(id.label, method, target)
+}
+
+func (s *Server) recordDeniedAs(agent, method, target string) {
 	if _, err := s.chain.Append(receipts.Entry{Method: method, URL: target, Decision: gwDeny, Status: http.StatusForbidden, Agent: agent}, false); err != nil {
 		log.Printf("CRITICAL: receipt record failed for denied %s %s: %v", method, target, err)
 	}
@@ -511,6 +511,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// methods case-insensitively; a guard that compared against "GET" while
 	// policy matched "get" would let the request through unguarded.
 	r.Method = strings.ToUpper(r.Method)
+	// A tunnel opened before its agent was stopped carries no more requests.
+	if s.refuseStopped(w, r, agentOf(r.Context())) {
+		return
+	}
 	// Query strings can carry secrets (tokens, SAS sigs) — the gateway and
 	// the receipt log get host+path only.
 	url := redactURL(r.URL)
@@ -530,7 +534,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	decision := "error"
 	status := 0
 	approvalID := ""
-	facts := &receiptFacts{hb: hb}
+	facts := &receiptFacts{hb: hb, agent: agentOf(r.Context())}
 	// A request that goes upstream is receipted twice: an attempt receipt,
 	// synced to disk before the first byte is sent (no receipt, no send),
 	// and the final receipt below, which then closes that attempt.
@@ -607,7 +611,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	failedOpen := false
-	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, requestContext(r, hb))
+	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, withAgentPreview(r.Context(), requestContext(r, hb)))
 	if err != nil {
 		log.Printf("gateway check failed for %s: %v", url, err)
 		if !s.failOpen {
@@ -742,6 +746,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// A write soon after the agent read untrusted content, and model use
+		// past the agent's budget, are questions too (taint.go,
+		// modelbudget.go).
+		if !s.agentQuestions(r, hb, url, facts, second) {
+			return
+		}
 		// Allowed traffic is metered per host; past the allowance a person
 		// is asked (budget.go). Model calls resend their whole conversation
 		// every turn, so only their count is metered, not their size.
@@ -754,6 +764,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if !second(outcome, id, map[string]any{"error": "egress budget exceeded", "reasons": []string{"egress_budget_exceeded"}, "host": host}) {
 			return
 		}
+	}
+
+	// Reading content anyone can write marks the agent (taint.go).
+	taintSrc := ""
+	if !failedOpen {
+		taintSrc = s.readTaintSource(r, d, modelFinding)
+	}
+	if taintSrc != "" {
+		facts.reasons = append(facts.reasons, "untrusted_read")
 	}
 
 	// SSRF guard: the policy decision says nothing about WHERE this goes —
@@ -866,6 +885,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	s.noteRead(r.Context(), taintSrc)
 	status = resp.StatusCode
 	respBytes = resp.ContentLength
 	stripHopHeaders(resp.Header)
@@ -910,7 +930,9 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			body = newSignedParamReader(body)
 		}
 	}
+	usage := s.watchModelUsage(r, resp, &body)
 	copyFlush(w, body)
+	usage.finish()
 	if verify != nil && errors.Is(verify.err, errDigestMismatch) {
 		// The client has everything but the last bytes; abort the
 		// connection so it cannot take a cut body for a whole one.
@@ -990,6 +1012,9 @@ func (s *Server) holdForApproval(ctx context.Context, what string, create func()
 			}
 			return "timeout", approvalID
 		case <-ticker.C:
+			if s.agentStopped(ctx) {
+				return "denied", approvalID
+			}
 			status, err := s.gw.ApprovalStatus(ctx, approvalID)
 			if err != nil {
 				if ctx.Err() != nil {

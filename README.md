@@ -273,6 +273,46 @@ push to refs/heads/main on github.com/acme/app
 `policy test` is a dry run against the live policy: nothing is sent and no
 approval is opened.
 
+### Several agents, and stopping one
+
+Give each agent its own proxy token, so the log and every approval say
+which agent it was, and you can stop one without stopping the rest:
+
+```bash
+ovara agent add reviewer -dir mydir              # or: ovara init mydir -agents reviewer,ci
+eval "$(ovara env -dir mydir -agent reviewer)"   # this shell runs as "reviewer"
+ovara agent list -dir mydir
+
+ovara kill -agent reviewer -dir mydir            # stop it now (every agent without -agent)
+ovara agent restore reviewer -dir mydir          # let it back in
+```
+
+Tokens live in `proxy.json` (owner-only) and are never printed; a running
+Ovara picks up added and removed agents within a second. The original
+`agent_token` keeps working as the agent `default`. A stopped agent's
+requests are refused within a second ("this agent was stopped by its
+operator"), what it was waiting on is denied, and it stays stopped after a
+restart until you restore it.
+
+### Untrusted content and model spend
+
+An agent that has just read something anyone can write (a GitHub or GitLab
+issue, a pull request comment, a discussion, a page you approved from an
+untrusted host) may be following instructions hidden in it. For 30 minutes
+after such a read, every write the policy would normally let through
+pauses, and the approval says what the agent read and how long ago. Writes
+that already pause are unchanged, and the agent can keep talking to its
+model. Tune or turn it off in `proxy.json`:
+
+```json
+"taint": { "on": true, "taint_window_minutes": 30 },
+"model_budget": { "requests": 2000, "input_tokens": 50000000, "output_tokens": 10000000 }
+```
+
+`model_budget` caps model use per agent for the run: requests, and the
+tokens the provider reports. Past it you are asked once; approving doubles
+the allowance.
+
 ## How strong is the protection?
 
 Be clear about what you are buying. Every promise, the mode it holds in and

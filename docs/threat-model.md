@@ -27,6 +27,9 @@ decision is written to a signed, hash-chained receipt log.
 | Data smuggled in a host name (DNS exfiltration) | A host name is not resolved until policy has approved a request to it; inside the boundary, DNS is off unless you turn it on | Always |
 | The agent sends data out through its own model API (an MCP connector, a web-fetch tool, an image "by URL" that the provider fetches) | Only the inference endpoints are allowed by default, and the proxy reads every model request body and pauses requests that use those features (`model_gate`) | The default policy is kept, and `model_gate` is on |
 | The agent adds its own credential (an account it controls) next to the one Ovara injects | On a host Ovara holds a key for, the agent's own credential headers are removed before the real one is attached, and the real one is set after hop-by-hop headers are stripped | Always |
+| Instructions hidden in content the agent reads (an issue, a PR comment, a page from a host a person let it read) that make it write somewhere it may write | For 30 minutes after such a read, every write the policy would allow on its own pauses, with the source and its age in the approval (`taint.write`); receipts name the source | `taint` is on and the content is recognised as untrusted (see What it cannot stop) |
+| A runaway or hijacked agent burning model spend | Model requests and the tokens their responses report are counted per agent for the run; past the allowance a person is asked once (`model.budget`) | `model_budget` is on |
+| Not knowing which of several agents did something, or having to stop all of them to stop one | Each agent can have its own proxy token (`ovara agent add`); receipts and approvals carry its name; `ovara kill -agent NAME` refuses its requests within a second and denies what it is waiting on | Agents use their own tokens and do not run as the same user |
 | A large volume of data through hosts the policy allows | Allowed traffic is metered per host (about 600 requests or 8 MB a minute by default, more for package registries); past that a person is asked once | The default `egress_budget` is kept |
 | Edits to the log after the fact | Receipts are Ed25519-signed and hash-chained; `ovara log` and `ovara doctor` verify the chain, the key history and the anchors written as it grew, so a log that was cut short, or cut and continued, fails and is not appended to | The signing key, the log and the local anchors are not all under the agent's control (see below) |
 | A request that leaves no trace | A request goes upstream only after its attempt receipt is on disk; if it cannot be written, the request is refused. The gateway turns an allow it cannot record into a deny | Always (unless `fail_open` is set) |
@@ -96,6 +99,12 @@ decision is written to a signed, hash-chained receipt log.
   they sit next to it. Only an off-host anchor (`gateway_anchor_mode` with
   `gateway_anchor_url`) survives someone who can write both. `ovara doctor`
   warns when it is off.
+- **Untrusted content Ovara cannot recognise.** The taint rule marks an
+  agent only after reads it can classify: approved reads, hosts trusted
+  from an approval prompt, the `untrusted_reads` patterns (issues, pull
+  request comments, discussions) and provider-side fetches. A README, a
+  commit message or a file on a trusted host can carry instructions too,
+  and does not mark the agent. The rule asks; it does not decide.
 - **Non-HTTP protocols.** Only HTTP and HTTPS through the proxy are inspected.
   CONNECT is limited to port 443; HTTP/2, gRPC and WebSockets are not
   supported through the interception.

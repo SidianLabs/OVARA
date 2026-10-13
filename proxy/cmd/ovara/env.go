@@ -52,6 +52,7 @@ func cmdEnv(args []string) error {
 	shell := fs.String("shell", def, "bash | powershell | cmd")
 	host := fs.String("host", "127.0.0.1", "address the agent uses to reach the proxy")
 	keepEnv := fs.Bool("keep-env", false, "do not unset other secret-looking variables (tokens, cloud keys) found in this shell")
+	agent := fs.String("agent", "", "the named agent this shell is for (ovara agent add NAME): its own proxy token, so receipts and approvals name it and ovara kill can stop it alone")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -62,6 +63,13 @@ func cmdEnv(args []string) error {
 	cfg, err := config.Load(filepath.Join(abs, "proxy.json"))
 	if err != nil {
 		return fmt.Errorf("cannot read proxy.json in %s: %w (run `ovara init` first, or pass -dir)", abs, err)
+	}
+	if *agent != "" {
+		tok, err := agentProxyToken(cfg, *agent)
+		if err != nil {
+			return err
+		}
+		cfg.AgentToken = tok
 	}
 	vars, notes, err := agentEnv(abs, cfg, *host)
 	if err != nil {

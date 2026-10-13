@@ -234,6 +234,68 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ---
 
+## 7. Agents
+
+### 7.1 A write soon after an untrusted read is asked about
+- **Holds in:** all modes.
+- **Conditions:** `taint` is not turned off in `proxy.json`, and the
+  default policy's `taint.write` rule (escalate) is kept. The mark is
+  kept per agent name for 30 minutes (`taint_window_minutes`) and lasts
+  one run.
+- **What it covers:** after the agent reads untrusted content (a read a
+  person approved, a read allowed by a rule added with "trust this host
+  for reads", a read matching `untrusted_reads`: by default GitHub and
+  GitLab issues, pull request comments and discussions by API and on the
+  web, matched on the decoded path; or a model request whose
+  provider-side fetch was let through), every write the policy would allow
+  on its own (any method but GET, HEAD and OPTIONS, a git push allowed by
+  ref rules included) pauses, with the source and how long ago it was read
+  in the approval. A refused write never goes upstream. Receipts record
+  `untrusted_read` and `tainted_by:<source>`. Writes the policy already
+  pauses or blocks are unchanged; model calls, git fetches and
+  `exempt_writes` (npm audit) are not asked about.
+- **Tests:** `proxy/internal/proxy`: `TestTaint_UntrustedReadThenAllowedWriteAsks`, `TestTaint_WindowExpires`, `TestTaint_ApprovedReadsTrustedHostsAndModelFetchesTaint`, `TestTaint_LeavesOtherDecisionsAlone`, `TestTaint_AllowedPushAsks`, `TestTaint_Off`, `TestDefaultUntrustedReadPatterns`; `proxy/cmd/ovara`: `TestDefaultPolicy_TaintAndModelBudgetEscalate`, `TestApprovalShowsAgentNameAndTaint`; `runtime/gateway/internal/handlers`: `TestApprovalContext_AgentAndTaintSurviveTheCap`.
+
+### 7.2 Model use is capped per agent
+- **Holds in:** all modes.
+- **Conditions:** `model_budget` is not turned off. Defaults: 2000
+  requests, 50M input and 10M output tokens per agent and model host per
+  run.
+- **What it covers:** every request to a model host that policy allows is
+  counted; tokens are counted from the response's `usage` (a JSON body up
+  to 8 MiB, or server-sent events, one line up to 1 MiB). Past the
+  allowance a person is asked once (`model.budget`); a refusal stops the
+  call, an approval doubles the allowance. A response whose usage cannot
+  be read counts as a request only.
+- **Tests:** `proxy/internal/proxy`: `TestModelBudget_RequestsAskOnceAndApprovalDoubles`, `TestModelBudget_CountsTokens`, `TestModelBudget_PerAgent`, `TestFindUsage`, `TestUsageReaderBounds`.
+
+### 7.3 Each agent has its own token and name
+- **Holds in:** all modes.
+- **What it covers:** the proxy accepts any token in `agents` and the
+  single `agent_token` (the agent `default`), compares every one in
+  constant time, and refuses anything else with 407. Receipts record the
+  agent's name in `agent` (`agent_token` keeps its `pt_` hash label), and
+  approvals name the agent. Tokens are 32 random bytes, kept in the
+  owner-only `proxy.json` and never printed; names are validated and no
+  token may be shared. Agents added or removed while Ovara runs take
+  effect within a second; a broken edit keeps the current agents.
+- **Tests:** `proxy/internal/proxy`: `TestNamedAgentsAreAcceptedAndNamed`, `TestNamedAgentsAloneRequireAuth`, `TestAgentsReloadFromProxyJSON`; `proxy/internal/config`: `TestValidateAgents`, `TestLoadAcceptsAgentsAsClientAuth`, `TestWriteAgentsKeepsOtherFields`; `proxy/cmd/ovara`: `TestAgentAddListEnvRemove`, `TestInitCreatesNamedAgents`.
+
+### 7.4 A stopped agent gets nothing more through
+- **Holds in:** all modes.
+- **What it covers:** `ovara kill -agent NAME` (every agent without
+  `-agent`) writes the owner-only stopped list; within a second the
+  running proxy refuses every request from that agent, including in
+  tunnels opened before, with 403 "this agent was stopped by its
+  operator" and a receipt (reason `agent_stopped`); its requests waiting
+  for a person stop waiting, and its pending approvals are denied. The
+  stop is written before the gateway is contacted, so it holds when the
+  gateway is down. A stopped list that cannot be read keeps the agents
+  stopped. It lasts across restarts until `ovara agent restore`.
+- **Tests:** `proxy/internal/proxy`: `TestKilledAgentIsRefusedWithinASecond`, `TestKilledAgentsOpenTunnelCarriesNoMore`, `TestKilledAgentsWaitingRequestStops`, `TestBrokenRevokedFileKeepsAgentsStopped`; `proxy/cmd/ovara`: `TestKillStopsOneAgentAndDeniesItsApprovals`, `TestKillWithoutGatewayStillStops`.
+
+---
+
 ## Not guaranteed
 
 These are real limits. Some are design limits, some are not built yet.
@@ -259,6 +321,20 @@ These are real limits. Some are design limits, some are not built yet.
   approving the wrong thing.
 - **Prompt injection.** Ovara bounds what an injected agent can do and
   records it. It does not stop the agent being talked into trying.
+  The taint rule (7.1) only sees untrusted content it can recognise:
+  content from a trusted host that is not on `untrusted_reads` (a README,
+  a commit message, a file in a repository anyone can push to), content
+  read before Ovara started, and content that arrives outside the proxy
+  do not mark the agent. A write it asks about is still the person's call.
+- **Agent names in cooperative mode.** The name in a receipt is the token
+  the client presented. Agents that run as the same user can read each
+  other's tokens (from the environment `ovara env` sets up, or from
+  `proxy.json` if they run as Ovara's user); give agents separate users if
+  their names must hold.
+- **Model budget accuracy.** Token counts are what the provider's response
+  says; a compressed response, a response format the proxy does not know,
+  or one larger than its bounds counts as a request only. Counts reset
+  when `ovara run` restarts.
 - **Interpreter one-liners and renamed binaries in the box.** The command
   gate sees every exec, but the default rules match command lines. A
   `python -c` that deletes files, a renamed copy of `rm`, or a git alias

@@ -172,6 +172,18 @@ func defaultPolicyRules() []map[string]any {
 		// "budget:<host>"; allow a host here to never be asked about it.
 		fsRule("egress.budget", "*", "escalate", "Unusually heavy traffic to one host pauses for a person"),
 		// --- end proxy follow-up questions ---
+		// --- per-agent questions (proxy/internal/proxy taint.go, modelbudget.go) ---
+		// For a while (taint_window_minutes, default 30) after the agent
+		// read content anyone can write (an issue, a PR comment, a host a
+		// person approved), every write the rules above would allow pauses
+		// with the source in view; resource "taint:<METHOD> <url>". Writes
+		// already paused or blocked are unchanged.
+		fsRule("taint.write", "*", "escalate", "A write soon after the agent read untrusted content pauses for a person"),
+		// Model use past the agent's budget for the run (model_budget in
+		// proxy.json) pauses once; approving doubles it. Resource
+		// "model-budget:<host>".
+		fsRule("model.budget", "*", "escalate", "Model use past the agent's budget for this run pauses for a person"),
+		// --- end per-agent questions ---
 		// Anything that changes something out in the world needs a human.
 		// This covers git push, opening/merging PRs, deleting branches,
 		// triggering deploys and posting messages.
