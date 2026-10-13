@@ -145,3 +145,64 @@ func VerifyWithAnchorsKeys(chainPath, anchorPath string, ring *KeyRing) (res *Ve
 	res = VerifyAnchorFileKeys(anchorPath, chainPath, ring)
 	return res, res.Anchors > 0
 }
+
+// VerifySegmentWithAnchors verifies a chain file that is a cut of a longer
+// chain (see Segment) against the anchors of the whole chain. Anchors
+// before the cut are skipped, except one exactly at the cut, which must
+// name the segment's starting prev_hash. An anchor past the segment's end
+// means the segment was cut short.
+func VerifySegmentWithAnchors(chainPath, anchorPath string, ring *KeyRing, seg Segment) (*VerifyResult, bool) {
+	res, heads, _ := verifySegment(chainPath, ring, seg)
+	if !res.Valid {
+		return res, false
+	}
+	anchors, err := readAnchors(anchorPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return res, false
+		}
+		res.Valid = false
+		res.Reason = "anchors: " + err.Error()
+		return res, false
+	}
+	for i, a := range anchors {
+		res.Anchors++
+		local := a.Seq - seg.After
+		switch {
+		case local < 0:
+			continue
+		case local == 0:
+			if seg.After > 0 && a.Head != seg.PrevHash {
+				res.Valid = false
+				res.Reason = fmt.Sprintf("anchor %d does not match the segment's start", i)
+				return res, true
+			}
+		case local > len(heads) || heads[local-1] != a.Head:
+			res.Valid = false
+			res.FailAt = a.Seq
+			res.Reason = fmt.Sprintf("anchor %d head does not match chain head at seq %d", i, a.Seq)
+			return res, true
+		}
+	}
+	res.AnchorsValid = res.Anchors > 0
+	return res, res.Anchors > 0
+}
+
+func readAnchors(path string) ([]Anchor, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []Anchor
+	for i, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var a Anchor
+		if err := json.Unmarshal(line, &a); err != nil {
+			return nil, fmt.Errorf("unparseable anchor at line %d", i+1)
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}

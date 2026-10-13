@@ -60,6 +60,10 @@ func main() {
 		err = cmdDoctor(os.Args[2:])
 	case "log":
 		err = cmdLog(os.Args[2:])
+	case "incident":
+		err = cmdIncident(os.Args[2:])
+	case "keys":
+		err = cmdKeys(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "policy":
@@ -97,6 +101,10 @@ func usage() {
   watch [-dir .]        answer approval requests live: approve / deny each one
   approvals [-dir .]    list agent requests waiting for approval
   log [-dir .] [-n 50]  what the agent did (allowed/approved/blocked), integrity-checked
+  log -verify-only      only check the receipt chain (also -receipts F -pubkey F for copies)
+  log export [-format jsonl|ocsf] [-since T]   verified receipts for a SIEM
+  incident bundle -out F.tar.gz [-since T]     receipts, anchors, keys and policy to check offline
+  keys rotate-receipt | revoke-receipt -key K | list-receipt   manage the receipt signing key
   approve <id>          let a waiting request through
   deny <id>             block a waiting request
   doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
@@ -112,12 +120,13 @@ func cmdInit(args []string) error {
 	if dir == "" {
 		dir = "."
 	}
-	token, err := deploy(dir, "8080", *force)
-	if err != nil {
+	if _, err := deploy(dir, "8080", *force); err != nil {
 		return err
 	}
 	fmt.Printf("initialized ovara deployment in %s\n\n", dir)
-	fmt.Printf("operator token (gateway-root — keep it scarce; also in config.json):\n  %s\n\n", token)
+	// The token itself is not printed: terminal scrollback and CI logs keep
+	// what is printed. The ovara commands that need it read it from there.
+	fmt.Printf("operator token (gateway-root — keep it scarce): stored in %s (operator_tokens), readable only by you\n\n", filepath.Join(dir, "config.json"))
 	fmt.Println("What you got: a policy (policy.json) where reading is free, changes need")
 	fmt.Println("your approval, and known data-dump sites are blocked. Edit it any time.")
 	fmt.Println()
@@ -251,7 +260,9 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		{filepath.Join(dir, "var", "gateway.key"), []byte(hex.EncodeToString(gatewayPriv) + "\n"), 0o600},
 		{filepath.Join(dir, "var", "receipt_pubkey.hex"), []byte(hex.EncodeToString(receiptPub) + "\n"), 0o644},
 		{filepath.Join(dir, "config.json"), mustJSON(gwConfig), 0o600},
-		{filepath.Join(dir, "policy.json"), mustJSON(policy), 0o644},
+		// Owner-only: the agent's user must neither change the policy nor
+		// read which hosts and commands get through.
+		{filepath.Join(dir, "policy.json"), mustJSON(policy), 0o600},
 		{filepath.Join(dir, "proxy.json"), mustJSON(proxyCfg), 0o600},
 	}
 	// The receipt signing key anchors every receipt ever written; init is
@@ -295,7 +306,8 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		}
 	}
 	for _, f := range files {
-		if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+		// 0700: var/ holds keys, receipts, journals and logs.
+		if err := os.MkdirAll(filepath.Dir(f.path), 0o700); err != nil {
 			return "", err
 		}
 		if err := os.WriteFile(f.path, f.data, f.perm); err != nil {

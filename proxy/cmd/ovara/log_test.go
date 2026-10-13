@@ -116,3 +116,25 @@ func TestWatchLoop_SkipsExpiredApprovals(t *testing.T) {
 		t.Fatalf("fresh approval not handled: %v", f.resolved)
 	}
 }
+
+// A forwarded request has an attempt and an outcome receipt; the log shows
+// it once. An attempt with no outcome (the proxy stopped mid-request) says so.
+func TestPrintLog_AttemptAndOutcomeShowOnce(t *testing.T) {
+	dir := t.TempDir()
+	chainFile, pubFile := filepath.Join(dir, "r.jsonl"), filepath.Join(dir, "p.hex")
+	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), pubFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := chain.Append(receipts.Entry{Method: "GET", URL: "https://pypi.org/simple/", Decision: "allow", Phase: "attempt", Outcome: "sent"}, true)
+	chain.Append(receipts.Entry{Method: "GET", URL: "https://pypi.org/simple/", Decision: "allow", Status: 200, Phase: "outcome", AttemptID: a.ReceiptID}, false)
+	chain.Append(receipts.Entry{Method: "POST", URL: "https://api.github.com/x", Decision: "allow", Phase: "attempt", Outcome: "sent"}, true)
+	var out bytes.Buffer
+	if err := printLog(&out, chainFile, pubFile, 0); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if strings.Count(s, "pypi.org") != 1 || !strings.Contains(s, "1 allowed, 1 no result") {
+		t.Fatalf("log:\n%s", s)
+	}
+}

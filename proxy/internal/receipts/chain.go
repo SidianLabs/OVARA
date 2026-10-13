@@ -161,6 +161,10 @@ func (r *Receipt) hash() string {
 	return hashLine(b)
 }
 
+// LineHash is the chain link to a receipt line: the prev_hash the next
+// receipt carries.
+func LineHash(line []byte) string { return hashLine(line) }
+
 func hashLine(line []byte) string {
 	sum := sha256.Sum256(line)
 	return hex.EncodeToString(sum[:])
@@ -327,7 +331,7 @@ func newID() string {
 
 // clean makes s valid UTF-8. JSON cannot carry invalid UTF-8, so a field
 // that held it would decode to different bytes than were signed.
-func clean(s string) string { return strings.ToValidUTF8(s, "�") }
+func clean(s string) string { return strings.ToValidUTF8(s, "\uFFFD") }
 
 // Record appends a receipt and returns it. approvalID links the receipt to
 // the gateway approval that authorized it ("" when none was involved).
@@ -512,11 +516,23 @@ func ReadVerified(path string, ring *KeyRing) (*VerifyResult, []Verified) {
 // verifyChain walks the file, returning the result plus each head hash
 // (heads[i] is the chain head after i+1 receipts) for anchor checks.
 func verifyChain(path string, ring *KeyRing) (*VerifyResult, []string, []Verified) {
+	return verifySegment(path, ring, Segment{})
+}
+
+// Segment describes where a chain file starts when it is a cut of a longer
+// chain (an incident bundle): After receipts came before it, and the first
+// receipt's prev_hash must be PrevHash. The zero value is a whole chain.
+type Segment struct {
+	After    int    `json:"after"`
+	PrevHash string `json:"prev_hash"`
+}
+
+func verifySegment(path string, ring *KeyRing, seg Segment) (*VerifyResult, []string, []Verified) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return &VerifyResult{Reason: err.Error()}, nil, nil
 	}
-	var prevHash string
+	prevHash := seg.PrevHash
 	var heads []string
 	var recs []Verified
 	attempts := map[string]bool{}
@@ -568,7 +584,8 @@ func verifyChain(path string, ring *KeyRing) (*VerifyResult, []string, []Verifie
 			switch r.Phase {
 			case "", "attempt":
 			case "outcome":
-				if !attempts[r.AttemptID] {
+				// In a segment the attempt may sit just before the cut.
+				if !attempts[r.AttemptID] && seg.After == 0 {
 					return fail("outcome receipt names no earlier attempt")
 				}
 				delete(attempts, r.AttemptID)
