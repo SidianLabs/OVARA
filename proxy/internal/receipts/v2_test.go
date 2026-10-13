@@ -180,6 +180,7 @@ func TestRotateAndRevoke(t *testing.T) {
 	}
 	// A receipt the old key signs after rotation fails verification.
 	c3 := &Chain{key: oldKey, keyID: oldID, sessionID: "x", path: path, prevHash: c2.prevHash, seq: c2.seq}
+	t.Cleanup(func() { _ = c3.Close() }) // Windows cannot remove an open file
 	_, _ = c3.Record("GET", "https://a.example/forged", "allow", 200, "")
 	res := VerifyFileKeys(path, mustRing(t, pubFile))
 	if res.Valid || res.FailAt != 2 || !strings.Contains(res.Reason, "rotated out") {
@@ -197,6 +198,7 @@ func TestRotateAndRevoke(t *testing.T) {
 	}
 	time.Sleep(2 * time.Millisecond)
 	c4 := &Chain{key: mustLoadKey(t, keyFile), keyID: newID, sessionID: "y", path: path, prevHash: hashLine(lines[1]), seq: 2}
+	t.Cleanup(func() { _ = c4.Close() })
 	_, _ = c4.Record("GET", "https://a.example/late", "allow", 200, "")
 	if res := VerifyFileKeys(path, mustRing(t, pubFile)); res.Valid || !strings.Contains(res.Reason, "revoked") {
 		t.Fatalf("receipt after revocation verified: %+v", res)

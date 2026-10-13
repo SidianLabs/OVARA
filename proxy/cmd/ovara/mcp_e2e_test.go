@@ -24,7 +24,14 @@ func TestMCPWrapWithTheRealGatewayAndDefaultPolicy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("starts a gateway")
 	}
-	dir := t.TempDir()
+	// Not t.TempDir: the gateway runs in this process and has no way to
+	// stop it short of a signal, so its stores stay open until the test
+	// binary exits, and Windows cannot remove an open file.
+	dir, err := os.MkdirTemp("", "ovara-mcp-e2e-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
