@@ -290,3 +290,26 @@ func TestEscalateHostRulesMatchAnyPort(t *testing.T) {
 		}
 	}
 }
+
+// A broad allow on commands cannot outrank a deny that names the program;
+// an allow that names it at least as precisely still can.
+func TestShellAllowMustNameTheProgramToBeatADeny(t *testing.T) {
+	st := specificStore(
+		policy.Rule{ActionType: "shell", Environment: "*", Resource: "shell:sudo*", Deny: true},
+		policy.Rule{ActionType: "shell", Environment: "*", Resource: "shell:*codex*--dangerously-bypass-approvals-and-sandbox*", Allow: true},
+		policy.Rule{ActionType: "shell", Environment: "*", Resource: "shell:sudo apt-get update", Allow: true},
+		policy.Rule{ActionType: "shell", Environment: "*", Resource: "shell:*", Allow: true},
+	)
+	st.SetPrecedence(policy.PrecedenceMostSpecific)
+	cases := map[string]models.Decision{
+		"shell:sudo codex --dangerously-bypass-approvals-and-sandbox":   models.DecisionDeny,
+		"shell:sudo apt-get update":                                     models.DecisionAllow,
+		"shell:sudo rm -rf /":                                           models.DecisionDeny,
+		"shell:codex exec --dangerously-bypass-approvals-and-sandbox x": models.DecisionAllow,
+	}
+	for res, want := range cases {
+		if d, _ := decideAction(t, st, "shell", res); d != want {
+			t.Errorf("%s: got %s, want %s", res, d, want)
+		}
+	}
+}

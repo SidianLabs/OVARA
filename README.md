@@ -250,8 +250,8 @@ characters in its pattern; among equals deny beats allow beats escalate), so
 `POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *` deny
 means exactly that one write. Three guards keep that from being turned around:
 a deny always beats an escalate; an allow only beats a deny if it names the
-host at least as precisely; and deny and escalate rules for a host apply on
-every port. A git push that updates several refs is decided ref by ref and
+host (for commands, the program) at least as precisely; and deny and
+escalate rules for a host apply on every port. A git push that updates several refs is decided ref by ref and
 gets the strictest answer, and an allow for refs does not cover deleting them
 unless it says `(delete)`. (Policies without `"precedence": "most-specific"`
 keep the older rule: any deny wins.) Anything not matched is escalated. Edit

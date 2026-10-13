@@ -773,14 +773,18 @@ func (e *Evaluator) evaluateOneResource(store *policy.Store, actionRules, envRul
 //   - an allow beats a less specific deny only if its pattern names the
 //     host at least as precisely as every matching deny (HostSpecificity),
 //     so "allow this one write, deny the rest" works while a broad allow
-//     with a long path cannot override a deny on a named host.
+//     with a long path cannot override a deny on a named host; and, for
+//     resources that are not URLs (commands, paths), only if its literal
+//     prefix is at least as long as every matching deny's
+//     (PrefixSpecificity), so a broad allow cannot override a deny on a
+//     named program.
 func (e *Evaluator) evaluateMostSpecific(store *policy.Store, req *models.ActionRequest) RuleOutcome {
 	type scored struct {
 		rule policy.Rule
 		key  [3]int
 	}
 	var denies, allows, escalates []scored
-	maxDenyHost := 0
+	maxDenyHost, maxDenyPrefix := 0, 0
 	for _, r := range store.RulesFor(string(req.ActionType), string(req.Environment)) {
 		if !ruleMatches(r, req.Resource) {
 			continue
@@ -791,6 +795,9 @@ func (e *Evaluator) evaluateMostSpecific(store *policy.Store, req *models.Action
 			denies = append(denies, s)
 			if h := policy.HostSpecificity(r.Resource); h > maxDenyHost {
 				maxDenyHost = h
+			}
+			if p := policy.PrefixSpecificity(r.Resource); p > maxDenyPrefix {
+				maxDenyPrefix = p
 			}
 		case r.Allow:
 			allows = append(allows, s)
@@ -813,7 +820,14 @@ func (e *Evaluator) evaluateMostSpecific(store *policy.Store, req *models.Action
 	}
 	bestDeny := best(denies, nil)
 	bestAllow := best(allows, func(s scored) bool {
-		return len(denies) == 0 || policy.HostSpecificity(s.rule.Resource) >= maxDenyHost
+		if len(denies) == 0 {
+			return true
+		}
+		if policy.HostSpecificity(s.rule.Resource) < maxDenyHost {
+			return false
+		}
+		// A URL-shaped allow is judged by its host alone (above).
+		return strings.Contains(s.rule.Resource, "://") || policy.PrefixSpecificity(s.rule.Resource) >= maxDenyPrefix
 	})
 	bestEscalate := best(escalates, nil)
 

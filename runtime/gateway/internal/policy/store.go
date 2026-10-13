@@ -82,6 +82,22 @@ func HostSpecificity(pattern string) int {
 	return Specificity(authoritySegment(pattern))
 }
 
+// PrefixSpecificity scores a pattern that is not URL-shaped (a command line,
+// a path, a package): the literal characters before its first '*'. It is
+// the non-URL counterpart of HostSpecificity: an allow overrides a deny on
+// such resources only if it names what it allows (the program, the
+// directory) at least as precisely as the deny names what it refuses, so
+// "shell:*codex*" cannot outrank "shell:sudo*". URL-shaped patterns score 0.
+func PrefixSpecificity(pattern string) int {
+	if strings.Contains(pattern, "://") {
+		return 0
+	}
+	if i := strings.IndexByte(pattern, '*'); i >= 0 {
+		return i
+	}
+	return len(pattern)
+}
+
 // shadowedRules lists pairs of rules that share action_type, environment
 // and resource pattern but disagree on the effect. Under most-specific
 // precedence the tie-break (deny > allow > escalate) decides between
