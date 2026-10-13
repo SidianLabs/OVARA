@@ -586,11 +586,22 @@ func ruleLabel(r policy.Rule) string {
 	return r.ActionType + " / " + r.Environment
 }
 
+// ruleMatches reports whether a rule's resource pattern matches resource.
+// Deny rules written as host rules match the host on any port (see
+// policy.MatchResourceAnyPort); allow and escalate rules match the port
+// exactly, so widening never makes anything more permissive.
+func ruleMatches(r policy.Rule, resource string) bool {
+	if r.Deny {
+		return policy.MatchResourceAnyPort(r.Resource, resource)
+	}
+	return policy.MatchResource(r.Resource, resource)
+}
+
 func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
 	// A rule only applies when its resource pattern matches the request
 	// resource; empty patterns match everything (pre-resource rules keep
 	// their semantics).
-	res := func(r policy.Rule) bool { return policy.MatchResource(r.Resource, req.Resource) }
+	res := func(r policy.Rule) bool { return ruleMatches(r, req.Resource) }
 
 	for _, r := range actionRules {
 		if res(r) && r.Deny && (r.Environment == "*" || r.Environment == string(req.Environment)) {
@@ -709,7 +720,7 @@ func (e *Evaluator) evaluateMostSpecific(store *policy.Store, req *models.Action
 	var denies, allows, escalates []scored
 	maxDenyHost := 0
 	for _, r := range store.RulesFor(string(req.ActionType), string(req.Environment)) {
-		if !policy.MatchResource(r.Resource, req.Resource) {
+		if !ruleMatches(r, req.Resource) {
 			continue
 		}
 		s := scored{r, [3]int{policy.Specificity(r.Resource), b2i(r.ActionType != "*"), b2i(r.Environment != "*")}}

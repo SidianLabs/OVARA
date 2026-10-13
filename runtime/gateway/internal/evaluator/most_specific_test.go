@@ -217,6 +217,46 @@ func TestMostSpecific_EscalateStillBeatsWeakerAllow(t *testing.T) {
 	}
 }
 
+// Deny rules written as host rules hold on every port. Allow and escalate
+// rules keep exact port matching: an allow must never grow to cover a
+// port its author did not write.
+func TestDenyHostRuleMatchesAnyPort(t *testing.T) {
+	for _, prec := range []string{policy.PrecedenceMostSpecific, policy.PrecedenceOrder} {
+		st := specificStore(
+			rule("*://pastebin.com/*", "deny", "paste site"),
+			rule("GET https://github.com/*", "allow", "github reads"),
+			rule("*://webhook.site/*", "escalate", "ask"),
+		)
+		st.SetPrecedence(prec)
+		cases := []struct {
+			res  string
+			want models.Decision
+		}{
+			{"GET https://pastebin.com:8443/raw/x", models.DecisionDeny},
+			{"GET http://pastebin.com:443/raw/x", models.DecisionDeny},
+			{"POST https://pastebin.com:8080/api", models.DecisionDeny},
+			{"GET https://github.com/acme", models.DecisionAllow},
+			// not allowed on a port the allow did not name: default applies
+			{"GET https://github.com:8443/acme", models.DecisionEscalate},
+			{"GET https://webhook.site/x", models.DecisionEscalate},
+		}
+		for _, c := range cases {
+			if d, _ := decide(t, st, models.EnvironmentDev, c.res); d != c.want {
+				t.Errorf("%s: %s: got %s, want %s", prec, c.res, d, c.want)
+			}
+		}
+		// the allow does not match the non-default port at all
+		st = specificStore(rule("GET https://github.com/*", "allow", "github reads"))
+		st.SetPrecedence(prec)
+		st.SetDefaultDecision(policy.DefaultDeny)
+		if prec == policy.PrecedenceMostSpecific {
+			if d, _ := decide(t, st, models.EnvironmentDev, "GET https://github.com:8443/acme"); d != models.DecisionDeny {
+				t.Errorf("allow matched a non-default port: %s", d)
+			}
+		}
+	}
+}
+
 func decideAction(t *testing.T, st *policy.Store, action models.ActionType, resource string) (models.Decision, string) {
 	t.Helper()
 	res, err := New(st).Simulate(&models.ActionRequest{

@@ -336,6 +336,70 @@ func MatchResource(pattern, resource string) bool {
 	return MatchCanonicalResource(pattern, canon)
 }
 
+// MatchResourceAnyPort is MatchResource for rules that refuse: when the
+// pattern is URL-shaped and its authority names no port, the resource's
+// port is ignored, so "*://pastebin.com/*" also matches
+// "https://pastebin.com:8443/x". A pattern that names a port keeps
+// matching only that port.
+//
+// The evaluator uses this for deny rules only. Allow rules keep exact
+// port matching (an allow for https://github.com/* must not start to
+// cover https://github.com:8443/), and so do escalate rules, which keeps
+// the widening limited to the one effect that can only make a decision
+// stricter.
+func MatchResourceAnyPort(pattern, resource string) bool {
+	if pattern == "" {
+		return true
+	}
+	if !isURLResource(resource) {
+		return globMatch(pattern, resource)
+	}
+	canon, ok := CanonicalResource(resource)
+	if !ok {
+		return false
+	}
+	if strings.Contains(pattern, "://") && !authorityHasPort(authoritySegment(pattern)) {
+		canon = stripCanonPort(canon)
+	}
+	return MatchCanonicalResource(pattern, canon)
+}
+
+// authorityHasPort reports whether a pattern authority names a port
+// (literal or wildcard), skipping an IPv6 literal's colons.
+func authorityHasPort(auth string) bool {
+	if i := strings.LastIndexByte(auth, ']'); i >= 0 {
+		auth = auth[i+1:]
+	}
+	return strings.Contains(auth, ":")
+}
+
+// stripCanonPort removes the ":port" from the authority of a canonical
+// resource ("GET https://h:8443/x refs/..." → "GET https://h/x refs/...").
+func stripCanonPort(canon string) string {
+	i := strings.Index(canon, "://")
+	if i < 0 {
+		return canon
+	}
+	start := i + 3
+	end := len(canon)
+	if j := strings.IndexByte(canon[start:], '/'); j >= 0 {
+		end = start + j
+	}
+	auth := canon[start:end]
+	hostEnd := len(auth)
+	if strings.HasPrefix(auth, "[") {
+		if k := strings.IndexByte(auth, ']'); k >= 0 {
+			hostEnd = k + 1
+		}
+	} else if k := strings.LastIndexByte(auth, ':'); k >= 0 {
+		hostEnd = k
+	}
+	if hostEnd == len(auth) {
+		return canon
+	}
+	return canon[:start] + auth[:hostEnd] + canon[end:]
+}
+
 // CanonicalResource normalizes "METHOD scheme://authority/path" into a
 // canonical string. Returns ok=false for userinfo-bearing, schemeless, or
 // unparseable resources.
