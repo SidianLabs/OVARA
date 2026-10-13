@@ -80,6 +80,7 @@ func main() {
 }
 
 func runVerify(path, pubHex string) {
+	pubFile := ""
 	keyBytes, err := hex.DecodeString(strings.TrimSpace(pubHex))
 	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
 		// Sibling pubkey conventions: <chain>.pub, or the init layout
@@ -88,6 +89,7 @@ func runVerify(path, pubHex string) {
 			if data, err2 := os.ReadFile(f); err2 == nil {
 				keyBytes, _ = hex.DecodeString(strings.TrimSpace(string(data)))
 				if len(keyBytes) == ed25519.PublicKeySize {
+					pubFile = f
 					break
 				}
 			}
@@ -96,7 +98,15 @@ func runVerify(path, pubHex string) {
 	if len(keyBytes) != ed25519.PublicKeySize {
 		log.Fatalf("verify: provide -pubkey or a pubkey file beside %s", path)
 	}
-	res := receipts.VerifyFile(path, ed25519.PublicKey(keyBytes))
+	// A public key file found beside the chain brings its key history
+	// (rotated-out and revoked keys) with it.
+	ring := receipts.SingleKey(ed25519.PublicKey(keyBytes))
+	if pubFile != "" {
+		if r, err := receipts.LoadKeyRing(pubFile); err == nil {
+			ring = r
+		}
+	}
+	res := receipts.VerifyFileKeys(path, ring)
 	// If anchors exist (OVARA_ANCHOR_FILE, or the default sink beside the
 	// chain file), verify each anchor's head against the recomputed chain
 	// head at that sequence.
@@ -105,7 +115,7 @@ func runVerify(path, pubHex string) {
 		anchorPath = filepath.Join(filepath.Dir(path), "anchors.jsonl")
 	}
 	if _, err := os.Stat(anchorPath); err == nil {
-		res = receipts.VerifyAnchorFile(anchorPath, path, ed25519.PublicKey(keyBytes))
+		res = receipts.VerifyAnchorFileKeys(anchorPath, path, ring)
 	}
 	out, _ := json.MarshalIndent(res, "", "  ")
 	fmt.Println(string(out))
