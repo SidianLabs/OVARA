@@ -202,6 +202,13 @@ func bindingKeys(bindings []creds.Binding) []string {
 	seen := map[string]bool{}
 	var keys []string
 	for _, b := range bindings {
+		// A GitHub App binding's variables (App ID, key) are the broker's
+		// inputs, not keys the agent's tools look for; those tools look
+		// for GITHUB_TOKEN, which Ovara then fills with a minted token.
+		if b.GitHubApp != nil && !seen["GITHUB_TOKEN"] {
+			seen["GITHUB_TOKEN"] = true
+			keys = append(keys, "GITHUB_TOKEN")
+		}
 		for _, val := range b.Headers {
 			for _, m := range bindingKeyRef.FindAllStringSubmatch(val, -1) {
 				if !seen[m[1]] {

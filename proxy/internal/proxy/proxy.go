@@ -785,12 +785,32 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if port == "" {
 			port = "443"
 		}
-		if headers := creds.MatchRequest(s.bindings, creds.Request{Host: host, Port: port, Method: r.Method, Path: r.URL.Path}); headers != nil {
+		if b := creds.MatchBinding(s.bindings, creds.Request{Host: host, Port: port, Method: r.Method, Path: r.URL.Path}); b != nil {
+			// A brokered binding mints (or reuses) a short-lived token here.
+			// Ovara's own call to the issuer goes out on the verified-TLS
+			// transport, not through policy, and nothing of it reaches the
+			// agent. No token, no request: never an empty or expired one.
+			headers, minted, err := b.Credential(r.Context(), s.transport)
+			if err != nil {
+				log.Printf("credential for %s %s unavailable; not forwarding: %v", r.Method, url, err)
+				decision = "error"
+				facts.reasons = []string{"credential_unavailable"}
+				writeJSON(http.StatusBadGateway, map[string]any{
+					"error":   "Ovara could not obtain a short-lived credential for " + host + "; the request was not sent",
+					"reasons": []string{"credential_unavailable"},
+				})
+				return
+			}
 			// The agent's own credentials never ride along with ours.
 			stripCredentialHeaders(r.Header)
 			for k, v := range headers {
 				r.Header.Set(k, v)
 				injected = append(injected, secretTargets(k, v)...)
+			}
+			// A minted token is scrubbed like a static secret, also where
+			// it appears bare (it may be sent wrapped, as in Basic auth).
+			for _, tok := range minted {
+				injected = append(injected, secretTargets("token", tok)...)
 			}
 		}
 	}

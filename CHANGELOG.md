@@ -10,6 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Focus: make the product usable and understandable for people running coding
 agents, and fix correctness bugs found in an in-depth review.
 
+### Added: short-lived credentials
+
+- A credential binding can mint its token instead of holding one. A
+  `github_app` binding keeps the App's private key in Ovara's environment
+  and injects a GitHub App installation token limited to the repositories
+  and permissions you list (or, with `ovara run -scope-repo` and
+  `ovara box`, to the project's repository). It covers `api.github.com`
+  and git over `github.com`. An `oauth2` binding gets a Bearer token by
+  the client-credentials grant or by token exchange (RFC 8693).
+- Tokens are reused until shortly before they expire and replaced; if no
+  token can be minted the request is refused (`credential_unavailable`)
+  and not sent. Minted tokens are scrubbed from responses and never
+  logged.
+- `ovara doctor` checks these bindings without calling the issuer: the
+  required fields, the variables, and that the key file is an owner-only
+  RSA key.
+
 ### Security hardening (October 2026)
 
 A review of the whole product found ways around several promises. They are

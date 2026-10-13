@@ -28,7 +28,15 @@ type Binding struct {
 	Paths []string `json:"paths,omitempty"`
 	// Methods, when set, limit the binding to these HTTP methods.
 	Methods []string          `json:"methods,omitempty"`
-	Headers map[string]string `json:"headers"` // header -> value, ${ENV} expanded at load
+	Headers map[string]string `json:"headers,omitempty"` // header -> value, ${ENV} expanded at load
+
+	// GitHubApp and OAuth2 make the binding a broker (broker.go): instead
+	// of a fixed header it injects a short-lived token minted from a
+	// long-lived secret that stays in Ovara's environment. At most one.
+	GitHubApp *GitHubApp `json:"github_app,omitempty"`
+	OAuth2    *OAuth2    `json:"oauth2,omitempty"`
+
+	broker *broker // set by LoadReport for a brokered binding
 }
 
 // MinSecretLen is the shortest secret a binding may inject. The response
@@ -114,6 +122,17 @@ func LoadReport(bindings []Binding) ([]Binding, []Skipped, error) {
 				}
 			}
 		}
+		var br *broker
+		if b.Brokered() {
+			e := &expander{}
+			nbr, err := loadBroker(b, e)
+			if err != nil {
+				errs = append(errs, err.Error())
+				continue
+			}
+			missing = append(missing, e.missing...)
+			br = nbr
+		}
 		if len(missing) > 0 {
 			skipped = append(skipped, Skipped{Host: b.Host, Missing: missing})
 			continue
@@ -125,8 +144,10 @@ func LoadReport(bindings []Binding) ([]Binding, []Skipped, error) {
 		}
 		nb := b
 		nb.Headers = h
+		nb.broker = br
 		out = append(out, nb)
 	}
+	out = append(out, gitCompanions(bindings, out)...)
 	if len(errs) > 0 {
 		return out, skipped, fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
@@ -165,6 +186,24 @@ type Request struct {
 	Host, Port, Method, Path string
 }
 
+// gitCompanions returns, for a GitHub App binding on api.github.com, the
+// same broker bound to github.com (git smart-HTTP, where the token goes as
+// Basic x-access-token), unless the configuration binds github.com itself.
+func gitCompanions(configured, loaded []Binding) []Binding {
+	for _, b := range configured {
+		if h, p := splitHostPattern(b.Host); h == "github.com" && p == "443" {
+			return nil
+		}
+	}
+	for _, b := range loaded {
+		if h, p := splitHostPattern(b.Host); h != "api.github.com" || p != "443" || b.GitHubApp == nil || b.broker == nil {
+			continue
+		}
+		return []Binding{{Host: "github.com", GitHubApp: b.GitHubApp, broker: b.broker}}
+	}
+	return nil
+}
+
 // Match returns the headers to inject for an upstream host on port 443,
 // considering only bindings that are not narrowed by path or method.
 func Match(bindings []Binding, host string) map[string]string {
@@ -174,13 +213,26 @@ func Match(bindings []Binding, host string) map[string]string {
 // MatchRequest returns the headers to inject for a request, or nil. The
 // first binding whose host, port, method and path all match wins. Host
 // match is exact or path.Match-style glob ("*.openai.com").
+//
+// For a brokered binding these are only its fixed headers; use
+// MatchBinding and Binding.Credential to get the minted token.
 func MatchRequest(bindings []Binding, req Request) map[string]string {
+	if b := MatchBinding(bindings, req); b != nil {
+		return b.Headers
+	}
+	return nil
+}
+
+// MatchBinding returns the first binding whose host, port, method and path
+// all match the request, or nil.
+func MatchBinding(bindings []Binding, req Request) *Binding {
 	host := strings.ToLower(req.Host)
 	port := req.Port
 	if port == "" {
 		port = "443"
 	}
-	for _, b := range bindings {
+	for i := range bindings {
+		b := &bindings[i]
 		pat, bport := splitHostPattern(b.Host)
 		if bport != port {
 			continue
@@ -193,7 +245,7 @@ func MatchRequest(bindings []Binding, req Request) map[string]string {
 		if !matchMethod(b.Methods, req.Method) || !matchPath(b.Paths, req.Path) {
 			continue
 		}
-		return b.Headers
+		return b
 	}
 	return nil
 }

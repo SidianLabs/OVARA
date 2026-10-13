@@ -130,6 +130,12 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 - **What it covers:** the CA can only sign server certificates (path length 0, server authentication only). It lives 30 days and is replaced at start when it has expired, expires within 3 days, or is weaker or longer-lived; CAs from earlier versions are replaced once. Site certificates live at most 24 hours and never past the CA. `ovara doctor` warns before expiry.
 - **Tests:** `proxy/internal/ca`: `TestNewCAIsConstrainedAndShortLived`, `TestLoadOrCreateRotatesWeakOrExpiringCA`, `TestLeafCappedAtCAExpiry`.
 
+### 3.6 A brokered binding sends only a short-lived, down-scoped token, or nothing
+- **Holds in:** all modes.
+- **Conditions:** the binding is a `github_app` or `oauth2` binding (not a static header). The GitHub App's own permissions, or the OAuth server, set the upper bound on what a token can do.
+- **What it covers:** the long-lived secret (App private key, client secret, subject token) stays in Ovara's environment and never goes upstream to the bound host. A GitHub App token is minted with an RS256 JWT (issued 60 s back, expiring within 10 minutes) and limited to the binding's repositories and permissions; when the binding lists none and `ovara run -scope-repo owner/repo` is set (as `ovara box` does), to that one repository. It goes out as Bearer on `api.github.com` and as Basic `x-access-token` on `github.com` git smart-HTTP. OAuth tokens come from the client-credentials grant or RFC 8693 token exchange. Tokens are reused until 5 minutes (GitHub) or 60 seconds (OAuth) before they expire; concurrent requests share one mint. When no token can be minted, the request is refused with `credential_unavailable` and not sent; an older token is never used after a failed refresh. The issuer call goes over the proxy's verified-TLS transport, does not pass through policy and is never shown to the agent. Minted tokens are scrubbed from responses like static keys (3.4) and are never logged. A broker setting that is wrong (missing field, unreadable or non-RSA key, plain-HTTP token URL) stops startup; `ovara doctor` checks the same offline, including that the key file is owner-only.
+- **Tests:** `proxy/internal/creds`: `TestGitHubAppJWTSignedAndDownScoped`, `TestGitHubAppKeyFormats`, `TestGitHubAppTokenRefreshedBeforeExpiry`, `TestBrokerConcurrentRequestsMintOnce`, `TestBrokerFailureFailsClosed`, `TestBrokeredBindingNotLoadedRefuses`, `TestGitHubAppGitSmartHTTPBasic`, `TestScopeBrokersToRepo`, `TestBrokerConfigErrors`, `TestOAuthClientCredentials`, `TestOAuthTokenExchange`, `TestOAuthRefusesUnusableAnswers`; `proxy/internal/proxy`: `TestBrokeredTokenInjectedAndScrubbed`, `TestBrokerFailureRequestNotForwarded`; `proxy/cmd/ovara`: `TestDoctor_BrokerBindings`, `TestBindingKeysGitHubApp`; `proxy/internal/config`: `TestExampleProxyConfigLoads`.
+
 ---
 
 ## 4. Policy semantics
@@ -275,6 +281,11 @@ These are real limits. Some are design limits, some are not built yet.
   log and its anchors consistently.
 - **Derived credentials in binary bodies.** Signed URL parameters are
   redacted from text responses only.
+- **Minted tokens outlive the run.** A brokered token is not revoked when
+  Ovara stops; it expires on its own (one hour for GitHub). Its scope is
+  what the binding asked for, never more than the App or the OAuth
+  client is granted. The token endpoint must be public: the issuer call
+  goes through the same destination guard as agent traffic.
 - **GitHub paths spelt differently.** The sensitive-read rules match
   GitHub API paths as written; a percent-encoded or case-changed path
   falls back to the host-wide read rule. In `ovara box` the repository
