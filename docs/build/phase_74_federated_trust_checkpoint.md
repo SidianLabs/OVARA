@@ -1,5 +1,9 @@
 # Phase 74 — Federated Trust Network Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 ## Branch
 `phase-74-federated-trust`
 

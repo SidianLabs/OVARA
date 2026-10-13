@@ -1,5 +1,20 @@
 # Ovara Roadmap
 
+> **Historical snapshot — not the current plan.** This is the roadmap from
+> mid-2026, kept for history. For what Ovara does and promises today, see
+> [docs/GUARANTEES.md](GUARANTEES.md); for the current plan, see
+> [docs/box.md](box.md) §14. Corrections to the text below:
+>
+> - Gateway receipts are signed with Ed25519 (`edsig_v1`); HMAC-SHA256 is
+>   kept only as a legacy second signature (`hmac_v1`).
+> - Phase 3's drift, trust-degradation and chain-detection code exists but
+>   is not wired into the gateway: it affects no decision today.
+> - Phase 4's hosted control plane, admin dashboard and SSO were removed
+>   (`docs/decisions/cloud-control-plane.md`). Nothing in Phase 4 or 5 is
+>   being built.
+> - The checkmarks below record what was built at the time, not that it
+>   is current or tested today.
+
 ## Phase 1: Trusted Interception ✅ COMPLETE
 
 Goal: make sensitive AI actions interceptable, policy-evaluable, and auditable.

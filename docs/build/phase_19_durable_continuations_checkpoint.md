@@ -1,5 +1,9 @@
 # Phase 19 Durable Continuations — Implementation Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: Mon May 25 2026
 **Branch**: `phase-19-durable-continuations`
 **Parent**: `phase-18-continuation` (merged into phase-17-event-persistence)

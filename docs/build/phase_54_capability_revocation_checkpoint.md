@@ -1,5 +1,9 @@
 # Phase 54 Capability Revocation — Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: Tue May 26 2026
 **Branch**: `phase-54-capability-revocation`
 **Parent**: `phase-53-policy-recovery` (commit `60cac32`)

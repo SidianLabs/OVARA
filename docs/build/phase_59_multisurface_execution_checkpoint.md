@@ -1,5 +1,9 @@
 # Phase 59 Multi-Surface Execution Foundations — Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: Tue May 26 2026
 **Branch**: Not yet created — awaiting Phase 58/58.5 PR merge
 **Parent**: Phase 58/58.5 (PR #2)

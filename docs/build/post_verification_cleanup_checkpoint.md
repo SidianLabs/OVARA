@@ -1,5 +1,9 @@
 # Post-Verification Cleanup - Phase 9 Merge Readiness
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Started:** 2026-05-25 10:00 (assumed)
 **Branch:** `phase-9-merge-cleanup` (created from `phase-8-5-verification`)
 

@@ -1,5 +1,9 @@
 # Recursive Execution Threats
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 Recursive execution occurs when an agent triggers a chain of
 executions that eventually bypass the gateway. This is one of the
 more subtle threat vectors because individual steps may all be

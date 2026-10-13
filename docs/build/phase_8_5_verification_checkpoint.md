@@ -1,5 +1,9 @@
 # Phase 8.5 Verification Run - Morning Test Readiness
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Started:** 2026-05-25 09:00 (assumed)
 **Branch:** `phase-8-5-verification` (created from `phase-8-overnight-hardening`)
 

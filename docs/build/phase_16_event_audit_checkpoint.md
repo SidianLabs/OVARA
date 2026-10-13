@@ -1,5 +1,9 @@
 # Phase 16 Event Audit — Implementation Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: Mon May 25 2026
 **Branch**: `phase-16-event-audit`
 **Parent**: `phase-15-5-api-polish` (merged baseline)

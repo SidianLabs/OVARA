@@ -1,5 +1,9 @@
 # Phase 14.5: Observability Verification Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: 2026-05-25
 **Branch**: `phase-14-5-observability-verification` (from `phase-14-observability`)
 **Objective**: Verify Phase 14 metrics/diagnostics layer and polish reload semantics

@@ -1,5 +1,9 @@
 # Phase 7 Foundations Execution Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Objective:** Prepare Ovara for future hosted control-plane evolution by:
 - tightening the last weak spots in the local runtime loop
 - introducing clean persistence/configuration/source abstractions

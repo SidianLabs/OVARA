@@ -1,5 +1,9 @@
 # Phase 25-30 Operator Substrate — Implementation Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: Mon May 25 2026
 **Branch**: `phase-25-30-operator-substrate`
 **Parent**: `phase-24-5-shell-safety-corrections` (commit `1852134`)
