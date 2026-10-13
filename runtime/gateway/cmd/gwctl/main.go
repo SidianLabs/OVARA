@@ -32,7 +32,8 @@
 //	gwctl anchor-catchup --registry F --anchor-url U --anchor-pin P
 //	                     --anchor-key K [--confirm]
 //	gwctl anchor-reset   --anchor-url U --anchor-pin P --domain D
-//	                     --operator-token T --confirm
+//	                     --confirm   (token in OVARA_ANCHOR_OPERATOR_TOKEN,
+//	                     or --operator-token T)
 package main
 
 import (
@@ -204,7 +205,7 @@ func main() {
 	aPin := fs.String("anchor-pin", "", "oracle identity pin (uid:<n> | key:<hex-pub>)")
 	aKey := fs.String("anchor-key", "", "anchor signing key file (checkpoint signer)")
 	newKey := fs.String("new-key", "", "anchor-addkey: new lineage key file")
-	opTok := fs.String("operator-token", "", "oracle operator token (reset)")
+	opTok := fs.String("operator-token", "", "oracle operator token (reset); prefer OVARA_ANCHOR_OPERATOR_TOKEN, which other users cannot read from the process list")
 	domain := fs.String("domain", "", "anchor domain id (reset)")
 	confirm := fs.Bool("confirm", false, "explicit operator confirmation for authority operations")
 	attest := fs.Bool("attest", false, "anchor-init: print attestation artifact and exit")
@@ -358,7 +359,12 @@ func main() {
 		if !*confirm {
 			fatal("anchor-reset deletes the domain's anchored authority state — requires --confirm (recovery re-runs anchor-init)")
 		}
-		c := anchorClient(*aURL, *aPin, *opTok, *aKey)
+		tok := *opTok
+		if tok == "" {
+			// Preferred: from the environment, so it is not in argv.
+			tok = os.Getenv("OVARA_ANCHOR_OPERATOR_TOKEN")
+		}
+		c := anchorClient(*aURL, *aPin, tok, *aKey)
 		if err := c.Reset(ctx, *domain); err != nil {
 			fatal("reset: %v", err)
 		}
