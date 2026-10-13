@@ -226,7 +226,9 @@ func isLoopbackHost(host string) bool {
 // though the host is a trusted read host: secret scanning alerts, Actions,
 // Dependabot, Codespaces and environment secrets and variables, the
 // account's keys and e-mail addresses, org membership, gists, OAuth
-// authorizations and app installation tokens.
+// authorizations and app installation tokens. "*" spans path segments, so
+// the repository- and organization-scoped entries also cover GitHub's
+// numeric-id spelling (/repositories/ID/..., /organizations/ID/...).
 var sensitiveGitHubReads = []string{
 	"/*/secret-scanning/*",
 	"/*/actions/secrets*",
@@ -242,6 +244,7 @@ var sensitiveGitHubReads = []string{
 	"/user/emails*",
 	"/user/public_emails*",
 	"/orgs/*/members*",
+	"/organizations/*/members*",
 	"/gists*",
 	"/authorizations*",
 	"/installation/*",

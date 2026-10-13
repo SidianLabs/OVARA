@@ -230,10 +230,44 @@ func TestDefaultUntrustedReadPatterns(t *testing.T) {
 		"https://gitlab.com/api/v4/projects/9/issues/1/notes",
 		"https://gitlab.com/api/v4/projects/9/merge_requests/2/notes",
 		"https://gitlab.com/g/p/-/issues/3",
+		// A pull request's own body, lists, its diff and review comments.
+		"https://api.github.com/repos/o/r/pulls",
+		"https://api.github.com/repos/o/r/pulls/3",
+		"https://api.github.com/repos/o/r/pulls/3/files",
+		"https://api.github.com/repos/o/r/pulls/comments",
+		"https://api.github.com/repos/o/r/pulls/3/reviews",
+		// Commit comments.
+		"https://api.github.com/repos/o/r/comments",
+		"https://api.github.com/repos/o/r/comments/7",
+		"https://api.github.com/repos/o/r/commits/abc123/comments",
+		// The numeric-id spelling GitHub's pagination links use.
+		"https://api.github.com/repositories/123/issues",
+		"https://api.github.com/repositories/123/issues/1/comments",
+		"https://api.github.com/repositories/123/pulls",
+		"https://api.github.com/repositories/123/pulls/3",
+		"https://api.github.com/repositories/123/comments",
+		"https://api.github.com/repositories/123/commits/abc/comments",
+		"https://api.github.com/repositories/123/discussions/2",
+		"https://api.github.com/issues",
+		// Web pages, lists included.
+		"https://github.com/o/r/issues",
+		"https://github.com/o/r/pulls",
+		"https://github.com/o/r/commit/abc123",
+		// GitLab lists, notes and commit comments.
+		"https://gitlab.com/api/v4/projects/9/issues",
+		"https://gitlab.com/api/v4/projects/9/merge_requests",
+		"https://gitlab.com/api/v4/projects/9/repository/commits/abc/comments",
+		"https://gitlab.com/api/v4/projects/9/repository/commits/abc/discussions",
+		"https://gitlab.com/api/v4/issues",
+		"https://gitlab.com/api/v4/merge_requests",
+		"https://gitlab.com/g/p/-/merge_requests",
+		"https://gitlab.com/g/p/-/commit/abc",
 	}
 	no := []string{
 		"https://api.github.com/repos/o/r/contents/README.md",
-		"https://api.github.com/repos/o/r/pulls/3/files",
+		"https://api.github.com/repositories/123/contents/README.md",
+		"https://api.github.com/repos/o/r/git/trees/main",
+		"https://gitlab.com/api/v4/projects/9/repository/files/x",
 		"https://github.com/o/r/blob/main/x.go",
 		"https://raw.githubusercontent.com/o/r/main/issues.md",
 	}

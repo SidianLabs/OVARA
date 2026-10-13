@@ -43,20 +43,38 @@ const (
 )
 
 // defaultUntrustedReads are reads on trusted hosts that return content
-// third parties write. "*" matches any run of characters, "/" included.
+// third parties write: issues, pull and merge requests (their bodies,
+// lists, diffs, comments and reviews), discussions and commit comments, by
+// API (also by numeric repository id, the form GitHub's own pagination
+// links use) and on the web. "*" matches any run of characters, "/"
+// included.
 var defaultUntrustedReads = []string{
 	"https://api.github.com/repos/*/issues*",
-	"https://api.github.com/repos/*/pulls/*/comments*",
-	"https://api.github.com/repos/*/pulls/*/reviews*",
+	"https://api.github.com/repos/*/pulls*",
 	"https://api.github.com/repos/*/discussions*",
+	"https://api.github.com/repos/*/comments*",
+	"https://api.github.com/repos/*/commits/*/comments*",
+	"https://api.github.com/repositories/*/issues*",
+	"https://api.github.com/repositories/*/pulls*",
+	"https://api.github.com/repositories/*/discussions*",
+	"https://api.github.com/repositories/*/comments*",
+	"https://api.github.com/repositories/*/commits/*/comments*",
 	"https://api.github.com/search/issues*",
-	"https://github.com/*/issues/*",
+	"https://api.github.com/issues*",
+	"https://github.com/*/issues*",
 	"https://github.com/*/pull/*",
+	"https://github.com/*/pulls*",
+	"https://github.com/*/commit/*",
 	"https://github.com/*/discussions*",
 	"https://gitlab.com/api/v4/projects/*/issues*",
 	"https://gitlab.com/api/v4/projects/*/merge_requests*",
+	"https://gitlab.com/api/v4/projects/*/repository/commits/*/comments*",
+	"https://gitlab.com/api/v4/projects/*/repository/commits/*/discussions*",
+	"https://gitlab.com/api/v4/issues*",
+	"https://gitlab.com/api/v4/merge_requests*",
 	"https://gitlab.com/*/-/issues*",
 	"https://gitlab.com/*/-/merge_requests*",
+	"https://gitlab.com/*/-/commit/*",
 }
 
 // defaultExemptWrites are writes that only read in substance: npm audit

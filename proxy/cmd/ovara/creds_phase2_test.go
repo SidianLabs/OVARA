@@ -29,12 +29,22 @@ func TestDefaultPolicy_SensitiveGitHubReadsEscalate(t *testing.T) {
 		"/gists/abc",
 		"/authorizations",
 		"/installation/repositories",
+		// The same resources by numeric id.
+		"/repositories/123/secret-scanning/alerts",
+		"/repositories/123/actions/secrets",
+		"/repositories/123/actions/variables/X",
+		"/repositories/123/environments/prod/secrets",
+		"/repositories/123/environments/prod/variables",
+		"/repositories/123/dependabot/secrets",
+		"/repositories/123/codespaces/secrets",
+		"/organizations/9/actions/secrets",
+		"/organizations/9/members",
 	} {
 		if got := defaultDecision("http.request", "GET https://api.github.com"+p); got != "escalate" {
 			t.Errorf("GET %s: %s, want escalate", p, got)
 		}
 	}
-	for _, p := range []string{"/repos/o/r", "/repos/o/r/pulls", "/repos/o/r/contents/README.md"} {
+	for _, p := range []string{"/repos/o/r", "/repos/o/r/pulls", "/repos/o/r/contents/README.md", "/repositories/123/contents/README.md"} {
 		if got := defaultDecision("http.request", "GET https://api.github.com"+p); got != "allow" {
 			t.Errorf("GET %s: %s, want allow", p, got)
 		}
