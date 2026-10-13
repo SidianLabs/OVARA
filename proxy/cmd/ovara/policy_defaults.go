@@ -98,6 +98,18 @@ func defaultPolicyRules() []map[string]any {
 		// approved one is allowed for the rest of the run. Allow trusted
 		// packages here, e.g. "npm:@types/*".
 		fsRule("package.install", "*", "escalate", "A new dependency pauses once with its name and version (strict profile)"),
+		// --- proxy follow-up questions (proxy/internal/proxy) ---
+		// The proxy asks these about requests the URL rules above allowed.
+		// A model request that makes the provider fetch a URL or connect to
+		// a server for the agent (MCP connector, web fetch/search, an image
+		// by URL) pauses with the request in view; resource
+		// "model:<host> <finding>".
+		fsRule("model.server_feature", "*", "escalate", "A model request that makes the provider reach out for the agent pauses for a person"),
+		// Allowed traffic past a host's per-minute budget pauses once;
+		// approving doubles that host's allowance for the run. Resource
+		// "budget:<host>"; allow a host here to never be asked about it.
+		fsRule("egress.budget", "*", "escalate", "Unusually heavy traffic to one host pauses for a person"),
+		// --- end proxy follow-up questions ---
 		// Anything that changes something out in the world needs a human.
 		// This covers git push, opening/merging PRs, deleting branches,
 		// triggering deploys and posting messages.
