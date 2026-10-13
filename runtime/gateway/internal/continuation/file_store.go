@@ -371,9 +371,10 @@ func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
 	return nil, false
 }
 
-// RecoverFromExecuting atomically transitions an Executing continuation back
-// to StateExecuted so it becomes retryable. Used for operator-driven recovery
-// of stuck executions. Persists the transition inline (cannot call Update:
+// RecoverFromExecuting atomically closes an Executing continuation whose
+// result was never recorded: StateExecuted with OutcomeUnknown, which is
+// not retryable (the action may have run). Used for recovery of stuck
+// executions. Persists the transition inline (cannot call Update:
 // it re-locks s.mu).
 func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) {
 	s.mu.Lock()
@@ -385,7 +386,7 @@ func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) 
 	if c.State != StateExecuting {
 		return nil, false
 	}
-	if !s.transitionLocked(c, func() { c.State = StateExecuted }) {
+	if !s.transitionLocked(c, func() { markOutcomeUnknown(c) }) {
 		return nil, false
 	}
 	return c.snapshot(), true

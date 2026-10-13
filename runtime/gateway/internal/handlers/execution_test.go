@@ -1252,8 +1252,10 @@ func TestContinuationHandler_RecoverExecuting_RecoversStuck(t *testing.T) {
 	if updated1.State != continuation.StateExecuted {
 		t.Errorf("c1 state after recovery = %v, want executed", updated1.State)
 	}
-	if !updated1.CanRetry() {
-		t.Error("c1 should be retryable after recovery")
+	if updated1.CanRetry() || !updated1.OutcomeUnknown {
+		// It was executing when recovered: it may have run, so it is
+		// not "failed, retryable" (that invited a second execution).
+		t.Error("c1 must be outcome-unknown and not retryable")
 	}
 
 	// Verify event was emitted
@@ -1491,8 +1493,10 @@ func TestContinuationHandler_RecoverExecutingItem_Success(t *testing.T) {
 	if updated.State != continuation.StateExecuted {
 		t.Errorf("store state = %v, want executed", updated.State)
 	}
-	if !updated.CanRetry() {
-		t.Error("continuation should be retryable after recovery")
+	if updated.CanRetry() || !updated.OutcomeUnknown {
+		// It was executing when recovered: it may have run, so it is
+		// not "failed, retryable" (that invited a second execution).
+		t.Error("continuation must be outcome-unknown and not retryable")
 	}
 }
 
