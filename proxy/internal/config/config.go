@@ -76,6 +76,14 @@ type Config struct {
 	// doubles that host's allowance for the rest of the run.
 	EgressBudget *EgressBudget `json:"egress_budget"`
 
+	// MCPGate reads MCP traffic (JSON-RPC over HTTP) the policy lets
+	// through: tool definitions are pinned per server and a new or changed
+	// one is asked about (action type mcp.tools); every tool call is asked
+	// about (mcp.tool_call). Default ON. MCPPinsFile is where the pins are
+	// kept (default var/mcp_pins.json).
+	MCPGate     *bool  `json:"mcp_gate"`
+	MCPPinsFile string `json:"mcp_pins_file"`
+
 	Credentials []creds.Binding `json:"credentials"`
 
 	// ScopeRepo ("owner/repo"), set by `ovara run -scope-repo` (which
@@ -121,6 +129,9 @@ func Load(path string) (*Config, error) {
 	}
 	if c.PubKeyFile == "" {
 		c.PubKeyFile = "var/receipt_pubkey.hex"
+	}
+	if c.MCPPinsFile == "" {
+		c.MCPPinsFile = "var/mcp_pins.json"
 	}
 	if c.EscalateTimeoutSec <= 0 {
 		c.EscalateTimeoutSec = 60

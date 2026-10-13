@@ -17,13 +17,14 @@ const (
 	// The commit-back diff is what a person reads before changes reach the
 	// real repository; it gets the same budget the proxy uses to build it.
 	maxContextDiffLen = 64 << 10
-	// Lists of files a person must see in full (what policy kept out, which
-	// sensitive files changed, what a cut diff leaves out).
+	// Lists a person must see in full (what policy kept out, which
+	// sensitive files changed, what a cut diff leaves out, the MCP tool
+	// definitions being approved).
 	maxContextListLen = 8 << 10
 )
 
 // contextListKeys get the larger list budget.
-var contextListKeys = map[string]bool{"diff_not_shown": true, "kept_out": true, "sensitive": true, "files": true}
+var contextListKeys = map[string]bool{"diff_not_shown": true, "kept_out": true, "sensitive": true, "files": true, "mcp_tools": true}
 
 // contextPriorityKeys are always kept first when a request carries more
 // entries than the cap: they are the proxy's own safety notes about the

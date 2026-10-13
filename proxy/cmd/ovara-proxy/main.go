@@ -74,6 +74,9 @@ func main() {
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
 	srv.SetModelGate(cfg.ModelGate == nil || *cfg.ModelGate, cfg.ModelHosts)
+	if err := srv.SetMCPGate(cfg.MCPGate == nil || *cfg.MCPGate, cfg.MCPPinsFile); err != nil {
+		log.Fatalf("mcp pins: %v", err)
+	}
 	srv.ApplyConfig(cfg)
 	srv.SetClientAuth(cfg.AgentToken)
 	log.Printf("ovara executor proxy on %s (gateway=%s env=%s bindings=%d fail_open=%v client_auth=%v)",

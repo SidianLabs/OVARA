@@ -27,6 +27,7 @@ import (
 	"ovara.proxy/internal/ca"
 	"ovara.proxy/internal/creds"
 	"ovara.proxy/internal/gateway"
+	"ovara.proxy/internal/mcp"
 	"ovara.proxy/internal/receipts"
 )
 
@@ -53,6 +54,7 @@ type Server struct {
 	modelGateNoAsk  bool          // model-gate findings are refused, not asked
 	limits          limits        // body, push and read size bounds (limits.go)
 	budget          *egressBudget // per-host allowance for allowed traffic; nil = off
+	mcp             *mcpState     // MCP-aware mode (mcpgate.go); nil = off
 }
 
 // maxPendingEscalations bounds how many requests may be held waiting for a
@@ -86,6 +88,7 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 	// resolution, so a DNS rebind between check and dial cannot slip a
 	// private address through (the classic TOCTOU hole in check-then-dial).
 	s.transport.DialContext = s.dialChecked
+	_ = s.SetMCPGate(true, "") // in memory; `ovara run` names the pin file
 	return s
 }
 
@@ -710,6 +713,21 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// MCP traffic (mcpgate.go): every tool call is a question of its own,
+	// and a tool list coming back is checked against its pins below.
+	var mx *mcpExchange
+	if !failedOpen {
+		var ref *mcpRefusal
+		if mx, ref = s.mcpRequest(r.Context(), r, hb); ref != nil {
+			decision, status = ref.write(w)
+			if ref.approvalID != "" {
+				approvalID = ref.approvalID
+			}
+			facts.reasons = ref.reasons
+			return
+		}
+	}
+
 	// Strict installs: downloading a package the project has not pinned is
 	// a second question, about the package (packages.go). Only a download
 	// the URL policy itself allowed is asked; one a person already approved
@@ -870,6 +888,24 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// where its own credential was reflected. Signed URL parameters the
 	// upstream minted from the credential (a Location to a presigned
 	// download) are redacted too; in the body, for text types only.
+	// A tool list the agent's MCP client would read is checked before it
+	// gets there (mcpgate.go).
+	if !failedOpen {
+		cut := func(v mcp.Verdict) {
+			log.Printf("mcp: %s %s: event refused after the response started (%s)", r.Method, url, strings.Join(v.Reasons, ","))
+			if _, err := s.chain.Record(r.Method, url, "deny", http.StatusBadGateway, v.ApprovalID); err != nil {
+				log.Printf("CRITICAL: receipt record failed for refused MCP event %s %s: %v", r.Method, url, err)
+			}
+		}
+		if ref := s.mcpResponse(r.Context(), r, mx, resp, cut); ref != nil {
+			decision, status = ref.write(w)
+			if ref.approvalID != "" {
+				approvalID = ref.approvalID
+			}
+			facts.reasons = ref.reasons
+			return
+		}
+	}
 	var set *secretSet
 	if len(injected) > 0 {
 		set = newSecretSet(injected)

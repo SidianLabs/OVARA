@@ -46,6 +46,10 @@ func redactPreview(s string) string {
 	return out
 }
 
+// RedactPreviewCount is redactPreviewCount for previews built outside the
+// proxy (`ovara mcp wrap` shows tool-call arguments the same way).
+func RedactPreviewCount(s string) (string, int) { return redactPreviewCount(s) }
+
 // redactPreviewCount is redactPreview plus how many values it masked.
 func redactPreviewCount(s string) (string, int) {
 	n := 0

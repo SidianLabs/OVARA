@@ -172,6 +172,20 @@ func defaultPolicyRules() []map[string]any {
 		// "budget:<host>"; allow a host here to never be asked about it.
 		fsRule("egress.budget", "*", "escalate", "Unusually heavy traffic to one host pauses for a person"),
 		// --- end proxy follow-up questions ---
+		// --- MCP (proxy/internal/mcp; the proxy and `ovara mcp wrap`) ---
+		// A server's tool definitions are what the model reads: the first
+		// time a server lists its tools, and whenever a definition changes
+		// or a new tool appears, a person sees them (resource
+		// "mcp:<host><path> tools <n> new [<m> changed]", or
+		// "mcp:stdio:<name> ..." for a wrapped stdio server). Until then
+		// the agent does not see them and cannot call them.
+		fsRule("mcp.tools", "*", "escalate", "New or changed MCP tool definitions pause for a person"),
+		// Every call of an approved tool pauses; resource
+		// "mcp:<host><path>/<tool>". Allow the tools you trust by name,
+		// e.g. "mcp:mcp.example.com/mcp/search", or a whole server with
+		// "mcp:mcp.example.com/mcp/*".
+		fsRule("mcp.tool_call", "*", "escalate", "MCP tool calls pause for a person unless the tool is allowed by name"),
+		// --- end MCP ---
 		// Anything that changes something out in the world needs a human.
 		// This covers git push, opening/merging PRs, deleting branches,
 		// triggering deploys and posting messages.

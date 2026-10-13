@@ -74,6 +74,8 @@ func main() {
 		err = cmdWatch(os.Args[2:])
 	case "approvals":
 		err = cmdApprovals(os.Args[2:])
+	case "mcp":
+		err = cmdMCP(os.Args[2:])
 	case "approve":
 		err = cmdResolve(true, os.Args[2:])
 	case "deny":
@@ -107,6 +109,8 @@ func usage() {
   log export [-format jsonl|ocsf] [-since T]   verified receipts for a SIEM
   incident bundle -out F.tar.gz [-since T]     receipts, anchors, keys and policy to check offline
   keys rotate-receipt | revoke-receipt -key K | list-receipt   manage the receipt signing key
+  mcp wrap -dir D -name NAME -- <server cmd>  run a stdio MCP server through
+                        Ovara: tool definitions pinned, every tool call decided
   approve <id>          let a waiting request through
   deny <id>             block a waiting request
   doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
@@ -369,6 +373,9 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
 	srv.SetModelGate(cfg.ModelGate == nil || *cfg.ModelGate, cfg.ModelHosts)
+	if err := srv.SetMCPGate(cfg.MCPGate == nil || *cfg.MCPGate, cfg.MCPPinsFile); err != nil {
+		return nil, nil, fmt.Errorf("mcp pins: %w", err)
+	}
 	srv.ApplyConfig(cfg)
 	srv.SetClientAuth(cfg.AgentToken)
 	return srv, rootCA, nil
