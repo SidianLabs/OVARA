@@ -195,7 +195,7 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ### 5.6 Ovara's files are owner-only
 - **Holds in:** all modes (Linux and macOS for the checks).
-- **What it covers:** stores, journals, logs and keys are written 0600 in 0700 directories; `policy.json` is 0600; `ovara init` does not print the operator token. `ovara doctor` fails on loose key and policy permissions.
+- **What it covers:** stores, journals, logs and keys are written 0600; the deployment and `var/` directories are 0711 (other users cannot list them, and can open only the public CA certificate, which the agent needs); `policy.json` is 0600; `ovara init` does not print the operator token. `ovara doctor` fails on loose key and policy permissions.
 - **Tests:** `runtime/gateway/internal/logging`: `TestDecisionLogger_OwnerOnly`; `proxy/cmd/ovara`: `TestInitKeepsTokenAndPolicyPrivate`, `TestDoctorPolicyReadableAndIssuerKey`, `TestDoctorSeesFailOpenInProxyJSON`.
 
 ---

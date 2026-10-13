@@ -192,8 +192,9 @@ the key history.
 - **Outcome unknown.** An action that was running when the gateway
   stopped is recovered as `executed` with `outcome_unknown: true`. It is
   never retried automatically; a person has to check what happened.
-- **Owner-only files.** Stores, journals, logs and keys are written 0600
-  in 0700 directories. `ovara init` writes `policy.json` 0600 and no
+- **Owner-only files.** Stores, journals, logs and keys are written 0600.
+  The deployment and `var/` directories are 0711: other users cannot list
+  them and can open only the public CA certificate, which the agent needs. `ovara init` writes `policy.json` 0600 and no
   longer prints the operator token (it is in `config.json`).
 
 ## Identity & Authorization Model (P1/P1.1)

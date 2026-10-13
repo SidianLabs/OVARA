@@ -17,6 +17,9 @@ func writeChain(t *testing.T) (dir, chainFile, pubFile string) {
 	chainFile = filepath.Join(dir, "receipts.jsonl")
 	pubFile = filepath.Join(dir, "pub.hex")
 	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), pubFile)
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +126,9 @@ func TestPrintLog_AttemptAndOutcomeShowOnce(t *testing.T) {
 	dir := t.TempDir()
 	chainFile, pubFile := filepath.Join(dir, "r.jsonl"), filepath.Join(dir, "p.hex")
 	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), pubFile)
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

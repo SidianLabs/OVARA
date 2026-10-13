@@ -304,12 +304,18 @@ func auditPermissions(dir string, cfg *config.Config) []check {
 		if err != nil {
 			continue
 		}
-		if fi.Mode().Perm()&0o077 != 0 {
+		// A directory may let others pass through it (x) to reach the
+		// public CA certificate; listing or writing it (r, w) is the problem.
+		mask := os.FileMode(0o077)
+		if fi.IsDir() {
+			mask = 0o066
+		}
+		if fi.Mode().Perm()&mask != 0 {
 			records = append(records, fmt.Sprintf("%s (%#o)", f, fi.Mode().Perm()))
 		}
 	}
 	if len(records) > 0 {
-		out = append(out, check{"activity record permissions", "WARN", "readable by other users: " + strings.Join(records, ", ") + " — chmod 600 files, 700 directories"})
+		out = append(out, check{"activity record permissions", "WARN", "readable by other users: " + strings.Join(records, ", ") + " — chmod 600 files, 711 directories"})
 	} else {
 		out = append(out, check{"activity record permissions", "PASS", "receipts, anchors, logs and journals are owner-only"})
 	}

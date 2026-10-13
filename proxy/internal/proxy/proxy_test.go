@@ -39,6 +39,9 @@ func newFixture(t *testing.T, gwDecision string, bindings []creds.Binding) *fixt
 	chainFile := filepath.Join(dir, "receipts.jsonl")
 	pubFile := filepath.Join(dir, "receipts.pub")
 	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "receipts.key"), pubFile)
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatalf("chain: %v", err)
 	}
@@ -220,6 +223,9 @@ func TestPlainHTTPFailClosed(t *testing.T) {
 	c, _ := ca.LoadOrCreate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"))
 	chainFile := filepath.Join(dir, "r.jsonl")
 	chain, _ := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), filepath.Join(dir, "r.pub"))
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	// gateway pointing at a dead address
 	gw := gateway.New("http://127.0.0.1:1", "", "test")
 	s := New(c, gw, nil, chain, false)

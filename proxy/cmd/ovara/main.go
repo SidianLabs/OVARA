@@ -347,8 +347,12 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		}
 	}
 	for _, f := range files {
-		// 0700: var/ holds keys, receipts, journals and logs.
-		if err := os.MkdirAll(filepath.Dir(f.path), 0o700); err != nil {
+		// 0711: other users cannot list the deployment or var/, but can
+		// reach a file by name if its own mode lets them. Everything secret
+		// in it (keys, tokens, receipts, journals, logs) is 0600; the agent,
+		// which runs as another user, needs the public CA certificate
+		// (var/ca.pem, 0644) to trust the proxy.
+		if err := os.MkdirAll(filepath.Dir(f.path), 0o711); err != nil {
 			return "", err
 		}
 		if err := os.WriteFile(f.path, f.data, f.perm); err != nil {

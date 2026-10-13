@@ -17,6 +17,9 @@ func newChain(t *testing.T) (*Chain, string, ed25519.PublicKey) {
 	keyFile := filepath.Join(dir, "receipts.key")
 	pubFile := filepath.Join(dir, "receipts.pub")
 	c, err := LoadOrCreate(chainFile, keyFile, pubFile)
+	if c != nil {
+		t.Cleanup(func() { _ = c.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatalf("LoadOrCreate: %v", err)
 	}
@@ -150,6 +153,9 @@ func TestRestartResumesChain(t *testing.T) {
 	// simulate restart: new Chain over same files
 	dir := filepath.Dir(chainFile)
 	c2, err := LoadOrCreate(chainFile, filepath.Join(dir, "receipts.key"), filepath.Join(dir, "receipts.pub"))
+	if c2 != nil {
+		t.Cleanup(func() { _ = c2.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}

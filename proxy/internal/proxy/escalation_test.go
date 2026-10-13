@@ -62,6 +62,9 @@ func newScripted(t *testing.T, decision string) (*Server, *scriptedGateway, stri
 	}
 	chainFile := filepath.Join(dir, "receipts.jsonl")
 	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), filepath.Join(dir, "r.pub"))
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

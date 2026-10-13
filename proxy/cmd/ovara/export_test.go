@@ -117,6 +117,9 @@ func TestIncidentBundleVerifiesOffline(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	cfg, _ := config.Load(filepath.Join(dir, "proxy.json"))
 	chain, err := receipts.LoadOrCreate(chainPath, filepath.Join(dir, cfg.ReceiptKeyFile), filepath.Join(dir, cfg.PubKeyFile))
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,6 +206,9 @@ func TestKeysRotateReceipt(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 	cfg, _ := config.Load(filepath.Join(dir, "proxy.json"))
 	chain, err := receipts.LoadOrCreate(chainPath, filepath.Join(dir, cfg.ReceiptKeyFile), filepath.Join(dir, cfg.PubKeyFile))
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +247,7 @@ func TestInitKeepsTokenAndPolicyPrivate(t *testing.T) {
 	}
 	for path, want := range map[string]os.FileMode{
 		filepath.Join(dir, "policy.json"): 0o600,
-		filepath.Join(dir, "var"):         0o700,
+		filepath.Join(dir, "var"):         0o711, // others may reach var/ca.pem by name, not list or write
 	} {
 		fi, err := os.Stat(path)
 		if err != nil {

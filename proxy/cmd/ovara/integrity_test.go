@@ -22,6 +22,9 @@ func writeAnchoredChain(t *testing.T, dir string, n int) string {
 	}
 	chainPath := filepath.Join(dir, cfg.ReceiptsFile)
 	chain, err := receipts.LoadOrCreate(chainPath, filepath.Join(dir, cfg.ReceiptKeyFile), filepath.Join(dir, cfg.PubKeyFile))
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

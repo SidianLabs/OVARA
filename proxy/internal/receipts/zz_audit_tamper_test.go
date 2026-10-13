@@ -18,6 +18,9 @@ func mkChain(t *testing.T, dir, name string, n int) (string, ed25519.PublicKey) 
 	keyF := filepath.Join(dir, name+".key")
 	pubF := filepath.Join(dir, name+".pub")
 	c, err := LoadOrCreate(path, keyF, pubF)
+	if c != nil {
+		t.Cleanup(func() { _ = c.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

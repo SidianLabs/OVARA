@@ -51,6 +51,9 @@ func receiptServer(t *testing.T, decision, chainFile string) *Server {
 		t.Fatal(err)
 	}
 	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), filepath.Join(dir, "r.pub"))
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

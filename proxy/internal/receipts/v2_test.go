@@ -56,6 +56,9 @@ func TestV1ThenV2Verifies(t *testing.T) {
 	h := writeV1(t, path, key, "", "GET", "https://a.example/1")
 	writeV1(t, path, key, h, "GET", "https://a.example/2")
 	c, err := LoadOrCreate(path, keyFile, pubFile)
+	if c != nil {
+		t.Cleanup(func() { _ = c.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +148,9 @@ func TestRotateAndRevoke(t *testing.T) {
 	keyFile, pubFile, oldKey := keyPair(t, dir)
 	path := filepath.Join(dir, "r.jsonl")
 	c, err := LoadOrCreate(path, keyFile, pubFile)
+	if c != nil {
+		t.Cleanup(func() { _ = c.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +163,9 @@ func TestRotateAndRevoke(t *testing.T) {
 	}
 	time.Sleep(2 * time.Millisecond)
 	c2, err := LoadOrCreate(path, keyFile, pubFile)
+	if c2 != nil {
+		t.Cleanup(func() { _ = c2.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,6 +269,9 @@ func TestDurableAppendAndTornWrite(t *testing.T) {
 func BenchmarkDurableAppend(b *testing.B) {
 	dir := b.TempDir()
 	c, err := LoadOrCreate(filepath.Join(dir, "r.jsonl"), filepath.Join(dir, "k"), filepath.Join(dir, "p"))
+	if c != nil {
+		b.Cleanup(func() { _ = c.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -275,6 +287,9 @@ func BenchmarkDurableAppend(b *testing.B) {
 func BenchmarkPlainAppend(b *testing.B) {
 	dir := b.TempDir()
 	c, err := LoadOrCreate(filepath.Join(dir, "r.jsonl"), filepath.Join(dir, "k"), filepath.Join(dir, "p"))
+	if c != nil {
+		b.Cleanup(func() { _ = c.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		b.Fatal(err)
 	}
