@@ -223,6 +223,9 @@ func keys(m map[string]bool) []string {
 // of being held back until a buffer fills.
 func copyFlush(w http.ResponseWriter, src io.Reader) {
 	rc := http.NewResponseController(w)
+	// The headers go out now: a body checked a whole event at a time
+	// (mcpgate.go) may take a while to produce its first byte.
+	_ = rc.Flush()
 	buf := make([]byte, 16*1024)
 	for {
 		n, err := src.Read(buf)

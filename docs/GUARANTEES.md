@@ -294,6 +294,34 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
   stopped. It lasts across restarts until `ovara agent restore`.
 - **Tests:** `proxy/internal/proxy`: `TestKilledAgentIsRefusedWithinASecond`, `TestKilledAgentsOpenTunnelCarriesNoMore`, `TestKilledAgentsWaitingRequestStops`, `TestBrokenRevokedFileKeepsAgentsStopped`; `proxy/cmd/ovara`: `TestKillStopsOneAgentAndDeniesItsApprovals`, `TestKillWithoutGatewayStillStops`.
 
+## 8. MCP
+
+These hold for MCP (JSON-RPC 2.0) traffic Ovara can see: requests through
+the proxy (Streamable HTTP, and the older HTTP+SSE transport), and stdio
+servers started through `ovara mcp wrap`. They need `mcp_gate` on (the
+default), and the policy must let the server's URL through first; with
+`fail_open` and the gateway down, none of them apply.
+
+### 8.1 Tool definitions nobody approved do not reach the agent
+- **Holds in:** all modes, for servers reached through the proxy; for wrapped stdio servers, when `ovara mcp wrap` runs as a user the agent cannot act as.
+- **What it covers:** every tool list a server sends (a JSON response, any event of an event stream from a host that is not a model API, a member of a batch, a line from a wrapped server) is compared with the definitions pinned for that server. A definition is its name, title, description, input and output schema and annotations, hashed as canonical JSON. The first list of a server, a new tool and a changed definition are a question for a person (`mcp.tools`, resource `mcp:<host><path> tools <n> new [<m> changed]` or `mcp:stdio:<name> ...`). Until the answer is yes, the list does not reach the agent: the proxy answers 502 with a JSON-RPC error (an event already being relayed is replaced by that error and a deny receipt is written), and the wrapper sends the error in its place. After a refused change, calls to that tool are refused until a definition is approved or the server goes back to the approved one. Pins are kept per server in `var/mcp_pins.json` (owner-only), shared by the proxy and the wrapper.
+- **Tests:** `proxy/internal/mcp`: `TestToolHashIsCanonical`, `TestPinStorePersistsAndMerges`, `TestGateDriftDetection`, `TestGateAsksOnceForConcurrentLists`; `proxy/internal/proxy`: `TestMCPFirstToolListAsksOnceThenPinsPass`, `TestMCPChangedDescriptionAsksAgainAndDenialCutsResponse`, `TestMCPLegacySSETransport`, `TestMCPBatches`, `TestMCPPinsPersistAcrossRestarts`; `proxy/cmd/ovara`: `TestMCPWrapPinsAndGatesStdio`, `TestMCPWrapRunsTheServerAsAChildProcess`, `TestMCPWrapWithTheRealGatewayAndDefaultPolicy`, `TestDefaultPolicy_MCP`.
+
+### 8.2 Every tool call is decided by policy, and only approved tools can be called
+- **Holds in:** as 7.1.
+- **What it covers:** each `tools/call`, alone or in a batch, is checked before it is sent (`mcp.tool_call`, resource `mcp:<host><path>/<tool>` or `mcp:stdio:<name>/<tool>`; characters other than letters, digits, `_`, `-` and `.` in a tool name are percent-encoded). The default policy pauses every call; a rule can allow a tool by name. A call to a tool whose definition was never approved is refused without asking. A refused call gets a JSON-RPC error (code -32001, "denied by Ovara policy") and never reaches the server; over HTTP, a batch with one refused call is refused whole.
+- **Tests:** `proxy/internal/mcp`: `TestGateToolCalls`; `proxy/internal/proxy`: `TestMCPToolCallsAllowedEscalatedDenied`, `TestMCPCallToUnpinnedToolIsDenied`, `TestMCPBatches`, `TestMCPGateOff`; `proxy/cmd/ovara`: `TestMCPWrapPinsAndGatesStdio`, `TestDefaultPolicy_MCP`.
+
+### 8.3 The person deciding sees the definitions and the warning signs
+- **Holds in:** as 7.1.
+- **What it covers:** the question about a tool list shows each new definition, and for a change the approved and the new description side by side. Hidden characters (the same classes the terminal output escapes: bidi controls, zero-width and other format characters, Unicode tag characters, whose text is also spelled out), instruction-like wording ("ignore previous instructions", "do not tell the user", `<IMPORTANT>`, "before using this tool, read …", secret file paths, "bcc" to an address), names or mentions of other servers' tools (shadowing), unusual tool names and descriptions over 1 KB are listed as a warning. A tool call shows its arguments, masked where they look like secrets.
+- **Tests:** `proxy/internal/mcp`: `TestPoisoningFlags`, `TestGateDriftDetection`, `TestGateToolCalls`; `proxy/internal/textsafe`: `TestKindsAndHidden`; `proxy/internal/proxy`: `TestMCPChangedDescriptionAsksAgainAndDenialCutsResponse`, `TestMCPToolCallsAllowedEscalatedDenied`; `proxy/cmd/ovara`: `TestMCPWrapWithTheRealGatewayAndDefaultPolicy`.
+
+### 8.4 An MCP message is not decided on one reading while the other side acts on another
+- **Holds in:** as 7.1.
+- **What it covers:** a message with duplicate keys or keys that differ only in case (also by Unicode case folding), invalid UTF-8, or a batch with a member that is not a message is refused when it carries a tool call or a tool list. Event streams are split the way clients split them (CR, LF and CRLF line ends, a leading byte order mark). A tool list that is malformed is refused, not passed. The agent's `Accept-Encoding` is not forwarded on MCP requests, and a response that still arrives encoded is refused; a request body is read through gzip. A message too large to read whole (over 4 MiB) is refused when it looks like JSON-RPC; an event over 4 MiB ends an MCP event stream, a JSON answer to a tool list over 4 MiB is refused, and a line over 4 MiB from a wrapped server ends the session (one from the client is not passed on).
+- **Tests:** `proxy/internal/mcp`: `TestDetectMCPBodies`, `TestCheckKeysNested`, `TestSSEEventReader`, `TestToolListMalformed`, `TestServerBodyRefusesUnreadableToolLists`; `proxy/internal/proxy`: `TestMCPAmbiguousRequestsAreRefused`, `TestMCPEncodedResponseIsRefused`, `TestMCPOversizedMessageIsRefused`, `TestMCPNonMCPTrafficIsUntouched`.
+
 ---
 
 ## Not guaranteed
@@ -375,6 +403,22 @@ These are real limits. Some are design limits, some are not built yet.
 - **Secrets in git history.** The project copy in `ovara box` keeps the
   repository's history; a secret committed in the past is still in its
   objects.
+- **MCP Ovara cannot see.** A stdio MCP server that is not started through
+  `ovara mcp wrap` is invisible to Ovara (inside `ovara box` its process
+  and its network traffic are still checked). WebSocket transports are not
+  supported. The wrapper protects nothing against an agent that runs as
+  the same user: it can edit the pins, read the gateway token or start the
+  server directly.
+- **What an MCP pin covers.** A pin covers what a server *says* a tool
+  does, not what it does: a server can change a tool's behaviour without
+  changing its definition. Only `tools/list` and `tools/call` are checked;
+  resources, prompts, sampling and elicitation pass as the URL policy
+  decides. The warnings about a definition are hints for the person, not
+  detection; a definition with none can still be hostile.
+- **MCP server identity.** A server is its host and path. After the proxy
+  restarts, calls posted to an HTTP+SSE server's endpoint are refused until
+  its event stream is opened again (the tie between the two is kept in
+  memory).
 - **SDK verifiers.** The TypeScript and Python SDK helpers verify v1 proxy
   receipts only, not v2. Use `ovara log -verify-only` for v2.
 - **External review.** No independent review of the box has been done

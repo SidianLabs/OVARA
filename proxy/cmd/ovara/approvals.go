@@ -91,6 +91,12 @@ func contextLines(a pendingApproval) []string {
 		{"command", "command as run"},
 		{"program", "program"},
 		{"directory", "directory"},
+		// MCP: the server, and for a tool call the tool and its arguments
+		{"mcp_server", "MCP server"},
+		{"tool", "tool"},
+		{"tool_sha256", "tool definition sha256"},
+		{"arguments_bytes", "arguments size"},
+		{"arguments", "arguments"},
 	}
 	var out []string
 	for _, o := range order {
@@ -111,6 +117,13 @@ func contextLines(a pendingApproval) []string {
 	}
 	if v := a.Context["why"]; v != "" {
 		out = append(out, "asked because: "+v)
+	}
+	// MCP tool definitions being approved: one per line, then the warnings
+	if l := contextList(a.Context["mcp_tools"]); len(l) > 0 {
+		out = append(out, "tool definitions:")
+		for _, t := range l {
+			out = append(out, "  "+t)
+		}
 	}
 	// `ovara box` commit-back: sensitive files and an incomplete diff first,
 	// then what comes back, what stays out, the tree, the diff

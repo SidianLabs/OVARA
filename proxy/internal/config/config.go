@@ -92,6 +92,13 @@ type Config struct {
 	// ModelBudget caps model API use per agent per run. Past it a person is
 	// asked (action type model.budget); an approval doubles the allowance.
 	ModelBudget *ModelBudget `json:"model_budget,omitempty"`
+	// MCPGate reads MCP traffic (JSON-RPC over HTTP) the policy lets
+	// through: tool definitions are pinned per server and a new or changed
+	// one is asked about (action type mcp.tools); every tool call is asked
+	// about (mcp.tool_call). Default ON. MCPPinsFile is where the pins are
+	// kept (default var/mcp_pins.json).
+	MCPGate     *bool  `json:"mcp_gate"`
+	MCPPinsFile string `json:"mcp_pins_file"`
 
 	Credentials []creds.Binding `json:"credentials"`
 
@@ -144,6 +151,9 @@ func Load(path string) (*Config, error) {
 	}
 	if err := ValidateAgents(c.Agents, c.AgentToken); err != nil {
 		return nil, err
+	}
+	if c.MCPPinsFile == "" {
+		c.MCPPinsFile = "var/mcp_pins.json"
 	}
 	if c.EscalateTimeoutSec <= 0 {
 		c.EscalateTimeoutSec = 60

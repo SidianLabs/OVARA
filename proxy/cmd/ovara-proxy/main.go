@@ -79,6 +79,9 @@ func main() {
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
 	srv.SetModelGate(cfg.ModelGate == nil || *cfg.ModelGate, cfg.ModelHosts)
+	if err := srv.SetMCPGate(cfg.MCPGate == nil || *cfg.MCPGate, cfg.MCPPinsFile); err != nil {
+		log.Fatalf("mcp pins: %v", err)
+	}
 	srv.ApplyConfig(cfg)
 	srv.SetClientAuth(cfg.AgentToken)
 	defer srv.WatchAgentFiles(*configPath, cfg.RevokedAgentsFile, 250*time.Millisecond)()

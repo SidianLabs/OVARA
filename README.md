@@ -313,6 +313,46 @@ model. Tune or turn it off in `proxy.json`:
 tokens the provider reports. Past it you are asked once; approving doubles
 the allowance.
 
+### MCP servers
+
+An MCP server's tool descriptions are text the model reads and follows, and a
+server can change them after you started trusting it. Ovara reads MCP traffic
+(JSON-RPC 2.0) that goes through it:
+
+- **Tool definitions are pinned.** The first time a server lists its tools,
+  and whenever a definition changes or a new tool appears, a person sees the
+  definitions (old and new side by side for a change) before the agent does.
+  Hidden Unicode, instruction-like wording ("do not tell the user",
+  `<IMPORTANT>`), mentions of other servers' tools and very long descriptions
+  are flagged. A refused list never reaches the agent. Pins are kept in
+  `var/mcp_pins.json`.
+- **Every tool call is a question** (`mcp.tool_call`, resource
+  `mcp:<host><path>/<tool>`) with its arguments shown, masked where they look
+  like secrets. A tool whose definition was never approved is refused. Allow
+  the tools you trust in `policy.json`:
+
+```json
+{ "action_type": "mcp.tool_call", "environment": "*", "resource": "mcp:mcp.example.com/mcp/search", "allow": true }
+```
+
+Remote servers are covered when the agent reaches them through the proxy
+(Streamable HTTP, and the older HTTP+SSE transport). The policy must allow the
+server's URL first: that `POST` pauses like any other write until a rule allows
+it. For a **stdio** server, point the agent's MCP configuration at the wrapper
+instead of the server:
+
+```json
+{ "mcpServers": { "files": {
+    "command": "ovara",
+    "args": ["mcp", "wrap", "-dir", "/srv/ovara", "-name", "files", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/work"] } } }
+```
+
+The wrapper means something only when it runs as a user the agent cannot act
+as. An agent that can read the deployment directory, edit the pins or start
+the server without the wrapper is not stopped by it. A stdio server that is
+not wrapped is invisible to Ovara, and WebSocket transports are not
+supported.
+
 ## How strong is the protection?
 
 Be clear about what you are buying. Every promise, the mode it holds in and
