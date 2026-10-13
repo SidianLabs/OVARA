@@ -53,3 +53,11 @@ coverage/
 
 # local scratch for ad-hoc container debugging
 .scratch-scn/
+
+# built binaries (go build in a module directory)
+/runtime/gateway/gwctl
+/runtime/gateway/ovara-anchor
+/runtime/gateway/server
+/proxy/ovara
+/proxy/ovara-proxy
+/ovara
