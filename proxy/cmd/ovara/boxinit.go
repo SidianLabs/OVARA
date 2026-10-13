@@ -3,7 +3,8 @@
 package main
 
 // `ovara box-init`: PID 1 of a tier 2 box (a container). Not for people to
-// run; `ovara box -tier 2` starts it as the container's entrypoint.
+// run; `ovara box -tier 2` starts it as the container's entrypoint. (With
+// -tier1 it is instead the last step before a tier 1 agent: box_tier1.go.)
 //
 // It runs as root inside the container, with only the capabilities it needs
 // (SETUID and SETGID to drop to the agent's uid, KILL to stop the agent's

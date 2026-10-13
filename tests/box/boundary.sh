@@ -8,14 +8,17 @@
 # that veth) and removes all of it at the end. Run it on a disposable
 # machine or in the privileged test container:
 #
-#   OVARA_TEST_ON_HOST=1 bash tests/box/boundary.sh
+#   tests/box/run.sh boundary                    in the privileged test container
+#   OVARA_TEST_ON_HOST=1 bash tests/box/boundary.sh   here (root)
 set -u
 [ "${OVARA_TEST_ON_HOST:-}" = 1 ] || { echo "this test changes this machine's network setup; run it on a disposable one with OVARA_TEST_ON_HOST=1" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 2; }
 here="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT="$here/../../proxy/scripts/setup-egress-boundary.sh"
+REPO="${REPO:-$here/../..}"
 NS=ovtb; VETH=vo-ovtb-h; IDX=77; HOST=10.200.$IDX.1; PORT=19443; OTHER=19922
 work="$(mktemp -d)"
+SCRIPT="$work/setup-egress-boundary.sh"
+tr -d '\r' < "$REPO/proxy/scripts/setup-egress-boundary.sh" > "$SCRIPT"
 pass=0; fail=0
 ok()  { echo "PASS  $1"; pass=$((pass+1)); }
 bad() { echo "FAIL  $1  -- $2"; fail=$((fail+1)); }
