@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"ovara.runtime.gateway/internal/record"
@@ -253,13 +254,7 @@ func (s *FileBackedStore) Sweep() (removed int, err error) {
 				ageSorted = append(ageSorted, e)
 			}
 		}
-		for i := 0; i < len(ageSorted)-1; i++ {
-			for j := i + 1; j < len(ageSorted); j++ {
-				if ageSorted[j].FinishedAt.Before(*ageSorted[i].FinishedAt) {
-					ageSorted[i], ageSorted[j] = ageSorted[j], ageSorted[i]
-				}
-			}
-		}
+		sort.SliceStable(ageSorted, func(i, j int) bool { return ageSorted[i].FinishedAt.Before(*ageSorted[j].FinishedAt) })
 		target := s.maxRecords
 		for i := 0; i < len(ageSorted)-target && i < len(ageSorted); i++ {
 			if !containsStr(toRemove, ageSorted[i].ExecutionID) {

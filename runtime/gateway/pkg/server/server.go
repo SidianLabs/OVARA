@@ -324,18 +324,14 @@ func Run(configPath string) error {
 
 	var receiptsStore receipts.Store
 	if cfg.ReceiptsFile != "" {
-		var maxAge time.Duration
-		if cfg.ReceiptsMaxAgeMinutes > 0 {
-			maxAge = time.Duration(cfg.ReceiptsMaxAgeMinutes) * time.Minute
-		}
-		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, maxAge, bind("receipts"))
+		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, bind("receipts"))
 		if err != nil {
 			return failClosedStore("receipt", cfg.ReceiptsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("receipts"))
 			postOpenRatchet("receipts", store.JournalTip)
 			receiptsStore = store
-			log.Printf("receipts persisted to %s (max=%d, max_age=%dm)", cfg.ReceiptsFile, cfg.ReceiptsMaxSize, cfg.ReceiptsMaxAgeMinutes)
+			log.Printf("receipts persisted to %s (max=%d)", cfg.ReceiptsFile, cfg.ReceiptsMaxSize)
 		}
 	} else {
 		receiptsStore = receipts.NewInMemoryStore()

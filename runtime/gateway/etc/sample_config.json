@@ -10,7 +10,6 @@
   "gateway_version": "0.8.0",
   "receipts_file": "var/data/receipts.json",
   "receipts_max_size": 10000,
-  "receipts_max_age_minutes": 60,
   "approvals_file": "var/data/approvals.json",
   "events_file": "var/data/events.jsonl",
   "events_max_size": 50000,

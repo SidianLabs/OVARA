@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"ovara.runtime.gateway/internal/record"
 )
@@ -31,12 +30,12 @@ func TestAdv21_ReceiptsSigned(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "receipts.jsonl")
 	os.WriteFile(p, []byte(`{"receipt_id":"rcpt_1"}`+"\n"), 0o600)
 	b := &record.Binding{Signer: signer, Resolve: resolve}
-	if _, err := NewFileBackedStore(p, 0, time.Hour, b); err == nil {
+	if _, err := NewFileBackedStore(p, 0, b); err == nil {
 		t.Fatal("unsigned receipts journal opened in signed mode")
 	}
 	os.Remove(p)
 
-	s, err := NewFileBackedStore(p, 0, time.Hour, b)
+	s, err := NewFileBackedStore(p, 0, b)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
-	"time"
 
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/persist"
@@ -19,7 +19,10 @@ type FileBackedStore struct {
 	mu       sync.RWMutex
 	receipts map[string]*models.Receipt
 	maxSize  int
-	maxAge   time.Duration
+	// order holds receipt ids oldest first (in the order they were
+	// stored), so evicting the oldest is amortized O(1). It may hold ids
+	// already removed; eviction skips those.
+	order      []string
 	evictedIDs []string // ids evicted this Put — journaled as compact
 }
 
@@ -27,13 +30,13 @@ type FileBackedStore struct {
 // switches it into signed-journal mode (P2.4): the store becomes the
 // durable decision journal (D9) — one signed envelope per receipt,
 // hash-chained and domain-bound. Unsigned legacy files fail closed;
-// run `gwctl migrate` first.
-func NewFileBackedStore(path string, maxSize int, maxAge time.Duration, bindings ...*record.Binding) (*FileBackedStore, error) {
+// run `gwctl migrate` first. maxSize > 0 bounds how many receipts are
+// kept, the oldest going first; receipts are never dropped by age.
+func NewFileBackedStore(path string, maxSize int, bindings ...*record.Binding) (*FileBackedStore, error) {
 	store := &FileBackedStore{
 		path:     path,
 		receipts: make(map[string]*models.Receipt),
 		maxSize:  maxSize,
-		maxAge:   maxAge,
 	}
 	var binding *record.Binding
 	if len(bindings) > 0 {
@@ -64,10 +67,20 @@ func (s *FileBackedStore) load() error {
 	if err := json.Unmarshal(data, &receipts); err != nil {
 		return fmt.Errorf("failed to parse receipts JSON: %w", err)
 	}
+	// The legacy file is unordered: order it by issue time once.
+	sort.SliceStable(receipts, func(i, j int) bool { return receipts[i].IssuedAt.Before(receipts[j].IssuedAt) })
 	for _, r := range receipts {
-		s.receipts[r.ReceiptID] = r
+		s.add(r)
 	}
 	return nil
+}
+
+// add stores r and notes its place in the eviction order.
+func (s *FileBackedStore) add(r *models.Receipt) {
+	if _, exists := s.receipts[r.ReceiptID]; !exists {
+		s.order = append(s.order, r.ReceiptID)
+	}
+	s.receipts[r.ReceiptID] = r
 }
 
 // persist writes the whole store via tmp-file + fsync + rename so a crash
@@ -89,7 +102,7 @@ func (s *FileBackedStore) Put(receipt *models.Receipt) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.receipts[receipt.ReceiptID] = receipt
+	s.add(receipt)
 	if s.maxSize > 0 && len(s.receipts) > s.maxSize {
 		s.evictOldest(len(s.receipts) - s.maxSize)
 	}
@@ -160,21 +173,24 @@ func (s *FileBackedStore) JournalTip() (uint64, string) {
 	return s.journal.Tip()
 }
 
+// evictOldest drops the count oldest receipts. Each id leaves the order
+// queue once, so the cost is amortized O(1) per receipt stored (it was a
+// full sort of every receipt, under the lock, on every Put).
 func (s *FileBackedStore) evictOldest(count int) {
-	var oldest []*models.Receipt
-	for _, r := range s.receipts {
-		oldest = append(oldest, r)
-	}
-	for i := 0; i < len(oldest)-1; i++ {
-		for j := i + 1; j < len(oldest); j++ {
-			if oldest[i].IssuedAt.After(oldest[j].IssuedAt) {
-				oldest[i], oldest[j] = oldest[j], oldest[i]
-			}
+	i := 0
+	for ; count > 0 && i < len(s.order); i++ {
+		id := s.order[i]
+		if _, ok := s.receipts[id]; !ok {
+			continue // already removed
 		}
+		delete(s.receipts, id)
+		s.evictedIDs = append(s.evictedIDs, id)
+		count--
 	}
-	for i := 0; i < count && i < len(oldest); i++ {
-		delete(s.receipts, oldest[i].ReceiptID)
-		s.evictedIDs = append(s.evictedIDs, oldest[i].ReceiptID)
+	s.order = s.order[i:]
+	// Let the backing array go once the queue has moved well past it.
+	if cap(s.order) > 1024 && len(s.order) < cap(s.order)/4 {
+		s.order = append([]string(nil), s.order...)
 	}
 }
 

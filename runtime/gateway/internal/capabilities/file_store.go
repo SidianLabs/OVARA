@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -177,13 +178,7 @@ func (s *FileBackedStore) evictOldest(count int) {
 	for _, l := range s.leases {
 		oldest = append(oldest, l)
 	}
-	for i := 0; i < len(oldest)-1; i++ {
-		for j := i + 1; j < len(oldest); j++ {
-			if oldest[i].CreatedAt.After(oldest[j].CreatedAt) {
-				oldest[i], oldest[j] = oldest[j], oldest[i]
-			}
-		}
-	}
+	sort.SliceStable(oldest, func(i, j int) bool { return oldest[i].CreatedAt.Before(oldest[j].CreatedAt) })
 	for i := 0; i < count && i < len(oldest); i++ {
 		delete(s.leases, oldest[i].Lease.LeaseID)
 	}
