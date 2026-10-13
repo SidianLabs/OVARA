@@ -164,6 +164,17 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
 
 ### Added
 
+- **MCP-aware mode** (`mcp_gate`, on by default). The proxy reads MCP
+  traffic it lets through. Tool definitions are pinned per server
+  (`var/mcp_pins.json`): the first list, a new tool and a changed definition
+  pause for a person (`mcp.tools`), with hidden characters, instruction-like
+  wording and other servers' tool names flagged, and a refused list never
+  reaches the agent. Every tool call pauses (`mcp.tool_call`, resource
+  `mcp:<host><path>/<tool>`) unless a rule allows the tool; a tool whose
+  definition was never approved is refused. `ovara mcp wrap -dir D -name
+  NAME -- <server>` does the same for a stdio server. The default policy
+  gains `mcp.tools` and `mcp.tool_call` escalate rules; add them to an
+  older `policy.json` by hand.
 - **`ovara box <project> -- <agent>`** (Linux, sudo): the agent runs in a
   network namespace whose only route is Ovara, as an unprivileged system
   user with a fresh home, in a copy of the project (a real clone with

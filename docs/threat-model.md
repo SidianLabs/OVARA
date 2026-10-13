@@ -25,6 +25,8 @@ decision is written to a signed, hash-chained receipt log.
 | The agent reads private data and sends it to a server it controls | Reads are allowed only from a short list of trusted hosts; any other host pauses for approval; a read carrying a body, a long query, or more than 2 KB of path, query and headers is refused | The default policy is kept |
 | Data smuggled in a host name (DNS exfiltration) | A host name is not resolved until policy has approved a request to it; inside the boundary, DNS is off unless you turn it on | Always |
 | The agent sends data out through its own model API (an MCP connector, a web-fetch tool, an image "by URL" that the provider fetches) | Only the inference endpoints are allowed by default, and the proxy reads every model request body and pauses requests that use those features (`model_gate`) | The default policy is kept, and `model_gate` is on |
+| An MCP server changes a tool's description after you trusted it (rug pull), hides instructions in it (tool poisoning), or describes another server's tools (shadowing) | Tool definitions are pinned per server; the first list, a new tool and a changed definition are shown to a person (old and new side by side, hidden characters and instruction-like wording flagged) before the agent sees them, and a refused list never reaches it | The server is reached through the proxy over HTTP, or a stdio server is started through `ovara mcp wrap` running as a user the agent cannot act as; `mcp_gate` is on |
+| The agent calls an MCP tool it should not (send an email, delete a repository) | Every tool call is decided by policy (`mcp.tool_call`, paused by default) with its arguments shown; a tool whose definition was never approved is refused | Same |
 | The agent adds its own credential (an account it controls) next to the one Ovara injects | On a host Ovara holds a key for, the agent's own credential headers are removed before the real one is attached, and the real one is set after hop-by-hop headers are stripped | Always |
 | A large volume of data through hosts the policy allows | Allowed traffic is metered per host (about 600 requests or 8 MB a minute by default, more for package registries); past that a person is asked once | The default `egress_budget` is kept |
 | Edits to the log after the fact | Receipts are Ed25519-signed and hash-chained; `ovara log` and `ovara doctor` verify the chain, the key history and the anchors written as it grew, so a log that was cut short, or cut and continued, fails and is not appended to | The signing key, the log and the local anchors are not all under the agent's control (see below) |
@@ -95,6 +97,12 @@ decision is written to a signed, hash-chained receipt log.
   they sit next to it. Only an off-host anchor (`gateway_anchor_mode` with
   `gateway_anchor_url`) survives someone who can write both. `ovara doctor`
   warns when it is off.
+- **MCP outside Ovara's view, and what a pin cannot see.** A stdio MCP
+  server that is not started through `ovara mcp wrap` never touches Ovara,
+  and WebSocket transports are not supported. A pin covers what a server
+  says a tool does, not what the server does when it is called; only tool
+  lists and tool calls are checked, not resources or prompts. The warnings
+  on a definition are hints, not detection.
 - **Non-HTTP protocols.** Only HTTP and HTTPS through the proxy are inspected.
   CONNECT is limited to port 443; HTTP/2, gRPC and WebSockets are not
   supported through the interception.
