@@ -57,6 +57,20 @@ func ParseStore(data []byte, versionHint string) (*Store, error) {
 		}
 	}
 
+	// A rule without action_type or environment matches nothing: the
+	// evaluator compares both exactly (or against "*"). Loading it anyway
+	// would leave a deny the operator wrote silently inert, so refuse it and
+	// say how to fix it. (Filling in "*" instead would also wake up allow
+	// rules that have never matched, which widens access without asking.)
+	for i, r := range fp.Rules {
+		if r.ActionType == "" {
+			return nil, fmt.Errorf("rule[%d] (resource %q): action_type is missing, so the rule would never match; use \"http.request\" for network requests, or \"*\" for every kind of action", i, r.Resource)
+		}
+		if r.Environment == "" {
+			return nil, fmt.Errorf("rule[%d] (resource %q): environment is missing, so the rule would never match; use \"*\" for every environment", i, r.Resource)
+		}
+	}
+
 	version := fp.Version
 	if version == "" {
 		version = versionHint
