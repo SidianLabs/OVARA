@@ -24,8 +24,10 @@ exist; treat per-protocol coverage as uneven.
 │  │  docker bridge:         │                   │ real creds live  │
 │  │  default-deny OUTPUT    │                   │ here only        │
 │  │  only -> proxy:9443     │      ┌──────────────────────────┐   │
-│  │  :53 -> resolver        │─────▶│  deny-by-default DNS     │   │
-│  │  IPv6 disabled          │ :53  │  (Corefile, allowlist)   │   │
+│  │  :53 dropped (opt-in:   │- - -▶│  deny-by-default DNS     │   │
+│  │  -> resolver)           │ :53  │  (Corefile, allowlist)   │   │
+│  │  IPv6 disabled          │      │  only with               │   │
+│  │                         │      │  OVARA_BOUNDARY_DNS=1    │   │
 │  └─────────────────────────┘      └──────────────────────────┘   │
 │                                                                  │
 │  kill switch: delete the credential binding row / proxy sidecar. │
@@ -38,11 +40,33 @@ docker modes) — also embedded in the `ovara` binary, so
 `ovara run -dir DIR --boundary netns` sets up the namespace and starts the
 stack in one command (requires root; `--boundary docker` applies the
 docker `--internal`-network recipe).
-Resolver setup is in `proxy/scripts/resolver.md`.
+
+What the boundary does:
+
+- **The proxy listens on the boundary address and loopback only.** With
+  `--boundary`, `ovara run` serves the proxy on its loopback `listen_addr`
+  and on the host's address inside the boundary (`10.200.N.1` for netns,
+  `172.30.0.1` for docker), never on every interface. A `listen_addr`
+  that is not loopback is left as you set it.
+- **No DNS by default.** The agent does not need DNS: the proxy resolves
+  names, after policy has allowed the request. Port 53 is dropped inside
+  the boundary. `OVARA_BOUNDARY_DNS=1` (or the script's `--allow-dns`)
+  sends it to a resolver instead; `ovara run` passes that variable on.
+  Resolver setup is in `proxy/scripts/resolver.md`.
+- **The host side is always firewalled.** Traffic from the boundary to
+  the host may reach the proxy port and nothing else. The script uses
+  iptables when the host has it and an nft table
+  (`inet ovara_host_<name>`) when it does not. If the host has neither,
+  setup stops with exit code 3, because the agent could then reach every
+  service on the host's boundary address. `ovara run
+  -allow-unhardened-boundary` (`OVARA_ALLOW_UNHARDENED=1` for the script)
+  goes on anyway, with a warning. Do not use it on a machine that serves
+  anything on that address.
 
 ## Trust store injection
 
-The proxy TLS-intercepts agent traffic with a per-session CA. That CA must
+The proxy TLS-intercepts agent traffic with its own CA (one per deployment,
+replaced every 30 days; see below). That CA must
 be trusted inside the agent environment, per stack — there is no single
 switch:
 
@@ -52,17 +76,34 @@ switch:
 | Node.js | `NODE_EXTRA_CA_CERTS=/path/to/ovara-ca.pem` (additive; does not replace system roots) |
 | Python requests/httpx | `REQUESTS_CA_BUNDLE=/path/to/ovara-ca.pem` |
 | git | `GIT_SSL_CAINFO=/path/to/ovara-ca.pem` or `git config http.sslCAInfo` |
-| System-wide (Go, curl, most things) | copy CA into `/usr/local/share/ca-certificates/ovara-ca.crt`, run `update-ca-certificates` |
 
-Practical approach: bake the CA into the agent image
-(`/usr/local/share/ca-certificates` + `update-ca-certificates`), *and* set
-the env vars anyway — some tools ignore the system store. For containers,
-the env vars go on the `docker run` line next to `HTTPS_PROXY`.
+`ovara env` and `ovara box` set all of these for you. Do **not** install the
+CA in the system trust store of a machine you also use for other things:
+anyone who holds the CA key can then impersonate any site to every program
+on that machine. Trust it only in the agent's environment (the variables
+above, or an image built for the agent alone). For containers, the env
+vars go on the `docker run` line next to `HTTPS_PROXY`.
 
-Caveat: `NODE_EXTRA_CA_CERTS` is read once at process start; rotating the CA
-requires restarting node processes. `SSL_CERT_FILE` *replaces* the default
-bundle — point it at a file containing your CA **plus** the public roots,
-or upstream verification of non-proxied hosts breaks.
+What the CA can do, and for how long:
+
+- It can only sign server certificates for sites (path length 0, server
+  authentication only); it cannot make another CA. Each site certificate
+  lives at most 24 hours and never past the CA's own expiry.
+- It lives **30 days**. It is checked each time `ovara run` (or
+  `ovara-proxy`) starts, and replaced when it has expired, expires within
+  3 days, or is weaker or longer-lived than this. CAs written by versions
+  before October 2026 are all replaced once, on the first start after the
+  upgrade. A replacement is logged. `ovara doctor` warns when the CA is
+  close to its expiry.
+- A proxy that runs for more than 30 days without a restart keeps the old
+  CA; site certificates then stop verifying until it is restarted.
+- After a replacement, restart the agent so it reads the new file
+  (`NODE_EXTRA_CA_CERTS` in particular is read once at start). If you
+  copied the CA anywhere else (an image, a trust store), refresh that copy.
+
+Caveat: `SSL_CERT_FILE` *replaces* the default bundle — point it at a file
+containing your CA **plus** the public roots, or upstream verification of
+non-proxied hosts breaks.
 
 ## Known limitations
 
@@ -120,7 +161,14 @@ credential binding.
 3. Completeness argument: because the boundary is default-deny, any side
    effect that is *not* in the chain never happened. The chain is the full
    record — but only as strong as the boundary verification above.
-4. External anchoring is implemented and env-configured: every
+4. Receipts are format v2. A request that goes upstream gets an
+   "attempt" receipt, written and synced to disk before any byte is sent,
+   and an "outcome" receipt before the response reaches the agent. If the
+   attempt receipt cannot be written, the request is refused. `ovara log
+   -verify-only` and `ovara-proxy -verify` check signatures, links, the
+   key history (`var/receipt_keys.jsonl`) and the anchors. The format is
+   specified in `SECURITY.md`.
+5. External anchoring is implemented and env-configured: every
    `OVARA_ANCHOR_EVERY` receipts (default 1) the proxy appends
    `{"seq": N, "head": "<chain head hash>", "time": "..."}` to
    `OVARA_ANCHOR_FILE` (default `var/anchors.jsonl`) and optionally POSTs it
@@ -128,7 +176,9 @@ credential binding.
    the proxy host's blast radius — ship the anchor file off-box (object
    store, log aggregator, separate mount) or set the URL to a third-party
    collector. `-verify` checks each anchor's head against the recomputed
-   chain head at that sequence and reports the first divergence.
-5. Anchors prove the chain was not rewritten *after* each anchor — they do
+   chain head at that sequence and reports the first divergence. A
+   chain shorter than its last anchor (a cut log) fails, and `ovara run`
+   refuses to append to it.
+6. Anchors prove the chain was not rewritten *after* each anchor — they do
    not prove completeness (that still rests on the boundary). Treat history
    before the first anchor as "tamper-evident, not anchored".
