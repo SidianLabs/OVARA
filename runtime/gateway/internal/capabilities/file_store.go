@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -43,7 +44,7 @@ func NewFileBackedStore(path string, maxSize int, maxAge time.Duration, bindings
 		maxSize: maxSize,
 		maxAge:  maxAge,
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("failed to create directory for capabilities store: %w", err)
 	}
 	var binding *record.Binding
@@ -110,7 +111,7 @@ func (s *FileBackedStore) persist(snapshot []*TrackedLease) error {
 		if err != nil {
 			return fmt.Errorf("failed to seal capabilities file: %w", err)
 		}
-		if err := persist.WriteFileAtomic(s.path, sealed, 0644); err != nil {
+		if err := persist.WriteFileAtomic(s.path, sealed, 0600); err != nil {
 			return fmt.Errorf("failed to write capabilities file: %w", err)
 		}
 		s.fileSeq++
@@ -122,7 +123,7 @@ func (s *FileBackedStore) persist(snapshot []*TrackedLease) error {
 		}
 		return nil
 	}
-	if err := persist.WriteFileAtomic(s.path, data, 0644); err != nil {
+	if err := persist.WriteFileAtomic(s.path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write capabilities file: %w", err)
 	}
 	return nil
@@ -177,13 +178,7 @@ func (s *FileBackedStore) evictOldest(count int) {
 	for _, l := range s.leases {
 		oldest = append(oldest, l)
 	}
-	for i := 0; i < len(oldest)-1; i++ {
-		for j := i + 1; j < len(oldest); j++ {
-			if oldest[i].CreatedAt.After(oldest[j].CreatedAt) {
-				oldest[i], oldest[j] = oldest[j], oldest[i]
-			}
-		}
-	}
+	sort.SliceStable(oldest, func(i, j int) bool { return oldest[i].CreatedAt.Before(oldest[j].CreatedAt) })
 	for i := 0; i < count && i < len(oldest); i++ {
 		delete(s.leases, oldest[i].Lease.LeaseID)
 	}

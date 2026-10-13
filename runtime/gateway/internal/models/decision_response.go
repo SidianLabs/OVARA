@@ -45,6 +45,9 @@ const (
 	ReasonRevoked               ReasonCode = "revoked"
 	ReasonRevocationUnavailable ReasonCode = "revocation_unavailable"
 	ReasonRevocationEpoch       ReasonCode = "revocation_epoch_stale"
+	// ReasonReceiptUnavailable: the decision's receipt could not be
+	// written, so it was turned into a deny (no receipt, no action).
+	ReasonReceiptUnavailable ReasonCode = "receipt_unavailable"
 )
 
 type DecisionResponse struct {
@@ -58,6 +61,10 @@ type DecisionResponse struct {
 	ReceiptStub       *ReceiptStub  `json:"receipt_stub,omitempty"`
 	TrustContext      *TrustContext `json:"trust_context,omitempty"`
 	EvaluationSummary string        `json:"evaluation_summary,omitempty"`
+	// MatchedRule names the policy rule that decided (its description, or
+	// a generated name), when a rule did. The proxy copies it into its
+	// receipt.
+	MatchedRule string `json:"matched_rule,omitempty"`
 }
 
 type TrustLevel string

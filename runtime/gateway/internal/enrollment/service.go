@@ -126,7 +126,7 @@ func (s *localService) Initialize(env string) error {
 		}
 		// Atomic write (tmp + fsync + rename): a crash mid-write must not
 		// leave a corrupt identity file.
-		return persist.WriteFileAtomic(s.filePath, data, 0644)
+		return persist.WriteFileAtomic(s.filePath, data, 0600)
 	}
 
 	return nil
@@ -147,7 +147,7 @@ func (s *localService) Heartbeat() error {
 		if err != nil {
 			return err
 		}
-		if err := persist.WriteFileAtomic(s.filePath, data, 0644); err != nil {
+		if err := persist.WriteFileAtomic(s.filePath, data, 0600); err != nil {
 			return err
 		}
 	}

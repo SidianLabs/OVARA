@@ -18,13 +18,23 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"ovara.runtime.gateway/internal/appendfile"
 )
 
-const Version = 1
+// Version is the envelope version Append writes. Version 2 signs every
+// field of the envelope (v, links and a signing time included); version 1
+// signed neither links nor v and carried no time. Version 1 journals keep
+// verifying, but once a journal holds a version 2 envelope, a version 1
+// envelope after it is refused.
+const Version = 2
+
+// VersionLegacy is the first envelope version, still accepted on read.
+const VersionLegacy = 1
 
 // Control record types a store fold may additionally accept. Data
 // records always carry the store's own type string.
@@ -58,12 +68,21 @@ type Envelope struct {
 	Links    []Link          `json:"links,omitempty"`
 	Payload  json.RawMessage `json:"payload"`
 	KeyRef   KeyRef          `json:"key_ref"`
-	Sig      string          `json:"sig"`
+	// At is when the envelope was signed (Unix nanoseconds; v2 only). It
+	// never decreases along a journal, and a key that was revoked or
+	// rotated out cannot vouch for an envelope signed after that.
+	At  int64  `json:"at,omitempty"`
+	Sig string `json:"sig"`
 }
 
 // ResolveFunc resolves a (gateway_id, key_id) pair to its registered
 // public key — receipt.RegistryResolver satisfies this shape.
 type ResolveFunc func(gatewayID, keyID string) (ed25519.PublicKey, error)
+
+// KeyBoundFunc reports the time after which (gatewayID, keyID) may no
+// longer sign: when it was revoked, destroyed, or rotated out. ok=false
+// means the key has no such bound.
+type KeyBoundFunc func(gatewayID, keyID string) (t time.Time, ok bool)
 
 // Signer holds the gateway's journal signing identity.
 type Signer struct {
@@ -107,6 +126,9 @@ func lpu64(b []byte, v uint64) []byte {
 }
 
 func signingPayload(env *Envelope) []byte {
+	if env.V >= 2 {
+		return signingPayloadV2(env)
+	}
 	b := []byte("OVARA-RECORD-" + env.Type + "-V1")
 	b = lp(b, env.DomainID)
 	b = lp(b, env.RecordID)
@@ -115,6 +137,80 @@ func signingPayload(env *Envelope) []byte {
 	b = lpb(b, env.Payload)
 	b = lp(b, env.KeyRef.GatewayID)
 	return lp(b, env.KeyRef.KeyID)
+}
+
+// signingPayloadV2 covers every envelope field but the signature: the
+// version, links and signing time too, which version 1 left unsigned.
+func signingPayloadV2(env *Envelope) []byte {
+	b := []byte("OVARA-RECORD-V2")
+	b = lpu64(b, uint64(env.V))
+	b = lp(b, env.Type)
+	b = lp(b, env.DomainID)
+	b = lpu64(b, env.Seq)
+	b = lp(b, env.RecordID)
+	b = lp(b, env.Parent)
+	b = lpu64(b, uint64(len(env.Links)))
+	for _, l := range env.Links {
+		b = lp(b, l.Kind)
+		b = lp(b, l.Hash)
+	}
+	b = lpb(b, env.Payload)
+	b = lp(b, env.KeyRef.GatewayID)
+	b = lp(b, env.KeyRef.KeyID)
+	return lpu64(b, uint64(env.At))
+}
+
+// decodeEnvelope parses one journal line strictly. Unknown keys and
+// duplicate keys are refused on every version; a version 2 line must also
+// be exactly the encoding of the envelope it decodes to, so no byte of it
+// is outside what the signature and the chain cover.
+func decodeEnvelope(line []byte) (*Envelope, error) {
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.DisallowUnknownFields()
+	var env Envelope
+	if err := dec.Decode(&env); err != nil {
+		return nil, err
+	}
+	if dec.More() {
+		return nil, errors.New("trailing data after envelope")
+	}
+	if env.V >= 2 {
+		again, err := json.Marshal(&env)
+		if err != nil || !bytes.Equal(again, line) {
+			return nil, errors.New("envelope is not in canonical form (duplicate, reordered or extra keys)")
+		}
+		return &env, nil
+	}
+	if err := noDuplicateKeys(line); err != nil {
+		return nil, err
+	}
+	return &env, nil
+}
+
+// noDuplicateKeys refuses a JSON object with a repeated top-level key:
+// parsers disagree on which copy wins.
+func noDuplicateKeys(line []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(line))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return errors.New("envelope is not a JSON object")
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		k, _ := t.(string)
+		if seen[k] {
+			return fmt.Errorf("duplicate key %q", k)
+		}
+		seen[k] = true
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GenesisParent is the parent hash of a store journal's first record —
@@ -139,6 +235,15 @@ type Binding struct {
 	Signer  *Signer
 	Resolve ResolveFunc
 	Floor   Floor
+	// Bound, when set, refuses envelopes signed by a key after it was
+	// revoked or rotated out.
+	Bound KeyBoundFunc
+}
+
+// OpenBinding is Open with everything taken from a store's binding,
+// including its key bounds.
+func OpenBinding(store, path string, b *Binding, apply func(*Envelope) error) (*Journal, error) {
+	return open(store, path, b.Signer.Domain(), b.Signer, b.Resolve, b.Bound, b.Floor, apply)
 }
 
 // ResumeAt creates a journal writer that continues an existing chain —
@@ -180,9 +285,12 @@ type Journal struct {
 	f       *os.File
 	seq     uint64
 	tip     string
-	off     int64                        // bytes folded so far (Absorb support)
-	floor   Floor                       // committed floor carried for Absorb
-	apply   func(*Envelope) error       // fold callback retained from Open
+	off     int64                 // bytes folded so far (Absorb support)
+	floor   Floor                 // committed floor carried for Absorb
+	apply   func(*Envelope) error // fold callback retained from Open
+	bound   KeyBoundFunc          // key revocation/rotation bounds; nil = none
+	v2      bool                  // a version 2 envelope has been folded
+	lastAt  int64                 // signing time of the last v2 envelope
 }
 
 // Open loads path and folds every envelope through apply. A missing or
@@ -192,11 +300,15 @@ type Journal struct {
 // The file is opened O_APPEND: a journal only ever writes at its end,
 // so appends after reopen land at true EOF rather than offset 0.
 func Open(store, path, domainID string, signer *Signer, resolve ResolveFunc, floor Floor, apply func(*Envelope) error) (*Journal, error) {
+	return open(store, path, domainID, signer, resolve, nil, floor, apply)
+}
+
+func open(store, path, domainID string, signer *Signer, resolve ResolveFunc, bound KeyBoundFunc, floor Floor, apply func(*Envelope) error) (*Journal, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("record %s: open: %w", store, err)
 	}
-	j := &Journal{store: store, domain: domainID, signer: signer, resolve: resolve, f: f, tip: GenesisParent(domainID, store), floor: floor, apply: apply}
+	j := &Journal{store: store, domain: domainID, signer: signer, resolve: resolve, bound: bound, f: f, tip: GenesisParent(domainID, store), floor: floor, apply: apply}
 	data, err := readAll(f)
 	if err != nil {
 		f.Close()
@@ -230,9 +342,11 @@ func Open(store, path, domainID string, signer *Signer, resolve ResolveFunc, flo
 			pos = end
 			continue
 		}
-		var env Envelope
-		if err := json.Unmarshal(line, &env); err != nil {
-			if nl < 0 {
+		env, err := decodeEnvelope(line)
+		if err != nil {
+			// Only a line that is not even complete JSON is a torn write;
+			// a complete line that fails the strict decode is corruption.
+			if nl < 0 && !json.Valid(line) {
 				// torn tail: uncommitted partial write — truncate it.
 				// pos stays at the torn offset so j.off tracks the
 				// truncated size, not the pre-truncate read length.
@@ -272,7 +386,11 @@ func Open(store, path, domainID string, signer *Signer, resolve ResolveFunc, flo
 				return nil, fmt.Errorf("record %s: compact prior_tip does not match ledger floor — equivocation", store)
 			}
 		}
-		if err := verifyEnvelope(&env, domainID, seq+1, prev, resolve); err != nil {
+		if err := verifyEnvelope(env, domainID, seq+1, prev, resolve); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("record %s: %v (offset %d)", store, err, pos)
+		}
+		if err := j.checkOrder(env); err != nil {
 			f.Close()
 			return nil, fmt.Errorf("record %s: %v (offset %d)", store, err, pos)
 		}
@@ -282,7 +400,7 @@ func Open(store, path, domainID string, signer *Signer, resolve ResolveFunc, flo
 			return nil, fmt.Errorf("record %s: tip-ledger floor mismatch at seq %d — committed history rewritten", store, floor.Seq)
 		}
 		if apply != nil {
-			if err := apply(&env); err != nil {
+			if err := apply(env); err != nil {
 				f.Close()
 				return nil, fmt.Errorf("record %s: fold error at seq %d: %w", store, seq+1, err)
 			}
@@ -348,9 +466,9 @@ func (j *Journal) Absorb() error {
 			pos = end
 			continue
 		}
-		var env Envelope
-		if err := json.Unmarshal(line, &env); err != nil {
-			if nl < 0 {
+		env, err := decodeEnvelope(line)
+		if err != nil {
+			if nl < 0 && !json.Valid(line) {
 				if terr := appendfile.Truncate(j.f, j.off+int64(pos)); terr != nil {
 					return fmt.Errorf("record %s: truncate torn tail: %w", j.store, terr)
 				}
@@ -359,7 +477,10 @@ func (j *Journal) Absorb() error {
 			}
 			return fmt.Errorf("record %s: corrupt envelope at offset %d: %w", j.store, j.off+int64(pos), err)
 		}
-		if err := verifyEnvelope(&env, j.domain, j.seq+1, j.tip, j.resolve); err != nil {
+		if err := verifyEnvelope(env, j.domain, j.seq+1, j.tip, j.resolve); err != nil {
+			return fmt.Errorf("record %s: %v (offset %d)", j.store, err, j.off+int64(pos))
+		}
+		if err := j.checkOrder(env); err != nil {
 			return fmt.Errorf("record %s: %v (offset %d)", j.store, err, j.off+int64(pos))
 		}
 		lineHash := TipHash(line)
@@ -367,7 +488,7 @@ func (j *Journal) Absorb() error {
 			return fmt.Errorf("record %s: tip-ledger floor mismatch at seq %d", j.store, j.seq+1)
 		}
 		if j.apply != nil {
-			if err := j.apply(&env); err != nil {
+			if err := j.apply(env); err != nil {
 				return fmt.Errorf("record %s: fold error at seq %d: %w", j.store, j.seq+1, err)
 			}
 		}
@@ -393,8 +514,30 @@ func terminateLine(f *os.File) error {
 	return f.Sync()
 }
 
+// checkOrder applies the rules that span envelopes: no version 1 envelope
+// after a version 2 one, signing times that never go back, and no
+// envelope signed by a key after it was revoked or rotated out.
+func (j *Journal) checkOrder(env *Envelope) error {
+	if env.V < 2 {
+		if j.v2 {
+			return errors.New("legacy v1 envelope after v2 envelopes")
+		}
+		return nil
+	}
+	if env.At < j.lastAt {
+		return errors.New("signing time goes backwards")
+	}
+	if j.bound != nil {
+		if t, ok := j.bound(env.KeyRef.GatewayID, env.KeyRef.KeyID); ok && !time.Unix(0, env.At).Before(t) {
+			return fmt.Errorf("signed by key %s after it was revoked or rotated out (%s)", env.KeyRef.KeyID, t.UTC().Format(time.RFC3339))
+		}
+	}
+	j.v2, j.lastAt = true, env.At
+	return nil
+}
+
 func verifyEnvelope(env *Envelope, domainID string, wantSeq uint64, wantParent string, resolve ResolveFunc) error {
-	if env.V != Version {
+	if env.V != Version && env.V != VersionLegacy {
 		return fmt.Errorf("unsupported envelope version %d", env.V)
 	}
 	if env.Seq != wantSeq {
@@ -441,6 +584,10 @@ func (j *Journal) Append(typ, recordID string, payload any, links []Link) (uint6
 		Links:    links,
 		Payload:  body,
 		KeyRef:   j.signer.Ref(),
+		At:       time.Now().UnixNano(),
+	}
+	if env.At < j.lastAt {
+		env.At = j.lastAt // a clock step back must not make the journal unreadable
 	}
 	sig := ed25519.Sign(j.signer.priv, signingPayload(env))
 	env.Sig = hex.EncodeToString(sig)
@@ -458,6 +605,7 @@ func (j *Journal) Append(typ, recordID string, payload any, links []Link) (uint6
 	j.seq = env.Seq
 	j.tip = TipHash(line[:len(line)-1])
 	j.off += int64(len(line))
+	j.v2, j.lastAt = true, env.At
 	return j.seq, j.tip, nil
 }
 

@@ -52,7 +52,7 @@ func TestRecordAndVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Record: %v", err)
 	}
-	if r.ReceiptID == "" || r.PrevHash != "" || !strings.HasPrefix(r.Signature, "sig_v1:") {
+	if r.ReceiptID == "" || r.PrevHash != "" || !strings.HasPrefix(r.Signature, "sig_v2:") {
 		t.Fatalf("bad receipt: %+v", r)
 	}
 	res := VerifyFile(chainFile, pub)
@@ -121,7 +121,7 @@ func TestTamperedSignatureFails(t *testing.T) {
 	c, chainFile, pub := newChain(t)
 	c.Record("GET", "https://a.com/", "allow", 200, "")
 	tamper(t, chainFile, 0, func(r *Receipt) {
-		r.Signature = "sig_v1:" + strings.Repeat("00", ed25519.SignatureSize)
+		r.Signature = "sig_v2:" + strings.Repeat("00", ed25519.SignatureSize)
 	})
 	res := VerifyFile(chainFile, pub)
 	if res.Valid || res.Reason != "signature invalid" {

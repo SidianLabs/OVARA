@@ -423,7 +423,8 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 		receipt.RiskCount = resp.TrustContext.RiskCount
 		receipt.AnomalySignals = resp.TrustContext.AnomalySignals
 	}
-	receipt.Signature = "sig_v1_local:" + resp.ReceiptStub.ReceiptID
+	// Without an HMAC key the field stays empty: an unsigned receipt says
+	// so, it never carries a stand-in that looks like a signature.
 	if h.receiptSigner != nil {
 		receipt.Signature = h.receiptSigner.Sign(receipt)
 	}
@@ -1550,12 +1551,19 @@ func (h *Handler) recordDecision(req *models.ActionRequest, resp *models.Decisio
 
 	if h.receiptsStore != nil && resp.ReceiptStub != nil {
 		receipt := h.buildReceipt(resp, req)
-		// The receipt is post-decision evidence, not an authorization
-		// prerequisite: a failed write must not change the decision,
-		// but it must never be reported as a durable receipt.
+		// No receipt, no action: a decision whose receipt could not be
+		// written is answered as a deny, whatever policy said. Otherwise a
+		// full disk would turn into allowed actions that leave no record.
 		persistErr := h.receiptsStore.Put(receipt)
 		if persistErr != nil {
 			log.Printf("SECURITY: receipt persistence failed for decision %s: %v", resp.DecisionID, persistErr)
+			if resp.Decision != models.DecisionDeny {
+				log.Printf("SECURITY: decision %s was %s; answering deny because its receipt is not on disk", resp.DecisionID, resp.Decision)
+				resp.Decision = models.DecisionDeny
+				resp.RequiresApproval = false
+				resp.ReasonCodes = append(resp.ReasonCodes, models.ReasonReceiptUnavailable)
+				resp.EvaluationSummary = "denied: the decision's receipt could not be written"
+			}
 		}
 
 		if h.eventStore != nil {

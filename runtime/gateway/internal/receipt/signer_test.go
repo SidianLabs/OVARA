@@ -1,6 +1,7 @@
 package receipt
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -150,8 +151,10 @@ func TestSigner_SignatureFormat(t *testing.T) {
 
 	sig := signer.Sign(r)
 
-	if len(sig) < 7 || sig[:7] != "sig_v1:" {
-		t.Fatalf("signature does not start with sig_v1: prefix: %s", sig)
+	// hmac_v1, not sig_v1: that prefix is the proxy's Ed25519 receipt
+	// scheme, and the two must not be mistaken for each other.
+	if !strings.HasPrefix(sig, "hmac_v1:") {
+		t.Fatalf("signature does not start with hmac_v1: prefix: %s", sig)
 	}
 }
 

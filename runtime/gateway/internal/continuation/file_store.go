@@ -59,7 +59,7 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		tombstones:    map[string]bool{},
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("failed to create directory for continuation store: %w", err)
 	}
 
@@ -68,7 +68,7 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		binding = bindings[0]
 	}
 	if binding != nil {
-		j, err := record.Open("continuation", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		j, err := record.OpenBinding("continuation", path, binding, store.foldEvent)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fold continuation journal: %w", err)
 		}
@@ -76,7 +76,7 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		return store, nil
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open continuation file: %w", err)
 	}
@@ -86,7 +86,7 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		return nil, fmt.Errorf("failed to load continuation store: %w", err)
 	}
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open continuation file for append: %w", err)
 	}
@@ -371,9 +371,10 @@ func (s *FileBackedStore) ClaimForRetry(id string) (*Continuation, bool) {
 	return nil, false
 }
 
-// RecoverFromExecuting atomically transitions an Executing continuation back
-// to StateExecuted so it becomes retryable. Used for operator-driven recovery
-// of stuck executions. Persists the transition inline (cannot call Update:
+// RecoverFromExecuting atomically closes an Executing continuation whose
+// result was never recorded: StateExecuted with OutcomeUnknown, which is
+// not retryable (the action may have run). Used for recovery of stuck
+// executions. Persists the transition inline (cannot call Update:
 // it re-locks s.mu).
 func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) {
 	s.mu.Lock()
@@ -385,7 +386,7 @@ func (s *FileBackedStore) RecoverFromExecuting(id string) (*Continuation, bool) 
 	if c.State != StateExecuting {
 		return nil, false
 	}
-	if !s.transitionLocked(c, func() { c.State = StateExecuted }) {
+	if !s.transitionLocked(c, func() { markOutcomeUnknown(c) }) {
 		return nil, false
 	}
 	return c.snapshot(), true
@@ -591,7 +592,7 @@ func (s *FileBackedStore) Compact() error {
 	}
 
 	tmpPath := s.path + ".compact.tmp"
-	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("failed to open compact tmp file: %w", err)
@@ -630,7 +631,7 @@ func (s *FileBackedStore) Compact() error {
 		return fmt.Errorf("failed to rename compact file: %w", err)
 	}
 
-	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("failed to reopen continuation file after compact: %w", err)

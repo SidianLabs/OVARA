@@ -33,8 +33,11 @@ type Config struct {
 	PolicyRefreshInterval int    `json:"policy_refresh_interval"`
 	ReceiptsFile          string `json:"receipts_file"`
 	ReceiptsMaxSize       int    `json:"receipts_max_size"`
-	ReceiptsMaxAgeMinutes int    `json:"receipts_max_age_minutes"`
-	ApprovalsFile         string `json:"approvals_file"`
+	// receipts_max_age_minutes was never applied and is no longer read:
+	// receipts are evidence and are not dropped by age (only
+	// receipts_max_size bounds them). A config that still sets it loads
+	// unchanged.
+	ApprovalsFile string `json:"approvals_file"`
 	// ApprovalPendingTTLSec is how long a pending approval can still be
 	// approved; after that it reads as "expired". 0 = the default (600,
 	// ten minutes); a negative value turns expiry off.
@@ -231,7 +234,6 @@ func Default() *Config {
 		PolicyRefreshInterval:        0,
 		ReceiptsFile:                 "var/data/receipts.json",
 		ReceiptsMaxSize:              10000,
-		ReceiptsMaxAgeMinutes:        60,
 		ApprovalsFile:                "var/data/approvals.json",
 		EventsFile:                   "var/data/events.jsonl",
 		EventsMaxSize:                50000,

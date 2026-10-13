@@ -29,11 +29,11 @@ func NewFileBackedHistoryStore(path string, maxRecords int) (*FileBackedHistoryS
 		entries:    make([]LeaseHistoryEntry, 0, maxRecords),
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("failed to create directory for history store: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open history file: %w", err)
 	}
@@ -43,7 +43,7 @@ func NewFileBackedHistoryStore(path string, maxRecords int) (*FileBackedHistoryS
 		return nil, fmt.Errorf("failed to load history store: %w", err)
 	}
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open history file for append: %w", err)
 	}

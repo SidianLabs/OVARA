@@ -49,9 +49,9 @@ func (c *Chain) emitAnchor() {
 	a := Anchor{Seq: c.seq, Head: c.prevHash, Time: time.Now().UTC()}
 	if c.anchorFile != "" {
 		line, _ := json.Marshal(a)
-		if err := os.MkdirAll(filepath.Dir(c.anchorFile), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(c.anchorFile), 0o700); err != nil {
 			log.Printf("anchor: %v", err)
-		} else if f, err := os.OpenFile(c.anchorFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err != nil {
+		} else if f, err := os.OpenFile(c.anchorFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err != nil {
 			log.Printf("anchor: %v", err)
 		} else {
 			f.Write(append(line, '\n'))
@@ -76,7 +76,12 @@ func (c *Chain) emitAnchor() {
 // equal the hash of the receipt at that sequence position. Returns the first
 // divergence found, if any.
 func VerifyAnchorFile(anchorPath, chainPath string, pubKey ed25519.PublicKey) *VerifyResult {
-	res, heads := verifyChain(chainPath, pubKey)
+	return VerifyAnchorFileKeys(anchorPath, chainPath, SingleKey(pubKey))
+}
+
+// VerifyAnchorFileKeys is VerifyAnchorFile against a key history.
+func VerifyAnchorFileKeys(anchorPath, chainPath string, ring *KeyRing) *VerifyResult {
+	res, heads, _ := verifyChain(chainPath, ring)
 	if !res.Valid {
 		return res
 	}
@@ -129,9 +134,75 @@ func AnchorPathFor(chainPath string) string {
 // remaining entry is correctly signed and linked. anchored reports whether
 // anchors were found at all: without them, truncation cannot be detected.
 func VerifyWithAnchors(chainPath, anchorPath string, pubKey ed25519.PublicKey) (res *VerifyResult, anchored bool) {
+	return VerifyWithAnchorsKeys(chainPath, anchorPath, SingleKey(pubKey))
+}
+
+// VerifyWithAnchorsKeys is VerifyWithAnchors against a key history.
+func VerifyWithAnchorsKeys(chainPath, anchorPath string, ring *KeyRing) (res *VerifyResult, anchored bool) {
 	if _, err := os.Stat(anchorPath); err != nil {
-		return VerifyFile(chainPath, pubKey), false
+		return VerifyFileKeys(chainPath, ring), false
 	}
-	res = VerifyAnchorFile(anchorPath, chainPath, pubKey)
+	res = VerifyAnchorFileKeys(anchorPath, chainPath, ring)
 	return res, res.Anchors > 0
+}
+
+// VerifySegmentWithAnchors verifies a chain file that is a cut of a longer
+// chain (see Segment) against the anchors of the whole chain. Anchors
+// before the cut are skipped, except one exactly at the cut, which must
+// name the segment's starting prev_hash. An anchor past the segment's end
+// means the segment was cut short.
+func VerifySegmentWithAnchors(chainPath, anchorPath string, ring *KeyRing, seg Segment) (*VerifyResult, bool) {
+	res, heads, _ := verifySegment(chainPath, ring, seg)
+	if !res.Valid {
+		return res, false
+	}
+	anchors, err := readAnchors(anchorPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return res, false
+		}
+		res.Valid = false
+		res.Reason = "anchors: " + err.Error()
+		return res, false
+	}
+	for i, a := range anchors {
+		res.Anchors++
+		local := a.Seq - seg.After
+		switch {
+		case local < 0:
+			continue
+		case local == 0:
+			if seg.After > 0 && a.Head != seg.PrevHash {
+				res.Valid = false
+				res.Reason = fmt.Sprintf("anchor %d does not match the segment's start", i)
+				return res, true
+			}
+		case local > len(heads) || heads[local-1] != a.Head:
+			res.Valid = false
+			res.FailAt = a.Seq
+			res.Reason = fmt.Sprintf("anchor %d head does not match chain head at seq %d", i, a.Seq)
+			return res, true
+		}
+	}
+	res.AnchorsValid = res.Anchors > 0
+	return res, res.Anchors > 0
+}
+
+func readAnchors(path string) ([]Anchor, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []Anchor
+	for i, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var a Anchor
+		if err := json.Unmarshal(line, &a); err != nil {
+			return nil, fmt.Errorf("unparseable anchor at line %d", i+1)
+		}
+		out = append(out, a)
+	}
+	return out, nil
 }

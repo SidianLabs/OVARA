@@ -64,7 +64,7 @@ type Store struct {
 
 // OpenStore loads or creates the oracle store at path (0600 enforced).
 func OpenStore(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("anchor store: mkdir: %w", err)
 	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0600)

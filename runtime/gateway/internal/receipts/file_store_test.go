@@ -12,7 +12,7 @@ func TestFileBackedStore_PutAndReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := tmpDir + "/receipts.json"
 
-	store, err := NewFileBackedStore(storePath, 100, 24*time.Hour)
+	store, err := NewFileBackedStore(storePath, 100)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestFileBackedStore_PutAndReload(t *testing.T) {
 		t.Fatalf("Put failed: %v", err)
 	}
 
-	newStore, err := NewFileBackedStore(storePath, 100, 24*time.Hour)
+	newStore, err := NewFileBackedStore(storePath, 100)
 	if err != nil {
 		t.Fatalf("failed to reload store: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestFileBackedStore_FileNotFoundInitializesEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := tmpDir + "/nonexistent/receipts.json"
 
-	store, err := NewFileBackedStore(storePath, 100, 24*time.Hour)
+	store, err := NewFileBackedStore(storePath, 100)
 	if err != nil {
 		t.Fatalf("expected no error for nonexistent file, got: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestFileBackedStore_MalformedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := NewFileBackedStore(storePath, 100, 24*time.Hour)
+	_, err := NewFileBackedStore(storePath, 100)
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -83,7 +83,7 @@ func TestFileBackedStore_MaxSizeEviction(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := tmpDir + "/evict.json"
 
-	store, err := NewFileBackedStore(storePath, 3, 24*time.Hour)
+	store, err := NewFileBackedStore(storePath, 3)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestFileBackedStore_EmptyReceiptID(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := tmpDir + "/emptyid.json"
 
-	store, err := NewFileBackedStore(storePath, 100, 24*time.Hour)
+	store, err := NewFileBackedStore(storePath, 100)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestFileBackedStore_ListByAgent(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := tmpDir + "/listbyagent.json"
 
-	store, err := NewFileBackedStore(storePath, 100, 24*time.Hour)
+	store, err := NewFileBackedStore(storePath, 100)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestFileBackedStore_ListByDecision(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := tmpDir + "/listbydecision.json"
 
-	store, err := NewFileBackedStore(storePath, 100, 24*time.Hour)
+	store, err := NewFileBackedStore(storePath, 100)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestFileBackedStore_Stats(t *testing.T) {
 	tmpDir := t.TempDir()
 	storePath := tmpDir + "/stats.json"
 
-	store, err := NewFileBackedStore(storePath, 10, 24*time.Hour)
+	store, err := NewFileBackedStore(storePath, 10)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}

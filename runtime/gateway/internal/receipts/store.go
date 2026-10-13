@@ -2,6 +2,7 @@ package receipts
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"ovara.runtime.gateway/internal/models"
@@ -26,9 +27,24 @@ func NewInMemoryStore() *InMemoryStore {
 	}
 }
 
-func (s *InMemoryStore) Put(receipt *models.Receipt) error {
-	if receipt.ReceiptID == "" {
+// errPlaceholderSignature refuses the stand-in signature older builds put
+// on receipts when no key was configured: it names a scheme but proves
+// nothing, so it must never be stored as if it were a signature.
+var errPlaceholderSignature = fmt.Errorf("receipt carries a placeholder signature, not a signature")
+
+func checkPersistable(r *models.Receipt) error {
+	if r.ReceiptID == "" {
 		return fmt.Errorf("receipt_id is required")
+	}
+	if strings.HasPrefix(r.Signature, "sig_v1_local:") {
+		return errPlaceholderSignature
+	}
+	return nil
+}
+
+func (s *InMemoryStore) Put(receipt *models.Receipt) error {
+	if err := checkPersistable(receipt); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -13,12 +13,16 @@
 //	--listen https://:9443 --key FILE        Tier 2: remote oracle,
 //	    self-signed Ed25519 cert pinned client-side.
 //
-// Authority-recovery operations (reset) require --operator-token.
+// Authority-recovery operations (reset) require the operator token, read
+// from --operator-token-file (owner-only) or OVARA_ANCHOR_OPERATOR_TOKEN.
+// It is never taken on the command line: every local user can read a
+// process's argv.
 package main
 
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +34,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -97,16 +102,59 @@ func loadClientKeys(path string) (map[string]bool, error) {
 	return out, nil
 }
 
+// operatorTokenEnv is where the reset token may come from instead of a file.
+const operatorTokenEnv = "OVARA_ANCHOR_OPERATOR_TOKEN"
+
+// loadOperatorToken returns the reset token from file (which must not be
+// readable by group or other) or, failing that, from the environment. ""
+// means reset is disabled.
+func loadOperatorToken(file string) (string, error) {
+	if file != "" {
+		fi, err := os.Stat(file)
+		if err != nil {
+			return "", fmt.Errorf("operator token file: %w", err)
+		}
+		if runtime.GOOS != "windows" && fi.Mode().Perm()&0o077 != 0 {
+			return "", fmt.Errorf("operator token file %s is readable by other users (%#o): chmod 600 it", file, fi.Mode().Perm())
+		}
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("operator token file: %w", err)
+		}
+		tok := strings.TrimSpace(string(b))
+		if tok == "" {
+			return "", fmt.Errorf("operator token file %s is empty", file)
+		}
+		return tok, nil
+	}
+	return strings.TrimSpace(os.Getenv(operatorTokenEnv)), nil
+}
+
+// operatorTokenOK compares in constant time: timing must not reveal how
+// much of a guessed token was right.
+func operatorTokenOK(want, got string) bool {
+	return want != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
 func main() {
 	store := flag.String("store", "", "oracle store file (required)")
 	listen := flag.String("listen", "", "unix:///path or https://addr:port (required)")
 	keyFile := flag.String("key", "", "ed25519 key file (required for https)")
 	clientKeys := flag.String("client-keys", "", "file of authorized client pubkeys, one hex per line (required for https)")
-	opTok := flag.String("operator-token", "", "token required for reset operations")
+	opTokFile := flag.String("operator-token-file", "", "owner-only file holding the token required for reset (or set "+operatorTokenEnv+")")
+	legacyTok := flag.String("operator-token", "", "no longer accepted: use --operator-token-file or "+operatorTokenEnv)
 	flag.Parse()
 	if *store == "" || *listen == "" {
 		fatal("--store and --listen are required")
 	}
+	if *legacyTok != "" {
+		fatal("--operator-token is no longer accepted (any local user can read a command line): put the token in an owner-only file and pass --operator-token-file, or set %s", operatorTokenEnv)
+	}
+	opTok, err := loadOperatorToken(*opTokFile)
+	if err != nil {
+		fatal("%v", err)
+	}
+	os.Unsetenv(operatorTokenEnv)
 
 	st, err := anchor.OpenStore(*store)
 	if err != nil {
@@ -114,6 +162,13 @@ func main() {
 	}
 	defer st.Close()
 
+	srv := &http.Server{Handler: newHandler(st, opTok), ReadHeaderTimeout: 10 * time.Second}
+	serve(srv, *listen, *store, *keyFile, *clientKeys)
+}
+
+// newHandler serves the oracle protocol over st. opTok authorizes reset;
+// "" disables it.
+func newHandler(st *anchor.Store, opTok string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/anchor/", func(w http.ResponseWriter, r *http.Request) {
 		// /v1/anchor/{domain}[/register|/keys|/reset]
@@ -185,7 +240,7 @@ func main() {
 			}
 			json.NewEncoder(w).Encode(map[string]string{"status": "key-added"})
 		case r.Method == "POST" && op == "reset":
-			if *opTok == "" || r.Header.Get("X-Operator-Token") != *opTok {
+			if !operatorTokenOK(opTok, r.Header.Get("X-Operator-Token")) {
 				writeErr(w, 498, fmt.Errorf("operator token rejected"))
 				return
 			}
@@ -198,8 +253,10 @@ func main() {
 			writeErr(w, 405, fmt.Errorf("unsupported operation"))
 		}
 	})
+	return mux
+}
 
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+func serve(srv *http.Server, listen, store, keyFile, clientKeys string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -208,8 +265,8 @@ func main() {
 	}()
 
 	switch {
-	case strings.HasPrefix(*listen, "unix://"):
-		sock := strings.TrimPrefix(*listen, "unix://")
+	case strings.HasPrefix(listen, "unix://"):
+		sock := strings.TrimPrefix(listen, "unix://")
 		os.Remove(sock)
 		l, err := net.Listen("unix", sock)
 		if err != nil {
@@ -220,18 +277,18 @@ func main() {
 		if err := os.Chmod(sock, 0660); err != nil {
 			fatal("chmod %s: %v", sock, err)
 		}
-		fmt.Fprintf(os.Stderr, "ovara-anchor: unix://%s store=%s\n", sock, *store)
+		fmt.Fprintf(os.Stderr, "ovara-anchor: unix://%s store=%s\n", sock, store)
 		if err := srv.Serve(l); err != nil && err != http.ErrServerClosed {
 			fatal("serve: %v", err)
 		}
-	case strings.HasPrefix(*listen, "https://"):
-		if *keyFile == "" {
+	case strings.HasPrefix(listen, "https://"):
+		if keyFile == "" {
 			fatal("--key is required for https listen")
 		}
-		if *clientKeys == "" {
+		if clientKeys == "" {
 			fatal("--client-keys is required for https listen (file of authorized client ed25519 pubkeys, one hex per line) — an oracle must never serve unauthenticated network clients")
 		}
-		priv, err := gwidentity.LoadOrCreateKey(*keyFile)
+		priv, err := gwidentity.LoadOrCreateKey(keyFile)
 		if err != nil {
 			fatal("%v", err)
 		}
@@ -239,11 +296,11 @@ func main() {
 		if err != nil {
 			fatal("%v", err)
 		}
-		authorized, err := loadClientKeys(*clientKeys)
+		authorized, err := loadClientKeys(clientKeys)
 		if err != nil {
 			fatal("%v", err)
 		}
-		addr := strings.TrimPrefix(*listen, "https://")
+		addr := strings.TrimPrefix(listen, "https://")
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
 			fatal("listen %s: %v", addr, err)
@@ -259,7 +316,7 @@ func main() {
 			VerifyPeerCertificate: anchor.VerifyPeerPubKey(authorized),
 		}
 		fmt.Fprintf(os.Stderr, "ovara-anchor: https://%s store=%s pub=%s clients=%d\n",
-			addr, *store, hex.EncodeToString(priv.Public().(ed25519.PublicKey)), len(authorized))
+			addr, store, hex.EncodeToString(priv.Public().(ed25519.PublicKey)), len(authorized))
 		if err := srv.ServeTLS(l, "", ""); err != nil && err != http.ErrServerClosed {
 			fatal("serve: %v", err)
 		}

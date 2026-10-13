@@ -45,3 +45,26 @@ func TestSimulate_NamesDecidingRule(t *testing.T) {
 		}
 	}
 }
+
+// Evaluate names the deciding rule and the policy hash too, so the proxy's
+// receipt can say which rule and which policy decided.
+func TestEvaluate_NamesDecidingRuleAndPolicy(t *testing.T) {
+	store := policy.NewStore("t")
+	store.ClearRules()
+	store.AddRule(policy.Rule{ActionType: "http.request", Environment: "*", Resource: "*://pastebin.com/*", Deny: true, Description: "no paste sites"})
+	ev := New(store)
+	res, err := ev.Evaluate(&models.ActionRequest{
+		Nonce: uuid.NewString(), IssuedAt: time.Now(),
+		ActionType: "http.request", Resource: "GET https://pastebin.com/raw/x", Environment: models.EnvironmentDev,
+		AgentIdentity: &models.AgentIdentity{Issuer: "t", SubjectID: "a"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision != models.DecisionDeny || res.MatchedRule != "no paste sites" {
+		t.Fatalf("got %s / %q", res.Decision, res.MatchedRule)
+	}
+	if res.ReceiptStub == nil || res.ReceiptStub.PolicyHash == "" {
+		t.Fatalf("decision carries no policy hash: %+v", res.ReceiptStub)
+	}
+}

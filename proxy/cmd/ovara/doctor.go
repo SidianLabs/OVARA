@@ -7,8 +7,6 @@
 package main
 
 import (
-	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -243,7 +241,7 @@ func auditPermissions(dir string, cfg *config.Config) []check {
 	if runtime.GOOS == "windows" {
 		return []check{{"file permissions", "WARN", "not checked on Windows (mode bits are not enforced); keep this directory under your user's private profile"}}
 	}
-	secret := []string{"config.json", "proxy.json", cfg.ReceiptKeyFile, cfg.CAKeyFile, "var/gateway.key"}
+	secret := []string{"config.json", "proxy.json", cfg.ReceiptKeyFile, cfg.CAKeyFile, "var/gateway.key", "var/issuer.key"}
 	var loose []string
 	for _, f := range secret {
 		if f == "" {
@@ -264,11 +262,34 @@ func auditPermissions(dir string, cfg *config.Config) []check {
 		out = append(out, check{"secret file permissions", "PASS", "keys and tokens are owner-only"})
 	}
 	if fi, err := os.Stat(filepath.Join(dir, "policy.json")); err == nil {
-		if fi.Mode().Perm()&0o022 != 0 {
-			out = append(out, check{"policy.json permissions", "FAIL", fmt.Sprintf("writable by group/other (%#o): anyone who can write it can allow everything", fi.Mode().Perm())})
-		} else {
-			out = append(out, check{"policy.json permissions", "PASS", "only the owner can edit the policy"})
+		switch perm := fi.Mode().Perm(); {
+		case perm&0o022 != 0:
+			out = append(out, check{"policy.json permissions", "FAIL", fmt.Sprintf("writable by group/other (%#o): anyone who can write it can allow everything", perm)})
+		case perm&0o044 != 0:
+			out = append(out, check{"policy.json permissions", "WARN", fmt.Sprintf("readable by group/other (%#o): other users (the agent's, say) can read which hosts and commands get through — chmod 600", perm)})
+		default:
+			out = append(out, check{"policy.json permissions", "PASS", "only the owner can read or edit the policy"})
 		}
+	}
+	// Activity records name every host and path the agent used (some APIs
+	// carry secrets in the path); other users must not read them.
+	var records []string
+	for _, f := range []string{cfg.ReceiptsFile, receipts.AnchorPathFor(cfg.ReceiptsFile), "var/log/decisions.jsonl", "var/log", "var/data", "var"} {
+		if f == "" {
+			continue
+		}
+		fi, err := os.Stat(filepath.Join(dir, f))
+		if err != nil {
+			continue
+		}
+		if fi.Mode().Perm()&0o077 != 0 {
+			records = append(records, fmt.Sprintf("%s (%#o)", f, fi.Mode().Perm()))
+		}
+	}
+	if len(records) > 0 {
+		out = append(out, check{"activity record permissions", "WARN", "readable by other users: " + strings.Join(records, ", ") + " — chmod 600 files, 700 directories"})
+	} else {
+		out = append(out, check{"activity record permissions", "PASS", "receipts, anchors, logs and journals are owner-only"})
 	}
 	return out
 }
@@ -322,15 +343,14 @@ func auditReceipts(dir string, cfg *config.Config) []check {
 	if _, err := os.Stat(chainPath); err != nil {
 		return []check{{"receipt chain", "PASS", "no receipts yet — nothing to verify"}}
 	}
-	pubRaw, err := os.ReadFile(pubPath)
-	if err != nil {
+	if _, err := os.Stat(pubPath); err != nil {
 		return []check{{"receipt chain", "FAIL", cfg.PubKeyFile + " missing but receipts exist"}}
 	}
-	pub, err := hex.DecodeString(strings.TrimSpace(string(pubRaw)))
-	if err != nil || len(pub) != ed25519.PublicKeySize {
-		return []check{{"receipt chain", "FAIL", cfg.PubKeyFile + " is not a valid ed25519 key"}}
+	ring, err := receipts.LoadKeyRing(pubPath)
+	if err != nil {
+		return []check{{"receipt chain", "FAIL", err.Error()}}
 	}
-	res, anchored := receipts.VerifyWithAnchors(chainPath, receipts.AnchorPathFor(chainPath), ed25519.PublicKey(pub))
+	res, anchored := receipts.VerifyWithAnchorsKeys(chainPath, receipts.AnchorPathFor(chainPath), ring)
 	if !res.Valid {
 		return []check{{"receipt chain", "FAIL", fmt.Sprintf("verification failed at %d: %s", res.FailAt, res.Reason)}}
 	}

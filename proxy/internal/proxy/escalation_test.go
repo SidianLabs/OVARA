@@ -214,8 +214,10 @@ func TestEveryOutcomeIsReceipted(t *testing.T) {
 	do(srv, "POST", up.URL+"/a")
 	sg.decision.Store("allow")
 	do(srv, "GET", up.URL+"/b")
-	if n := countLines(t, chainFile); n != 2 {
-		t.Fatalf("2 requests, %d receipts", n)
+	// The denied request has one receipt; the forwarded one has an attempt
+	// receipt (written before it was sent) and its outcome.
+	if n := countLines(t, chainFile); n != 3 {
+		t.Fatalf("2 requests, %d receipts, want 3", n)
 	}
 }
 
@@ -247,8 +249,9 @@ func TestReceiptIsWrittenBeforeTheResponseReachesTheAgent(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// Headers are in hand, the body is still open. The receipt must be there.
-	if n := countLines(t, chainFile); n != 1 {
-		t.Fatalf("response headers reached the agent with %d receipts on disk, want 1", n)
+	// Headers are in hand, the body is still open. Both receipts (the
+	// attempt and its outcome) must be there.
+	if n := countLines(t, chainFile); n != 2 {
+		t.Fatalf("response headers reached the agent with %d receipts on disk, want 2", n)
 	}
 }

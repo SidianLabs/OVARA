@@ -675,8 +675,10 @@ func TestInMemoryStore_RecoverFromExecuting_Success(t *testing.T) {
 	if rec.State != StateExecuted {
 		t.Errorf("state after recovery = %v, want executed", rec.State)
 	}
-	if !rec.CanRetry() {
-		t.Error("recovered continuation should be retryable")
+	if rec.CanRetry() || !rec.OutcomeUnknown {
+		// It was executing when recovered: it may have run, so it is
+		// not "failed, retryable" (that invited a second execution).
+		t.Error("recovered continuation must be outcome-unknown and not retryable")
 	}
 
 	stored, _ := store.Get(c.ContinuationID)
