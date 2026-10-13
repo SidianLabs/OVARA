@@ -7,6 +7,20 @@ set -u
 AGENT=codex
 
 prepare_agent() {
+  # In a box every program is checked, and Ovara's default policy pauses an
+  # agent started with its own approvals and sandbox turned off. This test
+  # starts Codex that way on purpose (above all of it is Ovara), so it says
+  # so in the policy, as an operator would: Codex with that flag may start.
+  if [ "$MODE" = box ] || [ "$MODE" = box2 ]; then
+    python3 - <<'PY'
+import json
+p = json.load(open('/tmp/d/policy.json'))
+p['rules'].insert(0, {"action_type": "shell", "environment": "*",
+    "resource": "shell:*codex*--dangerously-bypass-approvals-and-sandbox*", "allow": True,
+    "description": "test harness: Codex is started with its own sandbox off, on purpose"})
+json.dump(p, open('/tmp/d/policy.json', 'w'), indent=2)
+PY
+  fi
   mkdir -p /tmp/home/.codex
   cat > /tmp/home/.codex/config.toml <<'EOF'
 model = "m"
