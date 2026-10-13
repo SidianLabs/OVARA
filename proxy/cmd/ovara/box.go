@@ -100,29 +100,30 @@ var keyLikeName = regexp.MustCompile(`(?i)(key|token|secret|password|passwd|cred
 
 // boxAgent is what both tiers need to start the agent.
 type boxAgent struct {
-	dir      string
-	cfg      *config.Config
-	ws       *workspace.Workspace
-	runID    string
-	runDir   string
-	home     string
-	caPub    string
-	port     string
-	envs     []string
-	cmd      []string
-	gate     *commandGate
-	noGate   bool
-	sigs     chan os.Signal
-	user     string   // tier 1
-	uid, gid int      // tier 1: the agent user's
-	name     string   // tier 1: netns name
-	tier1FS  string   // tier 1: isolated or host
-	image    string   // tier 2
-	mounts   []string // SRC:DST, read-only (tier 1 isolated, tier 2)
-	pids     int      // tier 2
-	memory   string   // tier 2
-	cpus     string   // tier 2
-	selfPath string
+	dir          string
+	cfg          *config.Config
+	ws           *workspace.Workspace
+	runID        string
+	runDir       string
+	home         string
+	caPub        string
+	port         string
+	envs         []string
+	cmd          []string
+	gate         *commandGate
+	noGate       bool
+	sigs         chan os.Signal
+	user         string   // tier 1
+	uid, gid     int      // tier 1: the agent user's
+	name         string   // tier 1: netns name
+	tier1FS      string   // tier 1: isolated or host
+	visibleProcs bool     // tier 1 isolated: accept a /proc that shows the host's processes
+	image        string   // tier 2
+	mounts       []string // SRC:DST, read-only (tier 1 isolated, tier 2)
+	pids         int      // tier 2
+	memory       string   // tier 2
+	cpus         string   // tier 2
+	selfPath     string
 }
 
 func cmdBox(args []string) error {
@@ -132,6 +133,7 @@ func cmdBox(args []string) error {
 	name := fs.String("name", "ovara-box", "tier 1: network namespace name (one box per name at a time)")
 	agentUser := fs.String("user", boxDefaultUser, "tier 1: unprivileged user the agent runs as (created if missing)")
 	tier1FS := fs.String("tier1-fs", tier1FSIsolated, "tier 1: isolated = a root file system of its own (the host's system directories read-only, the workspace, a fresh home; nothing of /home, /root, /srv, /opt or the original project); host = the host's file system, where the agent reads whatever its user may (UNSAFE on a machine with secrets)")
+	visibleProcs := fs.Bool("allow-visible-procs", false, "tier 1 isolated: on a kernel before 5.8, which cannot hide other users' processes in the box's /proc, start anyway (the agent can then list every process on the host and its command line); without it such a box is refused")
 	image := fs.String("image", boxDefaultImage, "tier 2: the box image (build it from box/Dockerfile; extend it with your agent)")
 	pids := fs.Int("pids", 4096, "tier 2: most processes the box may have at once")
 	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
@@ -377,7 +379,7 @@ func cmdBox(args []string) error {
 	a := &boxAgent{
 		dir: *dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: envs, cmd: agentCmd, gate: gate, noGate: *noGate, sigs: sigs,
-		user: *agentUser, uid: uid, gid: gid, name: *name, tier1FS: *tier1FS, image: *image, mounts: mounts, pids: *pids, memory: *memory, cpus: *cpus, selfPath: self,
+		user: *agentUser, uid: uid, gid: gid, name: *name, tier1FS: *tier1FS, visibleProcs: *visibleProcs, image: *image, mounts: mounts, pids: *pids, memory: *memory, cpus: *cpus, selfPath: self,
 	}
 	var exitCode int
 	if *tier == 2 {
@@ -556,6 +558,7 @@ func (a *boxAgent) tier1Spec(env []string) (tier1Spec, error) {
 	if err := os.Mkdir(spec.Root, 0o700); err != nil {
 		return spec, err
 	}
+	spec.VisibleProcs = a.visibleProcs
 	spec.Binds = []tier1Bind{{Src: a.ws.Dir, Dst: a.ws.Dir, RW: true}, {Src: a.home, Dst: a.home, RW: true}}
 	if _, err := os.Stat(a.caPub); err == nil {
 		spec.Binds = append(spec.Binds, tier1Bind{Src: a.caPub, Dst: a.caPub})

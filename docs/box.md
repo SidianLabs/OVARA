@@ -266,6 +266,9 @@ flags (built)
                     tier 1: isolated (default) = a root file system of its own;
                     host = the agent's user sees the host's files (unsafe where
                     the host holds secrets)
+  -allow-visible-procs
+                    tier 1 isolated: start on a kernel before 5.8, whose box /proc
+                    cannot hide other users' processes (refused without it)
   -image NAME       tier 2: the box image (default ovara-box, from box/Dockerfile)
   -mount SRC:DST    extra READ-ONLY mount, tier 2 and isolated tier 1 (refused: /,
                     system paths, ~/.ssh, ~/.aws, ~/.gnupg, ~/.docker, ~/.kube,
@@ -405,7 +408,7 @@ the default) builds the same shape in a mount namespace:
 | the run's home | fresh, per run | yes |
 | `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc` | the host's, bind-mounted; `/etc/shadow`, `/etc/gshadow`, sudoers, `/etc/ssh`, `/etc/ssl/private` covered | no |
 | `/dev` | null, zero, full, random, urandom, tty, a private pts, `/dev/shm` | — |
-| `/proc` | a fresh mount that hides other users' processes | — |
+| `/proc` | a fresh mount that hides other users' processes (Linux 5.8 or later; on an older kernel the box is refused unless `-allow-visible-procs`) | — |
 | `/tmp`, `/var/tmp` | empty, in memory | yes |
 | `/run` | empty | — |
 | the public CA, `-mount` paths | read-only | no |

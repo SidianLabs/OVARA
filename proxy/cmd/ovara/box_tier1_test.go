@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -316,5 +317,35 @@ func TestMountpointNoFollow(t *testing.T) {
 	}
 	if got := unescapeMountinfo(`/a\040b\134c`); got != `/a b\c` {
 		t.Errorf("unescape: %q", got)
+	}
+}
+
+// A kernel that cannot mount /proc with hidepid=invisible (before 5.8)
+// makes an isolated tier 1 box refuse to start, unless the person accepts
+// a /proc that shows the host's processes (-allow-visible-procs).
+func TestTier1RefusesAProcThatShowsTheHostsProcesses(t *testing.T) {
+	var tried []string
+	oldKernel := func(opts string) error {
+		tried = append(tried, opts)
+		if opts != "" {
+			return errors.New("invalid argument")
+		}
+		return nil
+	}
+	err := mountBoxProc(oldKernel, false)
+	if !errors.Is(err, errVisibleProcs) || !strings.Contains(err.Error(), "-allow-visible-procs") {
+		t.Fatalf("old kernel without -allow-visible-procs: %v", err)
+	}
+	if len(tried) != 1 {
+		t.Fatalf("a plain /proc was mounted anyway: %q", tried)
+	}
+	tried = nil
+	if err := mountBoxProc(oldKernel, true); err != nil || len(tried) != 2 || tried[1] != "" {
+		t.Fatalf("with -allow-visible-procs: %v %q", err, tried)
+	}
+	tried = nil
+	newKernel := func(opts string) error { tried = append(tried, opts); return nil }
+	if err := mountBoxProc(newKernel, false); err != nil || len(tried) != 1 || tried[0] != "hidepid=invisible" {
+		t.Fatalf("new kernel: %v %q", err, tried)
 	}
 }

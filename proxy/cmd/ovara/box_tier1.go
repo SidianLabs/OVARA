@@ -62,6 +62,9 @@ type tier1Spec struct {
 	// root in; "" runs the agent on the host's file system.
 	Root  string      `json:"root,omitempty"`
 	Binds []tier1Bind `json:"binds,omitempty"`
+	// VisibleProcs accepts a /proc that shows every process of the host
+	// when the kernel cannot hide them (-allow-visible-procs).
+	VisibleProcs bool `json:"visible_procs,omitempty"`
 }
 
 // tier1Bind puts a host path into the box's root.
@@ -147,7 +150,7 @@ func runTier1Init() error {
 		if err := unix.Unshare(unix.CLONE_NEWNS); err != nil {
 			return fmt.Errorf("box-init -tier1: mount namespace: %w", err)
 		}
-		if err := buildBoxRoot(spec.Root, spec.Binds); err != nil {
+		if err := buildBoxRoot(spec.Root, spec.Binds, spec.VisibleProcs); err != nil {
 			return fmt.Errorf("box-init -tier1: the box's file system: %w", err)
 		}
 	}
@@ -225,7 +228,7 @@ func lookPathIn(prog string, env []string) (string, error) {
 
 // buildBoxRoot makes root (an empty directory) the box's root file system
 // and pivots into it. It must run in a fresh mount namespace.
-func buildBoxRoot(root string, binds []tier1Bind) error {
+func buildBoxRoot(root string, binds []tier1Bind, visibleProcs bool) error {
 	// nothing done here may reach the host's mount table
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("making mounts private: %w", err)
@@ -301,17 +304,15 @@ func buildBoxRoot(root string, binds []tier1Bind) error {
 		}
 	}
 
-	// /proc: a new one; the agent sees its own processes only. A kernel
-	// before 5.8 has no per-mount hidepid (setting it there would change
-	// the host's /proc too), so it gets a plain one.
+	// /proc: a new one; the agent sees its own processes only.
 	if err := os.Mkdir(in("/proc"), 0o555); err != nil {
 		return err
 	}
 	pflags := uintptr(unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC)
-	if err := unix.Mount("proc", in("/proc"), "proc", pflags, "hidepid=invisible"); err != nil {
-		if err := unix.Mount("proc", in("/proc"), "proc", pflags, ""); err != nil {
-			return fmt.Errorf("/proc: %w", err)
-		}
+	if err := mountBoxProc(func(opts string) error {
+		return unix.Mount("proc", in("/proc"), "proc", pflags, opts)
+	}, visibleProcs); err != nil {
+		return err
 	}
 
 	// scratch space
@@ -373,6 +374,31 @@ func buildBoxRoot(root string, binds []tier1Bind) error {
 	if err := unix.Mount("", "/", "", unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV, ""); err != nil {
 		return fmt.Errorf("root read-only: %w", err)
 	}
+	return nil
+}
+
+// errVisibleProcs is the refusal when /proc cannot hide other users'
+// processes.
+var errVisibleProcs = errors.New("this kernel cannot give the box a /proc that hides other users' processes " +
+	"(hidepid=invisible on a private /proc needs Linux 5.8 or later); the agent would see every process on the host " +
+	"and their command lines. Use -tier 2, or pass -allow-visible-procs to accept that")
+
+// mountBoxProc mounts the box's /proc with hidepid=invisible. A kernel
+// before 5.8 has no per-mount hidepid (setting it there would change the
+// host's /proc too): then the box is refused, unless visibleProcs accepts
+// a plain /proc.
+func mountBoxProc(mount func(opts string) error, visibleProcs bool) error {
+	err := mount("hidepid=invisible")
+	if err == nil {
+		return nil
+	}
+	if !visibleProcs {
+		return fmt.Errorf("/proc: %w (%v)", errVisibleProcs, err)
+	}
+	if err := mount(""); err != nil {
+		return fmt.Errorf("/proc: %w", err)
+	}
+	fmt.Fprintln(os.Stderr, "[ovara] -allow-visible-procs: the box's /proc shows every process on the host")
 	return nil
 }
 
