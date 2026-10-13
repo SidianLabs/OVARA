@@ -16,6 +16,16 @@ func openE(e *envT, path string, bound KeyBoundFunc) (*Journal, error) {
 	return open("continuation", path, e.domain, e.signer, e.resolve, bound, Floor{}, func(*Envelope) error { return nil })
 }
 
+// openClosed opens the journal only to see whether it opens, and closes it
+// again: Windows cannot remove a test's directory while a file in it is open.
+func openClosed(e *envT, path string, bound KeyBoundFunc) error {
+	j, err := openE(e, path, bound)
+	if err == nil {
+		_ = j.Close()
+	}
+	return err
+}
+
 func rewrite(t *testing.T, path string, ls [][]byte) {
 	t.Helper()
 	if err := os.WriteFile(path, append(bytes.Join(ls, []byte("\n")), '\n'), 0o600); err != nil {
@@ -46,7 +56,7 @@ func TestJournalBytesAreBound(t *testing.T) {
 			}
 			ls[2] = []byte(edited)
 			rewrite(t, path, ls)
-			if _, err := openE(e, path, nil); err == nil {
+			if err := openClosed(e, path, nil); err == nil {
 				t.Fatalf("journal with edited tail (%s) opened", name)
 			}
 		})
@@ -73,7 +83,7 @@ func TestJournalV1ThenV2(t *testing.T) {
 	}
 	seq, tip := j.Tip()
 	j.Close()
-	if _, err := openE(e, path, nil); err != nil {
+	if err := openClosed(e, path, nil); err != nil {
 		t.Fatalf("v1 then v2: %v", err)
 	}
 	// Append a validly signed v1 envelope after the v2 one.
@@ -84,7 +94,7 @@ func TestJournalV1ThenV2(t *testing.T) {
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
 	_, _ = f.Write(append(l, '\n'))
 	f.Close()
-	if _, err := openE(e, path, nil); err == nil || !strings.Contains(err.Error(), "v1 envelope after v2") {
+	if err := openClosed(e, path, nil); err == nil || !strings.Contains(err.Error(), "v1 envelope after v2") {
 		t.Fatalf("v1 after v2 opened: %v", err)
 	}
 }
@@ -97,7 +107,7 @@ func TestJournalRespectsKeyRevocation(t *testing.T) {
 	write3(t, e, path)
 	revokedAt := time.Now()
 	bound := func(gw, kid string) (time.Time, bool) { return revokedAt, gw == "gw1" && kid == "k1" }
-	if _, err := openE(e, path, bound); err != nil {
+	if err := openClosed(e, path, bound); err != nil {
 		t.Fatalf("records before revocation must open: %v", err)
 	}
 	time.Sleep(time.Millisecond)
@@ -107,7 +117,7 @@ func TestJournalRespectsKeyRevocation(t *testing.T) {
 	}
 	_, _, _ = j.Append("continuation", "d", map[string]string{"v": "d"}, nil) // the stolen key keeps signing
 	j.Close()
-	if _, err := openE(e, path, bound); err == nil || !strings.Contains(err.Error(), "revoked") {
+	if err := openClosed(e, path, bound); err == nil || !strings.Contains(err.Error(), "revoked") {
 		t.Fatalf("record signed after revocation opened: %v", err)
 	}
 }
@@ -120,7 +130,7 @@ func TestStrictFailureIsNotTornTail(t *testing.T) {
 	write3(t, e, path)
 	data, _ := os.ReadFile(path)
 	_ = os.WriteFile(path, append(data, []byte(`{"v":2,"bogus":1}`)...), 0o600)
-	if _, err := openE(e, path, nil); err == nil {
+	if err := openClosed(e, path, nil); err == nil {
 		t.Fatal("a complete but invalid final line was treated as torn")
 	}
 	after, _ := os.ReadFile(path)

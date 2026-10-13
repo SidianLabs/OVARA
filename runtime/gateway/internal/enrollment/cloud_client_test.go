@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestCloudService_Enroll(t *testing.T) {
@@ -125,6 +126,11 @@ func TestCloudService_CloudHeartbeat(t *testing.T) {
 	}
 	svc.identity.ID = "gw-hb-001"
 	before := svc.GetIdentity().LastSeenAt
+	// Windows' clock can return the same instant for both reads; wait until
+	// it has moved on so "updated" means a later time.
+	for !time.Now().UTC().After(before) {
+		time.Sleep(time.Millisecond)
+	}
 
 	err = svc.CloudHeartbeat()
 	if err != nil {
