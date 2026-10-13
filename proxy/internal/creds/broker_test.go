@@ -105,11 +105,11 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, clock *fakeClock) *fakeGitH
 		g.mu.Unlock()
 		if g.fail.Load() {
 			w.WriteHeader(http.StatusUnauthorized)
-			io.WriteString(w, `{"message":"A JSON web token could not be decoded"}`)
+			_, _ = io.WriteString(w, `{"message":"A JSON web token could not be decoded"}`)
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"token":      fmt.Sprintf("ghs_minted%04dXXXXXXXXXXXXXXXXXXXX", n),
 			"expires_at": g.clock.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 		})
@@ -125,7 +125,7 @@ func (g *fakeGitHub) lastBody() string {
 }
 
 // loadGitHubBinding loads one GitHub App binding against the fake.
-func loadGitHubBinding(t *testing.T, g *fakeGitHub, host string, app GitHubApp) []Binding {
+func loadGitHubBinding(t *testing.T, g *fakeGitHub, host string, app GitHubApp) []Binding { //nolint:unparam // host stays a parameter so tests can bind other hosts
 	t.Helper()
 	t.Setenv("TEST_GH_APP_ID", "123456")
 	t.Setenv("TEST_GH_INSTALL", "42")
@@ -190,7 +190,7 @@ func TestGitHubAppJWTSignedAndDownScoped(t *testing.T) {
 		return b
 	}
 	var hdr map[string]string
-	json.Unmarshal(dec(parts[0]), &hdr)
+	_ = json.Unmarshal(dec(parts[0]), &hdr)
 	if hdr["alg"] != "RS256" || hdr["typ"] != "JWT" {
 		t.Fatalf("JWT header %v", hdr)
 	}
@@ -198,7 +198,7 @@ func TestGitHubAppJWTSignedAndDownScoped(t *testing.T) {
 		Iat, Exp int64
 		Iss      string
 	}
-	json.Unmarshal(dec(parts[1]), &claims)
+	_ = json.Unmarshal(dec(parts[1]), &claims)
 	now := clock.Now().Unix()
 	if claims.Iss != "123456" || claims.Iat > now-59 || claims.Exp > now+600 || claims.Exp <= now {
 		t.Fatalf("JWT claims %+v (now %d)", claims, now)
@@ -216,14 +216,14 @@ func TestGitHubAppKeyFormats(t *testing.T) {
 	g := newFakeGitHub(t, &rsaKey(t).PublicKey, clock)
 	dir := t.TempDir()
 	f := filepath.Join(dir, "app.pem")
-	os.WriteFile(f, []byte(pkcs8PEM(t, rsaKey(t))), 0o600)
+	_ = os.WriteFile(f, []byte(pkcs8PEM(t, rsaKey(t))), 0o600)
 	bs := loadGitHubBinding(t, g, "api.github.com", GitHubApp{PrivateKeyFile: f})
 	if _, _, err := bs[0].Credential(context.Background(), rt(g.srv)); err != nil {
 		t.Fatalf("PKCS#8 file: %v", err)
 	}
 
 	ec, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	small, _ := rsa.GenerateKey(rand.Reader, 1024)
+	small, _ := rsa.GenerateKey(rand.Reader, 1024) //nolint:gosec // a deliberately weak key the broker must refuse
 	for name, pemText := range map[string]string{
 		"ec":      pkcs8PEM(t, ec),
 		"short":   pkcs1PEM(small),
@@ -394,7 +394,7 @@ func TestScopeBrokersToRepo(t *testing.T) {
 	if gb == nil {
 		t.Fatal("git binding missing after scoping")
 	}
-	gb.Credential(context.Background(), rt(g.srv))
+	_, _, _ = gb.Credential(context.Background(), rt(g.srv))
 	if g.calls.Load() != 1 {
 		t.Fatalf("api and git bindings minted %d tokens, want one shared", g.calls.Load())
 	}
@@ -459,7 +459,7 @@ func newFakeOAuth(t *testing.T) *fakeOAuth {
 	o := &fakeOAuth{reply: map[string]any{"token_type": "Bearer", "expires_in": 3600}}
 	o.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := o.calls.Add(1)
-		r.ParseForm()
+		_ = r.ParseForm()
 		o.mu.Lock()
 		o.forms = append(o.forms, r.PostForm)
 		o.auths = append(o.auths, r.Header.Get("Authorization"))
@@ -469,7 +469,7 @@ func newFakeOAuth(t *testing.T) *fakeOAuth {
 		}
 		o.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(reply)
+		_ = json.NewEncoder(w).Encode(reply)
 	}))
 	t.Cleanup(o.srv.Close)
 	return o

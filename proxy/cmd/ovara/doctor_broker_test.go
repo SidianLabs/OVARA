@@ -34,9 +34,9 @@ func TestDoctor_BrokerBindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.MkdirAll(filepath.Join(dir, "var"), 0o700)
+	_ = os.MkdirAll(filepath.Join(dir, "var"), 0o700)
 	keyPath := filepath.Join(dir, "var", "app.pem")
-	os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}), 0o600)
+	_ = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}), 0o600)
 	t.Setenv("DOCTOR_APP_ID", "123")
 	gh := creds.Binding{Host: "api.github.com", GitHubApp: &creds.GitHubApp{AppID: "${DOCTOR_APP_ID}", InstallationID: "42", PrivateKeyFile: "var/app.pem"}}
 	cfg := &config.Config{Credentials: []creds.Binding{gh}}
@@ -45,13 +45,13 @@ func TestDoctor_BrokerBindings(t *testing.T) {
 		t.Fatalf("good binding: %v", st)
 	}
 	if runtime.GOOS != "windows" {
-		os.Chmod(keyPath, 0o644)
+		_ = os.Chmod(keyPath, 0o644)
 		if st := brokerStatuses(auditCredentials(dir, cfg)); !strings.Contains(st["FAIL"], "chmod 600") {
 			t.Fatalf("group-readable key not flagged: %v", st)
 		}
-		os.Chmod(keyPath, 0o600)
+		_ = os.Chmod(keyPath, 0o600)
 	}
-	os.WriteFile(keyPath, []byte("not a key"), 0o600)
+	_ = os.WriteFile(keyPath, []byte("not a key"), 0o600)
 	if st := brokerStatuses(auditCredentials(dir, cfg)); !strings.Contains(st["FAIL"], "private key") {
 		t.Fatalf("unparsable key not flagged: %v", st)
 	}

@@ -330,6 +330,12 @@ func cmdBox(args []string) error {
 		if or := githubRepoOf(project); or != "" {
 			runArgs = append(runArgs, "-scope-repo", or)
 			fmt.Fprintf(os.Stderr, "==> the GitHub key is limited to %s for this run (-github-scope all to lift it)\n", or)
+		} else {
+			// No GitHub repository could be read from the project's remote:
+			// rather than hand over a key that reaches every repository,
+			// this run gets none.
+			runArgs = append(runArgs, "-scope-repo", scopeRepoNone)
+			fmt.Fprintln(os.Stderr, "==> no GitHub repository found in the project's origin remote: the GitHub key is withheld for this run (-github-scope all to give it unscoped)")
 		}
 	}
 	run := exec.Command(self, runArgs...) //nolint:gosec // the launcher re-executes itself with flags it validated

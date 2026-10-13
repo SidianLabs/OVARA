@@ -327,6 +327,38 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 
 // --- shared startup --------------------------------------------------------
 
+// scopeRepoNone as -scope-repo withholds the GitHub credentials entirely.
+const scopeRepoNone = "none"
+
+// scopeBindings applies -scope-repo: "none" drops the GitHub bindings,
+// "owner/repo" narrows them (and the tokens a GitHub App mints) to that
+// repository.
+func scopeBindings(bindings []creds.Binding, scope string) ([]creds.Binding, error) {
+	if scope == scopeRepoNone {
+		kept := make([]creds.Binding, 0, len(bindings))
+		for _, b := range bindings {
+			if h := strings.ToLower(b.Host); h != "api.github.com" && h != "github.com" {
+				kept = append(kept, b)
+			}
+		}
+		log.Printf("GitHub credentials are withheld for this run (-scope-repo %s)", scopeRepoNone)
+		return kept, nil
+	}
+	owner, repo, ok := strings.Cut(scope, "/")
+	if !ok || !creds.RepoName(owner) || !creds.RepoName(repo) {
+		return nil, fmt.Errorf("-scope-repo %q: want owner/repo or %q", scope, scopeRepoNone)
+	}
+	// A GitHub App binding that lists no repositories mints tokens for
+	// this repository only; every GitHub binding is also narrowed to its
+	// paths.
+	bindings = creds.ScopeBrokersToRepo(bindings, repo)
+	for _, h := range []string{"api.github.com", "github.com"} {
+		bindings = creds.ScopeToRepo(bindings, h, owner, repo)
+	}
+	log.Printf("GitHub credentials are limited to %s/%s for this run", owner, repo)
+	return bindings, nil
+}
+
 // wire builds the executor proxy exactly as ovara-proxy does.
 func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	rootCA, err := ca.LoadOrCreate(cfg.CACertFile, cfg.CAKeyFile)
@@ -352,18 +384,10 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 		return nil, nil, fmt.Errorf("credentials: %w", err)
 	}
 	if cfg.ScopeRepo != "" {
-		owner, repo, ok := strings.Cut(cfg.ScopeRepo, "/")
-		if !ok || !creds.RepoName(owner) || !creds.RepoName(repo) {
-			return nil, nil, fmt.Errorf("-scope-repo %q: want owner/repo", cfg.ScopeRepo)
+		var err error
+		if bindings, err = scopeBindings(bindings, cfg.ScopeRepo); err != nil {
+			return nil, nil, err
 		}
-		// A GitHub App binding that lists no repositories mints tokens for
-		// this repository only; every GitHub binding is also narrowed to
-		// its paths.
-		bindings = creds.ScopeBrokersToRepo(bindings, repo)
-		for _, h := range []string{"api.github.com", "github.com"} {
-			bindings = creds.ScopeToRepo(bindings, h, owner, repo)
-		}
-		log.Printf("GitHub credentials are limited to %s/%s for this run", owner, repo)
 	}
 	logSkippedBindings(skipped)
 	logBrokeredBindings(bindings)
@@ -429,7 +453,7 @@ func cmdRun(args []string) error {
 	noUI := fs.Bool("no-ui", false, "run without the approval page (same as -ui off); without it, a page address that cannot be used stops ovara run")
 	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
 	allowUnhardened := fs.Bool("allow-unhardened-boundary", false, "with --boundary: go on when the host side of the boundary cannot be firewalled (neither iptables nor nft on the host); the agent can then reach every service on the host's boundary address")
-	scopeRepo := fs.String("scope-repo", "", "limit the GitHub credentials to one repository (owner/repo) for this run: requests about any other repository go out without the key. `ovara box` sets it for the project it boxes")
+	scopeRepo := fs.String("scope-repo", "", "limit the GitHub credentials to one repository (owner/repo) for this run: requests about any other repository go out without the key; \"none\" withholds them entirely. `ovara box` sets it for the project it boxes")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
 	server.RepairIdentityRegistry = *repairRegistry

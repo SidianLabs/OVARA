@@ -52,11 +52,11 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			n := g.mints.Add(1)
 			if g.fail.Load() {
 				w.WriteHeader(http.StatusUnauthorized)
-				io.WriteString(w, `{"message":"Bad credentials"}`)
+				_, _ = io.WriteString(w, `{"message":"Bad credentials"}`)
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"token":      fmt.Sprintf("ghs_brokered%04dQQQQQQQQQQQQQQQQ", n),
 				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 			})
@@ -79,7 +79,7 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 		fmt.Fprintf(w, "auth=%s token=%s b64=%s", auth, tok, base64.StdEncoding.EncodeToString([]byte(tok)))
 	})
 	g.srv = httptest.NewUnstartedServer(h)
-	g.srv.TLS = &tls.Config{Certificates: []tls.Certificate{selfSignedFor(t, "api.github.com", "127.0.0.1")}}
+	g.srv.TLS = &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{selfSignedFor(t, "api.github.com", "127.0.0.1")}}
 	g.srv.StartTLS()
 	t.Cleanup(g.srv.Close)
 	return g
@@ -126,7 +126,7 @@ func brokerFixture(t *testing.T, g *fakeGitHubUpstream) *fixture {
 		t.Fatal(err)
 	}
 	keyFile := filepath.Join(t.TempDir(), "app.pem")
-	os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}), 0o600)
+	_ = os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}), 0o600)
 	t.Setenv("TEST_BROKER_APP_ID", "999")
 	bindings, skipped, err := creds.LoadReport([]creds.Binding{{
 		Host:      mustHostPort(t, g.srv.URL),
@@ -182,7 +182,7 @@ func TestBrokeredTokenInjectedAndScrubbed(t *testing.T) {
 	logs := captureLog(t)
 	g := newFakeGitHubUpstream(t)
 	f := brokerFixture(t, g)
-	resp, body := tunnelReq(t, f.srv, g.srv, f.ca, "GET", "/acme/app.git/info/refs", map[string]string{"Authorization": "Bearer agent-own-token"})
+	resp, body := tunnelReq(t, f.srv, g.srv, f.ca, "GET", "/acme/app.git/info/refs", map[string]string{"Authorization": "Bearer agent-own-token"}) //nolint:bodyclose // the helper reads and closes the body
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
@@ -212,7 +212,7 @@ func TestBrokeredTokenInjectedAndScrubbed(t *testing.T) {
 		t.Fatalf("mints %d upstream %d", g.mints.Load(), g.upstream.Load())
 	}
 	// Second request reuses the token.
-	tunnelReq(t, f.srv, g.srv, f.ca, "GET", "/acme/app.git/info/refs", nil)
+	tunnelReq(t, f.srv, g.srv, f.ca, "GET", "/acme/app.git/info/refs", nil) //nolint:bodyclose // the helper reads and closes the body
 	if g.mints.Load() != 1 {
 		t.Fatalf("token minted again for the second request (%d)", g.mints.Load())
 	}
@@ -238,7 +238,7 @@ func TestBrokerFailureRequestNotForwarded(t *testing.T) {
 	g := newFakeGitHubUpstream(t)
 	g.fail.Store(true)
 	f := brokerFixture(t, g)
-	resp, body := tunnelReq(t, f.srv, g.srv, f.ca, "GET", "/acme/app.git/info/refs", map[string]string{"Authorization": "Bearer agent-own-token"})
+	resp, body := tunnelReq(t, f.srv, g.srv, f.ca, "GET", "/acme/app.git/info/refs", map[string]string{"Authorization": "Bearer agent-own-token"}) //nolint:bodyclose // the helper reads and closes the body
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status %d, want 502", resp.StatusCode)
 	}

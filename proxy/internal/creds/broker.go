@@ -96,10 +96,11 @@ const (
 	mintTimeout      = 30 * time.Second
 	maxTokenResponse = 64 << 10
 
+	clientAuthPost         = "post"
 	grantClientCredentials = "client_credentials"
 	grantTokenExchange     = "token_exchange"
-	tokenExchangeURN       = "urn:ietf:params:oauth:grant-type:token-exchange"
-	accessTokenTypeURN     = "urn:ietf:params:oauth:token-type:access_token"
+	tokenExchangeURN       = "urn:ietf:params:oauth:grant-type:token-exchange" //nolint:gosec // an RFC 8693 grant type name, not a credential
+	accessTokenTypeURN     = "urn:ietf:params:oauth:token-type:access_token"   //nolint:gosec // an RFC 8693 token type name, not a credential
 )
 
 // ErrCredentialUnavailable wraps every reason a brokered binding has no
@@ -491,7 +492,7 @@ func loadOAuth2(b Binding, e *expander) (*broker, error) {
 		return nil, fmt.Errorf("%s: grant %q: want client_credentials or token_exchange", where, c.grant)
 	}
 	switch c.clientAuth {
-	case "", "basic", "post":
+	case "", "basic", clientAuthPost:
 	default:
 		return nil, fmt.Errorf("%s: client_auth %q: want basic or post", where, c.clientAuth)
 	}
@@ -528,7 +529,7 @@ func (c *oauthConfig) mint(ctx context.Context, rt http.RoundTripper, now time.T
 			form.Set(k, v)
 		}
 	}
-	if c.clientID != "" && c.clientAuth == "post" {
+	if c.clientID != "" && c.clientAuth == clientAuthPost {
 		form.Set("client_id", c.clientID)
 		if c.clientSecret != "" {
 			form.Set("client_secret", c.clientSecret)
@@ -541,7 +542,7 @@ func (c *oauthConfig) mint(ctx context.Context, rt http.RoundTripper, now time.T
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "ovara-credential-broker")
-	if c.clientID != "" && c.clientAuth != "post" {
+	if c.clientID != "" && c.clientAuth != clientAuthPost {
 		// RFC 6749 section 2.3.1: form-encode both parts before Basic.
 		req.SetBasicAuth(url.QueryEscape(c.clientID), url.QueryEscape(c.clientSecret))
 	}

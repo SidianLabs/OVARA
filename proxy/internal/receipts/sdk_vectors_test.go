@@ -233,7 +233,7 @@ func TestSDKVectors(t *testing.T) {
 
 	// The valid vectors form a whole chain: v1 receipts, then v2.
 	p := filepath.Join(dir, "chain.jsonl")
-	os.WriteFile(p, append(bytes.Join(chain, []byte{'\n'}), '\n'), 0o600)
+	_ = os.WriteFile(p, append(bytes.Join(chain, []byte{'\n'}), '\n'), 0o600)
 	if res := VerifyFile(p, ed25519.PublicKey(pub)); !res.Valid || res.Total != len(chain) || res.V1 != 2 {
 		t.Fatalf("vector chain: %+v", res)
 	}
@@ -249,7 +249,7 @@ func TestSDKVectors(t *testing.T) {
 		if err := os.MkdirAll(filepath.Dir(sdkVectorsPath), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(sdkVectorsPath, buf.Bytes(), 0o644); err != nil {
+		if err := os.WriteFile(sdkVectorsPath, buf.Bytes(), 0o644); err != nil { //nolint:gosec // a committed test fixture, meant to be readable
 			t.Fatal(err)
 		}
 		return
