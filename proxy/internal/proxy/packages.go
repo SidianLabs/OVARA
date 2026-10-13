@@ -103,25 +103,35 @@ func (s *Server) checkPackage(ctx context.Context, ref, url string) (string, str
 }
 
 func (s *Server) askPackage(ctx context.Context, ref, url string) (string, string) {
-	d, err := s.gw.CheckAction(ctx, actionPackageInstall, ref, map[string]string{
+	return s.askAction(ctx, actionPackageInstall, ref, map[string]string{
 		"package":  ref,
 		"download": url,
 		"why":      "not in the project's lockfiles when the box started",
-	})
+	}, "is not in the project's lockfiles")
+}
+
+// askAction is the second question the proxy asks about a request the URL
+// policy allowed: a gateway check of its own action type, held for a person
+// when the answer is escalate (the gateway opens approvals only for decisions
+// it recorded as escalate). It returns pkgAllow (policy allowed it),
+// pkgApproved, pkgDeny, pkgTimeout, pkgAborted or pkgError, and the approval
+// id if a person was asked. why is for the log line.
+func (s *Server) askAction(ctx context.Context, actionType, resource string, preview map[string]string, why string) (string, string) {
+	d, err := s.gw.CheckAction(ctx, actionType, resource, preview)
 	if err != nil {
-		log.Printf("package gate: gateway check for %s failed: %v", ref, err)
+		log.Printf("%s: gateway check for %s failed: %v", actionType, resource, err)
 		return pkgError, ""
 	}
 	switch d.Decision {
 	case pkgAllow:
 		return pkgAllow, ""
 	case gwEscalate:
-		log.Printf("package gate: %s is not in the project's lockfiles; waiting for approval", ref)
-		outcome, id := s.holdForApproval(ctx, ref, func() (string, error) {
+		log.Printf("%s: %s %s; waiting for approval", actionType, resource, why)
+		outcome, id := s.holdForApproval(ctx, resource, func() (string, error) {
 			if d.ApprovalID != "" {
 				return d.ApprovalID, nil
 			}
-			return s.gw.CreateApprovalFor(ctx, d, actionPackageInstall, ref)
+			return s.gw.CreateApprovalFor(ctx, d, actionType, resource)
 		})
 		switch outcome {
 		case pkgApproved, pkgTimeout, pkgAborted: // holdForApproval's outcomes share these names

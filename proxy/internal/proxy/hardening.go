@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"unicode"
 	"time"
+	"unicode"
 )
 
 // normalizeHost returns the canonical form of a host name for every policy,
@@ -64,11 +64,62 @@ func stripMethodOverride(h http.Header) {
 // a body or a very long query is a data-carrying request wearing a read's
 // clothes, so it is escalated even when a rule allows reads.
 const (
-	maxReadQueryBytes = 512
+	maxReadQueryBytes     = 512
+	defaultMaxReadRequest = 2048
+	// A standard header (User-Agent, Accept...) is free up to this size; past
+	// it, all of it counts, so it cannot become the place the data goes.
+	freeStandardHeaderBytes = 256
 )
 
-// readCarriesData reports why a read-class request should be escalated, or "".
-func readCarriesData(r *http.Request) string {
+// standardHeaders are the request headers every client sends. They are left
+// out of the approver's header list and, up to a size, out of the read budget.
+var standardHeaders = map[string]bool{
+	"Accept": true, "Accept-Encoding": true, "User-Agent": true, "Content-Length": true,
+	"Content-Type": true, "Connection": true, "Host": true,
+}
+
+// notForwarded are request headers the proxy never sends upstream, so they
+// carry nothing out.
+func notForwarded(name string) bool {
+	if strings.EqualFold(name, "Proxy-Authorization") {
+		return true
+	}
+	for _, h := range hopHeaders {
+		if strings.EqualFold(name, h) {
+			return true
+		}
+	}
+	for _, h := range methodOverrideHeaders {
+		if strings.EqualFold(name, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// readRequestBytes is what a read carries out besides its body: the path, the
+// query and the headers that will be forwarded.
+func readRequestBytes(r *http.Request) int {
+	n := len(r.URL.EscapedPath()) + len(r.URL.RawQuery)
+	for k, vv := range r.Header {
+		if notForwarded(k) {
+			continue
+		}
+		for _, v := range vv {
+			size := len(k) + len(v)
+			if standardHeaders[http.CanonicalHeaderKey(k)] && size <= freeStandardHeaderBytes {
+				continue
+			}
+			n += size
+		}
+	}
+	return n
+}
+
+// readCarriesData reports why a read-class request should be refused, or "".
+// A read's path, query and headers carry data just as well as a POST body,
+// so they share one budget; the query also keeps its own, smaller cap.
+func (s *Server) readCarriesData(r *http.Request) string {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return ""
 	}
@@ -77,6 +128,9 @@ func readCarriesData(r *http.Request) string {
 	}
 	if len(r.URL.RawQuery) > maxReadQueryBytes {
 		return "read_with_large_query"
+	}
+	if readRequestBytes(r) > s.limits.maxReadRequest {
+		return "read_request_too_large"
 	}
 	return ""
 }

@@ -40,16 +40,38 @@ func (s *Server) isModelHost(host string) bool {
 	return matchHostGlob(hosts, host)
 }
 
+// actionModelFeature is the question asked when a model request uses one of
+// those features: the gate no longer refuses outright, a person decides
+// (resource "model:<host> <reason>"). SetModelGateAsk(false) restores the
+// flat refusal.
+const actionModelFeature = "model.server_feature"
+
+// SetModelGateAsk chooses whether a model-gate finding is a question for a
+// person (default) or a flat refusal.
+func (s *Server) SetModelGateAsk(on bool) { s.modelGateNoAsk = !on }
+
+// modelAskable reports whether a model-gate finding may be put to a person.
+// Only findings about what the request asks the provider to do qualify; a
+// body the gate could not read is refused, since the person could not read
+// it either.
+func modelAskable(why string) bool {
+	switch why {
+	case "model_request_mcp_connector", "model_request_remote_url", "model_request_server_tool", "model_request_not_json":
+		return true
+	}
+	return false
+}
+
 // modelRequestRefusal returns why a request to a model host must not be
-// forwarded, or "". It buffers the body (bounded) and puts it back.
-func (s *Server) modelRequestRefusal(r *http.Request) string {
+// forwarded without a further answer, or "". hb is its held body.
+func (s *Server) modelRequestRefusal(r *http.Request, hb *heldBody) string {
 	if s.modelGateOff || !s.isModelHost(r.URL.Hostname()) {
 		return ""
 	}
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		return ""
 	}
-	if r.Body == nil || r.Body == http.NoBody {
+	if hb == nil {
 		return ""
 	}
 	if ce := r.Header.Values("Content-Encoding"); len(ce) > 0 {
@@ -59,16 +81,12 @@ func (s *Server) modelRequestRefusal(r *http.Request) string {
 			}
 		}
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxModelBody+1))
-	r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	r.TransferEncoding = nil
+	if hb.size > maxModelBody {
+		return "model_request_too_large"
+	}
+	body, err := io.ReadAll(hb.reader())
 	if err != nil {
 		return "model_request_unreadable"
-	}
-	if len(body) > maxModelBody {
-		return "model_request_too_large"
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return ""

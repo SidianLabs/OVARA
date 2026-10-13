@@ -18,6 +18,18 @@ func FuzzParseRefUpdates(f *testing.F) {
 	})
 }
 
+// validUploadPackRequest also reads an agent-controlled body.
+func FuzzValidUploadPackRequest(f *testing.F) {
+	f.Add([]byte(""))
+	f.Add([]byte("0000"))
+	f.Add([]byte("0032want 0000000000000000000000000000000000000000\n0000"))
+	f.Add([]byte("0012command=fetch\n00010009done\n0000"))
+	f.Add([]byte("0003"))
+	f.Fuzz(func(t *testing.T, body []byte) {
+		_ = validUploadPackRequest(body)
+	})
+}
+
 func FuzzNormalizeHost(f *testing.F) {
 	for _, s := range []string{"", "a.b", "A.B.", "[::1]:443", "host:99999", "..", "x:y:z", "\x00"} {
 		f.Add(s)

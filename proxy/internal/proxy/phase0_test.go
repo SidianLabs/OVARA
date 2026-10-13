@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"ovara.proxy/internal/creds"
 )
@@ -98,22 +99,70 @@ func TestModelGate(t *testing.T) {
 		"openai input_image url":  `{"model":"m","input":[{"role":"user","content":[{"type":"input_image","image_url":"https://x.example/a.png"}]}]}`,
 		"nested in tool_result":   `{"model":"m","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":{"type":"url","url":"https://x.example/a.png"}}]}]}]}`,
 	}
+	// A finding is a question for a person (model.server_feature), not a
+	// flat refusal: unanswered, the request times out and never runs.
+	// (Before, these were refused outright with 403.)
 	for name, body := range refused {
-		t.Run("refuse "+name, func(t *testing.T) {
-			f := newFixture(t, "allow", nil)
-			f.srv.SetModelGate(true, []string{"127.0.0.1"})
+		t.Run("ask "+name, func(t *testing.T) {
+			srv, ag, _ := newActionServer(t, "allow")
+			srv.SetModelGate(true, []string{"127.0.0.1"})
+			srv.SetEscalateWindow(60*time.Millisecond, 10*time.Millisecond)
+			ag.setDecision(actionModelFeature, "escalate")
 			rec := httptest.NewRecorder()
 			req, _ := http.NewRequest("POST", up.URL+"/v1/messages", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
-			f.srv.ServeHTTP(rec, req)
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("want 403, got %d", rec.Code)
+			srv.ServeHTTP(rec, req)
+			if rec.Code != http.StatusGatewayTimeout {
+				t.Fatalf("want 504 (held for a person), got %d", rec.Code)
+			}
+			q := ag.of(actionModelFeature)
+			if len(q) != 1 || !strings.HasPrefix(q[0].Resource, "model:127.0.0.1 model_request_") || q[0].Context["model_feature"] == "" {
+				t.Fatalf("questions %+v", q)
 			}
 		})
 	}
 	if hits.Load() != 0 {
-		t.Fatalf("refused model requests reached upstream %d times", hits.Load())
+		t.Fatalf("unanswered model requests reached upstream %d times", hits.Load())
 	}
+	mcp := refused["anthropic mcp connector"]
+	t.Run("approved forwards", func(t *testing.T) {
+		srv, ag, _ := newActionServer(t, "allow")
+		srv.SetModelGate(true, []string{"127.0.0.1"})
+		ag.setDecision(actionModelFeature, "escalate")
+		ag.status.Store("approved")
+		rec := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", up.URL+"/v1/messages", strings.NewReader(mcp))
+		req.Header.Set("Content-Type", "application/json")
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || ag.creates.Load() != 1 {
+			t.Fatalf("approved: %d creates=%d", rec.Code, ag.creates.Load())
+		}
+	})
+	t.Run("policy deny refuses without asking", func(t *testing.T) {
+		before := hits.Load()
+		srv, ag, _ := newActionServer(t, "allow")
+		srv.SetModelGate(true, []string{"127.0.0.1"})
+		ag.setDecision(actionModelFeature, "deny")
+		rec := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", up.URL+"/v1/messages", strings.NewReader(mcp))
+		req.Header.Set("Content-Type", "application/json")
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden || ag.creates.Load() != 0 || hits.Load() != before {
+			t.Fatalf("deny: %d creates=%d", rec.Code, ag.creates.Load())
+		}
+	})
+	t.Run("asking off refuses outright", func(t *testing.T) {
+		srv, ag, _ := newActionServer(t, "allow")
+		srv.SetModelGate(true, []string{"127.0.0.1"})
+		srv.SetModelGateAsk(false)
+		rec := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", up.URL+"/v1/messages", strings.NewReader(mcp))
+		req.Header.Set("Content-Type", "application/json")
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden || len(ag.of(actionModelFeature)) != 0 {
+			t.Fatalf("ask off: %d", rec.Code)
+		}
+	})
 
 	allowed := map[string]string{
 		"plain message":             `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`,
@@ -137,15 +186,30 @@ func TestModelGate(t *testing.T) {
 		})
 	}
 
-	t.Run("multipart upload refused", func(t *testing.T) {
-		f := newFixture(t, "allow", nil)
-		f.srv.SetModelGate(true, []string{"127.0.0.1"})
+	t.Run("multipart upload is asked about", func(t *testing.T) {
+		srv, ag, _ := newActionServer(t, "allow")
+		srv.SetModelGate(true, []string{"127.0.0.1"})
+		ag.setDecision(actionModelFeature, "escalate")
+		ag.status.Store("denied")
 		rec := httptest.NewRecorder()
 		req, _ := http.NewRequest("POST", up.URL+"/v1/files", strings.NewReader("--b\r\n\r\nsecret\r\n--b--"))
 		req.Header.Set("Content-Type", "multipart/form-data; boundary=b")
-		f.srv.ServeHTTP(rec, req)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("want 403, got %d", rec.Code)
+		srv.ServeHTTP(rec, req)
+		q := ag.of(actionModelFeature)
+		if rec.Code != http.StatusForbidden || len(q) != 1 || q[0].Resource != "model:127.0.0.1 model_request_not_json" {
+			t.Fatalf("want 403 after a denied question, got %d %+v", rec.Code, q)
+		}
+	})
+	t.Run("encoded body is refused outright", func(t *testing.T) {
+		srv, ag, _ := newActionServer(t, "allow")
+		srv.SetModelGate(true, []string{"127.0.0.1"})
+		rec := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", up.URL+"/v1/messages", strings.NewReader("xxxx"))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "br")
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden || len(ag.of(actionModelFeature)) != 0 {
+			t.Fatalf("want 403 without a question, got %d", rec.Code)
 		}
 	})
 	t.Run("gate off forwards", func(t *testing.T) {

@@ -55,8 +55,36 @@ type Config struct {
 	// hosts it applies to (default api.anthropic.com, api.openai.com).
 	ModelGate  *bool    `json:"model_gate"`
 	ModelHosts []string `json:"model_hosts"`
+	// ModelGateAsk turns a model-gate refusal into a question for a person
+	// (action type model.server_feature) instead of a flat refusal. Default
+	// ON; false refuses those requests outright.
+	ModelGateAsk *bool `json:"model_gate_ask"`
+
+	// Request bodies are read in full before policy or a person sees the
+	// request, and exactly those bytes are forwarded. A body over its limit
+	// is refused, never sent unseen. Defaults: 1 MiB for ordinary bodies,
+	// 256 MiB for git pushes, 1 MiB for git fetch negotiations.
+	MaxHeldBodyBytes   int64 `json:"max_held_body_bytes"`
+	MaxPushBytes       int64 `json:"max_push_bytes"`
+	MaxUploadPackBytes int64 `json:"max_upload_pack_bytes"`
+	// MaxReadRequestBytes bounds what a GET/HEAD can carry out in its path,
+	// query and extra headers together (default 2048).
+	MaxReadRequestBytes int `json:"max_read_request_bytes"`
+
+	// EgressBudget limits allowed traffic per destination host per minute.
+	// Past it a person is asked (action type egress.budget); an approval
+	// doubles that host's allowance for the rest of the run.
+	EgressBudget *EgressBudget `json:"egress_budget"`
 
 	Credentials []creds.Binding `json:"credentials"`
+}
+
+// EgressBudget is the per-host allowance for allowed traffic. Zero fields
+// keep the defaults (600 requests and 8 MiB of request data per minute).
+type EgressBudget struct {
+	Off               bool  `json:"off"`
+	RequestsPerMinute int   `json:"requests_per_minute"`
+	BytesPerMinute    int64 `json:"bytes_per_minute"`
 }
 
 func Load(path string) (*Config, error) {

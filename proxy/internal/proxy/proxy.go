@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -21,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ovara.proxy/internal/ca"
 	"ovara.proxy/internal/creds"
@@ -48,6 +50,9 @@ type Server struct {
 	pkgGate         *packageGate  // strict installs (packages.go); nil = off
 	modelGateOff    bool          // model-API body check (modelgate.go) disabled
 	modelHosts      []string      // hosts the model gate applies to; nil = defaults
+	modelGateNoAsk  bool          // model-gate findings are refused, not asked
+	limits          limits        // body, push and read size bounds (limits.go)
+	budget          *egressBudget // per-host allowance for allowed traffic; nil = off
 }
 
 // maxPendingEscalations bounds how many requests may be held waiting for a
@@ -66,6 +71,8 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 		escalatePoll:   2 * time.Second,
 		unauthLimiter:  newRateLimiter(20, 1),
 		escalateSem:    make(chan struct{}, maxPendingEscalations),
+		limits:         defaultLimits(),
+		budget:         newEgressBudget(0, 0),
 		dialer:         &net.Dialer{Timeout: 10 * time.Second},
 		transport: &http.Transport{
 			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
@@ -275,6 +282,37 @@ func redactURL(u *url.URL) string {
 	return c.String()
 }
 
+// maxResourceBytes bounds the resource string sent to the gateway and
+// written to every receipt: a long path must not inflate the signed log.
+const maxResourceBytes = 2048
+
+// capResource cuts s to maxResourceBytes with a marker saying how much was
+// cut, and reports whether it did.
+func capResource(s string) (string, bool) {
+	if len(s) <= maxResourceBytes {
+		return s, false
+	}
+	n := maxResourceBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + fmt.Sprintf("…(+%d bytes)", len(s)-n), true
+}
+
+// allowedGitRefusal returns why a git request policy allowed must still be
+// refused, or "". url is the resource policy decided on.
+func (s *Server) allowedGitRefusal(r *http.Request, hb *heldBody, url string) string {
+	if isUploadPackPost(r) {
+		return uploadPackRefusal(r, hb, s.limits.maxUploadPack)
+	}
+	// An allow decided without seeing every ref being pushed is not an
+	// answer about this push: ref-level rules could not have applied.
+	if s.gitGate && looksLikePush(r) && (strings.HasSuffix(url, pushUnparsed) || strings.HasSuffix(url, pushTruncated)) {
+		return "git_push_unparsed"
+	}
+	return ""
+}
+
 // hopHeaders are connection-scoped headers that must never be forwarded.
 // Token names carried in the Connection value are stripped too.
 var hopHeaders = []string{
@@ -392,6 +430,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	srv := &http.Server{
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       90 * time.Second,
+		// Same header bound as the outer listener: inside the tunnel the
+		// default would allow 1 MiB of headers per request.
+		MaxHeaderBytes: 64 << 10,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r.URL.Scheme = "https"
 			r.URL.Host = net.JoinHostPort(hostname, port)
@@ -463,11 +504,19 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Query strings can carry secrets (tokens, SAS sigs) — the gateway and
 	// the receipt log get host+path only.
 	url := redactURL(r.URL)
+	// The whole body is read before anyone decides anything, and exactly
+	// those bytes are sent (body.go). A body too large to hold is refused,
+	// not forwarded unseen.
+	hb, holdErr := holdBody(r, s.bodyLimit(r))
+	defer hb.close()
 	// Git push gating: if this is a git-receive-pack request, append the
 	// target ref names to the resource string used for policy evaluation
-	// and receipts. The body is buffered (bounded) and restored so upstream
-	// still receives the full stream.
-	url += s.gitResourceSuffix(r)
+	// and receipts.
+	url += s.gitResourceSuffix(r, hb)
+	// One bound on the resource for policy and receipts alike. A cut string
+	// could move the part a deny rule matches out of sight, so a request
+	// whose resource needs cutting is refused, not decided on a prefix.
+	url, cut := capResource(url)
 	decision := "error"
 	status := 0
 	approvalID := ""
@@ -491,8 +540,32 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer record()
 
+	writeJSON := func(code int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(v)
+		status = code
+	}
+	switch {
+	case errors.Is(holdErr, errBodyTooLarge):
+		decision = "deny"
+		writeJSON(http.StatusRequestEntityTooLarge, map[string]any{
+			"error":   fmt.Sprintf("request body is larger than the %d bytes Ovara holds for review; it was not sent", s.bodyLimit(r)),
+			"reasons": []string{"body_too_large_to_review"},
+		})
+		return
+	case holdErr != nil:
+		decision = "deny"
+		writeJSON(http.StatusBadRequest, map[string]any{"error": "could not read the request body", "reasons": []string{"body_unreadable"}})
+		return
+	case cut:
+		decision = "deny"
+		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "reasons": []string{"resource_too_long"}})
+		return
+	}
+
 	failedOpen := false
-	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, requestContext(r))
+	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, requestContext(r, hb))
 	if err != nil {
 		log.Printf("gateway check failed for %s: %v", url, err)
 		if !s.failOpen {
@@ -516,22 +589,51 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// A "read" that carries a body or a huge query string can move data out
 	// even though policy allowed the verb; the query is hidden from policy
 	// (it can hold secrets), so shape is the only signal we have.
+	modelFinding := ""
 	if d.Decision == "allow" && !failedOpen {
-		if why := readCarriesData(r); why != "" {
+		if why := s.readCarriesData(r); why != "" {
 			d.Decision = "deny"
 			d.ReasonCodes = append(d.ReasonCodes, why)
-		} else if why := s.modelRequestRefusal(r); why != "" {
+		} else if why := s.allowedGitRefusal(r, hb, url); why != "" {
 			d.Decision = "deny"
 			d.ReasonCodes = append(d.ReasonCodes, why)
+		} else if why := s.modelRequestRefusal(r, hb); why != "" {
+			if s.modelGateNoAsk || !modelAskable(why) {
+				d.Decision = "deny"
+				d.ReasonCodes = append(d.ReasonCodes, why)
+			} else {
+				modelFinding = why // asked below, once the URL decision is settled
+			}
 		}
 	}
 	decision = d.Decision
 
-	writeJSON := func(code int, v any) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(code)
-		json.NewEncoder(w).Encode(v)
-		status = code
+	// second answers the proxy's own follow-up questions (askAction). It
+	// writes the refusal and returns false unless the request may go on.
+	second := func(outcome, id string, about map[string]any) bool {
+		if id != "" {
+			approvalID = id
+		}
+		switch outcome {
+		case pkgAllow, pkgApproved:
+			return true
+		case pkgTimeout:
+			decision = "escalate"
+			about["error"] = "approval timeout"
+			about["approval_id"] = approvalID
+			writeJSON(http.StatusGatewayTimeout, about)
+		case pkgAborted:
+			decision = "escalate"
+		case pkgError:
+			decision = "deny"
+			about["error"] = "gateway unreachable, fail-closed"
+			writeJSON(http.StatusBadGateway, about)
+		default:
+			decision = "deny"
+			about["approval_id"] = approvalID
+			writeJSON(http.StatusForbidden, about)
+		}
+		return false
 	}
 
 	switch d.Decision {
@@ -570,27 +672,35 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if d.Decision == "allow" && !failedOpen {
 		if ref, ok := s.packageDownload(r.URL.Hostname(), r.URL.Path); ok {
 			outcome, id := s.checkPackage(r.Context(), ref, url)
-			if id != "" {
-				approvalID = id
-			}
-			switch outcome {
-			case pkgAllow:
-			case pkgTimeout:
-				decision = "escalate"
-				writeJSON(http.StatusGatewayTimeout, map[string]any{"error": "approval timeout", "package": ref, "approval_id": approvalID})
-				return
-			case pkgAborted:
-				decision = "escalate"
-				return
-			case pkgError:
-				decision = "deny"
-				writeJSON(http.StatusBadGateway, map[string]any{"error": "gateway unreachable, fail-closed", "package": ref})
-				return
-			default:
-				decision = "deny"
-				writeJSON(http.StatusForbidden, map[string]any{"error": "package not allowed", "package": ref, "approval_id": approvalID})
+			if !second(outcome, id, map[string]any{"error": "package not allowed", "package": ref}) {
 				return
 			}
+		}
+		// A model request that makes the provider reach out on the agent's
+		// behalf is a person's call, with the request in front of them.
+		if modelFinding != "" {
+			host := normalizeHost(r.URL.Hostname())
+			preview := requestContext(r, hb)
+			if preview == nil {
+				preview = map[string]string{}
+			}
+			preview["model_feature"] = modelFinding
+			outcome, id := s.askAction(r.Context(), actionModelFeature, "model:"+host+" "+modelFinding, preview, "uses a provider-side feature")
+			if !second(outcome, id, map[string]any{"error": "action denied", "reasons": []string{modelFinding}}) {
+				return
+			}
+		}
+		// Allowed traffic is metered per host; past the allowance a person
+		// is asked (budget.go). Model calls resend their whole conversation
+		// every turn, so only their count is metered, not their size.
+		host := normalizeHost(r.URL.Hostname())
+		n := int64(readRequestBytes(r))
+		if hb != nil && !s.isModelHost(host) {
+			n += hb.size
+		}
+		outcome, id := s.checkBudget(r.Context(), host, n)
+		if !second(outcome, id, map[string]any{"error": "egress budget exceeded", "reasons": []string{"egress_budget_exceeded"}, "host": host}) {
+			return
 		}
 	}
 
@@ -759,6 +869,12 @@ func (s *Server) holdForApproval(ctx context.Context, what string, create func()
 		case <-ctx.Done():
 			return "aborted", approvalID
 		case <-deadline.C:
+			// One last look: an answer given inside the final poll interval
+			// must not be lost, or the person approves a request that then
+			// reports a timeout and comes back as a retry.
+			if status, err := s.gw.ApprovalStatus(ctx, approvalID); err == nil && status != "pending" {
+				return status, approvalID
+			}
 			return "timeout", approvalID
 		case <-ticker.C:
 			status, err := s.gw.ApprovalStatus(ctx, approvalID)
