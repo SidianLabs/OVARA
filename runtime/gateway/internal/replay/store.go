@@ -101,7 +101,7 @@ func OpenFile(path string, maxBytes int64, bindings ...*record.Binding) (*FileSt
 	if maxBytes <= 0 {
 		maxBytes = 8 << 20
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("replay store: mkdir: %w", err)
 	}
 	var binding *record.Binding

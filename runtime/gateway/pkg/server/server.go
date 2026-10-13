@@ -54,6 +54,17 @@ import (
 // idregistry.OpenRepair). Set only by an explicit operator flag.
 var RepairIdentityRegistry bool
 
+// PolicyFileHash is the policy_hash decisions under the policy in filePath
+// carry (versionHint is config.json's policy_version, used when the file
+// names no version). Used by tools that bundle a policy for offline review.
+func PolicyFileHash(filePath, versionHint string) (string, error) {
+	st, err := policy.LoadStoreFromFile(filePath, versionHint)
+	if err != nil {
+		return "", err
+	}
+	return st.Hash(), nil
+}
+
 func Run(configPath string) error {
 	if configPath == "" {
 		configPath = os.Getenv("OVARA_CONFIG")

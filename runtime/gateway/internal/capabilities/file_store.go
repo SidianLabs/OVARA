@@ -43,7 +43,7 @@ func NewFileBackedStore(path string, maxSize int, maxAge time.Duration, bindings
 		maxSize: maxSize,
 		maxAge:  maxAge,
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("failed to create directory for capabilities store: %w", err)
 	}
 	var binding *record.Binding
@@ -110,7 +110,7 @@ func (s *FileBackedStore) persist(snapshot []*TrackedLease) error {
 		if err != nil {
 			return fmt.Errorf("failed to seal capabilities file: %w", err)
 		}
-		if err := persist.WriteFileAtomic(s.path, sealed, 0644); err != nil {
+		if err := persist.WriteFileAtomic(s.path, sealed, 0600); err != nil {
 			return fmt.Errorf("failed to write capabilities file: %w", err)
 		}
 		s.fileSeq++
@@ -122,7 +122,7 @@ func (s *FileBackedStore) persist(snapshot []*TrackedLease) error {
 		}
 		return nil
 	}
-	if err := persist.WriteFileAtomic(s.path, data, 0644); err != nil {
+	if err := persist.WriteFileAtomic(s.path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write capabilities file: %w", err)
 	}
 	return nil

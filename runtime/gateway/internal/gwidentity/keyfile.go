@@ -51,7 +51,7 @@ func LoadOrCreateKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gateway key: generate: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("gateway key: mkdir: %w", err)
 	}
 	if err := persist.WriteFileAtomic(path, []byte(hex.EncodeToString(priv)+"\n"), 0600); err != nil {

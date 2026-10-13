@@ -77,7 +77,7 @@ func (s *FileBackedStore) persist(receipts []*models.Receipt) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal receipts: %w", err)
 	}
-	if err := persist.WriteFileAtomic(s.path, data, 0644); err != nil {
+	if err := persist.WriteFileAtomic(s.path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write receipts file: %w", err)
 	}
 	return nil

@@ -58,7 +58,7 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		maxRecords:   maxRecords,
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("failed to create directory for execution store: %w", err)
 	}
 
@@ -75,7 +75,7 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		return store, nil
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open execution file: %w", err)
 	}
@@ -85,7 +85,7 @@ func NewFileBackedStoreWithRetention(path string, maxSize int, retentionDays int
 		return nil, fmt.Errorf("failed to load execution store: %w", err)
 	}
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open execution file for append: %w", err)
 	}
@@ -348,7 +348,7 @@ func (s *FileBackedStore) Compact() error {
 	s.staleIDs = nil
 
 	tmpPath := s.path + ".compact.tmp"
-	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	tmpFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open compact tmp file: %w", err)
 	}
@@ -381,7 +381,7 @@ func (s *FileBackedStore) Compact() error {
 		return fmt.Errorf("failed to rename compact file: %w", err)
 	}
 
-	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	newFile, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to reopen execution file after compact: %w", err)
 	}
