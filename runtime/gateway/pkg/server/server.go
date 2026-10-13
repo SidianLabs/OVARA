@@ -1098,10 +1098,11 @@ func reconcileAnchor(cfg *config.Config, reg *gwidentity.Registry, priv ed25519.
 	}
 
 	// Degraded semantics extend to the mutation path: a push failure
-	// leaves the same unanchored tail either way — degraded logs and
-	// continues (the tail surfaces at the next reconcile), strict
-	// returns the error to the caller. Unavailable-oracle tolerance is
-	// the point of degraded; the durable local record is never lost.
+	// leaves the same unanchored tail either way — degraded logs,
+	// continues, and keeps retrying in the background until the oracle
+	// takes this run's tip (anchor_retry.go); strict returns the error
+	// to the caller. Unavailable-oracle tolerance is the point of
+	// degraded; the durable local record is never lost.
 	var pusher anchor.Pusher = client
 	if !strict {
 		pusher = &warnPusher{inner: client}
@@ -1150,26 +1151,6 @@ func reconcileAnchor(cfg *config.Config, reg *gwidentity.Registry, priv ed25519.
 		return nil
 	}
 	return reg.SetAnchor(pusher, signer)
-}
-
-// warnPusher degrades oracle UNAVAILABILITY to warnings — the local
-// mutation is already durable (fsync before push), so an offline oracle
-// leaves the same unanchored tail either way. F-D1 remediation: only
-// availability errors are swallowed; integrity signals (equivocation,
-// bad key, malformed response) propagate and fail the mutation — a fork
-// is never masked as "oracle offline".
-type warnPusher struct{ inner anchor.Pusher }
-
-func (w *warnPusher) Commit(ctx context.Context, domain string, cp *anchor.Checkpoint) error {
-	if err := w.inner.Commit(ctx, domain, cp); err != nil {
-		if errors.Is(err, anchor.ErrUnavailable) {
-			log.Printf("anchor: checkpoint push failed (degraded — unanchored tail, reconcile at next boot): %v", err)
-			return nil
-		}
-		log.Printf("anchor: INTEGRITY failure on checkpoint push — refusing to mask it: %v", err)
-		return err
-	}
-	return nil
 }
 
 func init() {
