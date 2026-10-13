@@ -89,7 +89,7 @@ so the scripted battery needs a different driver), Cursor, and agents that are
 not installed from npm. If an agent ignores `HTTPS_PROXY` you
 will see it as missing entries in `ovara log`.
 
-## 2. An agent in a container or VM you control  — *tested (netns, `ovara box`); docker mode scripted*
+## 2. An agent in a container or VM you control  — *tested (netns, docker, `ovara box` tiers 1 and 2)*
 
 This is the setup to use when you do not fully trust the agent: an untrusted
 tool, a model you are evaluating, a long unattended run.
@@ -103,10 +103,11 @@ sudo ovara box ./myrepo -- claude        # one command: copy, box, agent, review
 ```
 
 `ovara box` does the whole setup: it copies the project into a workspace
-(history kept, `.env`/keys/certificates left out), starts Ovara with the
-namespace boundary, runs the agent inside as an unprivileged user with a
-fresh home and no keys, and when the agent exits brings its changes back as
-a commit on a new `ovara/box-<run>` branch of your repository, after you have
+(history kept; `.env`, keys, certificates and files whose content looks like
+a key left out), starts Ovara with the namespace boundary, runs the agent
+inside as an unprivileged user with a fresh home, a root file system of its
+own and no keys, and when the agent exits brings its changes back as a
+commit on a new `ovara/box-<run>` branch of your repository, after you have
 read the diff. Paths the policy keeps out (`.github/workflows/*` by default)
 never come back. Your working tree is not touched. Or do it by hand:
 
@@ -142,9 +143,14 @@ namespace changes are refused before they run, and `rm -rf`, `git push`,
 `mkfs` and `dd` pause for you. The real agents ran their whole battery under
 the gate (94 to 508 commands each) with nothing wrongly refused.
 
-Not yet in `ovara box`: the container tier (the agent runs on your host's
-filesystem as another user; what that user may read, it can read),
-macOS/Windows, and a `strict` profile that pauses on unknown commands.
+Also built: the container tier (`-tier 2`: no network interface but
+loopback, no capabilities, a read-only root, nothing of your machine inside
+but the project's copy) and strict installs (`-profile strict`: a new
+dependency pauses once, by name and version, and pinned downloads are checked
+against the lockfile's digests). Tier 1 now has a root file system of its
+own too; `-tier1-fs host` is the old, unsafe behaviour. Not yet in `ovara
+box`: macOS/Windows, and a profile that pauses on every command not on a
+list. What each tier holds is in [`GUARANTEES.md`](GUARANTEES.md).
 
 Still yours to ensure: the agent is not root inside the boundary (root can
 remove the firewall rules), and nothing else gives it a way out (a second
