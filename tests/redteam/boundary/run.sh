@@ -86,10 +86,10 @@ check "docker api :2375"             "BLOCKED" "$(tcp $HIP 2375)"
 check "kubelet :10250"               "BLOCKED" "$(tcp $HIP 10250)"
 check "host metadata 169.254.x"      "BLOCKED" "$(tcp 169.254.169.254 80)"
 
-# --- resolver (path deliberately allowed; informational — OPEN means a
-# resolver service is actually listening, REFUSED_OR_BLOCKED means the
-# packet path is open but nothing answers) ---
-R=$(tcps $PIP 5353); printf "%-46s | %-8s | %-8s | %s\n" "resolver port path" "ALLOWED" "$R" "INFO"
+# --- resolver (informational; DNS from the boundary is off unless
+# OVARA_BOUNDARY_DNS=1, so a blocked path is the default; OPEN means the
+# opt-in is on and a resolver service is listening) ---
+R=$(tcps $PIP 5353); printf "%-46s | %-8s | %-8s | %s\n" "resolver port path (opt-in)" "OFF" "$R" "INFO"
 
 # --- capability enforcement ---
 # netns: the agent is root's child dropped to a user; docker/inside: the

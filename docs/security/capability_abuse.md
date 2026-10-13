@@ -1,5 +1,9 @@
 # Capability Abuse
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 Capability abuse occurs when an agent uses a capability lease in
 ways that exceed its granted permissions. This is the primary
 defense surface for the identity module.

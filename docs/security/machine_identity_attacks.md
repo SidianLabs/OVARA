@@ -1,5 +1,9 @@
 # Machine Identity Attacks
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 The machine identity system uses ed25519 signatures and SHA-256 hash
 lineage to provide verifiable identity for autonomous agents. This
 document describes the attack vectors specific to machine identity.

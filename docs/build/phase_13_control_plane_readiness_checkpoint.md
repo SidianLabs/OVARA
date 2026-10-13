@@ -1,5 +1,9 @@
 # Phase 13: Control-Plane Readiness Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: 2026-05-25
 **Branch**: `phase-13-control-plane-readiness` (from `phase-12-enrollment-foundations`)
 **Objective**: Make enrollment/control-plane foundation more operationally real

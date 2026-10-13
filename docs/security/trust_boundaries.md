@@ -1,5 +1,9 @@
 # Trust Boundaries
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 A trust boundary is a point in the system where the level of trust
 changes. Identifying trust boundaries is essential for threat
 modeling and security review.

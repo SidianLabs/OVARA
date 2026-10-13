@@ -1,5 +1,9 @@
 # Long-Term Thesis
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 AI systems are becoming first-class actors on the internet. As they gain access
 to code, infrastructure, financial systems, browsers, and organizational
 workflows, the missing primitive is no longer model quality alone. It is

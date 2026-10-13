@@ -1,3 +1,7 @@
+// Not wired into the gateway yet. Nothing outside the tests creates a
+// DriftDetector, so drift never affects a decision today. It is kept for a
+// later change that may feed it as an escalate-only signal.
+
 package trust
 
 import (

@@ -1,5 +1,9 @@
 # Phase 10.5: Policy Verification and Consistency Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: 2026-05-25
 **Branch**: `phase-10-5-policy-verification` (from `phase-10-policy-allow`)
 **Objective**: Verify policy allow behavior is correct and consistent

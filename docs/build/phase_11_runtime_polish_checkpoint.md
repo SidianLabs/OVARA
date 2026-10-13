@@ -1,5 +1,9 @@
 # Phase 11: Runtime Polish and Verification Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: 2026-05-25
 **Branch**: `phase-11-runtime-polish` (from `phase-10-5-policy-verification`)
 **Objective**: Make the local runtime more trustworthy, observable, and cleaner to operate
