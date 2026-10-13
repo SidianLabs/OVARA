@@ -582,6 +582,17 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	status := 0
 	approvalID := ""
 	facts := &receiptFacts{hb: hb, agent: agentOf(r.Context())}
+	// noteApproval records the approval a question was answered by. The
+	// receipt's approval_id names the last one; earlier ones (a request can
+	// be asked about more than once: package, taint, budget) are kept in
+	// its reasons as approval:<id>.
+	noteApproval := func(id string) {
+		if id == "" {
+			return
+		}
+		approvalID = id
+		facts.noteApproval(id)
+	}
 	// A request that goes upstream is receipted twice: an attempt receipt,
 	// synced to disk before the first byte is sent (no receipt, no send),
 	// and the final receipt below, which then closes that attempt.
@@ -708,7 +719,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// writes the refusal and returns false unless the request may go on.
 	second := func(outcome, id string, about map[string]any) bool {
 		if id != "" {
-			approvalID = id
+			noteApproval(id)
 		}
 		switch outcome {
 		case pkgAllow, pkgApproved:
@@ -740,7 +751,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	case gwEscalate:
 		outcome, id := s.awaitEscalation(r.Context(), d, r.Method, url)
-		approvalID = id
+		noteApproval(id)
 		switch outcome {
 		case "approved":
 			decision = gwAllow
@@ -769,7 +780,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if mx, ref = s.mcpRequest(r.Context(), r, hb); ref != nil {
 			decision, status = ref.write(w)
 			if ref.approvalID != "" {
-				approvalID = ref.approvalID
+				noteApproval(ref.approvalID)
 			}
 			facts.reasons = ref.reasons
 			return
@@ -988,7 +999,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if ref := s.mcpResponse(r.Context(), r, mx, resp, cut); ref != nil {
 			decision, status = ref.write(w)
 			if ref.approvalID != "" {
-				approvalID = ref.approvalID
+				noteApproval(ref.approvalID)
 			}
 			facts.reasons = ref.reasons
 			return

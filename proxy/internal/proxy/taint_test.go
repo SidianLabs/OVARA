@@ -299,3 +299,35 @@ func TestGlobMatch(t *testing.T) {
 		}
 	}
 }
+
+// A request asked about twice (here a tainted write over the host's
+// budget) has a receipt that names both approvals: the last in
+// approval_id, the earlier one in its reasons.
+func TestReceiptNamesEveryApprovalAskedFor(t *testing.T) {
+	srv, ag, chainFile, up := taintServer(t)
+	ag.setDecision("taint.write", "escalate")
+	ag.setDecision(actionEgressBudget, "escalate")
+	ag.status.Store("approved")
+	if rec := send(srv, "GET", up.URL+"/repos/o/r/issues/7", "", nil, nil); rec.Code != 200 {
+		t.Fatalf("issue read: %d", rec.Code)
+	}
+	srv.SetEgressBudget(true, 1, 0)
+	if rec := send(srv, "GET", up.URL+"/x", "", nil, nil); rec.Code != 200 {
+		t.Fatalf("read inside the budget: %d", rec.Code)
+	}
+	if rec := send(srv, "POST", up.URL+"/after", "text/plain", strings.NewReader("x"), nil); rec.Code != 200 {
+		t.Fatalf("approved write: %d %s", rec.Code, rec.Body)
+	}
+	if len(ag.of("taint.write")) != 1 || len(ag.of(actionEgressBudget)) != 1 {
+		t.Fatalf("questions: taint %d budget %d", len(ag.of("taint.write")), len(ag.of(actionEgressBudget)))
+	}
+	r := lastReceiptOf(t, chainFile)
+	if r.ApprovalID != "apr_2" || !hasReason(r.Reasons, "approval:apr_1") {
+		t.Fatalf("receipt approval_id %q reasons %v", r.ApprovalID, r.Reasons)
+	}
+	for _, reason := range r.Reasons {
+		if reason == "approval:apr_2" {
+			t.Fatalf("approval_id repeated in reasons: %v", r.Reasons)
+		}
+	}
+}

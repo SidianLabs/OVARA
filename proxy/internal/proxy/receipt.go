@@ -38,6 +38,19 @@ type receiptFacts struct {
 	hb       *heldBody
 	approver string
 	looked   bool // approver lookup done
+	// approvals are the ids of every approval asked for this request, in
+	// the order asked.
+	approvals []string
+}
+
+// noteApproval adds id to the approvals asked for this request.
+func (f *receiptFacts) noteApproval(id string) {
+	for _, a := range f.approvals {
+		if a == id {
+			return
+		}
+	}
+	f.approvals = append(f.approvals, id)
 }
 
 // entry builds the receipt entry for the request in its current state.
@@ -57,6 +70,13 @@ func (s *Server) receiptEntry(f *receiptFacts, method, url, decision string, sta
 		e.Reasons = append(e.Reasons, f.gw.ReasonCodes...)
 	}
 	e.Reasons = append(e.Reasons, f.reasons...)
+	// approval_id names one approval; any other this request was asked
+	// about is listed in the reasons.
+	for _, id := range f.approvals {
+		if id != approvalID {
+			e.Reasons = append(e.Reasons, "approval:"+id)
+		}
+	}
 	if f.hb != nil {
 		e.ReqBytes = f.hb.size
 		e.BodySHA256 = f.hb.sha256Hex()
