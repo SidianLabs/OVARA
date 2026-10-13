@@ -41,6 +41,7 @@ func TestRuntimeIntegration(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalService := approval.NewService(approvalStore)
+	approvalService.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	approvalHandler := NewApprovalHandler(approvalService)
 	approvalHandler.SetDecisionLookup(h.LookupDecision)
 
@@ -617,6 +618,7 @@ func TestTraceAndSummaryHandler(t *testing.T) {
 	execStore := execution.NewInMemoryStore()
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	eventStore := events.NewInMemoryStore(500)
 	capsStore := capabilities.NewInMemoryStore()
 

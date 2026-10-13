@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,6 +157,9 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		case approval.StatusDenied:
 			api.JSONConflict(w, "decision already resolved (denied) — re-submit the action for a new decision")
 			return
+		case approval.StatusExpired:
+			api.JSONConflict(w, "the approval for this decision expired — re-submit the action for a new decision")
+			return
 		}
 	}
 
@@ -281,10 +285,13 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeResolveError maps approval resolution errors to honest status codes:
-// missing approval → 404, already-resolved → 409, anything else → 500.
+// missing approval → 404, already-resolved or expired → 409, anything
+// else → 500.
 func writeResolveError(w http.ResponseWriter, op string, err error) {
 	msg := err.Error()
 	switch {
+	case errors.Is(err, approval.ErrApprovalExpired):
+		api.JSONConflict(w, "too late to "+op+": "+msg+"; the request was not let through")
 	case strings.Contains(msg, "not found"):
 		api.JSONNotFound(w, msg)
 	case strings.Contains(msg, "not pending"):

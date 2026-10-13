@@ -1,18 +1,85 @@
 package approval
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"sort"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
 
+// DefaultPendingTTL is how long a pending approval can be approved. The
+// proxy holds a request for its escalate window (60s by default) and
+// then gives up; an approval given long after that lets nothing through
+// and teaches the person to approve the agent's retry without reading it.
+const DefaultPendingTTL = 10 * time.Minute
+
+// ErrApprovalExpired is returned when approving a pending approval older
+// than the TTL.
+var ErrApprovalExpired = errors.New("approval expired: the agent is no longer waiting for it")
+
 type Service struct {
 	store Store
+
+	mu         sync.RWMutex
+	pendingTTL time.Duration // <= 0: pending approvals never expire
+	now        func() time.Time
 }
 
 func NewService(store Store) *Service {
-	return &Service{store: store}
+	return &Service{store: store, pendingTTL: DefaultPendingTTL, now: time.Now}
+}
+
+// SetPendingTTL sets how long a pending approval stays approvable; zero
+// or less turns expiry off.
+func (s *Service) SetPendingTTL(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingTTL = d
+}
+
+func (s *Service) PendingTTL() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pendingTTL
+}
+
+// SetNow replaces the clock (tests).
+func (s *Service) SetNow(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+}
+
+func (s *Service) clock() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.now()
+}
+
+// expired reports whether a stored pending approval is past the TTL.
+func (s *Service) expired(a *ApprovalRequest) bool {
+	ttl := s.PendingTTL()
+	return a.Status == StatusPending && ttl > 0 && s.clock().Sub(a.CreatedAt) > ttl
+}
+
+// view is what callers see: a stored pending approval past the TTL reads
+// as expired. Store reads return copies, so this never touches the store.
+func (s *Service) view(a *ApprovalRequest) *ApprovalRequest {
+	if a != nil && s.expired(a) {
+		a.Status = StatusExpired
+	}
+	return a
+}
+
+func (s *Service) viewAll(list []*ApprovalRequest) []*ApprovalRequest {
+	for _, a := range list {
+		s.view(a)
+	}
+	return list
 }
 
 func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
@@ -25,6 +92,7 @@ func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
 
 	approvalID := fmt.Sprintf("apr_%s", uuid.New().String())
 	approval := req.ToApproval(approvalID)
+	approval.CreatedAt = s.clock().UTC()
 
 	if err := s.store.Create(approval); err != nil {
 		return nil, fmt.Errorf("creating approval: %w", err)
@@ -38,8 +106,29 @@ func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
 
 func (s *Service) Approve(approvalID, resolvedBy string) (*ApprovalRequest, error) {
 	// Atomic check+mutate under the store lock: a concurrent deny cannot
-	// interleave between the pending check and the mutation.
-	approval, err := s.store.Resolve(approvalID, StatusApproved, resolvedBy, "")
+	// interleave between the pending check and the mutation, and an
+	// approval cannot pass the expiry check and then expire before it is
+	// written.
+	notExpired := func(a *ApprovalRequest) error {
+		if s.expired(a) {
+			return fmt.Errorf("%w (%s, created %s)", ErrApprovalExpired, approvalID, a.CreatedAt.Format(time.RFC3339))
+		}
+		return nil
+	}
+	var approval *ApprovalRequest
+	var err error
+	if cr, ok := s.store.(ConditionalResolver); ok {
+		approval, err = cr.ResolveIf(approvalID, StatusApproved, resolvedBy, "", notExpired)
+	} else {
+		cur, gerr := s.store.Get(approvalID)
+		if gerr != nil {
+			return nil, gerr
+		}
+		if err := notExpired(cur); err != nil {
+			return nil, err
+		}
+		approval, err = s.store.Resolve(approvalID, StatusApproved, resolvedBy, "")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -63,23 +152,56 @@ func (s *Service) Deny(approvalID, resolvedBy, reason string) (*ApprovalRequest,
 }
 
 func (s *Service) GetApproval(approvalID string) (*ApprovalRequest, error) {
-	return s.store.Get(approvalID)
+	a, err := s.store.Get(approvalID)
+	if err != nil {
+		return nil, err
+	}
+	return s.view(a), nil
 }
 
 func (s *Service) ListAll() []*ApprovalRequest {
-	return s.store.ListAll()
+	return s.viewAll(s.store.ListAll())
 }
 
+// ListPending lists the approvals still waiting for a person, oldest
+// first. Expired approvals are not listed.
 func (s *Service) ListPending() []*ApprovalRequest {
-	return s.store.ListByStatus(StatusPending)
+	return s.ListByStatus(StatusPending)
 }
 
+// ListByStatus filters on the status callers see: "pending" leaves out
+// expired approvals and "expired" lists them. Pending and expired lists
+// are oldest first.
 func (s *Service) ListByStatus(status Status) []*ApprovalRequest {
-	return s.store.ListByStatus(status)
+	stored := status
+	if status == StatusExpired {
+		stored = StatusPending
+	}
+	all := s.viewAll(s.store.ListByStatus(stored))
+	if stored != StatusPending {
+		return all
+	}
+	out := make([]*ApprovalRequest, 0, len(all))
+	for _, a := range all {
+		if a.Status == status {
+			out = append(out, a)
+		}
+	}
+	sortOldestFirst(out)
+	return out
 }
 
 func (s *Service) ListByDecision(decisionID string) []*ApprovalRequest {
-	return s.store.ListByDecision(decisionID)
+	return s.viewAll(s.store.ListByDecision(decisionID))
+}
+
+func sortOldestFirst(list []*ApprovalRequest) {
+	sort.Slice(list, func(i, j int) bool {
+		if !list[i].CreatedAt.Equal(list[j].CreatedAt) {
+			return list[i].CreatedAt.Before(list[j].CreatedAt)
+		}
+		return list[i].ApprovalID < list[j].ApprovalID
+	})
 }
 
 // ResumeAction consumes the approval's single-use resume token atomically.
@@ -92,15 +214,15 @@ func (s *Service) ResumeAction(approvalID string) (*ResumeResult, error) {
 
 	result := &ResumeResult{
 		Approved:     true,
-		ApprovalID:    approvalID,
-		DecisionID:    approval.DecisionID,
-		ActionType:    string(approval.ActionType),
-		Resource:      approval.Resource,
-		TrustScore:    approval.TrustScore,
-		TrustLevel:    string(approval.TrustLevel),
-		AnomalyCodes:  approval.AnomalyCodes,
-		ShieldActive:  approval.ShieldActive,
-		Restricted:    approval.Restricted,
+		ApprovalID:   approvalID,
+		DecisionID:   approval.DecisionID,
+		ActionType:   string(approval.ActionType),
+		Resource:     approval.Resource,
+		TrustScore:   approval.TrustScore,
+		TrustLevel:   string(approval.TrustLevel),
+		AnomalyCodes: approval.AnomalyCodes,
+		ShieldActive: approval.ShieldActive,
+		Restricted:   approval.Restricted,
 	}
 
 	log.Printf("APPROVAL resumed approval_id=%s decision_id=%s action_type=%s",

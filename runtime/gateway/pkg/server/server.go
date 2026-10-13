@@ -481,6 +481,13 @@ func Run(configPath string) error {
 
 	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
 	approvalService := approval.NewService(approvalStore)
+	switch {
+	case cfg.ApprovalPendingTTLSec > 0:
+		approvalService.SetPendingTTL(time.Duration(cfg.ApprovalPendingTTLSec) * time.Second)
+	case cfg.ApprovalPendingTTLSec < 0:
+		approvalService.SetPendingTTL(0)
+		log.Printf("WARNING: approval_pending_ttl_secs < 0: pending approvals never expire")
+	}
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	receiptHandler := handlers.NewReceiptHandler(receiptsStore)
 

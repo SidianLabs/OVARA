@@ -13,6 +13,10 @@ const (
 	StatusPending  Status = "pending"
 	StatusApproved Status = "approved"
 	StatusDenied   Status = "denied"
+	// StatusExpired is never stored. A pending approval older than the
+	// service's TTL is reported as expired: the agent has stopped waiting
+	// for it, so it can no longer be approved (see Service.SetPendingTTL).
+	StatusExpired Status = "expired"
 )
 
 type ApprovalRequest struct {
@@ -47,9 +51,9 @@ type ApprovalRequest struct {
 	// was created under, captured from the evaluated request. Claim-time
 	// revalidation of the continuation checks them against CURRENT
 	// revocation state; the approval record itself stays historical.
-	LeaseID       string   `json:"lease_id,omitempty"`
+	LeaseID        string   `json:"lease_id,omitempty"`
 	DelegationKeys []string `json:"delegation_keys,omitempty"`
-	Issuers       []string `json:"issuers,omitempty"`
+	Issuers        []string `json:"issuers,omitempty"`
 }
 
 func (a *ApprovalRequest) MarshalJSON() ([]byte, error) {
@@ -100,48 +104,48 @@ func (a *ApprovalRequest) IsResolved() bool {
 }
 
 type CreateRequest struct {
-	DecisionID    string             `json:"decision_id"`
-	ActionType    models.ActionType  `json:"action_type"`
-	Resource      string             `json:"resource"`
-	Environment   models.Environment `json:"environment"`
-	AgentID       string             `json:"agent_id,omitempty"`
-	TrustScore    float64            `json:"trust_score,omitempty"`
-	TrustLevel    models.TrustLevel  `json:"trust_level,omitempty"`
-	AnomalyCodes  []string           `json:"anomaly_codes,omitempty"`
-	ShieldActive  bool               `json:"shield_active,omitempty"`
-	Restricted    bool               `json:"restricted,omitempty"`
+	DecisionID   string             `json:"decision_id"`
+	ActionType   models.ActionType  `json:"action_type"`
+	Resource     string             `json:"resource"`
+	Environment  models.Environment `json:"environment"`
+	AgentID      string             `json:"agent_id,omitempty"`
+	TrustScore   float64            `json:"trust_score,omitempty"`
+	TrustLevel   models.TrustLevel  `json:"trust_level,omitempty"`
+	AnomalyCodes []string           `json:"anomaly_codes,omitempty"`
+	ShieldActive bool               `json:"shield_active,omitempty"`
+	Restricted   bool               `json:"restricted,omitempty"`
 	// Context is filled in by the gateway from the evaluated request, never
 	// from the caller (json:"-").
-	Context       map[string]string  `json:"-"`
-	RequestHash   string             `json:"request_hash,omitempty"`
-	PolicyVersion string             `json:"policy_version,omitempty"`
+	Context       map[string]string `json:"-"`
+	RequestHash   string            `json:"request_hash,omitempty"`
+	PolicyVersion string            `json:"policy_version,omitempty"`
 	// P2.3.4 authority identifiers — server-populated from the recorded
 	// decision request, never caller-authoritative.
-	LeaseID       string   `json:"lease_id,omitempty"`
+	LeaseID        string   `json:"lease_id,omitempty"`
 	DelegationKeys []string `json:"delegation_keys,omitempty"`
-	Issuers       []string `json:"issuers,omitempty"`
+	Issuers        []string `json:"issuers,omitempty"`
 }
 
 func (c *CreateRequest) ToApproval(approvalID string) *ApprovalRequest {
 	return &ApprovalRequest{
-		ApprovalID:    approvalID,
-		DecisionID:    c.DecisionID,
-		ActionType:    c.ActionType,
-		Resource:      c.Resource,
-		Environment:   c.Environment,
-		Status:        StatusPending,
-		CreatedAt:     time.Now().UTC(),
-		AgentID:       c.AgentID,
-		TrustScore:    c.TrustScore,
-		TrustLevel:    c.TrustLevel,
-		AnomalyCodes:  c.AnomalyCodes,
-		ShieldActive:  c.ShieldActive,
-		Restricted:    c.Restricted,
-		Context:       c.Context,
-		RequestHash:   c.RequestHash,
-		PolicyVersion: c.PolicyVersion,
-		LeaseID:       c.LeaseID,
+		ApprovalID:     approvalID,
+		DecisionID:     c.DecisionID,
+		ActionType:     c.ActionType,
+		Resource:       c.Resource,
+		Environment:    c.Environment,
+		Status:         StatusPending,
+		CreatedAt:      time.Now().UTC(),
+		AgentID:        c.AgentID,
+		TrustScore:     c.TrustScore,
+		TrustLevel:     c.TrustLevel,
+		AnomalyCodes:   c.AnomalyCodes,
+		ShieldActive:   c.ShieldActive,
+		Restricted:     c.Restricted,
+		Context:        c.Context,
+		RequestHash:    c.RequestHash,
+		PolicyVersion:  c.PolicyVersion,
+		LeaseID:        c.LeaseID,
 		DelegationKeys: c.DelegationKeys,
-		Issuers:       c.Issuers,
+		Issuers:        c.Issuers,
 	}
 }
