@@ -417,8 +417,10 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 		}
 	}
 
+	matchedRule := ""
 	if decision == "" {
 		outcome := e.evaluateWithStore(e.policyStore, actionRules, envRules, req)
+		matchedRule = outcome.Rule
 		if outcome.Denied {
 			reasons = append(reasons, outcome.Reason)
 			decision = models.DecisionDeny
@@ -519,6 +521,7 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 		ReceiptStub:       receiptStub,
 		TrustContext:      trustCtx,
 		EvaluationSummary: summary,
+		MatchedRule:       matchedRule,
 	}, nil
 }
 

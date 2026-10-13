@@ -99,6 +99,13 @@ type Decision struct {
 	ApprovalID       string   `json:"approval_id"`
 	TrustScore       float64  `json:"trust_score"`
 	TrustLevel       string   `json:"trust_level"`
+	// MatchedRule names the policy rule that decided, when one did.
+	MatchedRule string `json:"matched_rule,omitempty"`
+	// ReceiptStub carries the gateway's receipt facts; the proxy keeps the
+	// policy hash so its own receipt names the policy that decided.
+	ReceiptStub struct {
+		PolicyHash string `json:"policy_hash"`
+	} `json:"receipt_stub"`
 }
 
 func nonce() string {
@@ -197,6 +204,17 @@ func (c *Client) ApprovalStatus(ctx context.Context, approvalID string) (string,
 		return "", err
 	}
 	return out.Status, nil
+}
+
+// ApprovalResolvedBy returns who resolved an approval ("" while pending).
+func (c *Client) ApprovalResolvedBy(ctx context.Context, approvalID string) (string, error) {
+	var out struct {
+		ResolvedBy string `json:"resolved_by"`
+	}
+	if err := c.do(ctx, "GET", "/v1/approval/"+approvalID, nil, &out); err != nil {
+		return "", err
+	}
+	return out.ResolvedBy, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte, out any) error {

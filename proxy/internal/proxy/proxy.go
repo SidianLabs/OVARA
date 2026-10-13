@@ -446,7 +446,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // policy pipeline (CONNECT-layer rejects). Best-effort: a chain failure is
 // logged, not retried — same posture as the deferred receipt path.
 func (s *Server) recordDenied(method, target string) {
-	if _, err := s.chain.Record(method, target, "deny", http.StatusForbidden, ""); err != nil {
+	agent := ""
+	if !strings.HasSuffix(method, " UNAUTH") {
+		agent = agentLabel(s.agentToken)
+	}
+	if _, err := s.chain.Append(receipts.Entry{Method: method, URL: target, Decision: "deny", Status: http.StatusForbidden, Agent: agent}, false); err != nil {
 		log.Printf("CRITICAL: receipt record failed for denied %s %s: %v", method, target, err)
 	}
 }
@@ -520,14 +524,43 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	decision := "error"
 	status := 0
 	approvalID := ""
-	// The receipt is written exactly once: before the upstream response
-	// headers are sent (so the agent can never hold a response whose receipt
-	// is not yet on disk), or on return for every path that never reaches
-	// that point.
+	facts := &receiptFacts{hb: hb}
+	// A request that goes upstream is receipted twice: an attempt receipt,
+	// synced to disk before the first byte is sent (no receipt, no send),
+	// and the final receipt below, which then closes that attempt.
+	attemptID := ""
+	notSent := false
+	var respBytes int64
+	attempt := func() error {
+		if decision == "allow" {
+			s.lookupApprover(r.Context(), facts, approvalID)
+		}
+		e := s.receiptEntry(facts, r.Method, url, decision, 0, approvalID)
+		e.Phase, e.Outcome = "attempt", "sent"
+		rc, err := s.chain.Append(e, true)
+		if rc != nil {
+			attemptID = rc.ReceiptID
+		}
+		return err
+	}
+	// The final receipt is written exactly once: before the upstream
+	// response headers are sent (so the agent can never hold a response
+	// whose receipt is not yet on disk), or on return for every path that
+	// never reaches that point.
 	var recordOnce sync.Once
 	record := func() {
 		recordOnce.Do(func() {
-			if _, err := s.chain.Record(r.Method, url, decision, status, approvalID); err != nil {
+			if decision == "allow" {
+				s.lookupApprover(r.Context(), facts, approvalID)
+			}
+			e := s.receiptEntry(facts, r.Method, url, decision, status, approvalID)
+			if attemptID != "" {
+				e.Phase, e.AttemptID, e.RespBytes = "outcome", attemptID, respBytes
+				if notSent {
+					e.Outcome = "not_sent"
+				}
+			}
+			if _, err := s.chain.Append(e, false); err != nil {
 				// A transit without a receipt is a boundary breach: scream to
 				// stderr in fail-closed mode, not just the log stream.
 				msg := fmt.Sprintf("receipt record failed for %s %s: %v", r.Method, url, err)
@@ -549,6 +582,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(holdErr, errBodyTooLarge):
 		decision = "deny"
+		facts.reasons = []string{"body_too_large_to_review"}
 		writeJSON(http.StatusRequestEntityTooLarge, map[string]any{
 			"error":   fmt.Sprintf("request body is larger than the %d bytes Ovara holds for review; it was not sent", s.bodyLimit(r)),
 			"reasons": []string{"body_too_large_to_review"},
@@ -556,10 +590,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	case holdErr != nil:
 		decision = "deny"
+		facts.reasons = []string{"body_unreadable"}
 		writeJSON(http.StatusBadRequest, map[string]any{"error": "could not read the request body", "reasons": []string{"body_unreadable"}})
 		return
 	case cut:
 		decision = "deny"
+		facts.reasons = []string{"resource_too_long"}
 		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "reasons": []string{"resource_too_long"}})
 		return
 	}
@@ -571,12 +607,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if !s.failOpen {
 			decision = "deny"
 			status = http.StatusBadGateway
+			facts.reasons = []string{"gateway_unreachable"}
 			http.Error(w, `{"error":"gateway unreachable, fail-closed"}`, http.StatusBadGateway)
 			return
 		}
 		d = &gateway.Decision{Decision: "allow"}
 		failedOpen = true
+		facts.reasons = []string{"gateway_unreachable_fail_open"}
 	}
+	facts.gw = d
 	// Pivot-risk hosts are never reachable on a policy "allow" alone. This is a
 	// DENY, not a pause: the gateway only opens an approval for a decision it
 	// recorded as escalate (it refuses with 409 for an allowed one, on purpose),
@@ -756,6 +795,20 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Strip hop-by-hop headers — notably Upgrade/Connection, which would
 	// otherwise turn one approved GET into an uninspected byte stream.
 	stripHopHeaders(r.Header)
+	// No receipt on disk, no request upstream: a full disk must not turn
+	// into egress that leaves no trace.
+	if err := attempt(); err != nil {
+		msg := fmt.Sprintf("attempt receipt for %s %s could not be written: %v", r.Method, url, err)
+		log.Printf("CRITICAL: %s", msg)
+		if !s.failOpen {
+			fmt.Fprintf(os.Stderr, "CRITICAL: %s\n", msg)
+			decision = "error"
+			notSent = true
+			http.Error(w, "receipt could not be written; not forwarding", http.StatusBadGateway)
+			status = http.StatusBadGateway
+			return
+		}
+	}
 	resp, err := s.transport.RoundTrip(r)
 	if err != nil {
 		decision = "error"
@@ -765,6 +818,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	status = resp.StatusCode
+	respBytes = resp.ContentLength
 	stripHopHeaders(resp.Header)
 	if len(injected) > 0 {
 		if ce := encodedValue(resp.Header.Values("Content-Encoding")); ce != "" {
