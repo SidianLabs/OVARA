@@ -31,6 +31,7 @@ func TestRuntimeStatusEndpoint_FullResponseStructure(t *testing.T) {
 	execStore := execution.NewInMemoryStore()
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	eventStore := events.NewInMemoryStore(500)
 	capsStore := capabilities.NewInMemoryStore()
 
@@ -132,6 +133,7 @@ func TestRuntimeStatusEndpoint_WithApprovalsAndExecutions(t *testing.T) {
 	execStore := execution.NewInMemoryStore()
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	eventStore := events.NewInMemoryStore(500)
 	capsStore := capabilities.NewInMemoryStore()
 
@@ -195,6 +197,7 @@ func TestRuntimeStatusEndpoint_AllApprovalStatuses(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 
 	approvalStore.Create(&approval.ApprovalRequest{
 		ApprovalID: "apr_pending_1",

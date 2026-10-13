@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,6 +157,9 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		case approval.StatusDenied:
 			api.JSONConflict(w, "decision already resolved (denied) — re-submit the action for a new decision")
 			return
+		case approval.StatusExpired:
+			api.JSONConflict(w, "the approval for this decision expired — re-submit the action for a new decision")
+			return
 		}
 	}
 
@@ -213,9 +217,23 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	created, err := h.service.CreateApproval(&bound)
+	// Flood control: the same request while one is waiting gets that
+	// approval back (no second card, no second continuation); past the
+	// per-agent cap the escalation is refused and the action stays
+	// blocked.
+	created, reused, err := h.service.Open(&bound)
+	if errors.Is(err, approval.ErrTooManyPending) {
+		h.emitSecurityEvent("approval_flood", bound.DecisionID, bound.AgentID, err.Error())
+		api.JSONError(w, http.StatusTooManyRequests, err.Error()+" — resolve or wait for the pending ones; this action stays blocked")
+		return
+	}
 	if err != nil {
 		api.JSONInternalError(w, "failed to create approval: "+err.Error())
+		return
+	}
+	if reused {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(created)
 		return
 	}
 
@@ -281,10 +299,13 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeResolveError maps approval resolution errors to honest status codes:
-// missing approval → 404, already-resolved → 409, anything else → 500.
+// missing approval → 404, already-resolved or expired → 409, anything
+// else → 500.
 func writeResolveError(w http.ResponseWriter, op string, err error) {
 	msg := err.Error()
 	switch {
+	case errors.Is(err, approval.ErrApprovalExpired):
+		api.JSONConflict(w, "too late to "+op+": "+msg+"; the request was not let through")
 	case strings.Contains(msg, "not found"):
 		api.JSONNotFound(w, msg)
 	case strings.Contains(msg, "not pending"):

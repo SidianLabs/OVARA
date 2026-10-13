@@ -2,6 +2,8 @@ package policy
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -89,6 +91,46 @@ func ParseStore(data []byte, versionHint string) (*Store, error) {
 		return nil, fmt.Errorf("default %q: must be %q or %q", fp.Default, DefaultEscalate, DefaultDeny)
 	}
 	return &Store{version: version, precedence: fp.Precedence, defaultDecision: fp.Default, rules: fp.Rules}, nil
+}
+
+// Hash is "sha256:<hex>" over the canonical JSON of the policy in force:
+// version, effective precedence and default, and the parsed rules in
+// order. It is computed from the parsed form, so formatting and key order
+// in the file do not change it, and any change to what is enforced does.
+// Receipts carry it as policy_hash: policy_version is free text, this
+// names the exact content a decision was made under.
+func (s *Store) Hash() string {
+	s.mu.RLock()
+	h := s.hash
+	s.mu.RUnlock()
+	if h != "" {
+		return h
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hash == "" {
+		s.hash = s.computeHashLocked()
+	}
+	return s.hash
+}
+
+func (s *Store) computeHashLocked() string {
+	fp := filePolicy{Version: s.version, Precedence: s.precedence, Default: s.defaultDecision, Rules: s.rules}
+	if fp.Precedence == "" {
+		fp.Precedence = PrecedenceOrder
+	}
+	if fp.Default == "" {
+		fp.Default = DefaultEscalate
+	}
+	if fp.Rules == nil {
+		fp.Rules = []Rule{}
+	}
+	data, err := json.Marshal(fp)
+	if err != nil {
+		return "" // Rule always marshals; an empty hash is never cached as valid
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // WriteFile atomically persists the store in the canonical file format

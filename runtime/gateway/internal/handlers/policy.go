@@ -127,6 +127,7 @@ func (h *PolicyHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/policy/rollback", h.handleRollback)
 	mux.HandleFunc("POST /v1/policy/restore", h.handleRestore)
 	mux.HandleFunc("PUT /v1/policy", h.handleDistribute)
+	mux.HandleFunc("GET /v1/policy", h.handleGetPolicy)
 }
 
 type ValidateRequest struct {
@@ -541,6 +542,19 @@ func (h *PolicyHandler) handleCandidatePromote(w http.ResponseWriter, r *http.Re
 		"status":  "promoted",
 		"version": h.store.Version(),
 		"rules":   len(h.store.ListRules()),
+	})
+}
+
+// handleGetPolicy names the live policy: its version label and its
+// content hash, the value receipts carry as policy_hash.
+func (h *PolicyHandler) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"version":     h.store.Version(),
+		"policy_hash": h.store.Hash(),
+		"precedence":  h.store.Precedence(),
+		"default":     h.store.DefaultDecision(),
+		"rule_count":  len(h.store.ListRules()),
 	})
 }
 

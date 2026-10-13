@@ -32,6 +32,7 @@ func TestRuntimeStatusEndpoint_MixedState(t *testing.T) {
 	execStore := execution.NewInMemoryStore()
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	eventStore := events.NewInMemoryStore(500)
 	capsStore := capabilities.NewInMemoryStore()
 
@@ -271,6 +272,7 @@ func TestRuntimeStatusEndpoint_OnlyApprovals(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 
 	// Create some approvals
 	approvalSvc.CreateApproval(&approval.CreateRequest{
@@ -405,6 +407,7 @@ func TestRuntimeStatusEndpoint_OldestTimestamps(t *testing.T) {
 	contStore := continuation.NewInMemoryStore()
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 
 	now := time.Now().UTC()
 

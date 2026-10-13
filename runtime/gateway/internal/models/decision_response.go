@@ -86,11 +86,14 @@ type AnomalySignal struct {
 }
 
 type ReceiptStub struct {
-	ReceiptID         string  `json:"receipt_id"`
-	ActionDigest      string  `json:"action_digest"`
-	ActionType        string  `json:"action_type"`
-	Resource          string  `json:"resource"`
-	PolicyVersion     string  `json:"policy_version"`
+	ReceiptID     string `json:"receipt_id"`
+	ActionDigest  string `json:"action_digest"`
+	ActionType    string `json:"action_type"`
+	Resource      string `json:"resource"`
+	PolicyVersion string `json:"policy_version"`
+	// PolicyHash names the exact policy content the decision was made
+	// under (policy.Store.Hash); policy_version is free text.
+	PolicyHash        string  `json:"policy_hash,omitempty"`
 	TrustContextScore float64 `json:"trust_context_score,omitempty"`
 	// TrustEpoch is the domain revocation epoch the decision was made
 	// against (P2.3.4) — the receipt binds the authority view, so a
@@ -100,23 +103,26 @@ type ReceiptStub struct {
 }
 
 type Receipt struct {
-	ReceiptID         string          `json:"receipt_id"`
-	DecisionID        string          `json:"decision_id"`
-	ActionDigest      string          `json:"action_digest"`
-	ActionType        string          `json:"action_type"`
-	Resource          string          `json:"resource"`
-	AgentID           string          `json:"agent_id,omitempty"`
-	CapabilityLeaseID string          `json:"capability_lease_id,omitempty"`
-	Decision          string          `json:"decision"`
-	PolicyVersion     string          `json:"policy_version"`
-	TrustScore        float64         `json:"trust_score"`
-	TrustLevel        TrustLevel      `json:"trust_level,omitempty"`
-	AnomalySignals    []AnomalySignal `json:"anomaly_signals,omitempty"`
-	ShieldActive      bool            `json:"shield_active,omitempty"`
-	Restricted        bool            `json:"restricted,omitempty"`
-	RiskCount         int             `json:"risk_count,omitempty"`
-	ApprovalID        string          `json:"approval_id,omitempty"`
-	ApprovalDecision  string          `json:"approval_decision,omitempty"`
+	ReceiptID         string `json:"receipt_id"`
+	DecisionID        string `json:"decision_id"`
+	ActionDigest      string `json:"action_digest"`
+	ActionType        string `json:"action_type"`
+	Resource          string `json:"resource"`
+	AgentID           string `json:"agent_id,omitempty"`
+	CapabilityLeaseID string `json:"capability_lease_id,omitempty"`
+	Decision          string `json:"decision"`
+	PolicyVersion     string `json:"policy_version"`
+	// PolicyHash is the content hash of the policy in force (see
+	// ReceiptStub). Covered by GatewaySig when present.
+	PolicyHash       string          `json:"policy_hash,omitempty"`
+	TrustScore       float64         `json:"trust_score"`
+	TrustLevel       TrustLevel      `json:"trust_level,omitempty"`
+	AnomalySignals   []AnomalySignal `json:"anomaly_signals,omitempty"`
+	ShieldActive     bool            `json:"shield_active,omitempty"`
+	Restricted       bool            `json:"restricted,omitempty"`
+	RiskCount        int             `json:"risk_count,omitempty"`
+	ApprovalID       string          `json:"approval_id,omitempty"`
+	ApprovalDecision string          `json:"approval_decision,omitempty"`
 	// TrustEpoch is the revocation epoch the decision was made against
 	// (P2.3.4). Informational — outside the HMAC preimage so adding it
 	// never invalidates already-signed receipts. Bound into GatewaySig

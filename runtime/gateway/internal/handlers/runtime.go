@@ -402,6 +402,7 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 		Resource:      resp.ReceiptStub.Resource,
 		Decision:      string(resp.Decision),
 		PolicyVersion: resp.ReceiptStub.PolicyVersion,
+		PolicyHash:    resp.ReceiptStub.PolicyHash,
 		TrustScore:    resp.ReceiptStub.TrustContextScore,
 		TrustLevel:    resp.TrustLevel,
 		TrustEpoch:    resp.ReceiptStub.TrustEpoch,

@@ -33,6 +33,7 @@ func setupSLAHandler(t *testing.T) (*Handler, *continuation.InMemoryStore, *appr
 	execStore := execution.NewInMemoryStore()
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	eventStore := events.NewInMemoryStore(500)
 	capsStore := capabilities.NewInMemoryStore()
 
@@ -60,6 +61,7 @@ func TestRuntimeStatus_SLABreach_UnderThreshold_NoBreach(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	contStore := continuation.NewInMemoryStore()
 
 	h.SetContinuationStore(contStore)
@@ -118,6 +120,7 @@ func TestRuntimeStatus_SLABreach_OverThreshold_BreachCounted(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	contStore := continuation.NewInMemoryStore()
 
 	h.SetContinuationStore(contStore)
@@ -186,6 +189,7 @@ func TestRuntimeStatus_SLABreach_EmptyStores_ZeroCounts(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	contStore := continuation.NewInMemoryStore()
 
 	h.SetContinuationStore(contStore)
@@ -226,6 +230,7 @@ func TestRuntimeHealthEndpoint_NoBreach_Healthy(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	contStore := continuation.NewInMemoryStore()
 
 	h.SetContinuationStore(contStore)
@@ -262,6 +267,7 @@ func TestRuntimeHealthEndpoint_WithBreach_Unhealthy(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	contStore := continuation.NewInMemoryStore()
 
 	h.SetContinuationStore(contStore)
@@ -344,6 +350,7 @@ func TestRuntimeStatus_SLABreach_SomeItemsNotBreaching(t *testing.T) {
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalSvc := approval.NewService(approvalStore)
+	approvalSvc.SetPendingTTL(0) // synthetic, backdated records: the SLA views, not expiry, are under test
 	contStore := continuation.NewInMemoryStore()
 
 	h.SetContinuationStore(contStore)

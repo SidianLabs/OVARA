@@ -117,6 +117,14 @@ func SignedPayload(r *models.Receipt) []byte {
 	// signing, and binding it means stripping/forging the sig_v1 field
 	// invalidates the whole signed receipt — not just the HMAC check.
 	out = append(out, lp([]byte(r.Signature))...)
+	// policy_hash came later. It is appended only when set, so receipts
+	// signed before it existed keep their preimage; when set, adding,
+	// changing or stripping it changes the preimage length or content
+	// and the signature no longer verifies.
+	if r.PolicyHash != "" {
+		out = append(out, lp([]byte("policy_hash"))...)
+		out = append(out, lp([]byte(r.PolicyHash))...)
+	}
 	return out
 }
 
