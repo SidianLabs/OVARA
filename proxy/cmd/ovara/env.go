@@ -51,6 +51,7 @@ func cmdEnv(args []string) error {
 	}
 	shell := fs.String("shell", def, "bash | powershell | cmd")
 	host := fs.String("host", "127.0.0.1", "address the agent uses to reach the proxy")
+	keepEnv := fs.Bool("keep-env", false, "do not unset other secret-looking variables (tokens, cloud keys) found in this shell")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -66,7 +67,80 @@ func cmdEnv(args []string) error {
 	if err != nil {
 		return err
 	}
-	return writeEnv(os.Stdout, *shell, vars, notes)
+	if err := writeEnv(os.Stdout, *shell, vars, notes); err != nil {
+		return err
+	}
+	if *keepEnv {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, v := range vars {
+		set[strings.ToUpper(v.name)] = true
+	}
+	return writeUnsets(os.Stdout, *shell, secretEnvNames(os.Environ(), set))
+}
+
+// secretNameParts and secretNamePrefixes pick out variables that look like
+// credentials: an agent started from this shell would inherit them, and
+// Ovara cannot keep a key out of the agent's hands if it is already there.
+var (
+	secretNameParts    = []string{"TOKEN", "SECRET", "API_KEY", "APIKEY", "ACCESS_KEY", "PRIVATE_KEY", "PASSWORD", "PASSWD", "CREDENTIAL"}
+	secretNamePrefixes = []string{"AWS_", "AZURE_", "GH_", "GOOGLE_APPLICATION_CREDENTIALS"}
+	envNameOK          = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+// secretEnvNames returns the sorted names in environ ("NAME=value") that
+// look like credentials, except those in skip (upper-case names Ovara sets
+// itself, such as the placeholders). Names that are not plain identifiers
+// are left out: they cannot be written safely into a shell line.
+func secretEnvNames(environ []string, skip map[string]bool) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		up := strings.ToUpper(name)
+		if name == "" || skip[up] || seen[up] || !envNameOK.MatchString(name) {
+			continue
+		}
+		hit := false
+		for _, p := range secretNameParts {
+			hit = hit || strings.Contains(up, p)
+		}
+		for _, p := range secretNamePrefixes {
+			hit = hit || strings.HasPrefix(up, p)
+		}
+		if hit {
+			seen[up] = true
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// writeUnsets prints the lines that remove names from the agent's shell.
+func writeUnsets(w io.Writer, shell string, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	var line func(string) string
+	comment := "#"
+	switch strings.ToLower(shell) {
+	case "bash", "sh", "zsh":
+		line = func(n string) string { return "unset " + n }
+	case "powershell", "pwsh", "ps":
+		line = func(n string) string { return "Remove-Item Env:" + n + " -ErrorAction SilentlyContinue" }
+	case "cmd":
+		comment = "rem"
+		line = func(n string) string { return "set \"" + n + "=\"" }
+	default:
+		return fmt.Errorf("unknown -shell %q (use bash, powershell or cmd)", shell)
+	}
+	fmt.Fprintf(w, "%s other secrets in this shell, removed so the agent does not inherit them (keep them with -keep-env)\n", comment)
+	for _, n := range names {
+		fmt.Fprintln(w, line(n))
+	}
+	return nil
 }
 
 type envVar struct{ name, value, comment string }
@@ -185,7 +259,9 @@ func writeEnv(w io.Writer, shell string, vars []envVar, notes []string) error {
 	switch strings.ToLower(shell) {
 	case "bash", "sh", "zsh":
 		comment = "#"
-		line = func(v envVar) string { return "export " + v.name + "='" + strings.ReplaceAll(v.value, "'", `'\''`) + "'" }
+		line = func(v envVar) string {
+			return "export " + v.name + "='" + strings.ReplaceAll(v.value, "'", `'\''`) + "'"
+		}
 	case "powershell", "pwsh", "ps":
 		comment = "#"
 		line = func(v envVar) string { return "$env:" + v.name + " = '" + strings.ReplaceAll(v.value, "'", "''") + "'" }
