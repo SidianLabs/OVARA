@@ -6,7 +6,6 @@ on:
     paths:
       - "sdk/**"
       - "integrations/**"
-      - "policy/**"
   pull_request:
 
 jobs:
@@ -18,7 +17,6 @@ jobs:
           - sdk/typescript
           - integrations/mcp
           - integrations/openai
-          - policy/compiler
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
