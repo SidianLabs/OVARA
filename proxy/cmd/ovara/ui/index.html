@@ -29,6 +29,10 @@
           padding: 14px 16px; margin-bottom: 10px; }
   .pending { border-left: 4px solid var(--wait); }
   .what { font-size: 16px; font-weight: 600; word-break: break-word; }
+  .dest { margin-top: 4px; word-break: break-word; }
+  .dest strong { font-size: 18px; }
+  .dest.untrusted { color: var(--deny); }
+  .warn { color: var(--deny); font-size: 13px; margin-top: 8px; }
   .meta { color: var(--muted); font-size: 13px; margin-top: 4px; word-break: break-all; }
   .detail { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; margin-top: 4px; padding: 4px 8px; border-radius: 4px; background: rgba(127,127,127,.12); word-break: break-all; white-space: pre-wrap; }
   .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
@@ -100,7 +104,7 @@
   var lastSig = "", armedAt = 0, ARM_MS = 800;
   function renderPending(list) {
     var box = document.getElementById("pending");
-    var sig = JSON.stringify(list.map(function (a) { return [a.id, a.what, a.raw, a.details, a.trust_host]; }));
+    var sig = JSON.stringify(list.map(function (a) { return [a.id, a.what, a.raw, a.details, a.trust_host, a.destination, a.destination_note]; }));
     if (sig === lastSig) {
       Array.prototype.forEach.call(box.querySelectorAll("[data-created]"), function (m) { m.textContent = m.dataset.prefix + ago(m.dataset.created) + m.dataset.suffix; });
       return;
@@ -113,6 +117,13 @@
     list.forEach(function (a) {
       var c = el("div", "card pending");
       c.appendChild(el("div", "what", "The agent wants to " + a.what));
+      if (a.destination) {
+        // who receives it, on its own line: a look-alike URL leads with a
+        // trusted name and hides the real one in the middle
+        var dst = el("div", "dest" + (a.destination_trusted ? "" : " untrusted"));
+        dst.append("→ to ", el("strong", null, a.destination), " " + (a.destination_note || ""));
+        c.appendChild(dst);
+      }
       var meta = el("div", "meta");
       meta.dataset.prefix = a.raw + "  ·  "; meta.dataset.created = a.created_at; meta.dataset.suffix = a.agent ? "  ·  " + a.agent : "";
       meta.textContent = meta.dataset.prefix + ago(a.created_at) + meta.dataset.suffix;

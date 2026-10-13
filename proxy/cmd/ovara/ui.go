@@ -64,6 +64,12 @@ func (u *uiServer) handler() http.Handler {
 			// TrustHost is set when the request is a read from a named https
 			// host, i.e. when "approve and trust this host for reads" applies.
 			TrustHost string `json:"trust_host,omitempty"`
+			// Destination is the registrable domain the request goes to,
+			// shown large on its own; DestinationNote says what host that
+			// is and whether it is trusted by default.
+			Destination     string `json:"destination,omitempty"`
+			DestinationNote string `json:"destination_note,omitempty"`
+			DestTrusted     bool   `json:"destination_trusted,omitempty"`
 		}
 		out := []item{}
 		for _, a := range list {
@@ -71,7 +77,13 @@ func (u *uiServer) handler() http.Handler {
 				continue
 			}
 			th, _ := trustableHost(a.Resource)
-			out = append(out, item{a.ApprovalID, describe(a.Resource), a.Resource, a.AgentID, a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), contextLines(a), th})
+			it := item{ID: a.ApprovalID, What: describe(a.Resource), Raw: a.Resource, Agent: a.AgentID,
+				CreatedAt: a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), Details: contextLines(a), TrustHost: th}
+			if d, ok := destinationOf(a.Resource); ok {
+				it.Destination, it.DestTrusted = d.Domain, d.Trusted
+				it.DestinationNote = strings.TrimPrefix(d.line(), "→ to "+d.Domain+" ")
+			}
+			out = append(out, it)
 		}
 		writeJSONResp(w, out)
 	}))

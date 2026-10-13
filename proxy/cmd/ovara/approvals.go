@@ -360,6 +360,9 @@ func printApproval(w io.Writer, a pendingApproval) {
 	}
 	fmt.Fprintln(w, "┌─ approval needed ─────────────────────────────────────")
 	fmt.Fprintf(w, "│ agent wants to: %s\n", describe(a.Resource))
+	if d, ok := destinationOf(a.Resource); ok {
+		fmt.Fprintf(w, "│ destination:    %s\n", d.line())
+	}
 	fmt.Fprintf(w, "│ raw request:    %s\n", a.Resource)
 	for _, l := range contextLines(a) {
 		fmt.Fprintf(w, "│ %s\n", l)
