@@ -611,3 +611,20 @@ func TestApprovalInTheLastPollIntervalCounts(t *testing.T) {
 		t.Fatalf("approved before the deadline: %d hits=%d", rec.Code, up.hits.Load())
 	}
 }
+
+// A clean install hits a registry thousands of times a minute; it must not
+// pause at the default allowance, while any other host still does.
+func TestPackageRegistriesGetALargerAllowance(t *testing.T) {
+	b := newEgressBudget(10, 1<<20)
+	for i := 0; i < 50; i++ {
+		if !b.take("registry.npmjs.org", 10) {
+			t.Fatalf("registry request %d paused under a 10x allowance", i)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		b.take("example.org", 10)
+	}
+	if b.take("example.org", 10) {
+		t.Fatal("an ordinary host kept going past its allowance")
+	}
+}

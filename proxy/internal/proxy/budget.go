@@ -24,6 +24,21 @@ const (
 	budgetWindow          = time.Minute
 )
 
+// Package registries see thousands of small requests during one clean
+// install (metadata plus every tarball), all of them reads of names the
+// install already chose. They start with a larger allowance so an ordinary
+// install does not pause; data hidden in fake package names still meets the
+// same limit, just later.
+const registryBudgetMult = 10
+
+var packageRegistryHosts = map[string]bool{
+	"registry.npmjs.org": true, "registry.yarnpkg.com": true,
+	"pypi.org": true, "files.pythonhosted.org": true,
+	"proxy.golang.org": true, "sum.golang.org": true,
+	"index.crates.io": true, "static.crates.io": true,
+	"rubygems.org": true, "repo.maven.apache.org": true, "repo1.maven.org": true,
+}
+
 type hostBudget struct {
 	start   time.Time
 	reqs    int
@@ -66,6 +81,9 @@ func (b *egressBudget) host(host string) *hostBudget {
 	h := b.hosts[host]
 	if h == nil {
 		h = &hostBudget{mult: 1}
+		if packageRegistryHosts[host] {
+			h.mult = registryBudgetMult
+		}
 		b.hosts[host] = h
 	}
 	if now := b.now(); now.Sub(h.start) >= budgetWindow {
