@@ -67,6 +67,7 @@ func main() {
 		srv.SetGitGate(*cfg.GitGate)
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
+	srv.SetModelGate(cfg.ModelGate == nil || *cfg.ModelGate, cfg.ModelHosts)
 	srv.SetClientAuth(cfg.AgentToken)
 	log.Printf("ovara executor proxy on %s (gateway=%s env=%s bindings=%d fail_open=%v client_auth=%v)",
 		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen, cfg.AgentToken != "")

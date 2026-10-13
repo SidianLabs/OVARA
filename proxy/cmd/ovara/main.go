@@ -336,6 +336,7 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 		srv.SetGitGate(*cfg.GitGate)
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
+	srv.SetModelGate(cfg.ModelGate == nil || *cfg.ModelGate, cfg.ModelHosts)
 	srv.SetClientAuth(cfg.AgentToken)
 	return srv, rootCA, nil
 }

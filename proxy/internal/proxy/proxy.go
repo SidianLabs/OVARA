@@ -46,6 +46,8 @@ type Server struct {
 	unauthLimiter   *rateLimiter
 	escalateSem     chan struct{} // caps requests parked awaiting approval
 	pkgGate         *packageGate  // strict installs (packages.go); nil = off
+	modelGateOff    bool          // model-API body check (modelgate.go) disabled
+	modelHosts      []string      // hosts the model gate applies to; nil = defaults
 }
 
 // maxPendingEscalations bounds how many requests may be held waiting for a
@@ -64,7 +66,7 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 		escalatePoll:   2 * time.Second,
 		unauthLimiter:  newRateLimiter(20, 1),
 		escalateSem:    make(chan struct{}, maxPendingEscalations),
-		dialer:        &net.Dialer{Timeout: 10 * time.Second},
+		dialer:         &net.Dialer{Timeout: 10 * time.Second},
 		transport: &http.Transport{
 			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 			MaxIdleConns:          100,
@@ -304,6 +306,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 		return
 	}
+	r.Method = strings.ToUpper(r.Method)
 	if r.Method == http.MethodConnect {
 		s.handleConnect(w, r)
 		return
@@ -431,9 +434,9 @@ func (c *eofConn) Close() error {
 }
 
 type oneShotListener struct {
-	conn net.Conn
-	done chan struct{}
-	once *sync.Once // shared with the wrapped eofConn
+	conn   net.Conn
+	done   chan struct{}
+	once   *sync.Once // shared with the wrapped eofConn
 	served bool
 }
 
@@ -453,6 +456,10 @@ func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }
 
 // handleRequest evaluates, executes, and receipts one request.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// One spelling of the method for every check below. The gateway matches
+	// methods case-insensitively; a guard that compared against "GET" while
+	// policy matched "get" would let the request through unguarded.
+	r.Method = strings.ToUpper(r.Method)
 	// Query strings can carry secrets (tokens, SAS sigs) — the gateway and
 	// the receipt log get host+path only.
 	url := redactURL(r.URL)
@@ -469,17 +476,19 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// is not yet on disk), or on return for every path that never reaches
 	// that point.
 	var recordOnce sync.Once
-	record := func() { recordOnce.Do(func() {
-		if _, err := s.chain.Record(r.Method, url, decision, status, approvalID); err != nil {
-			// A transit without a receipt is a boundary breach: scream to
-			// stderr in fail-closed mode, not just the log stream.
-			msg := fmt.Sprintf("receipt record failed for %s %s: %v", r.Method, url, err)
-			log.Printf("CRITICAL: %s", msg)
-			if !s.failOpen {
-				fmt.Fprintf(os.Stderr, "CRITICAL: %s\n", msg)
+	record := func() {
+		recordOnce.Do(func() {
+			if _, err := s.chain.Record(r.Method, url, decision, status, approvalID); err != nil {
+				// A transit without a receipt is a boundary breach: scream to
+				// stderr in fail-closed mode, not just the log stream.
+				msg := fmt.Sprintf("receipt record failed for %s %s: %v", r.Method, url, err)
+				log.Printf("CRITICAL: %s", msg)
+				if !s.failOpen {
+					fmt.Fprintf(os.Stderr, "CRITICAL: %s\n", msg)
+				}
 			}
-		}
-		}) }
+		})
+	}
 	defer record()
 
 	failedOpen := false
@@ -509,6 +518,9 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// (it can hold secrets), so shape is the only signal we have.
 	if d.Decision == "allow" && !failedOpen {
 		if why := readCarriesData(r); why != "" {
+			d.Decision = "deny"
+			d.ReasonCodes = append(d.ReasonCodes, why)
+		} else if why := s.modelRequestRefusal(r); why != "" {
 			d.Decision = "deny"
 			d.ReasonCodes = append(d.ReasonCodes, why)
 		}
@@ -601,6 +613,8 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var injected [][]byte
 	if r.URL.Scheme == "https" && !failedOpen {
 		if headers := creds.Match(s.bindings, host); headers != nil {
+			// The agent's own credentials never ride along with ours.
+			stripCredentialHeaders(r.Header)
 			for k, v := range headers {
 				r.Header.Set(k, v)
 				injected = append(injected, secretTargets(k, v)...)
@@ -643,7 +657,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	status = resp.StatusCode
 	stripHopHeaders(resp.Header)
 	if len(injected) > 0 {
-		if ce := resp.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
+		if ce := encodedValue(resp.Header.Values("Content-Encoding")); ce != "" {
 			// Upstream encoded the body although we did not ask for it:
 			// it cannot be scrubbed, so it is not delivered.
 			decision = "deny"
@@ -687,6 +701,20 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			w.Header()[http.TrailerPrefix+k] = append(w.Header()[http.TrailerPrefix+k], v)
 		}
 	}
+}
+
+// encodedValue returns the first Content-Encoding value that is not identity,
+// or "". Every value counts: a header list of "identity" then "gzip" is a
+// gzip body.
+func encodedValue(vals []string) string {
+	for _, v := range vals {
+		for _, tok := range strings.Split(v, ",") {
+			if t := strings.TrimSpace(tok); t != "" && !strings.EqualFold(t, "identity") {
+				return t
+			}
+		}
+	}
+	return ""
 }
 
 // awaitEscalation registers an approval request for an escalated decision and

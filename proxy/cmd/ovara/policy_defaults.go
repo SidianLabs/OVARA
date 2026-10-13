@@ -40,9 +40,16 @@ func defaultPolicyRules() []map[string]any {
 		rules = append(rules, rule("POST https://"+h+"/*git-upload-pack", "allow", "git clone/fetch/pull from "+h+" is reading"))
 	}
 	rules = append(rules,
-		// The agent must be able to talk to its own model provider.
-		rule("POST https://api.anthropic.com/*", "allow", "The agent may call the Anthropic API"),
-		rule("POST https://api.openai.com/*", "allow", "The agent may call the OpenAI API"),
+		// The agent must be able to talk to its own model provider, and only
+		// that: the inference endpoints. Files, batches, fine-tunes, vector
+		// stores and admin calls on the same hosts are writes and pause like
+		// any other. The proxy also checks these bodies (modelgate.go) and
+		// refuses features that make the provider fetch a URL for the agent.
+		rule("POST https://api.anthropic.com/v1/messages", "allow", "The agent may call its model (Anthropic Messages API)"),
+		rule("POST https://api.anthropic.com/v1/messages/count_tokens", "allow", "The agent may count tokens (Anthropic)"),
+		rule("POST https://api.openai.com/v1/responses", "allow", "The agent may call its model (OpenAI Responses API)"),
+		rule("POST https://api.openai.com/v1/chat/completions", "allow", "The agent may call its model (OpenAI Chat Completions)"),
+		rule("POST https://api.openai.com/v1/embeddings", "allow", "The agent may compute embeddings (OpenAI)"),
 		// `npm install` runs `npm audit` automatically: a POST that sends the
 		// package names and versions being installed to the registry. It reads
 		// advisories, it writes nothing, and without this rule every agent

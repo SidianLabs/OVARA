@@ -48,6 +48,14 @@ type Config struct {
 
 	SensitiveHosts []string `json:"sensitive_hosts"` // host globs that always escalate (pivot-risk services)
 
+	// ModelGate checks the JSON body of requests to model-provider APIs and
+	// refuses features that make the provider fetch a URL or connect to a
+	// server on the agent's behalf (MCP connectors, web fetch/search tools,
+	// images or documents given by URL). Default ON; ModelHosts overrides the
+	// hosts it applies to (default api.anthropic.com, api.openai.com).
+	ModelGate  *bool    `json:"model_gate"`
+	ModelHosts []string `json:"model_hosts"`
+
 	Credentials []creds.Binding `json:"credentials"`
 }
 

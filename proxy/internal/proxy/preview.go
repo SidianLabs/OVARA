@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -35,18 +36,40 @@ var secretShapes = []*regexp.Regexp{
 	regexp.MustCompile(`[A-Za-z0-9+/=_-]{40,}`),
 }
 
-// redactPreview masks anything that looks like a credential. It errs on the
-// side of hiding: the approver needs to see WHERE data goes and roughly WHAT it
-// is, not the secret itself.
+// redactPreview hides the VALUE of anything that looks like a credential or an
+// encoded blob, but never hides the fact that one is there: each is replaced
+// by a visible marker with its size. A silent "[redacted]" would read as
+// "Ovara took care of it" when it means "something secret-shaped is being
+// sent", which is exactly what the approver must notice.
 func redactPreview(s string) string {
+	out, _ := redactPreviewCount(s)
+	return out
+}
+
+// redactPreviewCount is redactPreview plus how many values it masked.
+func redactPreviewCount(s string) (string, int) {
+	n := 0
 	for i, re := range secretShapes {
-		if i == 6 {
-			s = re.ReplaceAllString(s, "${1}[redacted]")
-		} else {
-			s = re.ReplaceAllString(s, "[redacted]")
+		switch i {
+		case 6: // key=value for a secret-sounding key: keep the key
+			s = re.ReplaceAllStringFunc(s, func(m string) string {
+				sub := re.FindStringSubmatch(m)
+				n++
+				return sub[1] + fmt.Sprintf("[⚠ secret-named value, %d chars]", len(m)-len(sub[1]))
+			})
+		case 7:
+			s = re.ReplaceAllStringFunc(s, func(m string) string {
+				n++
+				return fmt.Sprintf("[⚠ opaque encoded blob, %d chars]", len(m))
+			})
+		default:
+			s = re.ReplaceAllStringFunc(s, func(m string) string {
+				n++
+				return fmt.Sprintf("[⚠ credential-shaped value, %d chars]", len(m))
+			})
 		}
 	}
-	return s
+	return s, n
 }
 
 func truncate(s string, n int) string {
@@ -75,8 +98,11 @@ func isTextual(contentType string) bool {
 // the whole stream. It never blocks on a body of unknown length.
 func requestContext(r *http.Request) map[string]string {
 	out := map[string]string{}
+	masked := 0
 	if q := r.URL.RawQuery; q != "" {
-		out["query"] = truncate(redactPreview(q), maxPreviewQuery)
+		rq, n := redactPreviewCount(q)
+		masked += n
+		out["query"] = truncate(rq, maxPreviewQuery)
 	}
 	for _, h := range methodOverrideHeaders {
 		if v := r.Header.Get(h); v != "" {
@@ -107,12 +133,17 @@ func requestContext(r *http.Request) map[string]string {
 			io.Closer
 		}{io.MultiReader(bytes.NewReader(buf[:got]), rest), rest}
 		if got > 0 && utf8.Valid(buf[:got]) {
-			p := truncate(redactPreview(string(buf[:got])), maxPreviewBody)
+			rp, n := redactPreviewCount(string(buf[:got]))
+			masked += n
+			p := truncate(rp, maxPreviewBody)
 			if r.ContentLength > int64(got) {
 				p += " …"
 			}
 			out["body_preview"] = p
 		}
+	}
+	if masked > 0 {
+		out["warning"] = fmt.Sprintf("this request carries %d credential-shaped or encoded value(s), masked below: data in this form may be leaving", masked)
 	}
 	if len(out) == 0 {
 		return nil
