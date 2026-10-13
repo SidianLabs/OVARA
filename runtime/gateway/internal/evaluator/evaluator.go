@@ -122,6 +122,11 @@ func (e *Evaluator) PolicyVersion() string {
 	return e.policyStore.Version()
 }
 
+// PolicyHash is the content hash of the live policy (policy.Store.Hash).
+func (e *Evaluator) PolicyHash() string {
+	return e.policyStore.Hash()
+}
+
 type EvalResult struct {
 	Decision         models.Decision
 	ReasonCodes      []models.ReasonCode
@@ -272,6 +277,7 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 	var requiresApproval bool
 	trustScore := 0.5
 	policyVersion := e.policyStore.Version()
+	policyHash := e.policyStore.Hash()
 
 	trustResult := trust.NewEvaluator(e.shieldStore).Evaluate(req)
 
@@ -479,6 +485,7 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 	}
 
 	receiptStub := e.buildReceiptStub(req, decision, policyVersion, trustScore)
+	receiptStub.PolicyHash = policyHash
 
 	if span != nil {
 		observe.AddSpanAttribute(span, "policy_version", policyVersion)

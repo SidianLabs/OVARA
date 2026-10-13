@@ -49,6 +49,31 @@ func TestPolicyHandler_ListRules(t *testing.T) {
 	}
 }
 
+// GET /v1/policy names the live policy by its content hash.
+func TestPolicyHandler_GetPolicyHash(t *testing.T) {
+	store := policy.NewStore("v1-test")
+	h := NewPolicyHandler(evaluator.New(store), store)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/policy", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Version    string `json:"version"`
+		PolicyHash string `json:"policy_hash"`
+		RuleCount  int    `json:"rule_count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.PolicyHash == "" || got.PolicyHash != store.Hash() || got.Version != "v1-test" || got.RuleCount != len(store.ListRules()) {
+		t.Fatalf("GET /v1/policy: %+v (store hash %s)", got, store.Hash())
+	}
+}
+
 func TestPolicyHandler_MethodNotAllowed(t *testing.T) {
 	h := NewPolicyHandler(nil, policy.NewStore("test"))
 

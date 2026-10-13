@@ -39,6 +39,8 @@ type Store struct {
 	defaultDecision string // "" = DefaultEscalate
 	rules           []Rule
 	filePath        string
+	// hash caches Hash(); every mutation clears it.
+	hash string
 }
 
 // How overlapping rules resolve.
@@ -138,6 +140,7 @@ func (s *Store) ClearRules() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rules = nil
+	s.hash = ""
 }
 
 func (s *Store) Version() string {
@@ -161,6 +164,7 @@ func (s *Store) SetPrecedence(p string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.precedence = p
+	s.hash = ""
 }
 
 // DefaultDecision is what applies when no rule matches: escalate unless
@@ -178,6 +182,7 @@ func (s *Store) SetDefaultDecision(d string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.defaultDecision = d
+	s.hash = ""
 }
 
 // RulesFor returns every rule whose action_type and environment admit the
@@ -222,6 +227,7 @@ func (s *Store) Reload() error {
 	s.version = newStore.version
 	s.precedence = newStore.precedence
 	s.defaultDecision = newStore.defaultDecision
+	s.hash = ""
 	return nil
 }
 
@@ -253,6 +259,7 @@ func (s *Store) AddRule(r Rule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rules = append(s.rules, r)
+	s.hash = ""
 }
 
 func (s *Store) ListRules() []Rule {
@@ -284,6 +291,7 @@ func (s *Store) ReloadFromStore(other *Store) error {
 	s.version = other.Version()
 	s.precedence = other.precedence
 	s.defaultDecision = other.defaultDecision
+	s.hash = ""
 	return nil
 }
 
@@ -291,6 +299,7 @@ func (s *Store) SetVersion(v string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.version = v
+	s.hash = ""
 }
 
 func defaultRules() []Rule {
