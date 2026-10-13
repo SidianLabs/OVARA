@@ -56,7 +56,10 @@ func main() {
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	log.Printf("anchoring chain head to %s (every=%d url=%q)", anchorFile, max(anchorEvery, 1), os.Getenv("OVARA_ANCHOR_URL"))
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	bindings, skipped := creds.LoadReport(cfg.Credentials)
+	bindings, skipped, err := creds.LoadReport(cfg.Credentials)
+	if err != nil {
+		log.Fatalf("credentials: %v", err)
+	}
 	for _, s := range skipped {
 		log.Printf("credential binding for %s skipped: %v not set", s.Host, s.Missing)
 	}

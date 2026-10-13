@@ -62,7 +62,7 @@ func TestAgentCredentialHeadersStrippedOnBoundHost(t *testing.T) {
 	}))
 	defer up.Close()
 	f := newFixture(t, "allow", []creds.Binding{
-		{Host: mustHost(t, up.URL), Headers: map[string]string{"X-Api-Key": "real-key-123456"}},
+		{Host: mustHostPort(t, up.URL), Headers: map[string]string{"X-Api-Key": "real-key-123456"}},
 	})
 	resp, _ := tunnel(t, f.srv, f.ca, up, map[string]string{
 		"Authorization":   "Bearer attacker-key",

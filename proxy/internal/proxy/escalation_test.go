@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -182,7 +182,7 @@ func TestFailOpenNeverInjectsCredentials(t *testing.T) {
 		fmt.Fprint(w, "ok")
 	}))
 	defer up.Close()
-	srv.bindings = []creds.Binding{{Host: mustHost(t, up.URL), Headers: map[string]string{"Authorization": "Bearer REAL-SECRET-VALUE"}}}
+	srv.bindings = []creds.Binding{{Host: mustHostPort(t, up.URL), Headers: map[string]string{"Authorization": "Bearer REAL-SECRET-VALUE"}}}
 	srv.transport.TLSClientConfig.InsecureSkipVerify = true
 
 	rec := httptest.NewRecorder()

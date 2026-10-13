@@ -349,7 +349,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleConnect(w, r)
 		return
 	}
-	// Plain-HTTP proxy request (absolute URI). Execute directly.
+	// Plain proxy request (absolute URI). An https:// one is TLS to the
+	// upstream just like a CONNECT tunnel, so the same port rule holds.
+	if p := r.URL.Port(); s.connectPort443 && strings.EqualFold(r.URL.Scheme, "https") && p != "" && p != "443" {
+		s.recordDenied(r.Method, r.URL.Scheme+"://"+r.URL.Host)
+		http.Error(w, "https requests are limited to port 443", http.StatusForbidden)
+		return
+	}
 	s.handleRequest(w, r)
 }
 
@@ -720,9 +726,20 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// nothing is injected: secrets must never transit in cleartext.
 	// Fail-open lets traffic through without a policy decision; it must
 	// never also hand that traffic the real credentials.
+	//
+	// Hop-by-hop headers go first — notably Upgrade/Connection, which would
+	// otherwise turn one approved GET into an uninspected byte stream — so
+	// that a Connection token cannot name, and remove, a header added here.
+	stripHopHeaders(r.Header)
 	var injected [][]byte
 	if r.URL.Scheme == "https" && !failedOpen {
-		if headers := creds.Match(s.bindings, host); headers != nil {
+		// A binding names the port it is for (443 unless it says otherwise)
+		// and may be limited to some paths and methods.
+		port := r.URL.Port()
+		if port == "" {
+			port = "443"
+		}
+		if headers := creds.MatchRequest(s.bindings, creds.Request{Host: host, Port: port, Method: r.Method, Path: r.URL.Path}); headers != nil {
 			// The agent's own credentials never ride along with ours.
 			stripCredentialHeaders(r.Header)
 			for k, v := range headers {
@@ -753,9 +770,6 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// checked destination in this single chokepoint covering both the
 	// plain-proxy and MITM paths.
 	r.Host = r.URL.Host
-	// Strip hop-by-hop headers — notably Upgrade/Connection, which would
-	// otherwise turn one approved GET into an uninspected byte stream.
-	stripHopHeaders(r.Header)
 	resp, err := s.transport.RoundTrip(r)
 	if err != nil {
 		decision = "error"

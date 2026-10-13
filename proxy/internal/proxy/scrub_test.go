@@ -60,7 +60,7 @@ func TestTrailerSecretScrubbed(t *testing.T) {
 	defer upstream.Close()
 
 	f := newFixture(t, "allow", []creds.Binding{
-		{Host: mustHost(t, upstream.URL), Headers: map[string]string{"Authorization": secret}},
+		{Host: mustHostPort(t, upstream.URL), Headers: map[string]string{"Authorization": secret}},
 	})
 	req, _ := http.NewRequest("GET", upstream.URL+"/x", nil)
 	rec := httptest.NewRecorder()

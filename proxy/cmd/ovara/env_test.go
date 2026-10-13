@@ -56,7 +56,7 @@ func TestAgentEnv_FromInitDeployment(t *testing.T) {
 	// `ovara run` injects only GitHub (the only key set in its env):
 	// the agent gets a GitHub placeholder and nothing for Anthropic, so a
 	// Claude Code subscription login keeps working.
-	_, skipped := creds.LoadReport(cfg.Credentials)
+	_, skipped, _ := creds.LoadReport(cfg.Credentials)
 	if err := writeActiveKeys(dir, cfg.Credentials, skipped); err != nil {
 		t.Fatal(err)
 	}

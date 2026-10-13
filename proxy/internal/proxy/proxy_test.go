@@ -128,7 +128,7 @@ func TestConnectMITMInjectsCreds(t *testing.T) {
 	host := mustHost(t, upstream.URL)
 
 	f := newFixture(t, "allow", []creds.Binding{
-		{Host: host, Headers: map[string]string{"Authorization": "Bearer real"}},
+		{Host: target, Headers: map[string]string{"Authorization": "Bearer real"}},
 	})
 	// Trust the test upstream's cert so the proxied TLS succeeds.
 	pool := x509.NewCertPool()

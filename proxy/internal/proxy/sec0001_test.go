@@ -102,7 +102,7 @@ func decodeBody(t *testing.T, resp *http.Response, b []byte) string {
 
 func credFixture(t *testing.T, up *httptest.Server) *fixture {
 	return newFixture(t, "allow", []creds.Binding{
-		{Host: mustHost(t, up.URL), Headers: map[string]string{"Authorization": testSecret}},
+		{Host: mustHostPort(t, up.URL), Headers: map[string]string{"Authorization": testSecret}},
 	})
 }
 
@@ -172,7 +172,7 @@ func TestFailOpen_NoCredentialInjection(t *testing.T) {
 	}
 	deadGW := gateway.New("http://127.0.0.1:1", "", "test")
 	srv := New(c, deadGW, creds.Load([]creds.Binding{
-		{Host: mustHost(t, up.URL), Headers: map[string]string{"Authorization": testSecret}},
+		{Host: mustHostPort(t, up.URL), Headers: map[string]string{"Authorization": testSecret}},
 	}), chain, true /* fail open */)
 	srv.SetPublicEgressOnly(false)
 	srv.SetConnectPort443Only(false)

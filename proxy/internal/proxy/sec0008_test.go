@@ -23,13 +23,13 @@ func TestClientAuth_UnauthenticatedRejected(t *testing.T) {
 	defer upstream.Close()
 
 	f := newFixture(t, "allow", []creds.Binding{
-		{Host: mustHost(t, upstream.URL), Headers: map[string]string{"Authorization": "Bearer real"}},
+		{Host: mustHostPort(t, upstream.URL), Headers: map[string]string{"Authorization": "Bearer real"}},
 	})
 	f.srv.SetClientAuth("proxy-secret")
 
 	for _, variant := range []struct {
-		name  string
-		setH  func(*http.Request)
+		name string
+		setH func(*http.Request)
 	}{
 		{"no header", func(*http.Request) {}},
 		{"wrong basic password", func(r *http.Request) {

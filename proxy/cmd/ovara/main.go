@@ -324,7 +324,10 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	bindings, skipped := creds.LoadReport(cfg.Credentials)
+	bindings, skipped, err := creds.LoadReport(cfg.Credentials)
+	if err != nil {
+		return nil, nil, fmt.Errorf("credentials: %w", err)
+	}
 	logSkippedBindings(skipped)
 	// Tell `ovara env` which keys are really injected (names only).
 	if err := writeActiveKeys(".", cfg.Credentials, skipped); err != nil {
