@@ -77,6 +77,11 @@ type Config struct {
 	EgressBudget *EgressBudget `json:"egress_budget"`
 
 	Credentials []creds.Binding `json:"credentials"`
+
+	// ScopeRepo ("owner/repo"), set by `ovara run -scope-repo` (which
+	// `ovara box` passes for the project it boxes), narrows the GitHub
+	// credentials to that one repository for the run. Not read from the file.
+	ScopeRepo string `json:"-"`
 }
 
 // EgressBudget is the per-host allowance for allowed traffic. Zero fields

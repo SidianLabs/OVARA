@@ -52,6 +52,9 @@ func main() {
 	if anchorFile == "" {
 		anchorFile = "var/anchors.jsonl"
 	}
+	if err := receipts.CheckBeforeResume(cfg.ReceiptsFile, anchorFile, cfg.PubKeyFile); err != nil {
+		log.Fatal(err)
+	}
 	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	log.Printf("anchoring chain head to %s (every=%d url=%q)", anchorFile, max(anchorEvery, 1), os.Getenv("OVARA_ANCHOR_URL"))

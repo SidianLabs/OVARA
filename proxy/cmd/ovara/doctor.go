@@ -7,7 +7,9 @@
 package main
 
 import (
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/receipts"
@@ -221,6 +224,24 @@ func auditDeployment(dir string) []check {
 			}
 		} else {
 			out = append(out, check{f.what, "PASS", f.path})
+		}
+	}
+
+	// The interception CA lives 30 days and is replaced when `ovara run`
+	// starts; a run left up past that would start failing TLS.
+	if raw, err := os.ReadFile(filepath.Join(dir, pcfg.CACertFile)); err == nil {
+		if blk, _ := pem.Decode(raw); blk != nil {
+			if c, err := x509.ParseCertificate(blk.Bytes); err == nil {
+				left := time.Until(c.NotAfter)
+				switch {
+				case left <= 0:
+					out = append(out, check{"CA lifetime", "FAIL", "the interception CA has expired: restart `ovara run` to replace it"})
+				case left < 7*24*time.Hour:
+					out = append(out, check{"CA lifetime", "WARN", fmt.Sprintf("the interception CA expires in %s: restart `ovara run` before then (it is replaced at start)", left.Round(time.Hour))})
+				default:
+					out = append(out, check{"CA lifetime", "PASS", "valid until " + c.NotAfter.Format("2006-01-02")})
+				}
+			}
 		}
 	}
 

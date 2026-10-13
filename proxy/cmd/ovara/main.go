@@ -337,12 +337,25 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	if anchorFile == "" {
 		anchorFile = "var/anchors.jsonl"
 	}
+	if err := receipts.CheckBeforeResume(cfg.ReceiptsFile, anchorFile, cfg.PubKeyFile); err != nil {
+		return nil, nil, err
+	}
 	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
 	bindings, skipped, err := creds.LoadReport(cfg.Credentials)
 	if err != nil {
 		return nil, nil, fmt.Errorf("credentials: %w", err)
+	}
+	if cfg.ScopeRepo != "" {
+		owner, repo, ok := strings.Cut(cfg.ScopeRepo, "/")
+		if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+			return nil, nil, fmt.Errorf("-scope-repo %q: want owner/repo", cfg.ScopeRepo)
+		}
+		for _, h := range []string{"api.github.com", "github.com"} {
+			bindings = creds.ScopeToRepo(bindings, h, owner, repo)
+		}
+		log.Printf("GitHub credentials are limited to %s/%s for this run", owner, repo)
 	}
 	logSkippedBindings(skipped)
 	// Tell `ovara env` which keys are really injected (names only).
@@ -398,6 +411,7 @@ func cmdRun(args []string) error {
 	noUI := fs.Bool("no-ui", false, "run without the approval page (same as -ui off); without it, a page address that cannot be used stops ovara run")
 	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
 	allowUnhardened := fs.Bool("allow-unhardened-boundary", false, "with --boundary: go on when the host side of the boundary cannot be firewalled (neither iptables nor nft on the host); the agent can then reach every service on the host's boundary address")
+	scopeRepo := fs.String("scope-repo", "", "limit the GitHub credentials to one repository (owner/repo) for this run: requests about any other repository go out without the key. `ovara box` sets it for the project it boxes")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
 	server.RepairIdentityRegistry = *repairRegistry
@@ -451,6 +465,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 	log.Printf("gateway healthy at %s", cfg.GatewayURL)
+	cfg.ScopeRepo = *scopeRepo
 	srv, _, err := wire(cfg)
 	if err != nil {
 		return err

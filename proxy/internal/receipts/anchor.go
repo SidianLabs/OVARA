@@ -206,3 +206,22 @@ func readAnchors(path string) ([]Anchor, error) {
 	}
 	return out, nil
 }
+
+// CheckBeforeResume refuses to continue a chain that no longer matches the
+// anchors written while it grew. Appending to a log that was cut short would
+// start a new branch that verifies link by link, so a run must stop and let
+// a person look first. A chain with no anchors yet is fine.
+func CheckBeforeResume(chainPath, anchorPath, pubKeyFile string) error {
+	if fi, err := os.Stat(anchorPath); err != nil || fi.Size() == 0 {
+		return nil
+	}
+	ring, err := LoadKeyRing(pubKeyFile)
+	if err != nil {
+		return fmt.Errorf("receipt keys: %w", err)
+	}
+	res, _ := VerifyWithAnchorsKeys(chainPath, anchorPath, ring)
+	if !res.Valid {
+		return fmt.Errorf("the receipt log %s does not match its anchors (%s at entry %d): it was edited or cut short since the last run. Not appending to it. Keep a copy for investigation, then move %s and %s aside to start a new log", chainPath, res.Reason, res.FailAt, chainPath, anchorPath)
+	}
+	return nil
+}

@@ -269,7 +269,7 @@ func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
 		fmt.Fprintf(w, "integrity: ✗ TAMPERED — %s\n", act.Problem)
 		return fmt.Errorf("receipt chain failed verification")
 	case act.Anchored:
-		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed, unbroken and match their anchors — this log has not been edited or cut short\n", act.Total)
+		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken, and match their anchors — this log has not been edited or cut short\n", act.Total)
 	default:
 		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken (no anchors found, so a log cut short at the end would not be noticed)\n", act.Total)
 	}

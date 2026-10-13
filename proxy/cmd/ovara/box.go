@@ -143,6 +143,7 @@ func cmdBox(args []string) error {
 	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
 	noCommitBack := fs.Bool("no-commit-back", false, "do not offer to bring changes back; keep the workspace")
 	allowBinary := fs.Bool("allow-binary", false, "let binary files the agent added or changed come back (by default they stay in the workspace: a diff cannot show what is in them)")
+	ghScope := fs.String("github-scope", "repo", "repo: the GitHub key only goes with requests about the project's own repository (from its origin remote); all: every request to GitHub gets it")
 	noGate := fs.Bool("no-command-gate", false, "do not check the agent's commands against policy (the network and file boundaries still hold)")
 	var envs, excludes, mounts multiFlag
 	fs.Var(&envs, "env", "extra NAME=value for the agent (repeatable; values that look like keys are refused)")
@@ -322,6 +323,14 @@ func cmdBox(args []string) error {
 	}
 	if pinnedFile != "" {
 		runArgs = append(runArgs, "-package-gate", pinnedFile)
+	}
+	// The agent works on this one project: the GitHub key only goes with
+	// requests about its repository, not every repository the key can see.
+	if *ghScope == "repo" {
+		if or := githubRepoOf(project); or != "" {
+			runArgs = append(runArgs, "-scope-repo", or)
+			fmt.Fprintf(os.Stderr, "==> the GitHub key is limited to %s for this run (-github-scope all to lift it)\n", or)
+		}
 	}
 	run := exec.Command(self, runArgs...) //nolint:gosec // the launcher re-executes itself with flags it validated
 	run.Stdout = os.Stderr
@@ -1168,4 +1177,14 @@ func capToApprovalTTL(dir string, wait time.Duration) time.Duration {
 		return ttl
 	}
 	return wait
+}
+
+// githubRepoOf returns "owner/repo" for a project whose origin remote is on
+// github.com, or "".
+func githubRepoOf(project string) string {
+	out, err := exec.Command("git", "-C", project, "config", "--get", "remote.origin.url").Output() //nolint:gosec // the project path the person gave
+	if err != nil {
+		return ""
+	}
+	return parseGitHubRemote(strings.TrimSpace(string(out)))
 }

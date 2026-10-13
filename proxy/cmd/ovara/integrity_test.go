@@ -184,3 +184,22 @@ func TestTermSafe(t *testing.T) {
 		t.Fatalf("escape byte reached the terminal: %q", buf.String())
 	}
 }
+
+// A run must not append to a log that was cut short since the last run.
+func TestRunRefusesToResumeACutLog(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := deploy(dir, "0", false); err != nil {
+		t.Fatal(err)
+	}
+	chainPath := writeAnchoredChain(t, dir, 4)
+	cfg, _ := config.Load(filepath.Join(dir, "proxy.json"))
+	pub := filepath.Join(dir, cfg.PubKeyFile)
+	anchors := receipts.AnchorPathFor(chainPath)
+	if err := receipts.CheckBeforeResume(chainPath, anchors, pub); err != nil {
+		t.Fatalf("intact log refused: %v", err)
+	}
+	truncateLines(t, chainPath, 2)
+	if err := receipts.CheckBeforeResume(chainPath, anchors, pub); err == nil {
+		t.Fatal("a cut log was accepted for appending")
+	}
+}
