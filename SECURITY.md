@@ -18,6 +18,15 @@ the issue, develop a fix, and agree on a disclosure timeline. We aim to
 acknowledge within 72 hours and ship a fix within 30 days for critical
 issues.
 
+
+## Reviews and releases
+
+[`docs/REVIEW_SCOPE.md`](docs/REVIEW_SCOPE.md) is the brief for an external
+security review (adversary, modes, the code everything depends on, what to
+look at first). [`docs/SECURITY_RELEASE.md`](docs/SECURITY_RELEASE.md) is the
+checklist every security release follows, including private fixes through
+GitHub Security Advisories.
+
 ## Supported Versions
 
 Ovara is pre-release. Security fixes land on `main` first and go into the
