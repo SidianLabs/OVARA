@@ -352,12 +352,17 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 		if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
 			return nil, nil, fmt.Errorf("-scope-repo %q: want owner/repo", cfg.ScopeRepo)
 		}
+		// A GitHub App binding that lists no repositories mints tokens for
+		// this repository only; every GitHub binding is also narrowed to
+		// its paths.
+		bindings = creds.ScopeBrokersToRepo(bindings, repo)
 		for _, h := range []string{"api.github.com", "github.com"} {
 			bindings = creds.ScopeToRepo(bindings, h, owner, repo)
 		}
 		log.Printf("GitHub credentials are limited to %s/%s for this run", owner, repo)
 	}
 	logSkippedBindings(skipped)
+	logBrokeredBindings(bindings)
 	// Tell `ovara env` which keys are really injected (names only).
 	if err := writeActiveKeys(".", cfg.Credentials, skipped); err != nil {
 		log.Printf("could not record active keys for `ovara env`: %v", err)
@@ -380,6 +385,15 @@ func logSkippedBindings(skipped []creds.Skipped) {
 	for _, s := range skipped {
 		log.Printf("no key injected for %s: %s not set in Ovara's environment (requests there go out with whatever the agent sends)",
 			s.Host, strings.Join(s.Missing, ", "))
+	}
+}
+
+// logBrokeredBindings says which hosts get short-lived minted tokens.
+func logBrokeredBindings(bindings []creds.Binding) {
+	for _, b := range bindings {
+		if b.Brokered() {
+			log.Printf("credentials for %s: %s, minted when first needed", b.Host, b.Describe())
+		}
 	}
 }
 

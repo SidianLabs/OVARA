@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ovara.proxy/internal/config"
+	"ovara.proxy/internal/creds"
 	"ovara.proxy/internal/receipts"
 )
 
@@ -204,7 +205,7 @@ func auditDeployment(dir string) []check {
 	} else {
 		out = append(out, check{"unsafe flags", "PASS", "fail_open and unsafe_no_agent_auth are off"})
 	}
-	out = append(out, auditCredentials(pcfg)...)
+	out = append(out, auditCredentials(dir, pcfg)...)
 
 	// --- CA / keys ----------------------------------------------------------
 	// CA files are created by ca.LoadOrCreate on first `ovara run`, so a
@@ -320,9 +321,12 @@ var envRef = regexp.MustCompile(`\$\{[A-Z_][A-Z0-9_]*\}`)
 // auditCredentials flags credential bindings that embed a literal secret
 // instead of an ${ENV} reference, and ${ENV} references whose variable is
 // unset — the two ways creds custody silently breaks.
-func auditCredentials(cfg *config.Config) []check {
-	var out []check
+func auditCredentials(dir string, cfg *config.Config) []check {
+	var out, brokers []check
 	for _, b := range cfg.Credentials {
+		if b.Brokered() {
+			brokers = append(brokers, auditBroker(dir, b)...)
+		}
 		for h, v := range b.Headers {
 			switch {
 			case strings.Contains(v, "${"):
@@ -338,7 +342,43 @@ func auditCredentials(cfg *config.Config) []check {
 		}
 	}
 	if len(out) == 0 {
-		return []check{{"credentials", "PASS", fmt.Sprintf("%d binding(s), all env-referenced", len(cfg.Credentials))}}
+		out = []check{{"credentials", "PASS", fmt.Sprintf("%d binding(s), all env-referenced", len(cfg.Credentials))}}
+	}
+	return append(out, brokers...)
+}
+
+// auditBroker checks a GitHub App or OAuth binding offline: required
+// fields, the private key file (present, owner-only, an RSA key) and
+// literal secrets in proxy.json. It never calls the issuer.
+func auditBroker(dir string, b creds.Binding) []check {
+	name := "credential broker " + b.Host
+	var out []check
+	literal := func(field, v string) {
+		if v != "" && !strings.Contains(v, "${") {
+			out = append(out, check{name, "FAIL", field + " is written into proxy.json — use ${ENV} so the file never carries the secret"})
+		}
+	}
+	if g := b.GitHubApp; g != nil {
+		literal("private_key", g.PrivateKey)
+	}
+	if o := b.OAuth2; o != nil {
+		literal("client_secret", o.ClientSecret)
+		literal("subject_token", o.SubjectToken)
+	}
+	c := creds.CheckBroker(b, dir)
+	if len(c.Missing) > 0 {
+		out = append(out, check{name, "WARN", "needs " + strings.Join(c.Missing, ", ") + ", not set here (it must be in `ovara run`'s environment)"})
+	}
+	if c.KeyFile != "" && runtime.GOOS != "windows" {
+		if fi, err := os.Stat(c.KeyFile); err == nil && fi.Mode().Perm()&0o077 != 0 {
+			out = append(out, check{name, "FAIL", fmt.Sprintf("private key %s is readable by other users (%#o) — chmod 600", c.KeyFile, fi.Mode().Perm())})
+		}
+	}
+	if c.Err != nil {
+		out = append(out, check{name, "FAIL", c.Err.Error()})
+	}
+	if len(out) == 0 {
+		out = append(out, check{name, "PASS", b.Describe() + "; settings and key checked offline"})
 	}
 	return out
 }

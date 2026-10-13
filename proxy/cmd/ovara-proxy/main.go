@@ -66,6 +66,11 @@ func main() {
 	for _, s := range skipped {
 		log.Printf("credential binding for %s skipped: %v not set", s.Host, s.Missing)
 	}
+	for _, b := range bindings {
+		if b.Brokered() {
+			log.Printf("credentials for %s: %s, minted when first needed", b.Host, b.Describe())
+		}
+	}
 
 	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
