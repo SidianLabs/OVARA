@@ -25,12 +25,35 @@ jobs:
           - tools/benchmarks
     steps:
       - uses: actions/checkout@v4
+        with:
+          # --new-from-rev below needs the PR's base commit in the clone.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.26"
           check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
+
+      # The commit the linter compares against: the PR's base, or the
+      # commit before the push. golangci-lint finds the new issues itself
+      # (--new-from-rev). The action's own only-new-issues fetches the diff
+      # from the API instead, which GitHub refuses for a change touching
+      # more than 300 files; the action then lints the whole module and
+      # fails on the old debt. A push that creates a branch has no "before"
+      # commit and falls back to the action's diff.
+      - name: Find the commit to compare against
+        id: base
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          base="${PR_BASE:-$PUSH_BEFORE}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "rev=" >> "$GITHUB_OUTPUT"
+          else
+            echo "rev=$base" >> "$GITHUB_OUTPUT"
+          fi
 
       # The action runs the linter itself in its own working-directory
       # (repo root by default) — pass the matrix module or it scans the
@@ -45,12 +68,11 @@ jobs:
           install-mode: goinstall
           working-directory: ${{ matrix.module }}
           # The lint gate never ran before (broken job config), so the
-          # repo carries preexisting lint debt. Gate only what the diff
+          # repo carries preexisting lint debt. Gate only what the change
           # introduces; whole-repo cleanup can come as its own change.
-          only-new-issues: true
+          only-new-issues: ${{ steps.base.outputs.rev == '' }}
           # `config verify` downloads the config schema from golangci-lint.run
           # on every run; twice that download timed out and failed the job
           # before any linting. The config is checked when it is loaded anyway.
           verify: false
-          args: --timeout=5m
-
+          args: --timeout=5m ${{ steps.base.outputs.rev != '' && format('--new-from-rev={0}', steps.base.outputs.rev) || '' }}
