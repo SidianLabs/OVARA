@@ -249,7 +249,9 @@ injected over HTTPS.
   supported through the interception.
 - **Stopping prompt injection.** It limits the damage an injected agent can do
   (it cannot push without you, cannot send to unknown hosts, never held your
-  keys). It does not stop the agent being talked into trying.
+  keys, and for a while after it reads an issue, a PR comment or another
+  untrusted source, even writes the policy allows wait for you). It does not
+  stop the agent being talked into trying.
 - **What an allowed host can do.** Reads from a trusted host are free, so an
   agent with an account on that host (a gist, an issue comment) can still move
   data through it. The policy limits *where*, not *what*.
