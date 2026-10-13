@@ -795,36 +795,32 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reflector-class exfil: a bound host that echoes request data
 	// (httpbin /headers, debug endpoints, request-bin services) would hand
-	// the injected credentials straight back to the agent. Scrub the exact
-	// injected values from response headers and body — the agent sees
-	// "[REDACTED]" where its own credential was reflected.
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			for _, secret := range injected {
-				v = strings.ReplaceAll(v, string(secret), "[REDACTED]")
-			}
-			w.Header().Add(k, v)
-		}
+	// the injected credentials straight back to the agent. Scrub the
+	// injected values, in their common encodings, from response header
+	// names and values, body and trailers — the agent sees "[REDACTED]"
+	// where its own credential was reflected. Signed URL parameters the
+	// upstream minted from the credential (a Location to a presigned
+	// download) are redacted too; in the body, for text types only.
+	var set *secretSet
+	if len(injected) > 0 {
+		set = newSecretSet(injected)
 	}
+	copyScrubbedHeader(w.Header(), resp.Header, "", set)
 	// Receipt first, then the response: status and decision are final here.
 	record()
 	w.WriteHeader(resp.StatusCode)
 	body := io.Reader(resp.Body)
 	if len(injected) > 0 {
 		body = newScrubReader(resp.Body, injected)
+		if textualType(resp.Header.Get("Content-Type")) {
+			body = newSignedParamReader(body)
+		}
 	}
 	copyFlush(w, body)
 	// resp.Trailer values populate after body read; forward them properly.
 	// Scrub here too — a reflector can echo injected credentials in
 	// trailers just as well as in headers or the body.
-	for k, vv := range resp.Trailer {
-		for _, v := range vv {
-			for _, secret := range injected {
-				v = strings.ReplaceAll(v, string(secret), "[REDACTED]")
-			}
-			w.Header()[http.TrailerPrefix+k] = append(w.Header()[http.TrailerPrefix+k], v)
-		}
-	}
+	copyScrubbedHeader(w.Header(), resp.Trailer, http.TrailerPrefix, set)
 }
 
 // encodedValue returns the first Content-Encoding value that is not identity,

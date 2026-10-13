@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -10,6 +12,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"ovara.proxy/internal/creds"
 )
 
 // normalizeHost returns the canonical form of a host name for every policy,
@@ -137,17 +141,20 @@ func (s *Server) readCarriesData(r *http.Request) string {
 
 // secretTargets expands one injected header into the strings that must be
 // scrubbed from responses: the whole value, the bare token after an auth
-// scheme ("Bearer abc" -> "abc"), and URL- and JSON-escaped spellings.
+// scheme ("Bearer abc" -> "abc"), their URL- and JSON-escaped spellings,
+// hex, and base64 (standard and URL alphabets, at each of the three
+// alignments the value can have inside a longer base64 stream). Matching
+// ignores ASCII case (secretSet), which also covers upper-case hex.
 // Non-secret protocol headers (versions, content types) are not scrubbed:
 // redacting "2023-06-01" everywhere helps nobody and corrupts responses.
 func secretTargets(name, value string) [][]byte {
-	if value == "" || isNonSecretHeader(name) {
+	if value == "" || creds.NonSecretHeader(name) {
 		return nil
 	}
 	seen := map[string]bool{}
 	var out [][]byte
 	add := func(s string) {
-		if len(s) >= 8 && !seen[s] {
+		if len(s) >= creds.MinSecretLen && !seen[s] {
 			seen[s] = true
 			out = append(out, []byte(s))
 		}
@@ -161,8 +168,42 @@ func secretTargets(name, value string) [][]byte {
 		if b, err := json.Marshal(s); err == nil && len(b) > 2 {
 			add(string(b[1 : len(b)-1]))
 		}
+		add(hex.EncodeToString([]byte(s)))
+		for _, v := range base64Spellings([]byte(s)) {
+			add(v)
+		}
 	}
 	return out
+}
+
+// base64Spellings returns the base64 text that encodes secret wherever it
+// sits in a longer encoded stream. Base64 works in 3-byte groups, so the
+// secret starts at one of three offsets in a group; for each, the
+// characters that also depend on neighbouring bytes are dropped from both
+// ends, leaving the run that is the same whatever surrounds the secret.
+// The whole padded encoding of the secret alone is included too.
+func base64Spellings(secret []byte) []string {
+	var out []string
+	for k := 0; k < 3; k++ {
+		src := append(make([]byte, k), secret...)
+		enc := base64.RawStdEncoding.EncodeToString(src)
+		lead := [3]int{0, 2, 3}[k] // characters that carry prefix bits
+		trail := 0
+		if len(src)%3 != 0 {
+			trail = 1 // the last character carries bits of what follows
+		}
+		if len(enc)-trail <= lead {
+			continue
+		}
+		core := enc[lead : len(enc)-trail]
+		out = append(out, core, toURLBase64(core))
+	}
+	full := base64.StdEncoding.EncodeToString(secret)
+	return append(out, full, toURLBase64(full))
+}
+
+func toURLBase64(s string) string {
+	return strings.NewReplacer("+", "-", "/", "_").Replace(s)
 }
 
 func keys(m map[string]bool) []string {
@@ -171,18 +212,6 @@ func keys(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	return out
-}
-
-func isNonSecretHeader(name string) bool {
-	n := strings.ToLower(name)
-	if strings.Contains(n, "version") {
-		return true
-	}
-	switch n {
-	case "accept", "content-type", "user-agent", "accept-language", "x-github-api-version":
-		return true
-	}
-	return false
 }
 
 // copyFlush streams src to w and flushes after every chunk, so event
