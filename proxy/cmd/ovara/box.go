@@ -21,8 +21,10 @@ package main
 //      the real repository, after a person has read the diff and a policy
 //      has had its say on each path.
 //
-// Tier 1: a separate user in a network namespace on the host. The agent
-// sees the host's files wherever that user may read them.
+// Tier 1: a separate user in a network namespace on the host, with a root
+// file system of its own: the host's system directories read-only, the
+// workspace, a fresh home, and nothing else of the host (box_tier1.go).
+// -tier1-fs host gives it the host's file system instead.
 // Tier 2: a container (box image) with no network interface but loopback,
 // no capabilities, a read-only root, and nothing of the host mounted except
 // the workspace and a fresh home. Its proxy and command gate reach the host
@@ -110,9 +112,11 @@ type boxAgent struct {
 	noGate   bool
 	sigs     chan os.Signal
 	user     string   // tier 1
+	uid, gid int      // tier 1: the agent user's
 	name     string   // tier 1: netns name
+	tier1FS  string   // tier 1: isolated or host
 	image    string   // tier 2
-	mounts   []string // tier 2: SRC:DST, read-only
+	mounts   []string // SRC:DST, read-only (tier 1 isolated, tier 2)
 	pids     int      // tier 2
 	memory   string   // tier 2
 	cpus     string   // tier 2
@@ -122,9 +126,10 @@ type boxAgent struct {
 func cmdBox(args []string) error {
 	fs := flag.NewFlagSet("box", flag.ContinueOnError)
 	dir := fs.String("dir", "", "Ovara deployment directory (default: ~/.ovara/box of the invoking user; created on first use)")
-	tier := fs.Int("tier", 1, "isolation: 1 = separate user in a network namespace; 2 = a container (no network but Ovara, no capabilities, read-only root, no host files)")
+	tier := fs.Int("tier", 1, "isolation: 1 = separate user in a network namespace with its own root file system (see -tier1-fs); 2 = a container (no network but Ovara, no capabilities, read-only root, no host files)")
 	name := fs.String("name", "ovara-box", "tier 1: network namespace name (one box per name at a time)")
 	agentUser := fs.String("user", boxDefaultUser, "tier 1: unprivileged user the agent runs as (created if missing)")
+	tier1FS := fs.String("tier1-fs", tier1FSIsolated, "tier 1: isolated = a root file system of its own (the host's system directories read-only, the workspace, a fresh home; nothing of /home, /root, /srv, /opt or the original project); host = the host's file system, where the agent reads whatever its user may (UNSAFE on a machine with secrets)")
 	image := fs.String("image", boxDefaultImage, "tier 2: the box image (build it from box/Dockerfile; extend it with your agent)")
 	pids := fs.Int("pids", 4096, "tier 2: most processes the box may have at once")
 	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
@@ -139,7 +144,7 @@ func cmdBox(args []string) error {
 	var envs, excludes, mounts multiFlag
 	fs.Var(&envs, "env", "extra NAME=value for the agent (repeatable; values that look like keys are refused)")
 	fs.Var(&excludes, "exclude", "extra path glob to leave out of the workspace (repeatable; .ovaraignore is read too)")
-	fs.Var(&mounts, "mount", "tier 2: SRC:DST, a host path mounted READ-ONLY into the box (repeatable; secret locations are refused)")
+	fs.Var(&mounts, "mount", "SRC:DST, a host path mounted READ-ONLY into the box (repeatable; secret locations are refused; not with -tier1-fs host)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: ovara box [flags] <project-dir> -- <agent command...>")
 		fs.PrintDefaults()
@@ -165,8 +170,11 @@ func cmdBox(args []string) error {
 	if os.Geteuid() != 0 {
 		return errors.New("ovara box needs root (tier 1: the network namespace; tier 2: handing the workspace to the box's user and keeping Ovara's sockets out of its reach): run it with sudo; the agent itself runs as an unprivileged user")
 	}
-	if *tier == 1 && len(mounts) > 0 {
-		return errors.New("-mount is for tier 2: in tier 1 the agent already sees the host's files its user may read")
+	if *tier1FS != tier1FSIsolated && *tier1FS != tier1FSHost {
+		return fmt.Errorf("-tier1-fs %s: want isolated or host", *tier1FS)
+	}
+	if *tier == 1 && *tier1FS == tier1FSHost && len(mounts) > 0 {
+		return errors.New("-mount needs a box file system: with -tier1-fs host the agent already sees the host's files its user may read")
 	}
 	for _, kv := range envs {
 		k, _, ok := strings.Cut(kv, "=")
@@ -183,6 +191,11 @@ func cmdBox(args []string) error {
 	}
 	if *dir == "" {
 		*dir = defaultBoxDir()
+	}
+	if *tier == 1 {
+		if err := checkMountsFor(mounts, *dir, tier1DstRefused); err != nil {
+			return err
+		}
 	}
 	if *tier == 2 {
 		if err := checkMounts(mounts, *dir); err != nil {
@@ -328,7 +341,7 @@ func cmdBox(args []string) error {
 	a := &boxAgent{
 		dir: *dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: envs, cmd: agentCmd, gate: gate, noGate: *noGate, sigs: sigs,
-		user: *agentUser, name: *name, image: *image, mounts: mounts, pids: *pids, memory: *memory, cpus: *cpus, selfPath: self,
+		user: *agentUser, uid: uid, gid: gid, name: *name, tier1FS: *tier1FS, image: *image, mounts: mounts, pids: *pids, memory: *memory, cpus: *cpus, selfPath: self,
 	}
 	var exitCode int
 	if *tier == 2 {
@@ -485,8 +498,38 @@ func mergeEnv(base, over []string) []string {
 	return out
 }
 
+// tier1Spec is what box-init -tier1 needs for a's agent (env holds the
+// proxy token: it travels on a pipe, never on a command line).
+func (a *boxAgent) tier1Spec(env []string) (tier1Spec, error) {
+	spec := tier1Spec{Netns: a.name, UID: a.uid, GID: a.gid, Env: env, Argv: a.cmd, Dir: a.ws.Dir}
+	if a.tier1FS == tier1FSHost {
+		return spec, nil
+	}
+	spec.Root = filepath.Join(a.runDir, "root")
+	if err := os.Mkdir(spec.Root, 0o700); err != nil {
+		return spec, err
+	}
+	spec.Binds = []tier1Bind{{Src: a.ws.Dir, Dst: a.ws.Dir, RW: true}, {Src: a.home, Dst: a.home, RW: true}}
+	if _, err := os.Stat(a.caPub); err == nil {
+		spec.Binds = append(spec.Binds, tier1Bind{Src: a.caPub, Dst: a.caPub})
+	}
+	for _, m := range a.mounts {
+		src, dst, _ := strings.Cut(m, ":")
+		abs, err := filepath.Abs(src)
+		if err != nil {
+			return spec, err
+		}
+		if abs, err = filepath.EvalSymlinks(abs); err != nil {
+			return spec, err
+		}
+		spec.Binds = append(spec.Binds, tier1Bind{Src: abs, Dst: filepath.Clean(dst)})
+	}
+	return spec, nil
+}
+
 // runTier1: the agent as an unprivileged host user inside the network
-// namespace, traced from this process.
+// namespace and (unless -tier1-fs host) a root file system of its own,
+// traced from this process.
 func runTier1(a *boxAgent) (int, error) {
 	proxyIP := boundaryProxyIP(boundarySubnetIdx(a.name))
 	vars, err := agentVars(a, proxyIP, a.caPub)
@@ -501,15 +544,22 @@ func runTier1(a *boxAgent) (int, error) {
 		"OVARA_BOX=1", "OVARA_BOX_TIER=1", "OVARA_WORKSPACE=" + a.ws.Dir,
 	}
 	env = mergeEnv(append(env, vars...), a.envs)
-	agentArgs := []string{"netns", "exec", a.name, "runuser", "-u", a.user, "--", "env", "-i"}
-	agentArgs = append(agentArgs, env...)
-	agentArgs = append(agentArgs, a.cmd...)
-	agent := exec.Command("ip", agentArgs...)
-	agent.Dir = a.ws.Dir
+	spec, err := a.tier1Spec(env)
+	if err != nil {
+		return 0, err
+	}
+	agent, specDone, err := tier1Command(a.selfPath, spec)
+	if err != nil {
+		return 0, err
+	}
+	defer specDone()
 	agent.Stdin, agent.Stdout, agent.Stderr = os.Stdin, os.Stdout, os.Stderr
-	agent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	fmt.Fprintf(os.Stderr, "==> tier 1: running as %s in %s (network only through Ovara at %s:%s)\n", a.user, a.ws.Dir, proxyIP, a.port)
-	fmt.Fprintf(os.Stderr, "==> tier 1 isolates the network, not the file system: %s can read any host file it has permission to (including %s). Use -tier 2 on a machine with secrets.\n", a.user, a.ws.Project)
+	if a.tier1FS == tier1FSHost {
+		fmt.Fprintf(os.Stderr, "==> -tier1-fs host: the agent sees the host's file system: %s can read any host file it has permission to (including %s). Unsafe on a machine with secrets.\n", a.user, a.ws.Project)
+	} else {
+		fmt.Fprintln(os.Stderr, "==> tier 1 file system: the host's system directories read-only, the workspace, a fresh home and /tmp; nothing else of the host")
+	}
 	if a.noGate {
 		if err := agent.Start(); err != nil {
 			return 0, fmt.Errorf("starting the agent: %w", err)
@@ -738,6 +788,13 @@ var secretMountPaths = []string{
 }
 
 func checkMounts(mounts []string, ovaraDir string) error {
+	return checkMountsFor(mounts, ovaraDir, []string{boxInWork, boxInHome, boxSockDir, filepath.Dir(boxInBinary), filepath.Dir(boxInCA), "/tmp", "/scratch", "/proc", "/sys", "/dev"})
+}
+
+// checkMountsFor checks -mount SRC:DST pairs: no secret or system path as
+// SRC, and no DST on, in or above one of the box's own (ownDst; a place
+// inside /tmp or /scratch is fine).
+func checkMountsFor(mounts []string, ovaraDir string, ownDst []string) error {
 	inside := func(p, dir string) bool { return strings.HasPrefix(p, strings.TrimSuffix(dir, "/")+"/") }
 	// never mounted, nor anything inside them
 	closed := []string{"/root", "/etc", "/proc", "/sys", "/dev", "/boot", "/run", "/var/run", "/var/lib/docker", "/var/lib/ovara"}
@@ -755,7 +812,6 @@ func checkMounts(mounts []string, ovaraDir string) error {
 			closed = append(closed, filepath.Join(h, s))
 		}
 	}
-	ownDst := []string{boxInWork, boxInHome, boxSockDir, filepath.Dir(boxInBinary), filepath.Dir(boxInCA), "/tmp", "/scratch", "/proc", "/sys", "/dev"}
 	for _, m := range mounts {
 		src, dst, ok := strings.Cut(m, ":")
 		if !ok || src == "" || !strings.HasPrefix(dst, "/") || strings.Contains(dst, ":") {
@@ -818,22 +874,14 @@ func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bo
 	return &commandGate{gw: gw, dir: dir, timeout: timeout, on: on, counts: map[string]int{}, launch: launch}
 }
 
-// skip exempts the launcher's own chain (ip netns exec → runuser → env)
-// up to and including env; the next exec in that chain is the agent.
+// skip exempts the launcher's own box-init -tier1, the first program in
+// the tree; what it execs next is the agent.
 func (g *commandGate) skip(e boxgate.Exec) bool {
 	if g.started {
 		return false
 	}
-	base := filepath.Base(e.Exe)
-	if base == "ip" || base == "runuser" {
-		return true
-	}
-	if base == "env" {
-		g.started = true // what env execs next is the agent
-		return true
-	}
 	g.started = true
-	return false
+	return len(e.Argv) >= 3 && e.Argv[1] == "box-init" && e.Argv[2] == "-tier1"
 }
 
 func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {

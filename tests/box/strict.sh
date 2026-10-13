@@ -85,7 +85,7 @@ PY
 HUMAN=$!
 
 echo "=== the strict box"
-timeout 900 ovara box -dir $D -ui off -profile strict -no-commit-back -user ovara-agent $P -- bash /tmp/sagent.sh > /tmp/s-box.out 2>&1
+timeout 900 ovara box -dir $D -ui off -profile strict -no-commit-back -user ovara-agent -mount /tmp/sagent.sh:/tmp/sagent.sh $P -- bash /tmp/sagent.sh > /tmp/s-box.out 2>&1
 BOX_EXIT=$?
 wait $HUMAN
 echo "--- ovara box output (tail)"; grep -v '^AGENTRESULT ' /tmp/s-box.out | grep -vE '^(APPROVAL|SKIP) ' | tail -30

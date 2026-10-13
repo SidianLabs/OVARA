@@ -33,6 +33,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"ovara.proxy/internal/boxgate"
@@ -56,14 +57,27 @@ type gateReply struct {
 	Allow bool `json:"allow"`
 }
 
+// box-init -tier1 enters namespaces and drops credentials on the thread
+// that then calls exec: keep main on the main thread from the start, so
+// the agent takes over the process as it is.
+func init() {
+	if len(os.Args) > 1 && os.Args[1] == "box-init" {
+		runtime.LockOSThread()
+	}
+}
+
 func cmdBoxInit(args []string) error {
 	fs := flag.NewFlagSet("box-init", flag.ContinueOnError)
 	uid := fs.Int("uid", boxContainerUID, "uid the agent runs as")
 	gid := fs.Int("gid", boxContainerUID, "gid the agent runs as")
 	proxyAddr := fs.String("proxy", "127.0.0.1:9443", "address inside the box where the proxy relay listens")
 	gateOn := fs.Bool("gate", true, "check every exec with the host's command gate")
+	tier1 := fs.Bool("tier1", false, "tier 1: become the agent described by the spec on fd 3 (box_tier1.go)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *tier1 {
+		return runTier1Init()
 	}
 	argv := fs.Args()
 	if len(argv) == 0 {

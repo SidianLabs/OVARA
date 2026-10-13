@@ -94,6 +94,16 @@ if [ "${OVARA_BOX_TIER:-1}" = 2 ]; then
   # (npm packages' own test fixtures are not the image's secrets)
   r T2_IMAGE_SECRETS "$(find / -xdev \( -path /proc -o -path '*/node_modules' \) -prune -o -type f \( -name 'id_rsa*' -o -name 'id_ed25519*' -o -name 'id_ecdsa*' -o -name 'id_dsa*' -o -name .netrc -o -name .git-credentials -o -name .npmrc -o -name .pypirc -o -name .env -o -path '*/.aws/credentials' -o -path '*/.docker/config.json' -o -path '*/.config/gh/hosts.yml' \) -print 2>/dev/null | head -5 | tr '\n' ' ')"
 fi
+# tier 1: the box's own root file system
+if [ "${OVARA_BOX_TIER:-1}" = 1 ]; then
+  r T1_HOSTPROJ "$( [ -e /tmp/proj ] && echo present || echo absent)"
+  r T1_HOSTDIRS "$(ls -A /home /root /srv /opt 2>/dev/null | wc -l)"
+  r T1_ROOTFS "$(touch /usr/ovara-probe 2>/dev/null && echo writable || echo readonly)"
+  r T1_ETC "$( (echo x >> /etc/hosts) 2>/dev/null && echo writable || echo readonly)"
+  r T1_SHADOW "$( [ -s /etc/shadow ] && echo present || echo covered)"
+  r T1_NNP "$(awk '/^NoNewPrivs/{print $2}' /proc/self/status)"
+  r T1_PROCS "$(ps -eo user= | sort -u | tr '\n' ' ' | sed 's/ $//')"
+fi
 r DONE yes
 EOF
 chmod 755 /tmp/agent.sh
@@ -130,7 +140,7 @@ echo "=== the box (tier $TIER)"
 if [ "$TIER" = 2 ]; then
   BOXFLAGS=(-tier 2 -image "$BOX_IMAGE" -mount /tmp/agent.sh:/tmp/agent.sh)
 else
-  BOXFLAGS=(-user ovara-agent)
+  BOXFLAGS=(-user ovara-agent -mount /tmp/agent.sh:/tmp/agent.sh)
 fi
 # config.json is a readability probe: the agent must not be able to read it
 timeout 600 ovara box -dir $D -ui off -approve-timeout 150s "${BOXFLAGS[@]}" $P -- bash /tmp/agent.sh > /tmp/box.out 2>&1
@@ -164,6 +174,17 @@ check "a paste site is refused by policy" 403 "$(val S1)"
 check "ignoring the proxy gets nothing (boundary)" 000 "$(val B1)"
 check "no direct DNS (boundary)" 000 "$(val B2)"
 check "git push from the box is refused" refused "$(val PUSH)"
+
+if [ "$TIER" = 1 ]; then
+  echo "=== tier 1: the box's file system"
+  check "the host's project is not in the box (only its copy)" absent "$(val T1_HOSTPROJ)"
+  check "nothing of /home, /root, /srv or /opt" 0 "$(val T1_HOSTDIRS)"
+  check "the system directories are read-only" readonly "$(val T1_ROOTFS)"
+  check "/etc is read-only" readonly "$(val T1_ETC)"
+  check "/etc/shadow is covered" covered "$(val T1_SHADOW)"
+  check "no-new-privileges: set-uid programs give nothing" 1 "$(val T1_NNP)"
+  check "the agent sees its own processes only" ovara-agent "$(val T1_PROCS)"
+fi
 
 if [ "$TIER" = 2 ]; then
   echo "=== tier 2: the container"
