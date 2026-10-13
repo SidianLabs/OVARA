@@ -58,11 +58,42 @@ type Server struct {
 	taint       *taintTracker  // untrusted read, then write (taint.go); nil = off
 	modelBudget *modelBudget   // per-agent model use (modelbudget.go); nil = off
 	mcp         *mcpState      // MCP-aware mode (mcpgate.go); nil = off
+	held        *heldCounter   // requests held for a person, per agent
 }
 
-// maxPendingEscalations bounds how many requests may be held waiting for a
-// human at once; beyond it new escalations are refused rather than queued.
-const maxPendingEscalations = 64
+// maxPendingEscalations bounds how many requests one agent may have held
+// waiting for a human at once; beyond it its new escalations are refused
+// rather than queued. maxHeldEscalations bounds them for all agents
+// together (goroutines and sockets).
+const (
+	maxPendingEscalations = 64
+	maxHeldEscalations    = 4 * maxPendingEscalations
+)
+
+// heldCounter counts the requests each agent has held for a person.
+type heldCounter struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// take reserves a slot for agent; false when it already has max.
+func (h *heldCounter) take(agent string, max int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.n[agent] >= max {
+		return false
+	}
+	h.n[agent]++
+	return true
+}
+
+func (h *heldCounter) release(agent string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.n[agent]--; h.n[agent] <= 0 {
+		delete(h.n, agent)
+	}
+}
 
 func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts.Chain, failOpen bool) *Server {
 	s := &Server{
@@ -75,7 +106,8 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 		connectPort443: true,
 		escalatePoll:   2 * time.Second,
 		unauthLimiter:  newRateLimiter(20, 1),
-		escalateSem:    make(chan struct{}, maxPendingEscalations),
+		escalateSem:    make(chan struct{}, maxHeldEscalations),
+		held:           &heldCounter{n: map[string]int{}},
 		limits:         defaultLimits(),
 		budget:         newEgressBudget(0, 0),
 		ids:            newAgentRegistry(),
@@ -1054,6 +1086,16 @@ func (s *Server) holdForApproval(ctx context.Context, what string, create func()
 			log.Printf("escalate: %d approvals already pending; refusing %s", cap(s.escalateSem), what)
 			return "denied", ""
 		}
+	}
+	// And per agent: one agent filling its share does not stop the
+	// others' questions.
+	if s.held != nil {
+		agent := agentKey(ctx)
+		if !s.held.take(agent, maxPendingEscalations) {
+			log.Printf("escalate: agent %q has %d approvals pending; refusing %s", agent, maxPendingEscalations, what)
+			return "denied", ""
+		}
+		defer s.held.release(agent)
 	}
 	approvalID, err := create()
 	if err != nil {

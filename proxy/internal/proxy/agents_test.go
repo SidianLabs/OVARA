@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"ovara.proxy/internal/config"
+	"ovara.proxy/internal/gateway"
 )
 
 var (
@@ -371,5 +373,27 @@ func TestAgentsStreamingResponseIsCutWhenStoppedOrRemoved(t *testing.T) {
 				t.Fatalf("receipt %+v", r)
 			}
 		})
+	}
+}
+
+// ASI08: the cap on requests held for a person is per agent: one agent
+// with its share full is refused, another agent's question still goes out.
+func TestEscalationCapIsPerAgent(t *testing.T) {
+	srv, ag, _ := newActionServer(t, "escalate")
+	ag.status.Store("approved")
+	srv.held.n[agentAlpha] = maxPendingEscalations
+	ask := func(name string) string {
+		ctx := context.WithValue(t.Context(), agentCtxKey{}, agentIdentity{name: name, label: name})
+		out, _ := srv.awaitEscalation(ctx, &gateway.Decision{Decision: "escalate", DecisionID: "d1"}, "POST", "https://x.example/y")
+		return out
+	}
+	if out := ask(agentAlpha); out != "denied" {
+		t.Fatalf("agent with a full share: %q", out)
+	}
+	if out := ask("beta"); out != "approved" {
+		t.Fatalf("another agent was refused too: %q", out)
+	}
+	if n := srv.held.n["beta"]; n != 0 {
+		t.Fatalf("beta's slot not released: %d", n)
 	}
 }

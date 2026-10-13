@@ -126,14 +126,19 @@ func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
 // the same agent already has an identical one waiting (same action type,
 // environment, resource and context), in which case that one is returned
 // with reused=true, and it refuses with ErrTooManyPending once the agent
-// has MaxPendingPerAgent approvals waiting. Expired approvals neither
+// has MaxPendingPerAgent approvals waiting. An agent is the principal
+// together with the agent name the request's context carries ("agent"),
+// so one named agent behind a proxy filling its share does not block the
+// others; the principal as a whole is bounded at PrincipalPendingFactor
+// times that. Expired approvals neither
 // count nor get reused. Without these limits an agent can keep the queue
 // full of cards and bury the one that matters.
 func (s *Service) Open(req *CreateRequest) (a *ApprovalRequest, reused bool, err error) {
 	s.openMu.Lock()
 	defer s.openMu.Unlock()
 	key := dedupeKey(req.AgentID, string(req.ActionType), string(req.Environment), req.Resource, req.Context)
-	waiting := 0
+	name := agentName(req.Context)
+	waiting, principalWaiting := 0, 0
 	for _, p := range s.ListPending() { // expired ones are already left out
 		if p.AgentID != req.AgentID {
 			continue
@@ -141,13 +146,40 @@ func (s *Service) Open(req *CreateRequest) (a *ApprovalRequest, reused bool, err
 		if dedupeKey(p.AgentID, string(p.ActionType), string(p.Environment), p.Resource, p.Context) == key {
 			return p, true, nil
 		}
-		waiting++
+		principalWaiting++
+		if agentName(p.Context) == name {
+			waiting++
+		}
 	}
-	if max := s.MaxPendingPerAgent(); max > 0 && waiting >= max {
-		return nil, false, fmt.Errorf("%w: agent %q has %d approvals waiting", ErrTooManyPending, req.AgentID, waiting)
+	if max := s.MaxPendingPerAgent(); max > 0 {
+		who := req.AgentID
+		if name != "" {
+			who = req.AgentID + "/" + name
+		}
+		if waiting >= max {
+			return nil, false, fmt.Errorf("%w: agent %q has %d approvals waiting", ErrTooManyPending, who, waiting)
+		}
+		// The names come from the caller's own request metadata, so a
+		// caller cannot get past the cap by inventing names: all of its
+		// agents together have a bound too.
+		if principalWaiting >= max*PrincipalPendingFactor {
+			return nil, false, fmt.Errorf("%w: %q has %d approvals waiting across its agents", ErrTooManyPending, req.AgentID, principalWaiting)
+		}
 	}
 	a, err = s.CreateApproval(req)
 	return a, false, err
+}
+
+// PrincipalPendingFactor bounds the approvals one gateway principal may
+// have waiting across all the agents it names: MaxPendingPerAgent times
+// this.
+const PrincipalPendingFactor = 4
+
+// agentName is the agent an approval's context names ("agent", set by the
+// proxy for each named agent), or "" when it names none; the cap is then
+// kept per principal alone.
+func agentName(ctx map[string]string) string {
+	return ctx["agent"]
 }
 
 // dedupeKey identifies "the same request" for Open: a length-prefixed

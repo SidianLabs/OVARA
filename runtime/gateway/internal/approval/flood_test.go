@@ -101,3 +101,47 @@ func TestOpen_DeduplicatesIdenticalPending(t *testing.T) {
 		t.Fatalf("after expiry: reused=%v err=%v", reused, err)
 	}
 }
+
+// Named agents behind one proxy share its gateway principal; the cap is
+// kept per agent name (the "agent" context entry), so one agent filling its
+// share does not block another's questions. Names cannot be invented to
+// get past the cap: the principal as a whole has a bound too.
+func TestOpen_PendingCapIsPerNamedAgent(t *testing.T) {
+	now := time.Now().UTC()
+	svc := NewService(NewInMemoryStore())
+	svc.SetNow(clockAt(&now))
+	svc.SetMaxPendingPerAgent(4)
+	named := func(n string) map[string]string { return map[string]string{"agent": n} }
+	for i := 0; i < 4; i++ {
+		if _, _, err := svc.Open(openReq(fmt.Sprintf("dec_a%d", i), "proxy", fmt.Sprintf("POST https://x.example/%d", i), named("alpha"))); err != nil {
+			t.Fatalf("alpha %d: %v", i, err)
+		}
+	}
+	if _, _, err := svc.Open(openReq("dec_a_over", "proxy", "POST https://x.example/over", named("alpha"))); !errors.Is(err, ErrTooManyPending) {
+		t.Fatalf("alpha over its share: %v", err)
+	}
+	if _, _, err := svc.Open(openReq("dec_b", "proxy", "POST https://x.example/over", named("beta"))); err != nil {
+		t.Fatalf("beta blocked by alpha's full share: %v", err)
+	}
+	// Requests that name no agent are counted per principal alone, apart
+	// from the named ones.
+	if _, _, err := svc.Open(openReq("dec_none", "proxy", "POST https://x.example/none", nil)); err != nil {
+		t.Fatalf("unnamed request: %v", err)
+	}
+	// Inventing names stops at PrincipalPendingFactor times the cap.
+	opened := 6 // 4 alpha, 1 beta, 1 unnamed
+	var err error
+	for i := 0; i < 4*PrincipalPendingFactor && err == nil; i++ {
+		_, _, err = svc.Open(openReq(fmt.Sprintf("dec_f%d", i), "proxy", fmt.Sprintf("POST https://x.example/f%d", i), named(fmt.Sprintf("fake%d", i))))
+		if err == nil {
+			opened++
+		}
+	}
+	if !errors.Is(err, ErrTooManyPending) || opened != 4*PrincipalPendingFactor {
+		t.Fatalf("invented names: opened %d, last error %v", opened, err)
+	}
+	// Another principal is unaffected.
+	if _, _, err := svc.Open(openReq("dec_other", "other", "POST https://x.example/o", named("alpha"))); err != nil {
+		t.Fatalf("other principal: %v", err)
+	}
+}
