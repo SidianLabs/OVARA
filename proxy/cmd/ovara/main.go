@@ -27,6 +27,7 @@ import (
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/creds"
 	"ovara.proxy/internal/gateway"
+	"ovara.proxy/internal/lockfiles"
 	"ovara.proxy/internal/proxy"
 	"ovara.proxy/internal/receipts"
 	"ovara.proxy/scripts"
@@ -442,9 +443,9 @@ func cmdRun(args []string) error {
 		if err != nil {
 			return fmt.Errorf("-package-gate: %w", err)
 		}
-		pinned := strings.Fields(string(b))
-		srv.SetPackageGate(pinned)
-		log.Printf("strict installs: %d pinned package(s) go through; any other package download asks policy (package.install)", len(pinned))
+		pinned := lockfiles.ParsePins(string(b))
+		srv.SetPackageGatePins(pinned)
+		log.Printf("strict installs: %d pinned package(s) go through, checked against their lockfile digests where recorded; any other package download, or a registry download that names no package, asks policy (package.install)", len(pinned))
 	}
 	log.Printf("ovara executor proxy on %s (env=%s fail_open=%v)", cfg.ListenAddr, cfg.Environment, cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)

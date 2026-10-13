@@ -137,6 +137,7 @@ func cmdBox(args []string) error {
 	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
 	cpus := fs.String("cpus", "", "tier 2: CPU limit for the box (e.g. 2; default none)")
 	profile := fs.String("profile", boxProfileDev, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9)")
+	untrustedLockfiles := fs.Bool("untrusted-lockfiles", false, "strict: the project's lockfiles are not trusted (a repository you are reviewing, not your own): nothing they pin is let through without a question")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "approval page address (loopback only; \"off\" to disable)")
 	approveTimeout := fs.Duration("approve-timeout", 10*time.Minute, "how long the commit-back waits for a person")
 	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
@@ -168,6 +169,9 @@ func cmdBox(args []string) error {
 	}
 	if *profile != boxProfileDev && *profile != boxProfileStrict {
 		return fmt.Errorf("-profile %s: want dev or strict", *profile)
+	}
+	if *untrustedLockfiles && *profile != boxProfileStrict {
+		return errors.New("-untrusted-lockfiles is for -profile strict (the dev profile asks about no package)")
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("ovara box needs root (tier 1: the network namespace; tier 2: handing the workspace to the box's user and keeping Ovara's sockets out of its reach): run it with sudo; the agent itself runs as an unprivileged user")
@@ -264,15 +268,24 @@ func cmdBox(args []string) error {
 	// else the agent adds pauses once (the proxy's package gate)
 	pinnedFile := ""
 	if *profile == boxProfileStrict {
-		refs, files := lockfiles.Scan(ws.Dir)
+		pins, files := strictPins(ws.Dir, *untrustedLockfiles)
 		pinnedFile = filepath.Join(runDir, "pinned-packages.txt")
-		if err := os.WriteFile(pinnedFile, []byte(strings.Join(refs, "\n")+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(pinnedFile, []byte(lockfiles.FormatPins(pins)), 0o600); err != nil {
 			return err
 		}
-		if len(files) == 0 {
+		withDigest := 0
+		for _, d := range pins {
+			if len(d) > 0 {
+				withDigest++
+			}
+		}
+		switch {
+		case *untrustedLockfiles:
+			fmt.Fprintln(os.Stderr, "==> strict installs: -untrusted-lockfiles: the project's lockfiles pin nothing, so every package the agent installs pauses once")
+		case len(files) == 0:
 			fmt.Fprintln(os.Stderr, "==> strict installs: no lockfile in the project, so every package the agent installs pauses once")
-		} else {
-			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through; any other package pauses once\n", len(refs), strings.Join(files, ", "))
+		default:
+			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through (%d checked against the lockfile's digest); any other package pauses once\n", len(pins), strings.Join(files, ", "), withDigest)
 		}
 		if b, err := os.ReadFile(filepath.Join(*dir, "policy.json")); err == nil && !strings.Contains(string(b), `"package.install"`) {
 			fmt.Fprintln(os.Stderr, "    warning: policy.json has no package.install rule; without one a new package is refused, not paused (add {\"action_type\": \"package.install\", \"resource\": \"*\", \"escalate\": true})")
@@ -464,6 +477,17 @@ func cmdBox(args []string) error {
 		return fmt.Errorf("agent exited with status %d", exitCode)
 	}
 	return nil
+}
+
+// strictPins are the packages a strict box lets through without a question,
+// with their lockfile digests, and the lockfiles read. A project whose
+// lockfiles are not trusted pins nothing.
+func strictPins(workspace string, untrusted bool) (map[string][]string, []string) {
+	pins, files := lockfiles.ScanPins(workspace)
+	if untrusted {
+		return map[string][]string{}, files
+	}
+	return pins, files
 }
 
 // agentVars is Ovara's agent environment for a proxy at host, with the CA
