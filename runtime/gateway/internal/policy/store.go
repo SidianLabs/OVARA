@@ -51,6 +51,9 @@ const (
 	// action_type over "*", then an exact environment over "*"); among
 	// equally specific rules deny beats allow beats escalate. This lets a
 	// policy say "allow exactly this write, deny every other write".
+	// Two limits apply whatever the specificity: a matching deny always
+	// beats a matching escalate, and an allow overrides a deny only if it
+	// names the host at least as precisely (HostSpecificity).
 	PrecedenceMostSpecific = "most-specific"
 
 	DefaultEscalate = "escalate"
@@ -61,6 +64,19 @@ const (
 // characters. An empty pattern matches everything and scores 0.
 func Specificity(pattern string) int {
 	return len(pattern) - strings.Count(pattern, "*")
+}
+
+// HostSpecificity scores only the authority of a URL-shaped pattern (the
+// literal characters between "://" and the first '/'). Patterns that are
+// not URL-shaped score 0. Under most-specific precedence an allow may
+// override a deny only if it names the host at least as precisely: a long
+// path under a wildcard host is not more specific than a deny that names
+// the host, however many literal characters the path adds.
+func HostSpecificity(pattern string) int {
+	if !strings.Contains(pattern, "://") {
+		return 0
+	}
+	return Specificity(authoritySegment(pattern))
 }
 
 // shadowedRules lists pairs of rules that share action_type, environment

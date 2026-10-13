@@ -691,53 +691,80 @@ func (e *Evaluator) evaluateWithStore(store *policy.Store, actionRules, envRules
 // Specificity is (literal characters in the pattern, exact action_type,
 // exact environment); ties go deny > allow > escalate. No match → the
 // store's default (escalate, or deny when the file says so).
+//
+// Two limits keep specificity from being gamed with text the agent
+// controls (a command line, a URL path or a ref name can always be made
+// longer so that it also matches a longer pattern):
+//   - a matching deny always beats a matching escalate: escalate may make
+//     an allow stricter, never a deny softer;
+//   - an allow beats a less specific deny only if its pattern names the
+//     host at least as precisely as every matching deny (HostSpecificity),
+//     so "allow this one write, deny the rest" works while a broad allow
+//     with a long path cannot override a deny on a named host.
 func (e *Evaluator) evaluateMostSpecific(store *policy.Store, req *models.ActionRequest) RuleOutcome {
 	type scored struct {
 		rule policy.Rule
-		key  [4]int
+		key  [3]int
 	}
-	rank := func(r policy.Rule) int {
-		switch {
-		case r.Deny:
-			return 3
-		case r.Allow:
-			return 2
-		case r.Escalate:
-			return 1
-		}
-		return 0
-	}
-	var best *scored
+	var denies, allows, escalates []scored
+	maxDenyHost := 0
 	for _, r := range store.RulesFor(string(req.ActionType), string(req.Environment)) {
 		if !policy.MatchResource(r.Resource, req.Resource) {
 			continue
 		}
-		k := [4]int{policy.Specificity(r.Resource), b2i(r.ActionType != "*"), b2i(r.Environment != "*"), rank(r)}
-		if k[3] == 0 {
-			continue // a rule with no effect decides nothing
+		s := scored{r, [3]int{policy.Specificity(r.Resource), b2i(r.ActionType != "*"), b2i(r.Environment != "*")}}
+		switch {
+		case r.Deny:
+			denies = append(denies, s)
+			if h := policy.HostSpecificity(r.Resource); h > maxDenyHost {
+				maxDenyHost = h
+			}
+		case r.Allow:
+			allows = append(allows, s)
+		case r.Escalate:
+			escalates = append(escalates, s)
 		}
-		if best == nil || greater(k, best.key) {
-			best = &scored{r, k}
-		}
+		// a rule with no effect decides nothing
 	}
-	if best == nil {
-		if store.DefaultDecision() == policy.DefaultDeny {
-			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: "default: deny"}
+	best := func(list []scored, eligible func(scored) bool) *scored {
+		var b *scored
+		for i := range list {
+			if eligible != nil && !eligible(list[i]) {
+				continue
+			}
+			if b == nil || greater(list[i].key, b.key) {
+				b = &list[i]
+			}
 		}
-		return RuleOutcome{Escalate: true, Reason: models.ReasonEscalate}
+		return b
 	}
-	r := best.rule
-	switch {
-	case r.Deny:
+	bestDeny := best(denies, nil)
+	bestAllow := best(allows, func(s scored) bool {
+		return len(denies) == 0 || policy.HostSpecificity(s.rule.Resource) >= maxDenyHost
+	})
+	bestEscalate := best(escalates, nil)
+
+	// A deny decides unless an eligible allow is strictly more specific
+	// (ties go to deny).
+	if bestDeny != nil && (bestAllow == nil || !greater(bestAllow.key, bestDeny.key)) {
+		r := bestDeny.rule
 		if req.Environment == models.EnvironmentProduction {
 			return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied, Rule: ruleLabel(r)}
 		}
 		return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: ruleLabel(r)}
-	case r.Allow:
-		return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
-	default:
-		return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(r)}
 	}
+	// Between allow and escalate the more specific decides; on a tie, allow.
+	if bestEscalate != nil && (bestAllow == nil || greater(bestEscalate.key, bestAllow.key)) {
+		return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(bestEscalate.rule)}
+	}
+	if bestAllow != nil {
+		r := bestAllow.rule
+		return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
+	}
+	if store.DefaultDecision() == policy.DefaultDeny {
+		return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: "default: deny"}
+	}
+	return RuleOutcome{Escalate: true, Reason: models.ReasonEscalate}
 }
 
 func b2i(b bool) int {
@@ -747,7 +774,7 @@ func b2i(b bool) int {
 	return 0
 }
 
-func greater(a, b [4]int) bool {
+func greater(a, b [3]int) bool {
 	for i := range a {
 		if a[i] != b[i] {
 			return a[i] > b[i]
