@@ -58,9 +58,33 @@ clean:
 	rm -f ovara ovara.exe
 	@for mod in $(TS_MODULES); do rm -rf $$mod/dist; done
 
-# ── Fuzz (a minute each; CI runs longer weekly) ──────
+# ── Fuzz (FUZZTIME each, a minute by default; CI runs longer weekly) ──
+# module:package:target, the same list as .github/workflows/fuzz.yml.
+# `go test` runs every target's seed corpus on its own; this explores.
+FUZZTIME ?= 1m
+FUZZ_TARGETS := \
+	proxy:./internal/proxy:FuzzParseRefUpdates \
+	proxy:./internal/proxy:FuzzParseRefUpdatesRoundTrip \
+	proxy:./internal/proxy:FuzzValidUploadPackRequest \
+	proxy:./internal/proxy:FuzzNormalizeHost \
+	proxy:./internal/proxy:FuzzReadCarriesData \
+	proxy:./internal/proxy:FuzzModelValueRefusal \
+	proxy:./internal/proxy:FuzzRedactPreviewCount \
+	proxy:./cmd/ovara:FuzzTermSafe \
+	proxy:./cmd/ovara:FuzzParseGitHubRemote \
+	proxy:./internal/boxgate:FuzzPolicyLine \
+	proxy:./internal/creds:FuzzScopeToRepo \
+	proxy:./internal/receipts:FuzzReceiptLine \
+	runtime/gateway:./internal/policy:FuzzMatchCanonicalResource \
+	runtime/gateway:./internal/policy:FuzzCanonicalResource \
+	runtime/gateway:./internal/policy:FuzzMatchResource \
+	runtime/gateway:./internal/policy:FuzzSplitRefList \
+	runtime/gateway:./internal/evaluator:FuzzPrecedence \
+	runtime/gateway:./internal/record:FuzzOpenNeverPanics
+
 fuzz:
-	cd proxy && go test -run='^$$' -fuzz='^FuzzParseRefUpdates$$' -fuzztime=1m ./internal/proxy
-	cd proxy && go test -run='^$$' -fuzz='^FuzzNormalizeHost$$' -fuzztime=1m ./internal/proxy
-	cd runtime/gateway && go test -run='^$$' -fuzz='^FuzzMatchCanonicalResource$$' -fuzztime=1m ./internal/policy
-	cd runtime/gateway && go test -run='^$$' -fuzz='^FuzzOpenNeverPanics$$' -fuzztime=1m ./internal/record
+	@set -e; for t in $(FUZZ_TARGETS); do \
+		mod=$${t%%:*}; rest=$${t#*:}; pkg=$${rest%%:*}; name=$${rest#*:}; \
+		echo "=== $$name ($$mod $$pkg, $(FUZZTIME))"; \
+		(cd $$mod && go test -run='^$$' -fuzz="^$$name\$$" -fuzztime=$(FUZZTIME) $$pkg); \
+	done

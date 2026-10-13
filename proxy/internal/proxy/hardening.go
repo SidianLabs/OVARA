@@ -123,8 +123,12 @@ func readRequestBytes(r *http.Request) int {
 // readCarriesData reports why a read-class request should be refused, or "".
 // A read's path, query and headers carry data just as well as a POST body,
 // so they share one budget; the query also keeps its own, smaller cap.
+//
+// The method is compared without regard to case: handleRequest upper-cases
+// it first, but a "get" that reached this check by another path must not
+// skip the budget that a "GET" is held to.
 func (s *Server) readCarriesData(r *http.Request) string {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+	if !strings.EqualFold(r.Method, http.MethodGet) && !strings.EqualFold(r.Method, http.MethodHead) {
 		return ""
 	}
 	if r.ContentLength > 0 || len(r.TransferEncoding) > 0 {

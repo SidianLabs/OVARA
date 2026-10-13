@@ -349,7 +349,7 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	}
 	if cfg.ScopeRepo != "" {
 		owner, repo, ok := strings.Cut(cfg.ScopeRepo, "/")
-		if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		if !ok || !creds.RepoName(owner) || !creds.RepoName(repo) {
 			return nil, nil, fmt.Errorf("-scope-repo %q: want owner/repo", cfg.ScopeRepo)
 		}
 		for _, h := range []string{"api.github.com", "github.com"} {

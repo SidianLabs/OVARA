@@ -107,6 +107,25 @@ func TestScopeToRepo(t *testing.T) {
 	}
 }
 
+// Found by FuzzScopeToRepo: an owner or repo of "*" made the scope a glob
+// over every repository ("/repos/*/*"), and one with a '/' moved the
+// scope's boundary. Such a scope now drops the host's bindings instead.
+func TestScopeToRepo_RefusesNamesThatAreNotNames(t *testing.T) {
+	in := []Binding{
+		{Host: "api.github.com", Headers: map[string]string{"Authorization": "Bearer t"}},
+		{Host: "api.openai.com", Headers: map[string]string{"Authorization": "Bearer o"}},
+	}
+	for _, c := range [][2]string{{"*", "*"}, {"acme", "*"}, {"acme/app", "x"}, {"acme", ".."}, {"", "app"}, {"acme", "app x"}} {
+		out := ScopeToRepo(in, "api.github.com", c[0], c[1])
+		if len(out) != 1 || out[0].Host != "api.openai.com" {
+			t.Errorf("scope %q/%q kept %+v", c[0], c[1], out)
+		}
+		if MatchRequest(out, Request{Host: "api.github.com", Method: "GET", Path: "/repos/evil/x"}) != nil {
+			t.Errorf("scope %q/%q sends the key to another repository", c[0], c[1])
+		}
+	}
+}
+
 // CR-11: a secret too short to scrub is refused, not silently injected.
 func TestLoadReport_RefusesShortSecrets(t *testing.T) {
 	t.Setenv("OVARA_TEST_SHORT", "abc")

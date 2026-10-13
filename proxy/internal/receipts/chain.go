@@ -532,6 +532,11 @@ func verifySegment(path string, ring *KeyRing, seg Segment) (*VerifyResult, []st
 	if err != nil {
 		return &VerifyResult{Reason: err.Error()}, nil, nil
 	}
+	return verifyData(data, ring, seg)
+}
+
+// verifyData is verifySegment over chain bytes already read.
+func verifyData(data []byte, ring *KeyRing, seg Segment) (*VerifyResult, []string, []Verified) {
 	prevHash := seg.PrevHash
 	var heads []string
 	var recs []Verified

@@ -1,6 +1,9 @@
 package boxgate
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPolicyLine(t *testing.T) {
 	cases := []struct {
@@ -36,6 +39,21 @@ func TestPolicyLine(t *testing.T) {
 		if got := PolicyLine(Exec{Argv: c.argv}); got != c.want {
 			t.Errorf("%q: %q, want %q", c.argv, got, c.want)
 		}
+	}
+	// Found by FuzzPolicyLine: GNU rm takes abbreviated long options, and
+	// argv[0] is the caller's to choose; neither may hide a recursive delete.
+	for _, e := range []Exec{
+		{Exe: "/usr/bin/rm", Argv: []string{"rm", "--rec", "--for", "x"}},
+		{Exe: "/usr/bin/rm", Argv: []string{"rm", "--r", "--f", "x"}},
+		{Exe: "/usr/bin/rm", Argv: []string{"tidy", "-rf", "/w"}},
+		{Exe: "/usr/bin/rm", Argv: []string{"sh", "-rf", "/w"}},
+	} {
+		if got := PolicyLine(e); !strings.HasPrefix(got, "rm -rf") {
+			t.Errorf("%q (image %s): %q", e.Argv, e.Exe, got)
+		}
+	}
+	if got := PolicyLine(Exec{Exe: "/usr/bin/python3.12", Argv: []string{"python3", "x.py"}}); got != "python3 x.py" {
+		t.Errorf("other images keep argv[0]: %q", got)
 	}
 	if got := PolicyLine(Exec{Exe: "/bin/true"}); got != "/bin/true" {
 		t.Errorf("no argv: %q", got)

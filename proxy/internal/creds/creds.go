@@ -259,8 +259,21 @@ func glob(pattern, s string) bool {
 //
 // Requests outside the tree (other repositories, the account, GraphQL)
 // then go out without the credential.
+//
+// An owner or repo that is not a plain GitHub name (see RepoName) would
+// put a glob or another path segment into the scope ("*" would cover every
+// repository); every binding for host is then dropped instead.
 func ScopeToRepo(bindings []Binding, host, owner, repo string) []Binding {
 	host = strings.ToLower(host)
+	if !RepoName(owner) || !RepoName(repo) {
+		out := make([]Binding, 0, len(bindings))
+		for _, b := range bindings {
+			if pat, _ := splitHostPattern(b.Host); pat != host {
+				out = append(out, b)
+			}
+		}
+		return out
+	}
 	var roots []string
 	if strings.HasPrefix(host, "api.") {
 		roots = []string{"/repos/" + owner + "/" + repo}
@@ -312,4 +325,20 @@ func within(p string, roots []string) bool {
 		}
 	}
 	return false
+}
+
+// RepoName reports whether s can be a GitHub owner or repository name:
+// letters, digits, '-', '_' and '.', and not "." or "..". Nothing else may
+// reach a credential scope, where '*' is a glob and '/' a path segment.
+func RepoName(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
