@@ -111,6 +111,10 @@ func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
 	approvalID := fmt.Sprintf("apr_%s", uuid.New().String())
 	approval := req.ToApproval(approvalID)
 	approval.CreatedAt = s.clock().UTC()
+	// The caller gets its own copy. Once stored, the record is the store's:
+	// an approval can be resolved (and the record changed under the store's
+	// lock) before the caller has finished reading what it created.
+	out := snapshotOf(approval)
 
 	if err := s.store.Create(approval); err != nil {
 		return nil, fmt.Errorf("creating approval: %w", err)
@@ -119,7 +123,7 @@ func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
 	log.Printf("APPROVAL created approval_id=%s decision_id=%s action_type=%s agent_id=%s environment=%s",
 		approvalID, req.DecisionID, req.ActionType, req.AgentID, req.Environment)
 
-	return approval, nil
+	return out, nil
 }
 
 // Open is how an escalation asks a person: it creates an approval unless

@@ -254,6 +254,11 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		cnt.WithMetadata("escalation_reason", "policy_escalate")
 	}
 
+	// Read what the event needs before the store owns the record: an
+	// approval can resolve (and change the continuation under the store's
+	// lock) as soon as it is stored.
+	cntID, cntState, cntExpires := cnt.ContinuationID, cnt.State, cnt.ExpiresAt
+
 	if h.continuationStore != nil {
 		if err := h.continuationStore.Create(cnt); err != nil {
 			api.JSONInternalError(w, "approval created but its continuation could not be persisted: "+err.Error())
@@ -268,12 +273,12 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			WithApprovalID(created.ApprovalID).
 			WithAgentID(bound.AgentID).
 			WithPayload(map[string]any{
-				"continuation_id": cnt.ContinuationID,
+				"continuation_id": cntID,
 				"action_type":     string(bound.ActionType),
 				"resource":        bound.Resource,
 				"trust_score":     bound.TrustScore,
-				"state":           string(cnt.State),
-				"expires_at":      cnt.ExpiresAt,
+				"state":           string(cntState),
+				"expires_at":      cntExpires,
 			})
 		h.eventStore.Append(evt)
 	}
