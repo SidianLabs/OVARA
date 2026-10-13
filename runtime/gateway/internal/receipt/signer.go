@@ -40,13 +40,20 @@ func NewSigner(key []byte) *Signer {
 	return &Signer{key: key}
 }
 
-// Sign produces an HMAC-SHA256 signature over the receipt fields required
-// by RFC 0003 and returns the signature string in "sig_v1:<hex>" format.
+// HMACPrefix tags the gateway's HMAC receipt signature. It was "sig_v1:",
+// the same prefix the proxy's Ed25519 receipt chain uses; a tool reading
+// both could take one for the other. The HMAC is a symmetric check only
+// the gateway itself can make, not a signature anyone can verify: the
+// gateway's Ed25519 gateway_sig is what /v1/receipts/verify checks.
+const HMACPrefix = "hmac_v1:"
+
+// Sign produces an HMAC-SHA256 over the receipt fields required by RFC
+// 0003 and returns it as "hmac_v1:<hex>".
 func (s *Signer) Sign(r *models.Receipt) string {
 	payload := s.canonicalPayload(r)
 	mac := hmac.New(sha256.New, s.key)
 	mac.Write([]byte(payload))
-	return "sig_v1:" + hex.EncodeToString(mac.Sum(nil))
+	return HMACPrefix + hex.EncodeToString(mac.Sum(nil))
 }
 
 // Verify checks whether the stored signature on r matches a freshly
@@ -59,7 +66,7 @@ func (s *Signer) Verify(r *models.Receipt) bool {
 	return hmac.Equal([]byte(expected), []byte(r.Signature))
 }
 
-// signatureVersion extracts "sig_v1" or "" from a signature string so
+// signatureVersion extracts "hmac_v1" or "" from a signature string so
 // callers can distinguish future signing schemes.
 func signatureVersion(sig string) string {
 	if idx := strings.IndexByte(sig, ':'); idx > 0 {

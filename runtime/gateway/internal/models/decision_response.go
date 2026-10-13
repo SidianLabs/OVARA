@@ -45,6 +45,9 @@ const (
 	ReasonRevoked               ReasonCode = "revoked"
 	ReasonRevocationUnavailable ReasonCode = "revocation_unavailable"
 	ReasonRevocationEpoch       ReasonCode = "revocation_epoch_stale"
+	// ReasonReceiptUnavailable: the decision's receipt could not be
+	// written, so it was turned into a deny (no receipt, no action).
+	ReasonReceiptUnavailable ReasonCode = "receipt_unavailable"
 )
 
 type DecisionResponse struct {

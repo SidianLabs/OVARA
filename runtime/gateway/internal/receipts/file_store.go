@@ -40,7 +40,7 @@ func NewFileBackedStore(path string, maxSize int, maxAge time.Duration, bindings
 		binding = bindings[0]
 	}
 	if binding != nil {
-		j, err := record.Open("receipts", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		j, err := record.OpenBinding("receipts", path, binding, store.foldEvent)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fold receipts journal: %w", err)
 		}
@@ -84,8 +84,8 @@ func (s *FileBackedStore) persist(receipts []*models.Receipt) error {
 }
 
 func (s *FileBackedStore) Put(receipt *models.Receipt) error {
-	if receipt.ReceiptID == "" {
-		return fmt.Errorf("receipt_id is required")
+	if err := checkPersistable(receipt); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
