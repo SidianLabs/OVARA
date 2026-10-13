@@ -367,8 +367,9 @@ func requirements(path string) []pin {
 	}
 	// a requirement may go on over lines ending in a backslash
 	text := strings.ReplaceAll(strings.ReplaceAll(string(b), "\r\n", "\n"), "\\\n", " ")
-	var out []pin
-	for _, line := range strings.Split(text, "\n") {
+	lines := strings.Split(text, "\n")
+	out := make([]pin, 0, len(lines))
+	for _, line := range lines {
 		m := reqPin.FindStringSubmatch(line)
 		if m == nil {
 			continue

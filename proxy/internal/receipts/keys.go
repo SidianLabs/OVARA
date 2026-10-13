@@ -115,8 +115,9 @@ func readHistory(path string) ([]KeyRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []KeyRecord
-	for i, line := range bytes.Split(data, []byte{'\n'}) {
+	lines := bytes.Split(data, []byte{'\n'})
+	out := make([]KeyRecord, 0, len(lines))
+	for i, line := range lines {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
@@ -177,9 +178,13 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 // verify checks sigHex over msg for receipt r under the ring. v2 receipts
 // name their key; v1 receipts do not, so every key is tried.
+//
+// The hex must be exactly what the writer produces (lower case): hex
+// decoding accepts either case, so "ab" and "AB" would carry the same
+// signature, and a line could be changed without failing to verify.
 func (k *KeyRing) verify(r *Receipt, msg []byte, sigHex string) error {
 	sig, err := hex.DecodeString(sigHex)
-	if err != nil || len(sig) != ed25519.SignatureSize {
+	if err != nil || len(sig) != ed25519.SignatureSize || hex.EncodeToString(sig) != sigHex {
 		return errors.New("signature invalid")
 	}
 	var cands []KeyRecord

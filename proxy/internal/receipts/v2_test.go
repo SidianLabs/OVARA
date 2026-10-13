@@ -26,7 +26,7 @@ func writeV1(t *testing.T, path string, key ed25519.PrivateKey, prev, method, ur
 		t.Fatal(err)
 	}
 	defer f.Close()
-	f.Write(append(line, '\n'))
+	_, _ = f.Write(append(line, '\n'))
 	return hashLine(line)
 }
 
@@ -34,8 +34,8 @@ func keyPair(t *testing.T, dir string) (keyFile, pubFile string, key ed25519.Pri
 	t.Helper()
 	pub, key, _ := ed25519.GenerateKey(rand.Reader)
 	keyFile, pubFile = filepath.Join(dir, "r.key"), filepath.Join(dir, "r.pub")
-	os.WriteFile(keyFile, []byte(hex.EncodeToString(key)), 0o600)
-	os.WriteFile(pubFile, []byte(hex.EncodeToString(pub)), 0o644)
+	_ = os.WriteFile(keyFile, []byte(hex.EncodeToString(key)), 0o600)
+	_ = os.WriteFile(pubFile, []byte(hex.EncodeToString(pub)), 0o600)
 	return keyFile, pubFile, key
 }
 
@@ -68,7 +68,7 @@ func TestV1ThenV2Verifies(t *testing.T) {
 	}
 	// v1 after v2 is refused.
 	lines := readLines(t, path)
-	os.WriteFile(path, append(append(append([]byte{}, lines[0]...), '\n'), append(lines[2], '\n')...), 0o600)
+	_ = os.WriteFile(path, append(append(append([]byte{}, lines[0]...), '\n'), append(lines[2], '\n')...), 0o600)
 	if res := VerifyFile(path, key.Public().(ed25519.PublicKey)); res.Valid {
 		t.Fatalf("broken link must fail: %+v", res)
 	}
@@ -90,7 +90,7 @@ func TestV2CanonicalFormIsUnambiguous(t *testing.T) {
 	}
 
 	c, chainFile, pub := newChain(t)
-	c.Record("GET", "https://a.example/p|q", "allow", 200, "")
+	_, _ = c.Record("GET", "https://a.example/p|q", "allow", 200, "")
 	tamper(t, chainFile, 0, func(r *Receipt) { r.Method, r.URL = "GET|https://a.example/p", "q" })
 	if res := VerifyFile(chainFile, pub); res.Valid {
 		t.Fatal("moving a pipe between fields must break the signature")
@@ -111,15 +111,15 @@ func TestExtraAndDuplicateKeysRejected(t *testing.T) {
 	for name, edit := range cases {
 		t.Run(name, func(t *testing.T) {
 			c, chainFile, pub := newChain(t)
-			c.Record("GET", "https://a.example/", "allow", 200, "")
-			c.Record("GET", "https://a.example/", "allow", 200, "")
+			_, _ = c.Record("GET", "https://a.example/", "allow", 200, "")
+			_, _ = c.Record("GET", "https://a.example/", "allow", 200, "")
 			orig := readLines(t, chainFile)
 			// The tail is the interesting position: no later prev_hash
 			// covers it, only its own signature and form.
 			for _, i := range []int{0, 1} {
 				lines := append([][]byte(nil), orig...)
 				lines[i] = []byte(edit(string(lines[i])))
-				os.WriteFile(chainFile, append(bytes.Join(lines, []byte("\n")), '\n'), 0o600)
+				_ = os.WriteFile(chainFile, append(bytes.Join(lines, []byte("\n")), '\n'), 0o600)
 				if res := VerifyFile(chainFile, pub); res.Valid || res.FailAt != i {
 					t.Fatalf("%s at line %d: %+v", name, i, res)
 				}
@@ -133,7 +133,7 @@ func TestExtraAndDuplicateKeysRejected(t *testing.T) {
 	writeV1(t, path, key, "", "GET", "https://a.example/")
 	line := readLines(t, path)[0]
 	line = bytes.Replace(line, []byte(`"prev_hash"`), []byte(`"approver":"someone","prev_hash"`), 1)
-	os.WriteFile(path, append(line, '\n'), 0o600)
+	_ = os.WriteFile(path, append(line, '\n'), 0o600)
 	if res := VerifyFileKeys(path, mustRing(t, pubFile)); res.Valid {
 		t.Fatal("v1 receipt with unsigned v2 fields verified")
 	}
@@ -148,7 +148,7 @@ func TestRotateAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Record("GET", "https://a.example/before", "allow", 200, "")
+	_, _ = c.Record("GET", "https://a.example/before", "allow", 200, "")
 	c.Close()
 	time.Sleep(2 * time.Millisecond)
 	oldID, newID, err := RotateKey(keyFile, pubFile, time.Now())
@@ -160,18 +160,18 @@ func TestRotateAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2.Record("GET", "https://a.example/after", "allow", 200, "")
+	_, _ = c2.Record("GET", "https://a.example/after", "allow", 200, "")
 	if res := VerifyFileKeys(path, mustRing(t, pubFile)); !res.Valid || res.Total != 2 {
 		t.Fatalf("chain across a rotation: %+v", res)
 	}
 	// The retired key cannot be used to start the proxy again.
-	os.WriteFile(filepath.Join(dir, "old.key"), []byte(hex.EncodeToString(oldKey)), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "old.key"), []byte(hex.EncodeToString(oldKey)), 0o600)
 	if _, err := LoadOrCreate(path, filepath.Join(dir, "old.key"), pubFile); err == nil {
 		t.Fatal("a rotated-out key must not start a chain")
 	}
 	// A receipt the old key signs after rotation fails verification.
 	c3 := &Chain{key: oldKey, keyID: oldID, sessionID: "x", path: path, prevHash: c2.prevHash, seq: c2.seq}
-	c3.Record("GET", "https://a.example/forged", "allow", 200, "")
+	_, _ = c3.Record("GET", "https://a.example/forged", "allow", 200, "")
 	res := VerifyFileKeys(path, mustRing(t, pubFile))
 	if res.Valid || res.FailAt != 2 || !strings.Contains(res.Reason, "rotated out") {
 		t.Fatalf("old key after rotation: %+v", res)
@@ -179,7 +179,7 @@ func TestRotateAndRevoke(t *testing.T) {
 	// Revoking the current key as of now: receipts it signed before stay
 	// valid, later ones fail.
 	lines := readLines(t, path)
-	os.WriteFile(path, append(bytes.Join(lines[:2], []byte("\n")), '\n'), 0o600)
+	_ = os.WriteFile(path, append(bytes.Join(lines[:2], []byte("\n")), '\n'), 0o600)
 	if _, err := RevokeKey(pubFile, newID, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestRotateAndRevoke(t *testing.T) {
 	}
 	time.Sleep(2 * time.Millisecond)
 	c4 := &Chain{key: mustLoadKey(t, keyFile), keyID: newID, sessionID: "y", path: path, prevHash: hashLine(lines[1]), seq: 2}
-	c4.Record("GET", "https://a.example/late", "allow", 200, "")
+	_, _ = c4.Record("GET", "https://a.example/late", "allow", 200, "")
 	if res := VerifyFileKeys(path, mustRing(t, pubFile)); res.Valid || !strings.Contains(res.Reason, "revoked") {
 		t.Fatalf("receipt after revocation verified: %+v", res)
 	}
@@ -208,7 +208,7 @@ func mustLoadKey(t *testing.T, f string) ed25519.PrivateKey {
 // G-07: a missing key next to existing receipts is not silently replaced.
 func TestMissingKeyWithReceiptsRefused(t *testing.T) {
 	c, chainFile, _ := newChain(t)
-	c.Record("GET", "https://a.example/", "allow", 200, "")
+	_, _ = c.Record("GET", "https://a.example/", "allow", 200, "")
 	dir := filepath.Dir(chainFile)
 	os.Remove(filepath.Join(dir, "receipts.key"))
 	if _, err := LoadOrCreate(chainFile, filepath.Join(dir, "receipts.key"), filepath.Join(dir, "receipts.pub")); err == nil {
@@ -223,11 +223,11 @@ func TestOutcomeNeedsAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Append(Entry{Method: "GET", URL: "https://a.example/", Decision: "allow", Status: 200, Phase: "outcome", AttemptID: a.ReceiptID}, false)
+	_, _ = c.Append(Entry{Method: "GET", URL: "https://a.example/", Decision: "allow", Status: 200, Phase: "outcome", AttemptID: a.ReceiptID}, false)
 	if res := VerifyFile(chainFile, pub); !res.Valid {
 		t.Fatalf("%+v", res)
 	}
-	c.Append(Entry{Method: "GET", URL: "https://a.example/", Decision: "allow", Status: 200, Phase: "outcome", AttemptID: "rcpt_nope"}, false)
+	_, _ = c.Append(Entry{Method: "GET", URL: "https://a.example/", Decision: "allow", Status: 200, Phase: "outcome", AttemptID: "rcpt_nope"}, false)
 	if res := VerifyFile(chainFile, pub); res.Valid {
 		t.Fatal("outcome without attempt verified")
 	}
@@ -279,6 +279,6 @@ func BenchmarkPlainAppend(b *testing.B) {
 		b.Fatal(err)
 	}
 	for i := 0; i < b.N; i++ {
-		c.Append(Entry{Method: "GET", URL: "https://a.example/", Decision: "allow"}, false)
+		_, _ = c.Append(Entry{Method: "GET", URL: "https://a.example/", Decision: "allow"}, false)
 	}
 }

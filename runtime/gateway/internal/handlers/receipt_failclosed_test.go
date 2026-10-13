@@ -51,7 +51,7 @@ func checkWith(t *testing.T, rs receipts.Store) *models.DecisionResponse {
 		t.Fatalf("check: %d %s", w.Code, w.Body.String())
 	}
 	var resp models.DecisionResponse
-	json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	return &resp
 }
 

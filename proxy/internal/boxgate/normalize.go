@@ -28,6 +28,13 @@ func PolicyLine(e Exec) string {
 		return e.Exe
 	}
 	name := baseName(e.Argv[0])
+	// argv[0] is whatever the caller chose (`exec -a x rm -rf /`); the
+	// image is not. When the image is rm, it is read as rm. (Only rm: for a
+	// multi-call program argv[0] picks what it does, and git's helpers run
+	// as git under their own names.)
+	if exe := baseName(e.Exe); exe == "rm" && name != exe {
+		name = exe
+	}
 	if shells[name] {
 		if line, ok := shellScript(e.Argv); ok {
 			return strings.Join(strings.Fields(line), " ")
@@ -122,9 +129,9 @@ func rmArgs(args []string) []string {
 			break
 		}
 		switch {
-		case a == "--recursive":
+		case isLongOpt(a, "--recursive"):
 			r = true
-		case a == "--force":
+		case isLongOpt(a, "--force"):
 			f = true
 		case strings.HasPrefix(a, "--"):
 			long = append(long, a)
@@ -160,4 +167,12 @@ func rmArgs(args []string) []string {
 	}
 	out = append(out, long...)
 	return append(out, operands...)
+}
+
+// isLongOpt reports whether a names the long option opt as GNU getopt reads
+// it: the whole name or any abbreviation of it ("--rec" is --recursive).
+// rm has no other long option starting with 'r' or 'f', so every prefix of
+// at least one letter is unambiguous.
+func isLongOpt(a, opt string) bool {
+	return len(a) >= 3 && strings.HasPrefix(opt, a)
 }

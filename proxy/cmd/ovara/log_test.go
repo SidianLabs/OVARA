@@ -127,8 +127,8 @@ func TestPrintLog_AttemptAndOutcomeShowOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, _ := chain.Append(receipts.Entry{Method: "GET", URL: "https://pypi.org/simple/", Decision: "allow", Phase: "attempt", Outcome: "sent"}, true)
-	chain.Append(receipts.Entry{Method: "GET", URL: "https://pypi.org/simple/", Decision: "allow", Status: 200, Phase: "outcome", AttemptID: a.ReceiptID}, false)
-	chain.Append(receipts.Entry{Method: "POST", URL: "https://api.github.com/x", Decision: "allow", Phase: "attempt", Outcome: "sent"}, true)
+	_, _ = chain.Append(receipts.Entry{Method: "GET", URL: "https://pypi.org/simple/", Decision: "allow", Status: 200, Phase: "outcome", AttemptID: a.ReceiptID}, false)
+	_, _ = chain.Append(receipts.Entry{Method: "POST", URL: "https://api.github.com/x", Decision: "allow", Phase: "attempt", Outcome: "sent"}, true)
 	var out bytes.Buffer
 	if err := printLog(&out, chainFile, pubFile, 0); err != nil {
 		t.Fatal(err)

@@ -16,12 +16,12 @@ import (
 func TestOperatorTokenSources(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "tok")
-	os.WriteFile(f, []byte("s3cret\n"), 0o600)
+	_ = os.WriteFile(f, []byte("s3cret\n"), 0o600)
 	if tok, err := loadOperatorToken(f); err != nil || tok != "s3cret" {
 		t.Fatalf("file: %q %v", tok, err)
 	}
 	if runtime.GOOS != "windows" {
-		os.Chmod(f, 0o644)
+		_ = os.Chmod(f, 0o644)
 		if _, err := loadOperatorToken(f); err == nil {
 			t.Fatal("a token file other users can read was accepted")
 		}

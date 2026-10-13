@@ -38,7 +38,7 @@ func TestTrustReadHost_SaysWhereAndWhenAndLastsOneRun(t *testing.T) {
 	var doc struct {
 		Rules []map[string]any `json:"rules"`
 	}
-	json.Unmarshal(raw, &doc)
+	_ = json.Unmarshal(raw, &doc)
 	desc, _ := doc.Rules[0]["description"].(string)
 	for _, want := range []string{"[this run only]", "approval prompt", time.Now().Format("2006-01-02"), "docs.example.com"} {
 		if !strings.Contains(desc, want) {
@@ -52,7 +52,7 @@ func TestTrustReadHost_SaysWhereAndWhenAndLastsOneRun(t *testing.T) {
 	}
 	raw, _ = os.ReadFile(filepath.Join(dir, "policy.json"))
 	doc.Rules = nil
-	json.Unmarshal(raw, &doc)
+	_ = json.Unmarshal(raw, &doc)
 	if len(doc.Rules) != 2 || doc.Rules[0]["resource"] != "GET https://keep.example.com/*" || doc.Rules[1]["resource"] != "POST *" {
 		t.Fatalf("rules after the run: %s", raw)
 	}

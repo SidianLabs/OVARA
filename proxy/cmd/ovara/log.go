@@ -102,15 +102,22 @@ func inDir(dir, p string) string {
 	return filepath.Join(dir, p)
 }
 
+// Receipt values the log reads.
+const (
+	phaseAttempt  = "attempt" // an attempt receipt (synced before sending)
+	decisionError = "error"   // a receipt decision, and the word shown for it
+	ocsfAllowed   = "Allowed" // OCSF action and disposition name
+)
+
 // outcome turns a receipt into the word a person would use.
 func outcome(r receipts.Receipt) string {
 	switch {
-	case r.Phase == "attempt":
+	case r.Phase == phaseAttempt:
 		// An attempt whose outcome was never written: sent, and then the
 		// proxy stopped before the answer came back.
 		return "no result"
 	case r.Outcome == "not_sent":
-		return "error"
+		return decisionError
 	}
 	switch r.Decision {
 	case "allow":
@@ -128,8 +135,8 @@ func outcome(r receipts.Receipt) string {
 			return "timed out"
 		}
 		return "not approved"
-	case "error":
-		return "error"
+	case decisionError:
+		return decisionError
 	}
 	return r.Decision
 }
@@ -195,9 +202,9 @@ func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
 			closed[r.AttemptID] = true
 		}
 	}
-	var requests []receipts.Receipt
+	requests := make([]receipts.Receipt, 0, len(all))
 	for _, r := range all {
-		if r.Phase == "attempt" && closed[r.ReceiptID] {
+		if r.Phase == phaseAttempt && closed[r.ReceiptID] {
 			continue
 		}
 		requests = append(requests, r)

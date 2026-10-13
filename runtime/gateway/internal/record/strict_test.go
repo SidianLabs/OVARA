@@ -63,7 +63,7 @@ func TestJournalV1ThenV2(t *testing.T) {
 		Parent: GenesisParent(e.domain, "continuation"), Payload: json.RawMessage(`{"v":"a"}`), KeyRef: e.signer.Ref()}
 	env.Sig = hex.EncodeToString(ed25519.Sign(e.signer.priv, signingPayload(env)))
 	v1line, _ := json.Marshal(env)
-	os.WriteFile(path, append(v1line, '\n'), 0o600)
+	_ = os.WriteFile(path, append(v1line, '\n'), 0o600)
 	j, err := openE(e, path, nil)
 	if err != nil {
 		t.Fatalf("v1 journal: %v", err)
@@ -82,7 +82,7 @@ func TestJournalV1ThenV2(t *testing.T) {
 	env2.Sig = hex.EncodeToString(ed25519.Sign(e.signer.priv, signingPayload(env2)))
 	l, _ := json.Marshal(env2)
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
-	f.Write(append(l, '\n'))
+	_, _ = f.Write(append(l, '\n'))
 	f.Close()
 	if _, err := openE(e, path, nil); err == nil || !strings.Contains(err.Error(), "v1 envelope after v2") {
 		t.Fatalf("v1 after v2 opened: %v", err)
@@ -105,7 +105,7 @@ func TestJournalRespectsKeyRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	j.Append("continuation", "d", map[string]string{"v": "d"}, nil) // the stolen key keeps signing
+	_, _, _ = j.Append("continuation", "d", map[string]string{"v": "d"}, nil) // the stolen key keeps signing
 	j.Close()
 	if _, err := openE(e, path, bound); err == nil || !strings.Contains(err.Error(), "revoked") {
 		t.Fatalf("record signed after revocation opened: %v", err)
@@ -119,7 +119,7 @@ func TestStrictFailureIsNotTornTail(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "j.jsonl")
 	write3(t, e, path)
 	data, _ := os.ReadFile(path)
-	os.WriteFile(path, append(data, []byte(`{"v":2,"bogus":1}`)...), 0o600)
+	_ = os.WriteFile(path, append(data, []byte(`{"v":2,"bogus":1}`)...), 0o600)
 	if _, err := openE(e, path, nil); err == nil {
 		t.Fatal("a complete but invalid final line was treated as torn")
 	}

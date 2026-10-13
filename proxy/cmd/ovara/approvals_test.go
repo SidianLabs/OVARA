@@ -174,7 +174,7 @@ func (p *typist) Write(b []byte) (int, error) {
 		} else {
 			ans := p.answers[0]
 			p.answers = p.answers[1:]
-			time.AfterFunc(2*typeAheadGrace, func() { p.w.Write([]byte(ans + "\n")) })
+			time.AfterFunc(2*typeAheadGrace, func() { _, _ = p.w.Write([]byte(ans + "\n")) })
 		}
 	}
 	return len(b), nil

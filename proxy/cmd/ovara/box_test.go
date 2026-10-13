@@ -32,10 +32,10 @@ func TestCommandGate_PolicyLineAndLaunch(t *testing.T) {
 				Context map[string]string `json:"proxy_context"`
 			} `json:"metadata"`
 		}
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body)
 		resources = append(resources, body.Resource)
 		shown = append(shown, body.Metadata.Context["command"])
-		json.NewEncoder(w).Encode(map[string]string{"decision": "escalate", "decision_id": "d1"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"decision": "escalate", "decision_id": "d1"})
 	}))
 	defer srv.Close()
 	launch := []string{"agent", "--dangerously-skip-permissions"}

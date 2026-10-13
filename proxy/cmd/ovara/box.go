@@ -738,7 +738,7 @@ func runTier2(a *boxAgent) (int, error) {
 	if isTerminal(os.Stdin) {
 		args = append(args, "-t")
 	}
-	args = append(args, a.image, "box-init",
+	args = append(args, a.image, boxInitCmd,
 		"-uid", strconv.Itoa(boxContainerUID), "-gid", strconv.Itoa(boxContainerUID),
 		"-proxy", "127.0.0.1:"+a.port, "-gate="+strconv.FormatBool(!a.noGate), "--")
 	args = append(args, a.cmd...)
@@ -922,7 +922,7 @@ func (g *commandGate) skip(e boxgate.Exec) bool {
 		return false
 	}
 	g.started = true
-	return len(e.Argv) >= 3 && e.Argv[1] == "box-init" && e.Argv[2] == "-tier1"
+	return len(e.Argv) >= 3 && e.Argv[1] == boxInitCmd && e.Argv[2] == "-tier1"
 }
 
 func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {

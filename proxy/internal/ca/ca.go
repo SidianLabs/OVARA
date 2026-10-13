@@ -188,7 +188,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err := tmp.Chmod(perm); err != nil && runtime.GOOS != "windows" {
+	if err := tmp.Chmod(perm); err != nil && runtime.GOOS != goosWindows {
 		tmp.Close()
 		return err
 	}
@@ -208,6 +208,9 @@ func (c *CA) CertPEM() []byte { return c.certPEM }
 // maxCertCache bounds the leaf cache; eviction is a single arbitrary entry
 // — minting is cheap and an unbounded map is a memory-growth vector.
 const maxCertCache = 1000
+
+// goosWindows is the one platform where a file's mode cannot be set.
+const goosWindows = "windows"
 
 // CertFor returns a cached or freshly minted leaf certificate for host.
 func (c *CA) CertFor(host string) (*tls.Certificate, error) {

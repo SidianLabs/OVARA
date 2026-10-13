@@ -107,7 +107,7 @@ func TestPlainHTTPAllowNoCredLeakAndReceipts(t *testing.T) {
 		t.Fatalf("credential leaked over plaintext http: upstream saw %q", sawHeader)
 	}
 	r := f.lastReceipt(t)
-	if r.Decision != "allow" || r.Status != 201 || r.Method != "GET" {
+	if r.Decision != gwAllow || r.Status != 201 || r.Method != "GET" {
 		t.Fatalf("bad receipt: %+v", r)
 	}
 	if strings.Contains(r.URL, "api_key") {
@@ -183,7 +183,7 @@ func TestSSRFDeniesLoopback(t *testing.T) {
 		t.Fatalf("expected 403 for loopback destination, got %d", rec.Code)
 	}
 	r := f.lastReceipt(t)
-	if r.Decision != "deny" {
+	if r.Decision != gwDeny {
 		t.Fatalf("expected deny receipt, got %+v", r)
 	}
 }
@@ -210,7 +210,7 @@ func TestPlainHTTPDeny(t *testing.T) {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
 	r := f.lastReceipt(t)
-	if r.Decision != "deny" {
+	if r.Decision != gwDeny {
 		t.Fatalf("expected deny receipt, got %+v", r)
 	}
 }

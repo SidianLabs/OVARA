@@ -456,7 +456,7 @@ func (s *Server) recordDenied(method, target string) {
 	if !strings.HasSuffix(method, " UNAUTH") {
 		agent = agentLabel(s.agentToken)
 	}
-	if _, err := s.chain.Append(receipts.Entry{Method: method, URL: target, Decision: "deny", Status: http.StatusForbidden, Agent: agent}, false); err != nil {
+	if _, err := s.chain.Append(receipts.Entry{Method: method, URL: target, Decision: gwDeny, Status: http.StatusForbidden, Agent: agent}, false); err != nil {
 		log.Printf("CRITICAL: receipt record failed for denied %s %s: %v", method, target, err)
 	}
 }
@@ -538,7 +538,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	notSent := false
 	var respBytes int64
 	attempt := func() error {
-		if decision == "allow" {
+		if decision == gwAllow {
 			s.lookupApprover(r.Context(), facts, approvalID)
 		}
 		e := s.receiptEntry(facts, r.Method, url, decision, 0, approvalID)
@@ -556,7 +556,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var recordOnce sync.Once
 	record := func() {
 		recordOnce.Do(func() {
-			if decision == "allow" {
+			if decision == gwAllow {
 				s.lookupApprover(r.Context(), facts, approvalID)
 			}
 			e := s.receiptEntry(facts, r.Method, url, decision, status, approvalID)
@@ -582,12 +582,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	writeJSON := func(code int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
-		json.NewEncoder(w).Encode(v)
+		_ = json.NewEncoder(w).Encode(v)
 		status = code
 	}
 	switch {
 	case errors.Is(holdErr, errBodyTooLarge):
-		decision = "deny"
+		decision = gwDeny
 		facts.reasons = []string{"body_too_large_to_review"}
 		writeJSON(http.StatusRequestEntityTooLarge, map[string]any{
 			"error":   fmt.Sprintf("request body is larger than the %d bytes Ovara holds for review; it was not sent", s.bodyLimit(r)),
@@ -595,12 +595,12 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	case holdErr != nil:
-		decision = "deny"
+		decision = gwDeny
 		facts.reasons = []string{"body_unreadable"}
 		writeJSON(http.StatusBadRequest, map[string]any{"error": "could not read the request body", "reasons": []string{"body_unreadable"}})
 		return
 	case cut:
-		decision = "deny"
+		decision = gwDeny
 		facts.reasons = []string{"resource_too_long"}
 		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "reasons": []string{"resource_too_long"}})
 		return
@@ -611,13 +611,13 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("gateway check failed for %s: %v", url, err)
 		if !s.failOpen {
-			decision = "deny"
+			decision = gwDeny
 			status = http.StatusBadGateway
 			facts.reasons = []string{"gateway_unreachable"}
 			http.Error(w, `{"error":"gateway unreachable, fail-closed"}`, http.StatusBadGateway)
 			return
 		}
-		d = &gateway.Decision{Decision: "allow"}
+		d = &gateway.Decision{Decision: gwAllow}
 		failedOpen = true
 		facts.reasons = []string{"gateway_unreachable_fail_open"}
 	}
@@ -627,24 +627,24 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// recorded as escalate (it refuses with 409 for an allowed one, on purpose),
 	// so a proxy-forced "escalate" could never be approved and only ever looked
 	// like a pause. To permit such a host, change the policy.
-	if d.Decision == "allow" && matchHostGlob(s.sensitiveHosts, r.URL.Hostname()) {
-		d.Decision = "deny"
+	if d.Decision == gwAllow && matchHostGlob(s.sensitiveHosts, r.URL.Hostname()) {
+		d.Decision = gwDeny
 		d.ReasonCodes = append(d.ReasonCodes, "sensitive_host")
 	}
 	// A "read" that carries a body or a huge query string can move data out
 	// even though policy allowed the verb; the query is hidden from policy
 	// (it can hold secrets), so shape is the only signal we have.
 	modelFinding := ""
-	if d.Decision == "allow" && !failedOpen {
+	if d.Decision == gwAllow && !failedOpen {
 		if why := s.readCarriesData(r); why != "" {
-			d.Decision = "deny"
+			d.Decision = gwDeny
 			d.ReasonCodes = append(d.ReasonCodes, why)
 		} else if why := s.allowedGitRefusal(r, hb, url); why != "" {
-			d.Decision = "deny"
+			d.Decision = gwDeny
 			d.ReasonCodes = append(d.ReasonCodes, why)
 		} else if why := s.modelRequestRefusal(r, hb); why != "" {
 			if s.modelGateNoAsk || !modelAskable(why) {
-				d.Decision = "deny"
+				d.Decision = gwDeny
 				d.ReasonCodes = append(d.ReasonCodes, why)
 			} else {
 				modelFinding = why // asked below, once the URL decision is settled
@@ -663,18 +663,18 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		case pkgAllow, pkgApproved:
 			return true
 		case pkgTimeout:
-			decision = "escalate"
+			decision = gwEscalate
 			about["error"] = "approval timeout"
 			about["approval_id"] = approvalID
 			writeJSON(http.StatusGatewayTimeout, about)
 		case pkgAborted:
-			decision = "escalate"
+			decision = gwEscalate
 		case pkgError:
-			decision = "deny"
+			decision = gwDeny
 			about["error"] = "gateway unreachable, fail-closed"
 			writeJSON(http.StatusBadGateway, about)
 		default:
-			decision = "deny"
+			decision = gwDeny
 			about["approval_id"] = approvalID
 			writeJSON(http.StatusForbidden, about)
 		}
@@ -682,17 +682,17 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch d.Decision {
-	case "allow":
+	case gwAllow:
 		// proceed to execution below
-	case "deny":
+	case gwDeny:
 		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes})
 		return
-	case "escalate":
+	case gwEscalate:
 		outcome, id := s.awaitEscalation(r.Context(), d, r.Method, url)
 		approvalID = id
 		switch outcome {
 		case "approved":
-			decision = "allow"
+			decision = gwAllow
 		case "timeout":
 			writeJSON(http.StatusGatewayTimeout, map[string]any{"error": "approval timeout", "decision_id": d.DecisionID, "approval_id": approvalID})
 			return
@@ -705,7 +705,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	default:
 		// Unknown/malformed decision strings must never reach execution:
 		// a truncated or confused gateway response is not an allow.
-		decision = "deny"
+		decision = gwDeny
 		writeJSON(http.StatusBadGateway, map[string]any{"error": "malformed gateway decision"})
 		return
 	}
@@ -721,7 +721,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			pkgDigests = s.packageDigests(ref)
 		}
 	}
-	if d.Decision == "allow" && !failedOpen {
+	if d.Decision == gwAllow && !failedOpen {
 		if ref, ok := s.packageDownload(r.URL.Hostname(), r.URL.Path); ok {
 			outcome, id := s.checkPackage(r.Context(), ref, url)
 			if !second(outcome, id, map[string]any{"error": "package not allowed", "package": ref}) {
@@ -761,7 +761,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	host := normalizeHost(r.URL.Hostname())
 	if err := s.checkDestination(r.Context(), host); err != nil {
 		log.Printf("destination %s rejected: %v", host, err)
-		decision = "deny"
+		decision = gwDeny
 		http.Error(w, "destination not allowed", http.StatusForbidden)
 		status = http.StatusForbidden
 		return
@@ -873,7 +873,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		if ce := encodedValue(resp.Header.Values("Content-Encoding")); ce != "" {
 			// Upstream encoded the body although we did not ask for it:
 			// it cannot be scrubbed, so it is not delivered.
-			decision = "deny"
+			decision = gwDeny
 			log.Printf("upstream %s sent Content-Encoding %q on a credentialed response; refusing (cannot scrub)", url, ce)
 			http.Error(w, "upstream sent an encoded response that cannot be checked for leaked credentials", http.StatusBadGateway)
 			status = http.StatusBadGateway
@@ -915,7 +915,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		// The client has everything but the last bytes; abort the
 		// connection so it cannot take a cut body for a whole one.
 		log.Printf("CRITICAL: %s %s does not match the digest in the project's lockfile; the download was cut", r.Method, url)
-		if _, err := s.chain.Record(r.Method, url, "deny", http.StatusBadGateway, ""); err != nil {
+		if _, err := s.chain.Record(r.Method, url, gwDeny, http.StatusBadGateway, ""); err != nil {
 			log.Printf("CRITICAL: receipt record failed for cut download %s %s: %v", r.Method, url, err)
 		}
 		panic(http.ErrAbortHandler)

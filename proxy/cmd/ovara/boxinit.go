@@ -62,13 +62,13 @@ type gateReply struct {
 // that then calls exec: keep main on the main thread from the start, so
 // the agent takes over the process as it is.
 func init() {
-	if len(os.Args) > 1 && os.Args[1] == "box-init" {
+	if len(os.Args) > 1 && os.Args[1] == boxInitCmd {
 		runtime.LockOSThread()
 	}
 }
 
 func cmdBoxInit(args []string) error {
-	fs := flag.NewFlagSet("box-init", flag.ContinueOnError)
+	fs := flag.NewFlagSet(boxInitCmd, flag.ContinueOnError)
 	uid := fs.Int("uid", boxContainerUID, "uid the agent runs as")
 	gid := fs.Int("gid", boxContainerUID, "gid the agent runs as")
 	proxyAddr := fs.String("proxy", "127.0.0.1:9443", "address inside the box where the proxy relay listens")

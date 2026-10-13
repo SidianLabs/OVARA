@@ -29,11 +29,11 @@ func TestEncodedReflectionsScrubbed(t *testing.T) {
 		v := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		w.Header().Set("X-"+v, "1")
 		w.Header().Set("X-B64", base64.StdEncoding.EncodeToString([]byte(r.Header.Get("Authorization"))))
-		io.WriteString(w, strings.Join(enc(v), "\n"))
+		_, _ = io.WriteString(w, strings.Join(enc(v), "\n"))
 	}))
 	defer up.Close()
 	f := credFixture(t, up)
-	resp, b := tunnelReq(t, f.srv, up, f.ca, "GET", "/x", nil)
+	resp, b := tunnelReq(t, f.srv, up, f.ca, "GET", "/x", nil) //nolint:bodyclose // the helper reads and closes the body
 	for _, e := range enc(tok) {
 		if strings.Contains(string(b), e) {
 			t.Errorf("encoded spelling %q reached the agent", e)
@@ -62,11 +62,11 @@ func TestDerivedSignedURLsRedacted(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		io.WriteString(w, `{"download_url":"https://codeload.example.com/x.zip?token=AABBCCDDEEFF","sas":"https://a.blob.core.windows.net/c/b?sv=2024&sp=r&sig=c2lnbmF0dXJl%3D","esc":"https://x.example/y?a=1&access_token=zzz111"}`)
+		_, _ = io.WriteString(w, `{"download_url":"https://codeload.example.com/x.zip?token=AABBCCDDEEFF","sas":"https://a.blob.core.windows.net/c/b?sv=2024&sp=r&sig=c2lnbmF0dXJl%3D","esc":"https://x.example/y?a=1&access_token=zzz111"}`)
 	}))
 	defer up.Close()
 	f := credFixture(t, up)
-	resp, _ := tunnelReq(t, f.srv, up, f.ca, "GET", "/archive", nil)
+	resp, _ := tunnelReq(t, f.srv, up, f.ca, "GET", "/archive", nil) //nolint:bodyclose // the helper reads and closes the body
 	got := resp.Header.Get("Location")
 	if strings.Contains(got, "deadbeefcafe") || strings.Contains(got, "AKIAXXX") {
 		t.Fatalf("signed Location reached the agent: %q", got)
@@ -74,7 +74,7 @@ func TestDerivedSignedURLsRedacted(t *testing.T) {
 	if !strings.Contains(got, "X-Amz-Expires=300") || !strings.Contains(got, "X-Amz-Signature=[REDACTED]") {
 		t.Fatalf("Location rewritten badly: %q", got)
 	}
-	_, b := tunnelReq(t, f.srv, up, f.ca, "GET", "/json", nil)
+	_, b := tunnelReq(t, f.srv, up, f.ca, "GET", "/json", nil) //nolint:bodyclose // the helper reads and closes the body
 	for _, s := range []string{"AABBCCDDEEFF", "c2lnbmF0dXJl", "zzz111"} {
 		if strings.Contains(string(b), s) {
 			t.Errorf("signed value %s reached the agent: %s", s, b)

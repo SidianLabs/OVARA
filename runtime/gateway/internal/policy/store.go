@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	pathpkg "path"
 	"strings"
@@ -456,7 +457,24 @@ func CanonicalResource(resource string) (string, bool) {
 		}
 	}
 	scheme := strings.ToLower(u.Scheme)
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	// Every trailing dot, as the proxy's host normalization strips them. A
+	// host of only dots ("https://./") has no name left: an empty host
+	// would skip the host-literal check and leave the decision to the
+	// glob alone, so it is refused.
+	host := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return "", false
+	}
+	// A '%' in the decoded host (from "%25"; no DNS name has one) would be
+	// written back unescaped, and the canonical string would no longer
+	// parse as the URL it came from.
+	if strings.Contains(host, "%") {
+		return "", false
+	}
+	// A host with a colon is written back as an IPv6 literal; it must be one.
+	if strings.Contains(host, ":") && net.ParseIP(host) == nil {
+		return "", false
+	}
 	port := u.Port()
 	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
 		port = ""

@@ -233,7 +233,7 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if reused {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(created)
+		_ = json.NewEncoder(w).Encode(created)
 		return
 	}
 

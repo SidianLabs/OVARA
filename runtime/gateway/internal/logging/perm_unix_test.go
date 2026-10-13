@@ -27,7 +27,7 @@ func TestDecisionLogger_OwnerOnly(t *testing.T) {
 			t.Errorf("%s: mode %#o, want %#o", path, fi.Mode().Perm(), want)
 		}
 	}
-	os.Chmod(logFile, 0o644)
+	_ = os.Chmod(logFile, 0o644)
 	l, err = NewDecisionLogger(logFile)
 	if err != nil {
 		t.Fatal(err)

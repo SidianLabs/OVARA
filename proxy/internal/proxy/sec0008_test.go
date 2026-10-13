@@ -97,7 +97,7 @@ func TestClientAuth_UnauthAttemptReceipted(t *testing.T) {
 		t.Fatalf("got %d, want 407", rec.Code)
 	}
 	r := f.lastReceipt(t)
-	if r.Decision != "deny" {
+	if r.Decision != gwDeny {
 		t.Fatalf("unauth probe left no deny receipt: %+v", r)
 	}
 }

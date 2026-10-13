@@ -44,13 +44,13 @@ func TestApprovalHandler_FloodControl(t *testing.T) {
 			t.Fatalf("create %d: %d %s", i, rec.Code, rec.Body.String())
 		}
 		if i == 0 {
-			json.Unmarshal(rec.Body.Bytes(), &first)
+			_ = json.Unmarshal(rec.Body.Bytes(), &first)
 		}
 	}
 	// identical to dec_0: the waiting approval comes back
 	rec := post(t, r.mux, "/v1/approval/create", map[string]any{"decision_id": "dec_same"})
 	var same approval.ApprovalRequest
-	json.Unmarshal(rec.Body.Bytes(), &same)
+	_ = json.Unmarshal(rec.Body.Bytes(), &same)
 	if rec.Code != http.StatusOK || same.ApprovalID != first.ApprovalID {
 		t.Fatalf("duplicate: %d id=%s want %s", rec.Code, same.ApprovalID, first.ApprovalID)
 	}
@@ -103,7 +103,7 @@ func TestApprovalHandler_ExpiredApproval(t *testing.T) {
 		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
 	}
 	var created approval.ApprovalRequest
-	json.Unmarshal(rec.Body.Bytes(), &created)
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 
 	now = now.Add(approval.DefaultPendingTTL + time.Second)
 

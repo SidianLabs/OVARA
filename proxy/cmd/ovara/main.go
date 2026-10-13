@@ -37,6 +37,10 @@ import (
 // version is stamped by release builds: -ldflags "-X main.version=v0.10.0".
 var version = "dev"
 
+// boxInitCmd is the subcommand a box runs as its first program (tier 1) or
+// PID 1 (tier 2); people do not run it.
+const boxInitCmd = "box-init"
+
 func main() {
 	log.SetFlags(0)
 	if len(os.Args) < 2 {
@@ -52,7 +56,7 @@ func main() {
 		err = cmdInit(os.Args[2:])
 	case "box":
 		err = cmdBox(os.Args[2:])
-	case "box-init": // PID 1 of a tier 2 box; started by `ovara box -tier 2`, not by people
+	case boxInitCmd: // PID 1 of a tier 2 box; started by `ovara box -tier 2`, not by people
 		err = cmdBoxInit(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
@@ -349,7 +353,7 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	}
 	if cfg.ScopeRepo != "" {
 		owner, repo, ok := strings.Cut(cfg.ScopeRepo, "/")
-		if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+		if !ok || !creds.RepoName(owner) || !creds.RepoName(repo) {
 			return nil, nil, fmt.Errorf("-scope-repo %q: want owner/repo", cfg.ScopeRepo)
 		}
 		// A GitHub App binding that lists no repositories mints tokens for
@@ -507,7 +511,7 @@ func cmdRun(args []string) error {
 	} else if host, _, err := net.SplitHostPort(listenAddr); err == nil && !isLoopbackHost(host) {
 		log.Printf("WARNING: proxy listens on %s, reachable from the network. Anyone holding the proxy token can use it; set listen_addr to 127.0.0.1:PORT unless you meant this", listenAddr)
 	}
-	var lns []net.Listener
+	lns := make([]net.Listener, 0, len(addrs))
 	for _, a := range addrs {
 		ln, err := net.Listen("tcp", a)
 		if err != nil {

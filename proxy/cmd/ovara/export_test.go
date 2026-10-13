@@ -89,7 +89,7 @@ func TestLogExportOCSF(t *testing.T) {
 func TestLogExportRefusesTamperedChain(t *testing.T) {
 	dir, chainPath := deployWithChain(t, 3)
 	data, _ := os.ReadFile(chainPath)
-	os.WriteFile(chainPath, bytes.Replace(data, []byte("pypi.org"), []byte("pypi.org.evil"), 1), 0o600)
+	_ = os.WriteFile(chainPath, bytes.Replace(data, []byte("pypi.org"), []byte("pypi.org.evil"), 1), 0o600)
 	out, err := captureStdout(t, func() error { return cmdLog([]string{"export", "-dir", dir}) })
 	if err == nil || out != "" {
 		t.Fatalf("tampered chain exported: %q %v", out, err)
@@ -121,8 +121,8 @@ func TestIncidentBundleVerifiesOffline(t *testing.T) {
 		t.Fatal(err)
 	}
 	chain.SetAnchoring(receipts.AnchorPathFor(chainPath), "", 1)
-	chain.Record("POST", "https://pastebin.com/api", "deny", 403, "")
-	chain.Record("GET", "https://pypi.org/simple/y/", "allow", 200, "")
+	_, _ = chain.Record("POST", "https://pastebin.com/api", "deny", 403, "")
+	_, _ = chain.Record("GET", "https://pypi.org/simple/y/", "allow", 200, "")
 
 	for _, args := range [][]string{nil, {"-since", since.Format(time.RFC3339Nano)}} {
 		bundle := filepath.Join(t.TempDir(), "b.tar.gz")
@@ -146,7 +146,7 @@ func TestIncidentBundleVerifiesOffline(t *testing.T) {
 		}
 		ex := t.TempDir()
 		for name, b := range files {
-			os.WriteFile(filepath.Join(ex, name), b, 0o600)
+			_ = os.WriteFile(filepath.Join(ex, name), b, 0o600)
 		}
 		verify := func() error {
 			_, err := captureStdout(t, func() error {
@@ -207,7 +207,7 @@ func TestKeysRotateReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	chain.SetAnchoring(receipts.AnchorPathFor(chainPath), "", 1)
-	chain.Record("GET", "https://pypi.org/simple/z/", "allow", 200, "")
+	_, _ = chain.Record("GET", "https://pypi.org/simple/z/", "allow", 200, "")
 	var out bytes.Buffer
 	if err := printLog(&out, chainPath, filepath.Join(dir, cfg.PubKeyFile), 0); err != nil || !strings.Contains(out.String(), "integrity: ✓ all 3") {
 		t.Fatalf("log after rotation: %v\n%s", err, out.String())
@@ -229,7 +229,7 @@ func TestInitKeepsTokenAndPolicyPrivate(t *testing.T) {
 		OperatorTokens []string `json:"operator_tokens"`
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "config.json"))
-	json.Unmarshal(b, &gw)
+	_ = json.Unmarshal(b, &gw)
 	if len(gw.OperatorTokens) != 1 || strings.Contains(out, gw.OperatorTokens[0]) {
 		t.Fatal("init printed the operator token")
 	}
@@ -263,9 +263,9 @@ func TestDoctorPolicyReadableAndIssuerKey(t *testing.T) {
 	if got["policy.json permissions"] != "PASS" || got["activity record permissions"] != "PASS" {
 		t.Fatalf("fresh deployment: %v", got)
 	}
-	os.Chmod(filepath.Join(dir, "policy.json"), 0o644)
-	os.Chmod(filepath.Join(dir, "var", "issuer.key"), 0o644)
-	os.Chmod(filepath.Join(dir, "var", "receipts.jsonl"), 0o644)
+	_ = os.Chmod(filepath.Join(dir, "policy.json"), 0o644)
+	_ = os.Chmod(filepath.Join(dir, "var", "issuer.key"), 0o644)
+	_ = os.Chmod(filepath.Join(dir, "var", "receipts.jsonl"), 0o644)
 	got = statuses(auditDeployment(dir))
 	if got["policy.json permissions"] != "WARN" || got["secret file permissions"] != "FAIL" || got["activity record permissions"] != "WARN" {
 		t.Fatalf("loose files: %v", got)

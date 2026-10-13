@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"ovara.proxy/internal/creds"
+)
 
 // parseGitHubRemote turns a github.com remote URL into "owner/repo":
 // https://github.com/o/r(.git), git@github.com:o/r(.git),
@@ -26,7 +30,10 @@ func parseGitHubRemote(u string) string {
 	}
 	path = strings.TrimSuffix(strings.TrimSuffix(path, "/"), ".git")
 	owner, repo, ok := strings.Cut(path, "/")
-	if !ok || owner == "" || repo == "" || strings.ContainsAny(repo, "/?#") || strings.ContainsAny(owner, "?#:@") {
+	// The remote is in the project, which the agent can edit; what comes
+	// back scopes the GitHub key, so only plain names pass ("*" would be a
+	// glob over every repository).
+	if !ok || !creds.RepoName(owner) || !creds.RepoName(repo) {
 		return ""
 	}
 	return owner + "/" + repo

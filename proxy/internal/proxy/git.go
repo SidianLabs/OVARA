@@ -11,6 +11,12 @@ import (
 	"strings"
 )
 
+// The gzip content codings (RFC 9110 lists "x-gzip" as an alias).
+const (
+	encGzip  = "gzip"
+	encXGzip = "x-gzip"
+)
+
 // gitBodyPeek is the max bytes of a receive-pack body parsed for ref names.
 // Ref-update header lines live at the start of the body; pack data follows
 // the flush pkt (0000) and is never inspected.
@@ -167,7 +173,7 @@ func uploadPackRefusal(r *http.Request, hb *heldBody, limit int64) string {
 	var body io.Reader = hb.reader()
 	switch enc := strings.ToLower(encodedValue(r.Header.Values("Content-Encoding"))); enc {
 	case "":
-	case "gzip", "x-gzip":
+	case encGzip, encXGzip:
 		// git gzips negotiations over 1KB. Decompressed size is bounded by
 		// the same limit, so a small bomb cannot balloon here.
 		zr, err := gzip.NewReader(body)

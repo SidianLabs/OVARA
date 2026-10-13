@@ -136,7 +136,7 @@ func newRecorder(t *testing.T) *recorder {
 		rc.body = b
 		rc.mu.Unlock()
 		rc.hits.Add(1)
-		io.WriteString(w, "ok")
+		_, _ = io.WriteString(w, "ok")
 	}))
 	t.Cleanup(rc.Close)
 	return rc
@@ -196,7 +196,7 @@ func TestApprovalCoversTheExactBodySent(t *testing.T) {
 	if n := len(ag.all()); n != 0 {
 		t.Fatalf("the gateway was asked (%d checks) before the body was complete", n)
 	}
-	io.WriteString(conn, rest)
+	_, _ = io.WriteString(conn, rest)
 	go func() {
 		for len(ag.all()) == 0 {
 			time.Sleep(5 * time.Millisecond)
@@ -236,7 +236,7 @@ func TestBodyTooLargeToReviewIsRefused(t *testing.T) {
 		if up.hits.Load() != 0 || len(ag.all()) != 0 {
 			t.Fatalf("streamed=%v: upstream hits=%d gateway checks=%d", streamed, up.hits.Load(), len(ag.all()))
 		}
-		if rc := lastReceiptOf(t, chainFile); rc.Decision != "deny" || rc.Status != http.StatusRequestEntityTooLarge {
+		if rc := lastReceiptOf(t, chainFile); rc.Decision != gwDeny || rc.Status != http.StatusRequestEntityTooLarge {
 			t.Fatalf("receipt %+v", rc)
 		}
 	}
@@ -251,7 +251,7 @@ func TestBodyTooLargeToReviewIsRefused(t *testing.T) {
 func gz(s string) []byte {
 	var b bytes.Buffer
 	zw := gzip.NewWriter(&b)
-	io.WriteString(zw, s)
+	_, _ = io.WriteString(zw, s)
 	zw.Close()
 	return b.Bytes()
 }
@@ -349,10 +349,10 @@ func TestReadBudgetCoversPathAndHeaders(t *testing.T) {
 // EGRESS-02: inside the TLS tunnel, headers are bounded like on the outer
 // listener (64 KiB), not by the 1 MiB default.
 func TestTunnelHeadersAreBounded(t *testing.T) {
-	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "ok") }))
 	defer up.Close()
 	f := newFixture(t, "allow", nil)
-	resp, _ := tunnel(t, f.srv, f.ca, up, map[string]string{"X-Big": strings.Repeat("A", 100<<10)})
+	resp, _ := tunnel(t, f.srv, f.ca, up, map[string]string{"X-Big": strings.Repeat("A", 100<<10)}) //nolint:bodyclose // the helper reads and closes the body
 	if resp.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
 		t.Fatalf("want 431, got %d", resp.StatusCode)
 	}
@@ -567,7 +567,7 @@ func TestLongResourceIsRefusedAndReceiptBounded(t *testing.T) {
 	if len(ag.all()) != 0 {
 		t.Fatal("a cut resource was put to policy")
 	}
-	if rc := lastReceiptOf(t, chainFile); len(rc.URL) > maxResourceBytes+32 || !strings.Contains(rc.URL, "bytes)") || rc.Decision != "deny" {
+	if rc := lastReceiptOf(t, chainFile); len(rc.URL) > maxResourceBytes+32 || !strings.Contains(rc.URL, "bytes)") || rc.Decision != gwDeny {
 		t.Fatalf("receipt URL %d bytes, decision %s", len(rc.URL), rc.Decision)
 	}
 }

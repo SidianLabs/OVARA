@@ -122,7 +122,7 @@ func cmdDemo() error {
 	// 1 — a read.
 	say("\n━━ 1. The agent reads something")
 	say("   agent → GET %s/v1/models", upstream.URL)
-	code, _ := agentCall(agent, "GET", upstream.URL+"/v1/models")
+	code, _ := agentCall(agent, http.MethodGet, upstream.URL+"/v1/models")
 	say("   ✓ ALLOWED (HTTP %d) — policy: \"reading is allowed\"", code)
 
 	// 2 — a write: pauses for a human.

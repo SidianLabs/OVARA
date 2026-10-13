@@ -172,5 +172,5 @@ func scrubGitConfig(dir string) (bool, error) {
 	if bytes.Equal(out, b) {
 		return false, nil
 	}
-	return true, os.WriteFile(p, out, 0o644)
+	return true, os.WriteFile(p, out, 0o600)
 }

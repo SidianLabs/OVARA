@@ -45,6 +45,26 @@ jobs:
         working-directory: ${{ matrix.module }}
         run: go test -bench=. -benchtime=1s ./... 2>/dev/null || true
 
+  # The tier 1 box tests need root (namespaces, mounts, a second user); in
+  # the matrix above they run as the runner's user and skip. The test binary
+  # is built as that user and only run as root, so no root-owned files land
+  # in the Go caches.
+  box-tier1-root:
+    name: box tier 1 (root)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
+      - name: Build the test binary
+        working-directory: proxy
+        run: go test -c -o "$RUNNER_TEMP/ovara-cmd.test" ./cmd/ovara
+      - name: Tier 1 tests as root
+        working-directory: proxy/cmd/ovara
+        run: sudo -E env "PATH=$PATH" "$RUNNER_TEMP/ovara-cmd.test" -test.run 'Tier1|Box' -test.count=1 -test.v
+
   e2e:
     runs-on: ubuntu-latest
     steps:

@@ -139,15 +139,15 @@ func ocsfEvent(r *receipts.Receipt) map[string]any {
 		activityID, activityName = 99, "Other"
 	}
 	actionID, action, dispositionID, disposition := 2, "Denied", 2, "Blocked"
-	if r.Decision == "allow" {
-		actionID, action, dispositionID, disposition = 1, "Allowed", 1, "Allowed"
+	if r.Decision == decisionAllow {
+		actionID, action, dispositionID, disposition = 1, ocsfAllowed, 1, ocsfAllowed
 	}
 	statusID, status := 1, "Success"
-	if r.Decision != "allow" || r.Outcome == "not_sent" || r.Status >= 400 {
+	if r.Decision != decisionAllow || r.Outcome == "not_sent" || r.Status >= 400 {
 		statusID, status = 2, "Failure"
 	}
 	severityID, severity := 1, "Informational"
-	if r.Decision == "deny" {
+	if r.Decision == decisionDeny {
 		severityID, severity = 3, "Medium"
 	}
 	u := map[string]any{"url_string": r.URL}
@@ -194,7 +194,7 @@ func ocsfEvent(r *receipts.Receipt) map[string]any {
 	}
 	if r.AttemptID != "" {
 		ev["metadata"].(map[string]any)["correlation_uid"] = r.AttemptID
-	} else if r.Phase == "attempt" {
+	} else if r.Phase == phaseAttempt {
 		ev["metadata"].(map[string]any)["correlation_uid"] = r.ReceiptID
 	}
 	if r.Status != 0 {
