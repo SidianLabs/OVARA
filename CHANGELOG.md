@@ -233,6 +233,37 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
 - A git push is decided ref by ref; an allow for refs does not cover
   deleting them unless it says `(delete)`.
 
+**MCP**
+
+- MCP traffic that Ovara cannot read strictly is refused, not passed as
+  "not MCP". A request body that a lenient reader could take for JSON-RPC
+  (UTF-16 or UTF-32, `NaN` or `Infinity`, a second value after the first,
+  escaped member names) but that is not valid UTF-8 JSON is answered with
+  400 and a JSON-RPC parse error (reason `mcp_unparseable`). Once a server
+  is known to speak MCP, or the client sends MCP session headers, any body
+  that is not valid JSON is refused. `ovara mcp wrap` answers such a line
+  with a parse error (-32700) and does not pass it on.
+- Responses to MCP requests must be `application/json` or
+  `text/event-stream` (parameters allowed), named by one Content-Type
+  header. Anything else with a body is refused (502,
+  `mcp_unexpected_content_type`); error statuses and empty answers pass.
+  A JSON answer or a message event that cannot be read strictly is
+  refused too (502, `mcp_unparseable`).
+- A request body with a Content-Encoding other than gzip is refused when
+  it could be JSON-RPC (a JSON or missing Content-Type, a known MCP
+  server, or MCP session headers), whether or not the server was seen
+  before. A body too large to read is refused when anything in it looks
+  like JSON-RPC, not only its first megabyte.
+- Servers whose tools are pinned stay known for good. Other servers are
+  forgotten least recently used first, past 4096, instead of all at once.
+- A tool-call question carries `arguments_sha256` (the SHA-256 of the
+  call's arguments in canonical JSON) and the request's `body_sha256`. An
+  approval stands for those exact arguments, and the gateway no longer
+  merges two pending calls that differ only past what the preview shows.
+- The gateway's note on a cut approval-context value now carries the
+  SHA-256 of the whole value, and `body_sha256` and `arguments_sha256` are
+  always kept when a request carries more entries than the cap.
+
 **Removed**
 
 - `policy/compiler`: it produced rules the gateway refuses, and nothing

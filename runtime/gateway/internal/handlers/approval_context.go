@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -29,8 +31,10 @@ var contextListKeys = map[string]bool{"diff_not_shown": true, "kept_out": true, 
 // contextPriorityKeys are always kept first when a request carries more
 // entries than the cap: the proxy's own safety notes about the request
 // body, which agent is asking, and the untrusted read that made a write a
-// question.
-var contextPriorityKeys = []string{"warning", "body_note", "body_sha256", "agent", "taint", "sensitive", "diff_not_shown", "kept_out", "tree"}
+// question. The hashes come first among them: they are what binds an
+// approval to the exact request (and keep two different requests from
+// being merged into one pending approval).
+var contextPriorityKeys = []string{"body_sha256", "arguments_sha256", "warning", "body_note", "agent", "taint", "sensitive", "diff_not_shown", "kept_out", "tree"}
 
 // approvalContextFromMetadata extracts {"proxy_context": {"k": "v", ...}} from
 // the metadata of the request the gateway evaluated. Anything that is not a
@@ -104,7 +108,9 @@ func isPriorityKey(k string) bool {
 
 // truncateContextValue cuts s to at most limit bytes on a UTF-8 boundary
 // and says how much was left out, so a cut is never mistaken for the whole
-// value.
+// value. The note carries the SHA-256 of the whole value: two values that
+// differ only past the cut stay different, both to the person and to
+// Open's merging of identical pending requests.
 func truncateContextValue(s string, limit int) string {
 	if len(s) <= limit {
 		return s
@@ -113,5 +119,10 @@ func truncateContextValue(s string, limit int) string {
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return s[:cut] + fmt.Sprintf("… [truncated: %d more bytes not shown]", len(s)-cut)
+	return s[:cut] + truncationNote(s, cut)
+}
+
+func truncationNote(s string, cut int) string {
+	sum := sha256.Sum256([]byte(s))
+	return fmt.Sprintf("… [truncated: %d more bytes not shown; sha256 of the whole value %s]", len(s)-cut, hex.EncodeToString(sum[:]))
 }

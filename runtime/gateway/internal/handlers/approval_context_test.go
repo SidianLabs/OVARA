@@ -39,7 +39,7 @@ func TestApprovalContext_ExtractsOnlyBoundedStrings(t *testing.T) {
 	if _, ok := got["nested"]; ok {
 		t.Error("a nested value reached the approver")
 	}
-	want := strings.Repeat("A", maxContextValueLen) + "… [truncated: 4400 more bytes not shown]"
+	want := strings.Repeat("A", maxContextValueLen) + truncationNote(long, maxContextValueLen)
 	if got["long"] != want {
 		t.Errorf("long value: got %d bytes ending %q", len(got["long"]), got["long"][len(got["long"])-45:])
 	}
@@ -72,17 +72,17 @@ func TestApprovalContext_DiffKeepsItsLength(t *testing.T) {
 		t.Fatalf("a %d-byte diff was cut to %d bytes", len(diff), len(got["diff"]))
 	}
 	// File lists get the list budget; other values the ordinary one.
-	if !strings.HasSuffix(got["files"], "… [truncated: 100 more bytes not shown]") {
+	if !strings.Contains(got["files"], "… [truncated: 100 more bytes not shown; sha256 of the whole value ") {
 		t.Errorf("files: %q", got["files"][maxContextListLen-5:])
 	}
-	if !strings.HasSuffix(got["branch"], "… [truncated: 100 more bytes not shown]") {
+	if !strings.Contains(got["branch"], "… [truncated: 100 more bytes not shown; sha256 of the whole value ") {
 		t.Errorf("branch: %q", got["branch"][maxContextValueLen-5:])
 	}
 
 	big := strings.Repeat("x", maxContextDiffLen+1234)
 	meta, _ = json.Marshal(map[string]any{"proxy_context": map[string]any{"diff": big}})
 	got = approvalContextFromMetadata(meta)
-	if want := big[:maxContextDiffLen] + "… [truncated: 1234 more bytes not shown]"; got["diff"] != want {
+	if want := big[:maxContextDiffLen] + truncationNote(big, maxContextDiffLen); got["diff"] != want {
 		t.Fatalf("big diff: %d bytes, suffix %q", len(got["diff"]), got["diff"][len(got["diff"])-45:])
 	}
 }
@@ -95,7 +95,7 @@ func TestApprovalContext_CutsOnRuneBoundary(t *testing.T) {
 	if !utf8.ValidString(got) {
 		t.Fatalf("invalid UTF-8 after cut: %q", got[maxContextValueLen-4:])
 	}
-	if want := strings.Repeat("a", maxContextValueLen-1) + "… [truncated: 20 more bytes not shown]"; got != want {
+	if want := strings.Repeat("a", maxContextValueLen-1) + truncationNote(v, maxContextValueLen-1); got != want {
 		t.Fatalf("got %q", got[maxContextValueLen-4:])
 	}
 }

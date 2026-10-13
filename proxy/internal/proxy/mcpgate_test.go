@@ -391,6 +391,11 @@ func TestMCPToolCallsAllowedEscalatedDenied(t *testing.T) {
 	if last.Resource != "mcp:"+key+"/send_email" || strings.Contains(last.Context["arguments"], "sk-abc") || last.Context["warning"] == "" || last.Context["tool_sha256"] == "" {
 		t.Fatalf("question: %+v", last)
 	}
+	// the question binds the exact arguments and request body
+	sent := mcpCall(3, "send_email", `{"to":"a@b.example","token":"sk-abcdefghijklmnopqrstuvwxyz"}`)
+	if last.Context["arguments_sha256"] != mcp.ArgumentsSHA256([]byte(`{"to":"a@b.example","token":"sk-abcdefghijklmnopqrstuvwxyz"}`)) || last.Context["body_sha256"] != mcp.SHA256Hex([]byte(sent)) {
+		t.Fatalf("question does not bind the call: %+v", last.Context)
+	}
 	// denied by a person: a JSON-RPC error, nothing sent
 	g.set(g.answer, mcp.ActionToolCall, "denied")
 	rec = postMCP(srv, up.URL+"/mcp", mcpCall(4, "send_email", `{"to":"x"}`))
