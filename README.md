@@ -151,18 +151,27 @@ carries; a rule missing them never matches, so Ovara refuses to load it):
 
 Reads are allowed only from a list of hosts an agent legitimately needs (package
 registries, code hosts, documentation); `ovara policy` shows the full list. A
-host that is not on it pauses for approval. A `GET` that carries a request body
-or a very long query string is **refused** with an explanation (the path and
-query of a read can carry data out), even on a trusted host. To trust another
-host, add a rule for it to `policy.json`.
+host that is not on it pauses for approval. A `GET` that carries a request body,
+a long query string, or a long path and headers (over 2 KB together) is
+**refused** with an explanation (all of these can carry data out), even on a
+trusted host. Allowed traffic is also metered per host: past about 600
+requests or 8 MB a minute (ten times that for package registries) a person is
+asked once. To trust another host, add a rule for it to `policy.json`, or use
+"approve and trust this host for reads" on the approval page, which lasts until
+`ovara run` stops.
 
 `allow` lets it through, `escalate` pauses it for you, `deny` blocks it. If more
 than one rule matches, **the most specific one decides** (more literal
 characters in its pattern; among equals deny beats allow beats escalate), so
 `POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *` deny
-means exactly that one write. (Policies without `"precedence":
-"most-specific"` keep the older rule: any deny wins.) Anything not
-matched is escalated. Edit the file; changes are picked up without a restart.
+means exactly that one write. Three guards keep that from being turned around:
+a deny always beats an escalate; an allow only beats a deny if it names the
+host at least as precisely; and deny and escalate rules for a host apply on
+every port. A git push that updates several refs is decided ref by ref and
+gets the strictest answer, and an allow for refs does not cover deleting them
+unless it says `(delete)`. (Policies without `"precedence": "most-specific"`
+keep the older rule: any deny wins.) Anything not matched is escalated. Edit
+the file; changes are picked up without a restart.
 
 Not sure what a rule will do? Ask:
 

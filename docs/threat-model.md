@@ -25,6 +25,9 @@ decision is written to a signed, hash-chained receipt log.
 | The agent sends data out through its own model API (an MCP connector, a web-fetch tool, an image "by URL" that the provider fetches) | Only the inference endpoints are allowed by default, and the proxy reads every model request body and refuses those features (`model_gate`) | The default policy is kept, and `model_gate` is on |
 | The agent adds its own credential (an account it controls) next to the one Ovara injects | On a host Ovara holds a key for, the agent's own credential headers are removed before the real one is attached | Always |
 | Edits to the log after the fact | Receipts are Ed25519-signed and hash-chained; `ovara log` and `ovara doctor` verify the chain and check it against the anchors written as it grew, so a log that was cut short, or cut and continued, fails | The signing key, the log and the local anchors are not all under the agent's control (see below) |
+| A request held for approval is changed after the person looked at it | The whole body is read before asking and only those bytes are forwarded; approvals expire after 10 minutes and one agent can have at most 64 waiting | Always |
+| A push that also updates a protected branch, a deny rule dodged with a port or an escalate rule outranking a deny | Pushes are decided ref by ref; deny and escalate host rules apply on every port; a deny always beats an escalate | The policy uses most-specific precedence (what `ovara init` writes) |
+| `ovara box` commit-back bringing back agent config, hooks or files hidden from review | Agent config, CI and hook paths are kept out by default; sensitive files are flagged; binary files stay out; a cut diff says what it leaves out; the branch is exactly the tree that was reviewed, built in a repository the agent never touched | `ovara box` is used |
 | A crash re-running an approved action | The "executing" claim is written to disk before the action runs; if that write fails the action is refused | Always |
 | Silent loss of approvals/receipts after tampering | A configured store that cannot be opened stops startup instead of starting empty | Always |
 
@@ -43,15 +46,21 @@ decision is written to a signed, hash-chained receipt log.
 - **An agent with another way out.** Without a network boundary, anything the
   agent can reach directly (a second proxy, a mounted socket, another process)
   is outside Ovara.
-- **Approving the wrong thing.** The approval screen shows the method, the URL,
-  the query and the first 400 bytes of a text body. Values that look like
-  credentials or encoded blobs are masked but flagged with a warning and
-  their size. Bodies that are not text, compressed or streamed are not shown.
-  (Being fixed: the approval will be bound to the exact bytes sent.)
+- **Approving the wrong thing.** What is approved is exactly what is sent:
+  the whole body (up to 1 MB; 256 MB for a git push) is read before the
+  person is asked, its SHA-256 is shown, and only those bytes are forwarded.
+  The screen shows the method, the URL with its registrable domain and
+  whether that host is trusted, the request headers, the query and the first
+  400 bytes of a text body. Credential-shaped values and encoded blobs are
+  masked but flagged with their size; bodies that cannot be shown (binary,
+  compressed, multipart) are named as such. What a person cannot judge from
+  that (the meaning of 400 bytes of a 1 MB upload) is still on them.
 - **Data moved through a trusted read host.** Reads from the trusted hosts are
-  free. The query of a read is capped, but an agent that controls an account
-  on a trusted host can still carry data in the URL path. The policy limits
-  *where*, not *what* (see below).
+  free. Their query, path and headers are capped (512 bytes of query, 2 KB in
+  all) and the number and size of requests to each host are metered, so the
+  channel is narrow and slow, but an agent that controls an account on a
+  trusted host can still use it. The policy limits *where*, not *what* (see
+  below).
 - **`ovara box` tier 1 and the file system.** Tier 1 gives the agent its own
   user and network namespace, not its own file system: it can read any file
   that user can read, including the original project. Use tier 2 when that

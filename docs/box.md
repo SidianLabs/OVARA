@@ -18,6 +18,23 @@ older text.
 >   speed bump.** Every exec is seen, but the shipped rules match command-line
 >   text, so `rm -r -f` or `find -delete` is not caught by `*rm -rf*`. Treat
 >   the default shell rules as catching mistakes, not as enforcement.
+> - **Command rules see a normalised command line** (`boxgate.PolicyLine`):
+>   the program's base name, git without its global options, `rm` flags
+>   merged (`rm -r -f`, `rm --recursive --force` and `rm -Rf` all read as
+>   `rm -rf`). The person still sees the command as run. Every child exec is
+>   checked on its own, and a deny always beats an escalate, so
+>   `sudo … # rm -rf` is refused. Interpreter one-liners that delete files
+>   themselves are still not caught by the shell rules.
+> - **Commit-back** reads the workspace once into a tree in a repository the
+>   launcher owns (the agent's `.git` is never used, so its hooks, filters
+>   and config never run on the host). Path policy, the diff and the commit
+>   all come from that tree, and the branch is exactly that tree on top of
+>   the starting point. Agent config and host-execution paths (`.claude/`,
+>   `.mcp.json`, `.github/`, `.husky/`, `.gitattributes`, ...) are kept out by
+>   default; `CLAUDE.md`, `AGENTS.md`, `package.json`, lockfiles, `Makefile`,
+>   `Dockerfile` and scripts are flagged; binary files stay out unless
+>   `-allow-binary`. A cut diff says what it leaves out and where the full
+>   diff is.
 > - `OVARA_EXEC_GATE`/`ovara-exec` (§8) do not exist; the gate is ptrace in
 >   `proxy/internal/boxgate`. `/scratch` is a tmpfs, not persistent.
 
