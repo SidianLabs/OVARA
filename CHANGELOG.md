@@ -10,6 +10,147 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Focus: make the product usable and understandable for people running coding
 agents, and fix correctness bugs found in an in-depth review.
 
+### Security hardening (October 2026)
+
+A review of the whole product found ways around several promises. They are
+fixed below. What Ovara promises now, mode by mode and with the test behind
+each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
+
+**Breaking changes** (things you may notice after upgrading):
+
+- The model API is limited to the inference endpoints. Other endpoints on
+  the model hosts (files, batches, …) pause for approval, and a model
+  request that asks the provider to fetch a URL or reach a server (MCP
+  connectors, web tools, images or documents by URL) pauses too.
+- A policy rule without `action_type` or `environment` stops the policy
+  from loading. Such rules never matched; now you are told.
+- Under most-specific precedence, a matching deny always beats an escalate,
+  and deny and escalate host rules apply on every port.
+- Pending approvals expire after 10 minutes (`approval_pending_ttl_secs`),
+  and one agent can have at most 64 waiting.
+- A request body that needs review is read in full first and is capped at
+  1 MiB (`max_held_body_bytes`; 256 MiB for a git push). A larger one is
+  refused with `body_too_large_to_review`.
+- Reads are capped at 2 KB of path, query and headers together
+  (`max_read_request_bytes`).
+- Allowed traffic is metered per host (about 600 requests or 8 MB a
+  minute, more for package registries); past that a person is asked once
+  (`egress_budget`).
+- The interception CA now lives 30 days and is replaced at start when it is
+  close to expiry. Every CA made by an earlier version is replaced once, on
+  the first start: restart your agents, and refresh any copy you installed
+  elsewhere.
+- The default Slack binding is `slack.com`, not `*.slack.com`. Existing
+  `proxy.json` files keep what they say.
+- A credential binding whose secret is shorter than 8 bytes stops startup.
+- `ovara env` unsets other secret-looking variables in the shell it sets up
+  (`-keep-env` to keep them).
+- `ovara box` tier 1 runs the agent in a root file system of its own. Tools
+  under `/opt` or a home directory, and scripts under `/tmp`, need `-mount`.
+  `-tier1-fs host` restores the old behaviour, which is unsafe.
+- DNS inside an enforced boundary is off unless `OVARA_BOUNDARY_DNS=1`.
+  Boundary setup stops (exit 3) when the host side cannot be firewalled;
+  `-allow-unhardened-boundary` goes on anyway.
+- Proxy receipts are format v2 (attempt and outcome receipts). Older logs
+  still verify. The SDK verifiers read v1 only for now.
+- `ovara init` no longer prints the operator token; it is in `config.json`.
+- `receipts_max_age_minutes` is gone. It was never applied; configs that
+  set it still load.
+- `ovara-anchor` no longer takes `--operator-token`; use
+  `--operator-token-file` or `OVARA_ANCHOR_OPERATOR_TOKEN`.
+
+**Network egress**
+
+- Method spelling no longer matters: `get` is checked like `GET`.
+- An allowed `git-upload-pack` POST must be a real git fetch; any
+  `git-receive-pack` POST is treated as a push.
+- Long resources are refused rather than cut in the receipt.
+- The proxy listens on the boundary address and loopback only, never on
+  every interface, and the host side of the boundary is always firewalled
+  (iptables, or nft when there is no iptables).
+
+**Approvals**
+
+- What you approve is exactly what is sent: the body's SHA-256 is shown and
+  only those bytes are forwarded.
+- The approval shows the request headers, the registrable domain in bold
+  and whether that host is trusted, and says why a body is not shown.
+- Terminal control, bidi and invisible characters are escaped in `ovara
+  watch` and `ovara approvals`. Pending requests are listed oldest first,
+  and keys typed before a request appears do not answer it.
+- "Trust this host for reads" lasts until `ovara run` stops.
+- A taken approval-page port stops `ovara run`; `-no-ui` runs without it.
+- Identical pending requests share one approval.
+
+**Credentials**
+
+- Bindings can name a port, paths and methods. Without a port, a key goes
+  to port 443 only.
+- `ovara box` limits the GitHub key to the project's repository
+  (`-github-scope all` turns this off); `ovara run -scope-repo` does the
+  same by hand.
+- GitHub API reads of secrets, keys, emails, org members and gists pause by
+  default. A GET to the Slack API is shown as a call.
+- Reflected keys are also scrubbed in hex, base64 and case-changed
+  spellings and from header names; signed URL parameters are redacted from
+  credentialed text responses.
+- The CA can only sign site certificates (path length 0); site
+  certificates live at most 24 hours. `ovara doctor` warns before the CA
+  expires.
+
+**Audit log**
+
+- No request goes upstream without its receipt on disk, and the gateway
+  does not allow what it cannot record.
+- Receipt v2 adds the agent, the matched rule, the policy hash, the
+  approver, sizes, the body hash and the key id, signed over an unambiguous
+  encoding. Lines must be byte-canonical.
+- `ovara keys rotate-receipt | revoke-receipt | list-receipt` keep a key
+  history; verification respects it.
+- `ovara log -verify-only`, `ovara log export -format jsonl|ocsf` and
+  `ovara incident bundle` (verifiable offline).
+- A log that was cut short, or cut and continued, fails verification, and
+  `ovara run` will not append to it. `ovara doctor` says "anchored" only
+  when anchoring is on.
+- Gateway journals are format v2 (strict, time-bound to key state); stores,
+  logs and keys are owner-only. The gateway's HMAC receipt prefix is now
+  `hmac_v1:`.
+- An action interrupted by a crash is marked "outcome unknown" and never
+  retried automatically.
+- In degraded anchor mode, a push that failed during an oracle outage is
+  retried until it lands.
+
+**Box**
+
+- Tier 1's own root file system: host system directories read-only,
+  nothing from home directories, `/root`, `/srv`, `/opt` or `/var`, other
+  users' processes hidden, no_new_privs, and the proxy token on no command
+  line. `-mount` works in tier 1.
+- The project copy also leaves out files whose content looks like a key or
+  token.
+- Commit-back lands exactly the reviewed tree, built in a repository the
+  agent never touched; agent config, CI and hook paths are kept out;
+  sensitive files are flagged; binary files stay out unless
+  `-allow-binary`; a cut diff says what it leaves out.
+- Command rules match a normalised command line (`rm -r -f` reads as
+  `rm -rf`), with new default pauses for `find -delete`, `shred` and agents
+  started with their permission checks off.
+- Strict installs name Ruby and Maven packages, ask about unrecognised
+  registry downloads, and check downloads against lockfile digests.
+  `-untrusted-lockfiles` for repositories you are reviewing.
+
+**Policy semantics**
+
+- Decisions and receipts name the rule that decided and the policy's
+  content hash (`GET /v1/policy` shows it).
+- A git push is decided ref by ref; an allow for refs does not cover
+  deleting them unless it says `(delete)`.
+
+**Removed**
+
+- `policy/compiler`: it produced rules the gateway refuses, and nothing
+  used it.
+
 ### Removed
 
 - `services/` (approval, alerting, observability, receipt-storage): four
@@ -482,5 +623,5 @@ authority verification, and Ed25519-signed receipts.
 - **100+ TypeScript test cases** (Vitest)
 - **70 Python test cases** (pytest)
 
-[Unreleased]: https://github.com/SidianLabs/OVARA/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/SidianLabs/OVARA/releases/tag/v1.0.0
+[Unreleased]: https://github.com/SidianLabs/OVARA/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/SidianLabs/OVARA/releases/tag/v0.9.0
