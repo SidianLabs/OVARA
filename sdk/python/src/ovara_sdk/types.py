@@ -158,10 +158,15 @@ class ReceiptRecord:
 class PortableReceipt:
     """Receipt produced by the Ovara egress proxy (proxy/internal/receipts).
 
-    Proxy receipts are ed25519-signed ("sig_v1:<hex>") and verifiable
-    offline with the proxy's public key. Gateway decision receipts are
-    HMAC-signed and cannot be verified client-side — fetch them via
-    GET /v1/receipts/{id} instead.
+    Proxy receipts are ed25519-signed and verifiable offline with the
+    proxy's public key. Two versions exist: v1 (no ``v``, "sig_v1:<hex>"
+    over a pipe-joined payload) and v2 (``v`` == 2, "sig_v2:<hex>" over a
+    domain-separated, length-prefixed encoding of every field, naming its
+    signing key in ``kid``). Gateway decision receipts are HMAC-signed and
+    cannot be verified client-side — fetch them via GET /v1/receipts/{id}
+    instead.
+
+    Build one from a chain line with ``PortableReceipt.from_json``.
     """
 
     receipt_id: str
@@ -172,8 +177,43 @@ class PortableReceipt:
     decision: str
     status: int
     # Links an escalated-then-approved receipt to the approval that
-    # authorized it. Present only on such receipts; it is part of the
-    # signed canonical payload (appended as "|approval_id").
+    # authorized it. Signed in both versions.
     approval_id: Optional[str] = None
     prev_hash: str = ""
-    signature: str = ""  # "sig_v1:<hex ed25519>"
+    signature: str = ""  # "sig_v1:<hex ed25519>" | "sig_v2:<hex ed25519>"
+
+    # --- v2 only (None / empty on v1 receipts) ---
+    v: Optional[int] = None  # 2 on v2 receipts; absent on v1
+    phase: Optional[str] = None  # "attempt" | "outcome" | ""
+    outcome: Optional[str] = None  # "sent" | "not_sent" | ""
+    attempt_id: Optional[str] = None  # on an outcome: its attempt's receipt_id
+    agent: Optional[str] = None  # "pt_<sha256[:16]>" of the proxy credential
+    rule: Optional[str] = None
+    policy_hash: Optional[str] = None
+    approver: Optional[str] = None
+    req_bytes: Optional[int] = None
+    resp_bytes: Optional[int] = None  # -1 when the upstream streamed without a length
+    body_sha256: Optional[str] = None
+    reasons: Optional[list[str]] = None
+    kid: Optional[str] = None  # signing key id: first 16 hex digits of sha256(pub)
+
+    @classmethod
+    def from_json(cls, data: "dict | str | bytes") -> "PortableReceipt":
+        """Build from one receipt line (a JSON object or its text).
+        Unknown keys raise ValueError: every byte of a line is meant to
+        be covered by its signature, so a key the verifier does not know
+        is not silently ignored."""
+        import json
+
+        if isinstance(data, (str, bytes)):
+            data = json.loads(data)
+        if not isinstance(data, dict):
+            raise ValueError("receipt must be a JSON object")
+        known = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
+        unknown = set(data) - known
+        if unknown:
+            raise ValueError(f"unknown receipt keys: {sorted(unknown)}")
+        try:
+            return cls(**data)
+        except TypeError as e:  # a required key is missing
+            raise ValueError(f"bad receipt: {e}") from None
