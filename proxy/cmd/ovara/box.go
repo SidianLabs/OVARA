@@ -82,10 +82,7 @@ const (
 	outcomeKept   = "kept"   // something is left for a person: the workspace stays
 	outcomeFailed = "failed" // an error on our side: the workspace stays
 
-	// gateway decisions and approval states
-	decisionAllow    = "allow"
-	decisionDeny     = "deny"
-	decisionEscalate = "escalate"
+	// approval states (the gateway's decisions are in commitback.go)
 	approvalApproved = "approved"
 	approvalError    = "error"
 
@@ -137,6 +134,7 @@ func cmdBox(args []string) error {
 	approveTimeout := fs.Duration("approve-timeout", 10*time.Minute, "how long the commit-back waits for a person")
 	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
 	noCommitBack := fs.Bool("no-commit-back", false, "do not offer to bring changes back; keep the workspace")
+	allowBinary := fs.Bool("allow-binary", false, "let binary files the agent added or changed come back (by default they stay in the workspace: a diff cannot show what is in them)")
 	noGate := fs.Bool("no-command-gate", false, "do not check the agent's commands against policy (the network and file boundaries still hold)")
 	var envs, excludes, mounts multiFlag
 	fs.Var(&envs, "env", "extra NAME=value for the agent (repeatable; values that look like keys are refused)")
@@ -350,48 +348,65 @@ func cmdBox(args []string) error {
 		outcome = outcomeKept
 		return nil
 	}
-	changes, err := ws.Changes()
+	// The workspace's files are read once, into a tree only Ovara can
+	// write. Policy, the diff the person reads and the commit that lands
+	// all come from that tree, so nothing the agent (or a process it left
+	// behind) changes after this point can come back.
+	snap, err := ws.Snapshot()
 	if err != nil {
 		return err
 	}
-	if len(changes) == 0 {
+	if len(snap.Changes) == 0 {
 		fmt.Fprintln(os.Stderr, "==> the agent changed nothing")
 		outcome = outcomeClean
 		return nil
 	}
 	branch := "ovara/box-" + runID
 	ctx := context.Background()
-	var denied, allowed []string
-	for _, c := range changes {
-		d, err := gw.CheckAction(ctx, "fs.commit_back.path", "path:"+c.Path, map[string]string{"status": c.Status})
+	plan, err := planCommitBack(snap.Changes, func(path, status string) (string, error) {
+		d, err := gw.CheckAction(ctx, "fs.commit_back.path", "path:"+path, map[string]string{"status": status})
 		if err != nil {
-			return fmt.Errorf("gateway: %w", err)
+			return "", fmt.Errorf("gateway: %w", err)
 		}
-		if d.Decision == decisionDeny {
-			denied = append(denied, c.Path)
-		} else {
-			allowed = append(allowed, c.Path)
-		}
-	}
-	for _, p := range denied {
-		fmt.Fprintf(os.Stderr, "    policy keeps out: %s\n", termSafe(p))
-	}
-	if len(allowed) == 0 {
-		fmt.Fprintln(os.Stderr, "==> every changed path is kept out by policy; nothing comes back")
-		outcome = outcomeKept
-		return nil
-	}
-	preview, err := ws.Preview(boxPreviewMax)
+		return d.Decision, nil
+	}, *allowBinary)
 	if err != nil {
 		return err
 	}
-	ctxLines := map[string]string{
-		"files":    strconv.Itoa(len(allowed)) + " path(s): " + strings.Join(allowed, ", "),
-		"branch":   branch,
-		"diff":     preview,
-		"kept_out": strings.Join(denied, ", "),
+	for _, p := range plan.policy {
+		fmt.Fprintf(os.Stderr, "    policy keeps out: %s\n", termSafe(p))
 	}
-	resource := fmt.Sprintf("commit:%s (%d files)", filepath.Base(ws.Project), len(allowed))
+	for _, p := range plan.binary {
+		fmt.Fprintf(os.Stderr, "    kept out (binary file, cannot be reviewed; -allow-binary brings it back): %s\n", termSafe(p))
+	}
+	for _, p := range plan.flagged {
+		fmt.Fprintf(os.Stderr, "    ⚠ sensitive file changed: %s\n", termSafe(p))
+	}
+	if len(plan.allowed) == 0 {
+		fmt.Fprintln(os.Stderr, "==> every changed path is kept out; nothing comes back")
+		outcome = outcomeKept
+		return nil
+	}
+	if snap, err = ws.Without(snap, plan.revert); err != nil {
+		return err
+	}
+	if len(snap.Changes) != len(plan.allowed) {
+		return fmt.Errorf("internal: %d path(s) left to bring back, %d expected; nothing comes back", len(snap.Changes), len(plan.allowed))
+	}
+	rev, err := ws.Review(snap, boxPreviewMax)
+	if err != nil {
+		return err
+	}
+	// the whole diff, for when the approval shows only part of it
+	fullDiff := filepath.Join(runDir, "commit-back.diff")
+	if err := os.WriteFile(fullDiff, []byte(rev.Stat+"\n"+rev.Full), 0o600); err != nil {
+		return err
+	}
+	if rev.Truncated() {
+		fmt.Fprintf(os.Stderr, "    ⚠ the diff is too long to show in full: %d of %d bytes are not in the approval; read all of it in %s\n", rev.TotalBytes-rev.ShownBytes, rev.TotalBytes, fullDiff)
+	}
+	ctxLines := commitBackContext(plan, snap, rev, branch, fullDiff)
+	resource := fmt.Sprintf("commit:%s (%d files, tree %s)", filepath.Base(ws.Project), len(plan.allowed), snap.Tree[:12])
 	d, err := gw.CheckAction(ctx, "fs.commit_back", resource, ctxLines)
 	if err != nil {
 		return fmt.Errorf("gateway: %w", err)
@@ -406,7 +421,7 @@ func cmdBox(args []string) error {
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "==> waiting for you to approve the changes (%d files, approval %s): the approval page or `ovara approvals -dir %s`\n", len(allowed), id, *dir)
+		fmt.Fprintf(os.Stderr, "==> waiting for you to approve the changes (%d files, approval %s): the approval page or `ovara approvals -dir %s`\n", len(plan.allowed), id, *dir)
 		status, err := waitApproval(ctx, gw, id, *approveTimeout)
 		if err != nil {
 			return err
@@ -417,7 +432,8 @@ func cmdBox(args []string) error {
 			return nil
 		}
 	}
-	commit, err := ws.CommitBack(branch, denied)
+	// exactly the reviewed tree, or nothing
+	commit, err := ws.CommitTree(branch, snap)
 	if err != nil {
 		return err
 	}

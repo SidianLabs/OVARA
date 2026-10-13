@@ -96,15 +96,28 @@ func contextLines(a pendingApproval) []string {
 	if v := a.Context["why"]; v != "" {
 		out = append(out, "asked because: "+v)
 	}
-	// `ovara box` commit-back: what comes back, what policy kept out, the diff
+	// `ovara box` commit-back: sensitive files and an incomplete diff first,
+	// then what comes back, what stays out, the tree, the diff
+	for _, l := range contextList(a.Context["sensitive"]) {
+		out = append(out, "⚠ sensitive file changed: "+l)
+	}
+	if l := contextList(a.Context["diff_not_shown"]); len(l) > 0 {
+		out = append(out, "⚠ diff not shown: "+l[0])
+		for _, more := range l[1:] {
+			out = append(out, "    "+more)
+		}
+	}
 	if v := a.Context["files"]; v != "" {
 		out = append(out, "files: "+v)
 	}
-	if v := a.Context["kept_out"]; v != "" {
-		out = append(out, "kept out by policy: "+v)
+	for _, l := range contextList(a.Context["kept_out"]) {
+		out = append(out, "kept out: "+l)
 	}
 	if v := a.Context["branch"]; v != "" {
 		out = append(out, "lands on branch: "+v)
+	}
+	if v := a.Context["tree"]; v != "" {
+		out = append(out, "reviewed tree: "+v+" (exactly this lands; anything else is refused)")
 	}
 	if v := a.Context["diff"]; v != "" {
 		lines := strings.Split(strings.TrimRight(v, "\n"), "\n")
@@ -115,6 +128,18 @@ func contextLines(a pendingApproval) []string {
 		out = append(out, "diff:")
 		for _, l := range lines {
 			out = append(out, "  "+l)
+		}
+	}
+	return out
+}
+
+// contextList splits a one-item-per-line context value. (The gateway caps
+// each value's length, so the last item may end in "…".)
+func contextList(v string) []string {
+	var out []string
+	for _, l := range strings.Split(strings.ReplaceAll(v, "\r\n", "\n"), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
 		}
 	}
 	return out
