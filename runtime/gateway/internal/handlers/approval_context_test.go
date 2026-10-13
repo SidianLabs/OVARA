@@ -66,13 +66,17 @@ func TestApprovalContext_CapsTheNumberOfEntries(t *testing.T) {
 // and a cut is always labelled.
 func TestApprovalContext_DiffKeepsItsLength(t *testing.T) {
 	diff := strings.Repeat("+ line of a diff\n", 3000) // 51000 bytes
-	meta, _ := json.Marshal(map[string]any{"proxy_context": map[string]any{"diff": diff, "files": strings.Repeat("f", 700)}})
+	meta, _ := json.Marshal(map[string]any{"proxy_context": map[string]any{"diff": diff, "files": strings.Repeat("f", maxContextListLen+100), "branch": strings.Repeat("b", 700)}})
 	got := approvalContextFromMetadata(meta)
 	if got["diff"] != diff {
 		t.Fatalf("a %d-byte diff was cut to %d bytes", len(diff), len(got["diff"]))
 	}
+	// File lists get the list budget; other values the ordinary one.
 	if !strings.HasSuffix(got["files"], "… [truncated: 100 more bytes not shown]") {
-		t.Errorf("files: %q", got["files"][maxContextValueLen-5:])
+		t.Errorf("files: %q", got["files"][maxContextListLen-5:])
+	}
+	if !strings.HasSuffix(got["branch"], "… [truncated: 100 more bytes not shown]") {
+		t.Errorf("branch: %q", got["branch"][maxContextValueLen-5:])
 	}
 
 	big := strings.Repeat("x", maxContextDiffLen+1234)

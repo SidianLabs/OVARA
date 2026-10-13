@@ -17,12 +17,18 @@ const (
 	// The commit-back diff is what a person reads before changes reach the
 	// real repository; it gets the same budget the proxy uses to build it.
 	maxContextDiffLen = 64 << 10
+	// Lists of files a person must see in full (what policy kept out, which
+	// sensitive files changed, what a cut diff leaves out).
+	maxContextListLen = 8 << 10
 )
+
+// contextListKeys get the larger list budget.
+var contextListKeys = map[string]bool{"diff_not_shown": true, "kept_out": true, "sensitive": true, "files": true}
 
 // contextPriorityKeys are always kept first when a request carries more
 // entries than the cap: they are the proxy's own safety notes about the
 // request body.
-var contextPriorityKeys = []string{"warning", "body_note", "body_sha256"}
+var contextPriorityKeys = []string{"warning", "body_note", "body_sha256", "sensitive", "diff_not_shown", "kept_out", "tree"}
 
 // approvalContextFromMetadata extracts {"proxy_context": {"k": "v", ...}} from
 // the metadata of the request the gateway evaluated. Anything that is not a
@@ -68,6 +74,8 @@ func approvalContextFromMetadata(meta json.RawMessage) map[string]string {
 		limit := maxContextValueLen
 		if k == "diff" {
 			limit = maxContextDiffLen
+		} else if contextListKeys[k] {
+			limit = maxContextListLen
 		}
 		if len(k) > maxContextKeyLen {
 			k = k[:maxContextKeyLen]

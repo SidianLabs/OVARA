@@ -422,7 +422,7 @@ func cmdBox(args []string) error {
 			return fmt.Errorf("gateway: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "==> waiting for you to approve the changes (%d files, approval %s): the approval page or `ovara approvals -dir %s`\n", len(plan.allowed), id, *dir)
-		status, err := waitApproval(ctx, gw, id, *approveTimeout)
+		status, err := waitApproval(ctx, gw, id, capToApprovalTTL(*dir, *approveTimeout))
 		if err != nil {
 			return err
 		}
@@ -1063,3 +1063,29 @@ type multiFlag []string
 
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// capToApprovalTTL keeps a wait within the time the gateway keeps an
+// approval open (approval_pending_ttl_secs in config.json, default 10
+// minutes): waiting longer only ends in "expired", after a person may
+// already have read the diff and clicked approve.
+func capToApprovalTTL(dir string, wait time.Duration) time.Duration {
+	ttl := 10 * time.Minute
+	if raw, err := os.ReadFile(filepath.Join(dir, "config.json")); err == nil {
+		var c struct {
+			TTL int `json:"approval_pending_ttl_secs"`
+		}
+		if json.Unmarshal(raw, &c) == nil {
+			switch {
+			case c.TTL > 0:
+				ttl = time.Duration(c.TTL) * time.Second
+			case c.TTL < 0:
+				return wait // expiry is off
+			}
+		}
+	}
+	if wait > ttl {
+		fmt.Fprintf(os.Stderr, "==> -approve-timeout %s is longer than the gateway keeps an approval open (%s); waiting %s (raise approval_pending_ttl_secs in config.json to wait longer)\n", wait, ttl, ttl)
+		return ttl
+	}
+	return wait
+}
