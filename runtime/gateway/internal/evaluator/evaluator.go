@@ -590,9 +590,17 @@ func ruleLabel(r policy.Rule) string {
 // Deny rules written as host rules match the host on any port (see
 // policy.MatchResourceAnyPort); allow and escalate rules match the port
 // exactly, so widening never makes anything more permissive.
+//
+// An allow that names refs (" refs/...") covers a branch or tag deletion
+// only if it says so with "(delete)": "refs/heads/feature/*" allows
+// pushing feature branches, not deleting them.
 func ruleMatches(r policy.Rule, resource string) bool {
 	if r.Deny {
 		return policy.MatchResourceAnyPort(r.Resource, resource)
+	}
+	if r.Allow && strings.Contains(r.Resource, " refs/") && !strings.Contains(r.Resource, "(delete)") &&
+		policy.IsRefDeletion(resource) {
+		return false
 	}
 	return policy.MatchResource(r.Resource, resource)
 }
@@ -690,7 +698,42 @@ func (e *Evaluator) evaluateRulesWithStore(store *policy.Store, req *models.Acti
 }
 
 // evaluateWithStore picks the resolution the policy file asked for.
+//
+// A git push that updates several refs is evaluated once per ref (see
+// policy.SplitRefList) and the push gets the strictest of the answers
+// (deny > escalate > allow): an allow for one ref never carries another
+// ref along with it.
 func (e *Evaluator) evaluateWithStore(store *policy.Store, actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
+	parts := policy.SplitRefList(req.Resource)
+	if len(parts) == 1 {
+		return e.evaluateOneResource(store, actionRules, envRules, req)
+	}
+	var worst RuleOutcome
+	for i, p := range parts {
+		sub := *req
+		sub.Resource = p
+		o := e.evaluateOneResource(store, actionRules, envRules, &sub)
+		if i == 0 || strictness(o) > strictness(worst) {
+			worst = o
+		}
+	}
+	return worst
+}
+
+// strictness orders outcomes for combining per-ref decisions.
+func strictness(o RuleOutcome) int {
+	switch {
+	case o.Denied:
+		return 3
+	case o.Escalate:
+		return 2
+	case o.LeaseRequired:
+		return 1 // an allow that still needs a lease
+	}
+	return 0
+}
+
+func (e *Evaluator) evaluateOneResource(store *policy.Store, actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
 	if store.Precedence() == policy.PrecedenceMostSpecific {
 		return e.evaluateMostSpecific(store, req)
 	}

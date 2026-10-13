@@ -517,6 +517,37 @@ func isMethodToken(s string) bool {
 	return true
 }
 
+// SplitRefList turns a git push that updates several refs
+// ("POST <url> refs/a,refs/b(delete)") into one resource per ref
+// ("POST <url> refs/a", "POST <url> refs/b(delete)"), so that each ref is
+// matched on its own and a '*' in a ref pattern can never reach across
+// the comma into another ref. Any other resource, including a push the
+// proxy flagged as unreadable ("git-receive-pack(truncated)"), comes back
+// unchanged as the only element.
+func SplitRefList(resource string) []string {
+	i := strings.LastIndexByte(resource, ' ')
+	if i <= 0 || !isURLResource(resource[:i]) {
+		return []string{resource}
+	}
+	head, tail := resource[:i], resource[i+1:]
+	if !strings.HasPrefix(tail, "refs/") || !strings.Contains(tail, ",") || !isRefList(tail) {
+		return []string{resource}
+	}
+	refs := strings.Split(tail, ",")
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, head+" "+ref)
+	}
+	return out
+}
+
+// IsRefDeletion reports whether a single-ref push resource deletes the ref
+// (the proxy's git gate marks it "(delete)").
+func IsRefDeletion(resource string) bool {
+	i := strings.LastIndexByte(resource, ' ')
+	return i > 0 && strings.HasPrefix(resource[i+1:], "refs/") && strings.HasSuffix(resource, "(delete)")
+}
+
 // isRefList reports whether s is a comma-separated git ref list as
 // appended by the proxy's git gate ("refs/heads/main,refs/tags/v1").
 func isRefList(s string) bool {
