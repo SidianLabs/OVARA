@@ -38,7 +38,11 @@ type Config struct {
 	// ApprovalPendingTTLSec is how long a pending approval can still be
 	// approved; after that it reads as "expired". 0 = the default (600,
 	// ten minutes); a negative value turns expiry off.
-	ApprovalPendingTTLSec        int      `json:"approval_pending_ttl_secs,omitempty"`
+	ApprovalPendingTTLSec int `json:"approval_pending_ttl_secs,omitempty"`
+	// ApprovalMaxPendingPerAgent caps how many approvals one agent may
+	// have waiting; past it, creating one returns 429. 0 = the default
+	// (16); a negative value removes the cap.
+	ApprovalMaxPendingPerAgent   int      `json:"approval_max_pending_per_agent,omitempty"`
 	EventsFile                   string   `json:"events_file"`
 	EventsMaxSize                int      `json:"events_max_size"`
 	ReceiptLogEnabled            bool     `json:"receipt_log_enabled"`

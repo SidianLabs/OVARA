@@ -217,9 +217,23 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	created, err := h.service.CreateApproval(&bound)
+	// Flood control: the same request while one is waiting gets that
+	// approval back (no second card, no second continuation); past the
+	// per-agent cap the escalation is refused and the action stays
+	// blocked.
+	created, reused, err := h.service.Open(&bound)
+	if errors.Is(err, approval.ErrTooManyPending) {
+		h.emitSecurityEvent("approval_flood", bound.DecisionID, bound.AgentID, err.Error())
+		api.JSONError(w, http.StatusTooManyRequests, err.Error()+" — resolve or wait for the pending ones; this action stays blocked")
+		return
+	}
 	if err != nil {
 		api.JSONInternalError(w, "failed to create approval: "+err.Error())
+		return
+	}
+	if reused {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(created)
 		return
 	}
 

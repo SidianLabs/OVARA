@@ -1,6 +1,9 @@
 package approval
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -21,16 +24,28 @@ const DefaultPendingTTL = 10 * time.Minute
 // than the TTL.
 var ErrApprovalExpired = errors.New("approval expired: the agent is no longer waiting for it")
 
+// DefaultMaxPendingPerAgent is how many approvals one agent may have
+// waiting at once (see Open).
+const DefaultMaxPendingPerAgent = 16
+
+// ErrTooManyPending is returned by Open when the agent already has the
+// maximum number of approvals waiting.
+var ErrTooManyPending = errors.New("too many approvals waiting")
+
 type Service struct {
 	store Store
 
-	mu         sync.RWMutex
-	pendingTTL time.Duration // <= 0: pending approvals never expire
-	now        func() time.Time
+	mu                 sync.RWMutex
+	pendingTTL         time.Duration // <= 0: pending approvals never expire
+	maxPendingPerAgent int           // <= 0: no cap
+	now                func() time.Time
+
+	// openMu makes Open's count/dedupe check and the create one step.
+	openMu sync.Mutex
 }
 
 func NewService(store Store) *Service {
-	return &Service{store: store, pendingTTL: DefaultPendingTTL, now: time.Now}
+	return &Service{store: store, pendingTTL: DefaultPendingTTL, maxPendingPerAgent: DefaultMaxPendingPerAgent, now: time.Now}
 }
 
 // SetPendingTTL sets how long a pending approval stays approvable; zero
@@ -102,6 +117,74 @@ func (s *Service) CreateApproval(req *CreateRequest) (*ApprovalRequest, error) {
 		approvalID, req.DecisionID, req.ActionType, req.AgentID, req.Environment)
 
 	return approval, nil
+}
+
+// Open is how an escalation asks a person: it creates an approval unless
+// the same agent already has an identical one waiting (same action type,
+// environment, resource and context), in which case that one is returned
+// with reused=true, and it refuses with ErrTooManyPending once the agent
+// has MaxPendingPerAgent approvals waiting. Expired approvals neither
+// count nor get reused. Without these limits an agent can keep the queue
+// full of cards and bury the one that matters.
+func (s *Service) Open(req *CreateRequest) (a *ApprovalRequest, reused bool, err error) {
+	s.openMu.Lock()
+	defer s.openMu.Unlock()
+	key := dedupeKey(req.AgentID, string(req.ActionType), string(req.Environment), req.Resource, req.Context)
+	waiting := 0
+	for _, p := range s.ListPending() { // expired ones are already left out
+		if p.AgentID != req.AgentID {
+			continue
+		}
+		if dedupeKey(p.AgentID, string(p.ActionType), string(p.Environment), p.Resource, p.Context) == key {
+			return p, true, nil
+		}
+		waiting++
+	}
+	if max := s.MaxPendingPerAgent(); max > 0 && waiting >= max {
+		return nil, false, fmt.Errorf("%w: agent %q has %d approvals waiting", ErrTooManyPending, req.AgentID, waiting)
+	}
+	a, err = s.CreateApproval(req)
+	return a, false, err
+}
+
+// dedupeKey identifies "the same request" for Open: a length-prefixed
+// SHA-256 over the fields and the sorted context entries.
+func dedupeKey(agent, action, env, resource string, ctx map[string]string) string {
+	h := sha256.New()
+	field := func(v string) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(v)))
+		h.Write(n[:])
+		h.Write([]byte(v))
+	}
+	field(agent)
+	field(action)
+	field(env)
+	field(resource)
+	keys := make([]string, 0, len(ctx))
+	for k := range ctx {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		field(k)
+		field(ctx[k])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SetMaxPendingPerAgent caps how many approvals one agent may have
+// waiting at once; zero or less removes the cap.
+func (s *Service) SetMaxPendingPerAgent(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxPendingPerAgent = n
+}
+
+func (s *Service) MaxPendingPerAgent() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.maxPendingPerAgent
 }
 
 func (s *Service) Approve(approvalID, resolvedBy string) (*ApprovalRequest, error) {

@@ -488,6 +488,13 @@ func Run(configPath string) error {
 		approvalService.SetPendingTTL(0)
 		log.Printf("WARNING: approval_pending_ttl_secs < 0: pending approvals never expire")
 	}
+	switch {
+	case cfg.ApprovalMaxPendingPerAgent > 0:
+		approvalService.SetMaxPendingPerAgent(cfg.ApprovalMaxPendingPerAgent)
+	case cfg.ApprovalMaxPendingPerAgent < 0:
+		approvalService.SetMaxPendingPerAgent(0)
+		log.Printf("WARNING: approval_max_pending_per_agent < 0: no cap on pending approvals per agent")
+	}
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	receiptHandler := handlers.NewReceiptHandler(receiptsStore)
 
