@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
@@ -266,7 +268,9 @@ func (w *wrapper) fromServer(ctx context.Context, r *bufio.Reader, clientOut io.
 		}
 		if len(line) > 0 {
 			out := line
-			if t := bytes.TrimSpace(line); len(t) > 0 && (t[0] == '{' || t[0] == '[') {
+			// Every line goes through the check: one that does not start
+			// like JSON may still read as JSON-RPC to a lenient client.
+			if t := bytes.TrimSpace(line); len(t) > 0 {
 				res := w.gate.ServerBody(ctx, w.server, t)
 				if res.Verdict.Outcome == mcp.OutcomeAborted {
 					return nil
@@ -311,6 +315,14 @@ func (w *wrapper) fromClient(ctx context.Context, r *bufio.Reader, clientOut io.
 
 func (w *wrapper) fromClientLine(ctx context.Context, line []byte, clientOut, serverIn io.Writer, calls *sync.WaitGroup) {
 	body, err := mcp.Parse(line)
+	if err != nil && !strictJSONLine(line) {
+		// A line Ovara cannot read strictly is never passed on: a lenient
+		// server (NaN, UTF-16, a second value) could still read a tool call
+		// in it that nobody decided.
+		fmt.Fprintf(os.Stderr, "[ovara] the client sent a line that is not valid JSON; it was not passed on\n")
+		_ = writeLine(&w.outMu, clientOut, mcp.ParseErrorResponse(w.server))
+		return
+	}
 	hasCall := false
 	if err == nil {
 		for _, m := range body.Messages {
@@ -361,6 +373,12 @@ func (w *wrapper) fromClientLine(ctx context.Context, line []byte, clientOut, se
 			_ = writeLine(&w.outMu, clientOut, out)
 		}
 	}()
+}
+
+// strictJSONLine reports a line that is blank or valid UTF-8 JSON.
+func strictJSONLine(line []byte) bool {
+	t := bytes.TrimSpace(line)
+	return len(t) == 0 || (utf8.Valid(t) && json.Valid(t))
 }
 
 // refuseClientBody answers every request in a refused client body with an

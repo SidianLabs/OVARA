@@ -105,6 +105,14 @@ func (s *Store) Lookup(server, tool string) (Pin, bool) {
 	return p, ok
 }
 
+// HasServer reports whether any tool of server is pinned (or was refused):
+// the server is known to speak MCP.
+func (s *Store) HasServer(server string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.servers[server]) > 0
+}
+
 // Drift compares a tool list with the server's pins.
 func (s *Store) Drift(server string, tools []Tool) Drift {
 	s.mu.Lock()

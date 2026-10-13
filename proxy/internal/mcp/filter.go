@@ -3,7 +3,18 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
+
+// ReasonUnparseable is the reason given when a message is refused because
+// it cannot be read strictly (see ErrUnparseable).
+const ReasonUnparseable = "mcp_unparseable"
+
+// RefusedUnparseable is the verdict on a message that cannot be read
+// strictly: what cannot be read cannot be checked.
+func RefusedUnparseable() Verdict {
+	return Refused("the message cannot be read strictly as JSON (UTF-8, no NaN or Infinity, one value), so it cannot be checked", ReasonUnparseable)
+}
 
 // CallCheck is the verdict on one message of a client body.
 type CallCheck struct {
@@ -31,7 +42,7 @@ func (g *Gate) ClientBody(ctx context.Context, server string, b *Body) []CallChe
 			c.Verdict = Refused("a tools/call without a tool name", "mcp_message_malformed")
 		default:
 			c.Tool = name
-			c.Verdict = g.ToolCall(ctx, server, name, args)
+			c.Verdict = g.toolCall(ctx, server, name, args, b.SHA256)
 		}
 		out = append(out, c)
 		if c.Verdict.Outcome == OutcomeAborted {
@@ -57,10 +68,14 @@ type ServerResult struct {
 
 // ServerBody checks a body (one message or a batch) a server sends to the
 // client: every tool list in it goes through ToolList. A tool list that
-// cannot be read, or can be read two ways, is refused. Bodies that are not
-// JSON-RPC pass.
+// cannot be read, or can be read two ways, is refused, and so is a body
+// that is not valid JSON but that a lenient reader could take for JSON-RPC
+// (ErrUnparseable). Other bodies that are not JSON-RPC pass.
 func (g *Gate) ServerBody(ctx context.Context, server string, data []byte) ServerResult {
 	b, err := Parse(data)
+	if errors.Is(err, ErrUnparseable) {
+		return ServerResult{HasTools: true, IsMCP: true, Verdict: RefusedUnparseable()}
+	}
 	if err != nil {
 		return ServerResult{Verdict: Verdict{Outcome: OutcomeAllow}}
 	}

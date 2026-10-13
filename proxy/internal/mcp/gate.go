@@ -241,8 +241,17 @@ const maxArgsPreview = 400
 
 // ToolCall decides one call of tool name on server. A tool that is not
 // pinned, or whose new definition was refused, is refused without asking;
-// any other call is put to the gateway (ActionToolCall) with its arguments.
+// any other call is put to the gateway (ActionToolCall) with its arguments
+// and their hash (arguments_sha256), so that an approval, and the
+// gateway's merging of identical pending questions, stand for these exact
+// arguments and never for another call that only starts the same way.
 func (g *Gate) ToolCall(ctx context.Context, server, name string, args json.RawMessage) Verdict {
+	return g.toolCall(ctx, server, name, args, "")
+}
+
+// toolCall is ToolCall for a call that came in a body whose hash is
+// bodySHA ("" when there is none); the hash goes with the question too.
+func (g *Gate) toolCall(ctx context.Context, server, name string, args json.RawMessage, bodySHA string) Verdict {
 	pin, ok := g.Store.Lookup(server, name)
 	if !ok {
 		g.logf("mcp: %s: call of tool %s refused: not an approved tool of this server", server, textsafe.Escape(name))
@@ -256,6 +265,12 @@ func (g *Gate) ToolCall(ctx context.Context, server, name string, args json.RawM
 		"mcp_server":  server,
 		"tool":        textsafe.Escape(name),
 		"tool_sha256": pin.SHA256,
+		// What the approval stands for: the exact arguments, whatever part
+		// of them the preview below can show.
+		"arguments_sha256": ArgumentsSHA256(args),
+	}
+	if bodySHA != "" {
+		preview["body_sha256"] = bodySHA
 	}
 	if len(args) > 0 && string(args) != "null" {
 		a := string(args)

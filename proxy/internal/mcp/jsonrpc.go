@@ -79,6 +79,11 @@ type Body struct {
 	// but a lenient one still found messages: callers that would act on
 	// them must refuse instead.
 	Ambiguous bool
+	// SHA256 is the hash (hex) of the bytes Parse was given. A caller that
+	// holds the body in another form (the HTTP body before it was
+	// decompressed) may set it to that form's hash. It goes with every
+	// tool-call question, so an approval stands for these exact bytes.
+	SHA256 string
 }
 
 // IsMCP reports whether any message in the body is MCP traffic.
@@ -93,9 +98,27 @@ func (b *Body) IsMCP() bool {
 
 // Parse reads a JSON-RPC body. A leading byte order mark and surrounding
 // white space are ignored. It returns ErrNotJSONRPC for anything that is not
-// a JSON object or a non-empty array of objects. A body that parses only
-// leniently comes back with Ambiguous set.
+// a JSON object or a non-empty array of objects, and ErrUnparseable instead
+// when the bytes are not valid JSON but a lenient reader could take them
+// for JSON-RPC (see LooksLikeJSONRPC). A body that parses only leniently
+// comes back with Ambiguous set.
 func Parse(data []byte) (*Body, error) {
+	b, err := parse(data)
+	if err != nil {
+		if errors.Is(err, ErrNotJSONRPC) && !json.Valid(trimBody(data)) && LooksLikeJSONRPC(data) {
+			return nil, ErrUnparseable
+		}
+		return nil, err
+	}
+	b.SHA256 = SHA256Hex(data)
+	return b, nil
+}
+
+func trimBody(data []byte) []byte {
+	return bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(data), []byte("\xef\xbb\xbf")))
+}
+
+func parse(data []byte) (*Body, error) {
 	data = bytes.TrimPrefix(bytes.TrimSpace(data), []byte("\xef\xbb\xbf"))
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || (data[0] != '{' && data[0] != '[') {
@@ -294,6 +317,19 @@ const ErrorCode = -32001
 
 // ErrorMessage is the message of that error.
 const ErrorMessage = "denied by Ovara policy"
+
+// ParseErrorCode is the JSON-RPC "Parse error" code, given to a message
+// refused because it cannot be read strictly.
+const ParseErrorCode = -32700
+
+// ParseErrorResponse is the error (id null, code ParseErrorCode) sent in
+// place of a message that cannot be read strictly.
+func ParseErrorResponse(server string) []byte {
+	v := RefusedUnparseable()
+	e := map[string]any{"code": ParseErrorCode, "message": "Parse error: " + ErrorMessage + ": " + v.Detail, "data": v.ErrorData(server)}
+	out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": nil, "error": e})
+	return out
+}
 
 // ErrorResponse builds a JSON-RPC error response for id (null when id is
 // nil) saying why Ovara refused. data is attached as the error's data.

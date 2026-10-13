@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"compress/gzip"
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"ovara.proxy/internal/mcp"
 )
@@ -39,12 +41,15 @@ type mcpState struct {
 	mu   sync.Mutex
 	// endpoints maps the POST endpoint of an HTTP+SSE server to the key of
 	// the event stream that announced it.
-	endpoints map[string]string
-	// known are server keys seen carrying MCP.
-	known map[string]bool
+	endpoints *lru[string]
+	// known are server keys seen carrying MCP. Servers with pinned tools
+	// are known whatever this holds (isKnown asks the pin store), so
+	// filling it can only push out servers nothing was pinned for.
+	known *lru[bool]
 }
 
-// maxMCPEndpoints bounds the two maps above; past it they start again.
+// maxMCPEndpoints bounds the two maps above; past it the entry used least
+// recently goes.
 const maxMCPEndpoints = 4096
 
 func (s *Server) newMCPState(store *mcp.Store) *mcpState {
@@ -52,8 +57,51 @@ func (s *Server) newMCPState(store *mcp.Store) *mcpState {
 		return s.askAction(ctx, actionType, resource, preview, "is an MCP question")
 	}), redactPreviewCount)
 	g.Logf = log.Printf
-	return &mcpState{gate: g, endpoints: map[string]string{}, known: map[string]bool{}}
+	return &mcpState{gate: g, endpoints: newLRU[string](maxMCPEndpoints), known: newLRU[bool](maxMCPEndpoints)}
 }
+
+// lru is a map bounded by evicting the entry used least recently. Not safe
+// for concurrent use (mcpState.mu guards it).
+type lru[V any] struct {
+	max int
+	ll  *list.List
+	m   map[string]*list.Element
+}
+
+type lruEntry[V any] struct {
+	k string
+	v V
+}
+
+func newLRU[V any](max int) *lru[V] {
+	return &lru[V]{max: max, ll: list.New(), m: map[string]*list.Element{}}
+}
+
+func (c *lru[V]) get(k string) (V, bool) {
+	e, ok := c.m[k]
+	if !ok {
+		var zero V
+		return zero, false
+	}
+	c.ll.MoveToFront(e)
+	return e.Value.(*lruEntry[V]).v, true
+}
+
+func (c *lru[V]) put(k string, v V) {
+	if e, ok := c.m[k]; ok {
+		e.Value.(*lruEntry[V]).v = v
+		c.ll.MoveToFront(e)
+		return
+	}
+	c.m[k] = c.ll.PushFront(&lruEntry[V]{k: k, v: v})
+	for c.ll.Len() > c.max {
+		last := c.ll.Back()
+		c.ll.Remove(last)
+		delete(c.m, last.Value.(*lruEntry[V]).k)
+	}
+}
+
+func (c *lru[V]) len() int { return c.ll.Len() }
 
 // SetMCPGate turns MCP-aware mode on or off (default on, pins in memory)
 // and names the file the pinned tool definitions are kept in ("" keeps them
@@ -89,7 +137,7 @@ func (m *mcpState) server(u *url.URL) string {
 	k := mcpServerKey(u)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if s, ok := m.endpoints[k]; ok {
+	if s, ok := m.endpoints.get(k); ok {
 		return s
 	}
 	return k
@@ -98,25 +146,28 @@ func (m *mcpState) server(u *url.URL) string {
 func (m *mcpState) markKnown(k string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.known) >= maxMCPEndpoints {
-		m.known = map[string]bool{}
-	}
-	m.known[k] = true
+	m.known.put(k, true)
 }
 
-func (m *mcpState) isKnown(k string) bool {
+func (m *mcpState) knownLen() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.known[k]
+	return m.known.len()
+}
+
+// isKnown reports a server seen carrying MCP: recently, or ever if any of
+// its tools are pinned.
+func (m *mcpState) isKnown(k string) bool {
+	m.mu.Lock()
+	_, ok := m.known.get(k)
+	m.mu.Unlock()
+	return ok || m.gate.Store.HasServer(k)
 }
 
 func (m *mcpState) mapEndpoint(endpoint, stream string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.endpoints) >= maxMCPEndpoints {
-		m.endpoints = map[string]string{}
-	}
-	m.endpoints[endpoint] = stream
+	m.endpoints.put(endpoint, stream)
 }
 
 // mcpExchange is what the gate learned from one MCP request.
@@ -142,7 +193,7 @@ func (f *mcpRefusal) write(w http.ResponseWriter) (string, int) {
 	if f.aborted {
 		return f.decision, 0
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", mediaJSON)
 	w.WriteHeader(f.status)
 	_, _ = w.Write(append(f.body, '\n'))
 	return f.decision, f.status
@@ -178,10 +229,14 @@ func (s *Server) mcpRequest(ctx context.Context, r *http.Request, hb *heldBody) 
 		return nil, nil
 	}
 	server := m.server(r.URL)
+	// An MCP context: the client says it is in an MCP session, or the
+	// server is known to speak MCP. There, anything that cannot be read
+	// strictly is refused.
+	mcpCtx := isMCPSession(r) || m.isKnown(server)
 	if hb.size > mcp.MaxMessageBytes {
-		// Too large to read whole. If it looks like JSON-RPC it is refused:
+		// Too large to read whole. If it could be JSON-RPC it is refused:
 		// a tool call must not go out unchecked for being big.
-		if bytes.Contains(bytes.ToLower(hb.head), []byte("jsonrpc")) || m.isKnown(server) {
+		if mcpCtx || heldLooksLikeJSONRPC(hb) {
 			v := mcp.Refused("the MCP message is too large to check", "mcp_message_too_large")
 			return nil, &mcpRefusal{status: http.StatusRequestEntityTooLarge, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
 		}
@@ -191,8 +246,8 @@ func (s *Server) mcpRequest(ctx context.Context, r *http.Request, hb *heldBody) 
 	if err != nil {
 		return nil, nil
 	}
-	switch enc := encodedValue(r.Header.Values("Content-Encoding")); {
-	case enc == "gzip" || enc == "x-gzip":
+	switch encs := contentEncodings(r.Header.Values("Content-Encoding")); {
+	case len(encs) == 1 && (encs[0] == "gzip" || encs[0] == "x-gzip"):
 		zr, err := gzip.NewReader(bytes.NewReader(data))
 		if err == nil {
 			data, err = io.ReadAll(io.LimitReader(zr, mcp.MaxMessageBytes+1))
@@ -200,16 +255,30 @@ func (s *Server) mcpRequest(ctx context.Context, r *http.Request, hb *heldBody) 
 		if err != nil || len(data) > mcp.MaxMessageBytes {
 			return nil, s.mcpUnreadable(server)
 		}
-	case enc != "":
-		if m.isKnown(server) || isMCPSession(r) {
+	case len(encs) > 0:
+		// An encoding Ovara does not decode. Whatever could be JSON-RPC is
+		// refused: a server that decodes it would act on a call nobody
+		// decided.
+		if mcpCtx || jsonContentType(r.Header) || mcp.LooksLikeJSONRPC(data) {
 			return nil, s.mcpUnreadable(server)
 		}
 		return nil, nil
 	}
 	body, err := mcp.Parse(data)
-	if err != nil || !body.IsMCP() {
+	if err != nil {
+		// Not valid JSON, yet a lenient reader (NaN, UTF-16/32, a second
+		// value) could take it for JSON-RPC; or anything at all that is
+		// not valid JSON sent in an MCP context.
+		if errors.Is(err, mcp.ErrUnparseable) || (mcpCtx && !strictJSONOrEmpty(data)) {
+			return nil, s.mcpUnparseable(server)
+		}
 		return nil, nil
 	}
+	if !body.IsMCP() {
+		return nil, nil
+	}
+	// The approval of a tool call stands for the bytes sent, as held.
+	body.SHA256 = hb.sha256Hex()
 	m.markKnown(server)
 	r.Header.Del("Accept-Encoding")
 	r.Header.Del("Range")
@@ -268,6 +337,63 @@ func (s *Server) mcpUnreadable(server string) *mcpRefusal {
 	return &mcpRefusal{status: http.StatusBadRequest, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
 }
 
+// mcpUnparseable refuses a request that cannot be read strictly.
+func (s *Server) mcpUnparseable(server string) *mcpRefusal {
+	return &mcpRefusal{status: http.StatusBadRequest, decision: "deny", reasons: []string{mcp.ReasonUnparseable}, body: mcp.ParseErrorResponse(server)}
+}
+
+// mcpUnparseableResponse refuses a response that cannot be read strictly.
+func mcpUnparseableResponse(server string) *mcpRefusal {
+	v := mcp.RefusedUnparseable()
+	return &mcpRefusal{status: http.StatusBadGateway, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
+}
+
+// strictJSONOrEmpty reports a body that is empty or valid JSON (UTF-8, a
+// leading byte order mark aside).
+func strictJSONOrEmpty(data []byte) bool {
+	t := bytes.TrimSpace(bytes.TrimPrefix(bytes.TrimSpace(data), []byte("\xef\xbb\xbf")))
+	return len(t) == 0 || (json.Valid(t) && utf8.Valid(t))
+}
+
+// heldLooksLikeJSONRPC runs mcp.LooksLikeJSONRPC over a whole held body,
+// a piece at a time.
+func heldLooksLikeJSONRPC(hb *heldBody) bool {
+	var sn mcp.Sniffer
+	buf := make([]byte, 64<<10)
+	r := hb.reader()
+	for {
+		n, err := r.Read(buf)
+		_, _ = sn.Write(buf[:n])
+		if sn.Found() {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+	}
+}
+
+// contentEncodings lists the codings of a Content-Encoding header, in
+// lower case, leaving out "identity".
+func contentEncodings(vals []string) []string {
+	var out []string
+	for _, v := range vals {
+		for _, tok := range strings.Split(v, ",") {
+			if t := strings.ToLower(strings.TrimSpace(tok)); t != "" && t != "identity" {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+// jsonContentType reports a request whose Content-Type says JSON, or that
+// has none (a server may then read it as JSON anyway).
+func jsonContentType(h http.Header) bool {
+	v := h.Values("Content-Type")
+	return len(v) == 0 || strings.Contains(strings.ToLower(strings.Join(v, ",")), "json")
+}
+
 func joinMessages(parts [][]byte, batch bool) []byte {
 	if len(parts) == 0 {
 		return mcp.ErrorResponse(nil, "", nil)
@@ -304,18 +430,42 @@ func (s *Server) mcpResponse(ctx context.Context, r *http.Request, x *mcpExchang
 	if m == nil || s.isModelHost(r.URL.Hostname()) {
 		return nil
 	}
-	mt := mediaType(resp.Header)
-	isSSE := mt == "text/event-stream"
-	isJSON := strings.HasSuffix(mt, "json")
-	if x == nil && !isSSE {
-		return nil
-	}
 	server := m.server(r.URL)
 	if x != nil {
 		server = x.server
 	}
-	if enc := encodedValue(resp.Header.Values("Content-Encoding")); enc != "" {
-		if x != nil || (isSSE && (acceptsEventStream(r) || isMCPSession(r) || m.isKnown(server))) {
+	// An MCP exchange: the request was MCP, the client says it is in an MCP
+	// session, or the server is known to speak MCP. Its answer must name
+	// one plain type, JSON or an event stream; every client reads those,
+	// while what a client still reads under a looser name (SDKs match
+	// prefixes or substrings, and join repeated headers) would otherwise
+	// pass unchecked.
+	mcpCtx := x != nil || isMCPSession(r) || m.isKnown(server)
+	cts := resp.Header.Values("Content-Type")
+	mt := ""
+	if len(cts) == 1 {
+		mt = mediaType(resp.Header)
+	}
+	isSSE := mt == "text/event-stream"
+	isJSON := mt == mediaJSON
+	if !mcpCtx {
+		// Any other event stream is still read for JSON-RPC events.
+		if !strings.Contains(strings.ToLower(strings.Join(cts, ",")), "text/event-stream") {
+			return nil
+		}
+		isSSE, isJSON = true, false
+	}
+	if mcpCtx && !isSSE && !isJSON {
+		// An error status is not read as a message by MCP clients, and an
+		// empty answer (202 Accepted) carries none.
+		if resp.StatusCode/100 != 2 || emptyBody(resp) {
+			return nil
+		}
+		v := mcp.Refused("the MCP response's content type is not exactly one of application/json or text/event-stream", "mcp_unexpected_content_type")
+		return &mcpRefusal{status: http.StatusBadGateway, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
+	}
+	if len(contentEncodings(resp.Header.Values("Content-Encoding"))) > 0 {
+		if mcpCtx || acceptsEventStream(r) {
 			v := mcp.Refused("the response is encoded in a form Ovara cannot read", "mcp_message_unreadable")
 			return &mcpRefusal{status: http.StatusBadGateway, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
 		}
@@ -325,7 +475,7 @@ func (s *Server) mcpResponse(ctx context.Context, r *http.Request, x *mcpExchang
 		f := &sseFilter{
 			ctx: ctx, s: s, m: m, req: r, server: server, cut: cut,
 			ev:        mcp.NewEventReader(resp.Body, mcp.MaxMessageBytes),
-			mcpStream: x != nil || isMCPSession(r) || m.isKnown(server),
+			mcpStream: mcpCtx,
 		}
 		if x != nil && len(x.toolListIDs) > 0 {
 			if ref := f.hold(x.toolListIDs); ref != nil {
@@ -336,12 +486,9 @@ func (s *Server) mcpResponse(ctx context.Context, r *http.Request, x *mcpExchang
 		resp.Header.Del("Content-Length") // a refused event is replaced
 		return nil
 	}
-	if !isJSON {
-		return nil
-	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, mcp.MaxMessageBytes+1))
 	if err != nil || len(data) > mcp.MaxMessageBytes {
-		if len(x.toolListIDs) > 0 || err != nil {
+		if (x != nil && len(x.toolListIDs) > 0) || err != nil {
 			v := mcp.Refused("the response is too large to check, or could not be read", "mcp_response_unchecked")
 			return &mcpRefusal{status: http.StatusBadGateway, decision: "deny", reasons: v.Reasons, body: mcp.ErrorResponse(nil, v.Detail, v.ErrorData(server))}
 		}
@@ -349,11 +496,36 @@ func (s *Server) mcpResponse(ctx context.Context, r *http.Request, x *mcpExchang
 		return nil
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(data))
+	if resp.StatusCode/100 == 2 && !strictJSONOrEmpty(data) {
+		// What cannot be read strictly cannot be checked; a lenient client
+		// might still read a tool list in it.
+		return mcpUnparseableResponse(server)
+	}
 	res := m.gate.ServerBody(ctx, server, data)
 	if res.Verdict.Allowed() {
 		return nil
 	}
 	return refusalFor(res, server)
+}
+
+// emptyBody reports a response with no body bytes at all, reading at most
+// one byte (put back).
+func emptyBody(resp *http.Response) bool {
+	if resp.Body == nil || resp.Body == http.NoBody {
+		return true
+	}
+	var one [1]byte
+	n, err := io.ReadFull(resp.Body, one[:])
+	if n == 0 && (err == io.EOF || err == io.ErrUnexpectedEOF) {
+		return true
+	}
+	resp.Body = readCloser{io.MultiReader(bytes.NewReader(one[:n]), resp.Body), resp.Body}
+	return false
+}
+
+type readCloser struct {
+	io.Reader
+	io.Closer
 }
 
 // refusalFor turns a refused server body into the HTTP answer sent instead.
@@ -448,11 +620,18 @@ func (f *sseFilter) check(raw []byte) []byte {
 		return raw
 	}
 	data := strings.TrimSpace(ev.Data)
-	if !ev.HasData || data == "" || (data[0] != '{' && data[0] != '[') {
+	if !ev.HasData || data == "" {
 		return raw
 	}
-	if !f.mcpStream && !strings.Contains(strings.ToLower(data), "jsonrpc") {
-		// a stream not known to carry MCP: only JSON-RPC is looked at
+	if f.mcpStream && (ev.Name == "" || ev.Name == "message") && !strictJSONOrEmpty([]byte(data)) {
+		// A message event of an MCP stream that cannot be read strictly
+		// cannot be checked.
+		return f.refuse(mcp.ServerResult{IsMCP: true, HasTools: true, Verdict: mcp.RefusedUnparseable()})
+	}
+	jsonish := data[0] == '{' || data[0] == '['
+	if !(jsonish && (f.mcpStream || strings.Contains(strings.ToLower(data), "jsonrpc"))) && !mcp.LooksLikeJSONRPC([]byte(data)) {
+		// a stream not known to carry MCP: only what could be JSON-RPC is
+		// looked at
 		return raw
 	}
 	res := f.m.gate.ServerBody(f.ctx, f.server, []byte(ev.Data))
@@ -470,6 +649,11 @@ func (f *sseFilter) check(raw []byte) []byte {
 	if res.Verdict.Allowed() {
 		return raw
 	}
+	return f.refuse(res)
+}
+
+// refuse records a refused event and returns what is relayed in its place.
+func (f *sseFilter) refuse(res mcp.ServerResult) []byte {
 	if res.Verdict.Outcome == mcp.OutcomeAborted {
 		f.err = context.Canceled
 		return nil
@@ -520,3 +704,6 @@ func (f *sseFilter) hold(ids map[string]bool) *mcpRefusal {
 }
 
 const schemeHTTPS = "https"
+
+// mediaJSON is the JSON media type.
+const mediaJSON = "application/json"
