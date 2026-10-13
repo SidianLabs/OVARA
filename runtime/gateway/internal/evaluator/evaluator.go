@@ -605,10 +605,17 @@ func ruleLabel(r policy.Rule) string {
 //
 // An allow that names refs (" refs/...") covers a branch or tag deletion
 // only if it says so with "(delete)": "refs/heads/feature/*" allows
-// pushing feature branches, not deleting them.
+// pushing feature branches, not deleting them. A deny or escalate rule
+// that names refs works the other way: it covers the ref with or without
+// the marker, so "deny ... refs/heads/main" also refuses deleting main.
 func ruleMatches(r policy.Rule, resource string) bool {
 	if r.Deny || r.Escalate {
-		return policy.MatchResourceAnyPort(r.Resource, resource)
+		if policy.MatchResourceAnyPort(r.Resource, resource) {
+			return true
+		}
+		return strings.Contains(r.Resource, " refs/") && !strings.Contains(r.Resource, "(delete)") &&
+			policy.IsRefDeletion(resource) &&
+			policy.MatchResourceAnyPort(r.Resource, strings.TrimSuffix(resource, "(delete)"))
 	}
 	if r.Allow && strings.Contains(r.Resource, " refs/") && !strings.Contains(r.Resource, "(delete)") &&
 		policy.IsRefDeletion(resource) {

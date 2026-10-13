@@ -89,3 +89,39 @@ func TestSplitRefList(t *testing.T) {
 		}
 	}
 }
+
+// A deny or escalate written for a ref, without "(delete)", also covers
+// deleting that ref; an allow still covers a deletion only when it says
+// "(delete)".
+func TestGitPush_ExactRefDenyCoversDeletion(t *testing.T) {
+	for _, prec := range []string{policy.PrecedenceMostSpecific, policy.PrecedenceOrder} {
+		st := specificStore(
+			rule(receivePack+" refs/heads/*", "allow", "any branch"),
+			rule(receivePack+" refs/heads/main", "deny", "main is protected"),
+			rule(receivePack+" refs/tags/v1", "escalate", "release tag"),
+			rule(receivePack+" refs/heads/tmp/*(delete)", "allow", "delete scratch branches"),
+		)
+		st.SetPrecedence(prec)
+		cases := []struct {
+			refs string
+			want models.Decision
+		}{
+			{"refs/heads/main", models.DecisionDeny},
+			{"refs/heads/main(delete)", models.DecisionDeny},
+			{"refs/heads/feature/x,refs/heads/main(delete)", models.DecisionDeny},
+			{"refs/tags/v1(delete)", models.DecisionEscalate},
+			// a deny for main says nothing about other refs
+			{"refs/heads/mainline", models.DecisionAllow},
+			{"refs/heads/mainline(delete)", models.DecisionEscalate},
+			// allows: a deletion still has to be named
+			{"refs/heads/feature/x", models.DecisionAllow},
+			{"refs/heads/feature/x(delete)", models.DecisionEscalate},
+			{"refs/heads/tmp/y(delete)", models.DecisionAllow},
+		}
+		for _, c := range cases {
+			if d, _ := decide(t, st, models.EnvironmentDev, receivePack+" "+c.refs); d != c.want {
+				t.Errorf("%s: %s: got %s, want %s", prec, c.refs, d, c.want)
+			}
+		}
+	}
+}
