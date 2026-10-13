@@ -193,8 +193,9 @@ func readAnchors(path string) ([]Anchor, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []Anchor
-	for i, line := range bytes.Split(data, []byte{'\n'}) {
+	lines := bytes.Split(data, []byte{'\n'})
+	out := make([]Anchor, 0, len(lines))
+	for i, line := range lines {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}

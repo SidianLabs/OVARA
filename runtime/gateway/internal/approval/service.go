@@ -156,7 +156,7 @@ func dedupeKey(agent, action, env, resource string, ctx map[string]string) strin
 	h := sha256.New()
 	field := func(v string) {
 		var n [4]byte
-		binary.BigEndian.PutUint32(n[:], uint32(len(v)))
+		binary.BigEndian.PutUint32(n[:], uint32(len(v))) //nolint:gosec // request fields are far below 4 GiB
 		h.Write(n[:])
 		h.Write([]byte(v))
 	}

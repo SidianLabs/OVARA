@@ -30,10 +30,10 @@ func (o *flakyOracle) Commit(_ context.Context, _ string, cp *anchor.Checkpoint)
 	return nil
 }
 
-func (o *flakyOracle) state() (bool, uint64) {
+func (o *flakyOracle) tookSeq() uint64 {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.up, o.took
+	return o.took
 }
 
 // G-10: one outage does not leave the run's tail unanchored. When the
@@ -56,12 +56,12 @@ func TestDegradedAnchorRetriesAfterOutage(t *testing.T) {
 	o.mu.Unlock()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, took := o.state(); took == 3 && w.Unanchored() == 0 {
+		if took := o.tookSeq(); took == 3 && w.Unanchored() == 0 {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	_, took := o.state()
+	took := o.tookSeq()
 	t.Fatalf("tail not re-anchored after the oracle came back: oracle seq %d, pending %d", took, w.Unanchored())
 }
 
@@ -69,7 +69,7 @@ func TestDegradedAnchorRetriesAfterOutage(t *testing.T) {
 func TestDegradedAnchorLaterPushSupersedes(t *testing.T) {
 	o := &flakyOracle{}
 	w := &warnPusher{inner: o, minBackoff: time.Hour}
-	w.Commit(context.Background(), "d", &anchor.Checkpoint{Seq: 1})
+	_ = w.Commit(context.Background(), "d", &anchor.Checkpoint{Seq: 1})
 	o.mu.Lock()
 	o.up = true
 	o.mu.Unlock()

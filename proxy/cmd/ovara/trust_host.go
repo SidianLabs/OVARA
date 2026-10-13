@@ -104,7 +104,7 @@ func dropRunTrust(dir string) (hosts []string, err error) {
 	if err != nil {
 		return nil, err
 	}
-	var keep []any
+	keep := make([]any, 0, len(rules))
 	seen := map[string]bool{}
 	for _, r := range rules {
 		if host, ok := runTrustRule(r); ok {

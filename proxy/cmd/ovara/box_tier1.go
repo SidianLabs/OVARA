@@ -105,7 +105,7 @@ func tier1Command(self string, spec tier1Spec) (cmd *exec.Cmd, done func(), err 
 		_, _ = w.Write(b) // a box-init that died early leaves EPIPE here, once done closes r
 		w.Close()
 	}()
-	cmd = exec.Command(self, "box-init", "-tier1") //nolint:gosec // our own binary
+	cmd = exec.Command(self, boxInitCmd, "-tier1") //nolint:gosec // our own binary
 	cmd.ExtraFiles = []*os.File{r}                 // fd 3
 	cmd.Env = []string{}                           // nothing of ours; the agent's environment is in the spec
 	cmd.Dir = "/"
@@ -276,7 +276,7 @@ func buildBoxRoot(root string, binds []tier1Bind) error {
 		return fmt.Errorf("/dev: %w", err)
 	}
 	for _, d := range boxDevices {
-		if err := os.WriteFile(filepath.Join(dev, d), nil, 0o666); err != nil {
+		if err := os.WriteFile(filepath.Join(dev, d), nil, 0o666); err != nil { //nolint:gosec // a bind-mount target: what is mounted over it sets the mode
 			return err
 		}
 		if err := unix.Mount("/dev/"+d, filepath.Join(dev, d), "", unix.MS_BIND, ""); err != nil {
@@ -484,7 +484,7 @@ func mountpointNoFollow(root, dst string, dir bool) error {
 			}
 			continue
 		}
-		if err := os.WriteFile(cur, nil, 0o644); err != nil {
+		if err := os.WriteFile(cur, nil, 0o644); err != nil { //nolint:gosec // a bind-mount target: what is mounted over it sets the mode
 			return err
 		}
 	}

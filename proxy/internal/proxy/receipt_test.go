@@ -25,16 +25,16 @@ func receiptGateway(t *testing.T, decision string) *httptest.Server {
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/runtime/check":
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"decision": decision, "decision_id": "d1",
 				"reason_codes": []string{"policy_escalate"},
 				"matched_rule": "writes need approval",
 				"receipt_stub": map[string]any{"policy_hash": "sha256:abc"},
 			})
 		case "/v1/approval/create":
-			json.NewEncoder(w).Encode(map[string]string{"approval_id": "apr_1"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"approval_id": "apr_1"})
 		case "/v1/approval/apr_1":
-			json.NewEncoder(w).Encode(map[string]string{"status": "approved", "resolved_by": "operator:alice"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "approved", "resolved_by": "operator:alice"})
 		default:
 			w.WriteHeader(404)
 		}
@@ -43,7 +43,7 @@ func receiptGateway(t *testing.T, decision string) *httptest.Server {
 	return gw
 }
 
-func receiptServer(t *testing.T, decision, chainFile string) (*Server, *receipts.Chain) {
+func receiptServer(t *testing.T, decision, chainFile string) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	c, err := ca.LoadOrCreate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"))
@@ -58,17 +58,17 @@ func receiptServer(t *testing.T, decision, chainFile string) (*Server, *receipts
 	srv.SetPublicEgressOnly(false)
 	srv.SetConnectPort443Only(false)
 	srv.SetEscalateWindow(2*time.Second, 10*time.Millisecond)
-	return srv, chain
+	return srv
 }
 
 // G-06: a request whose receipt cannot be written is not sent.
 func TestNoUpstreamBytesWithoutReceipt(t *testing.T) {
 	dir := t.TempDir()
 	chainFile := filepath.Join(dir, "var", "receipts.jsonl")
-	srv, _ := receiptServer(t, "allow", chainFile)
+	srv := receiptServer(t, "allow", chainFile)
 	// The receipt directory's place is taken by a file: no receipt can be
 	// created there.
-	os.WriteFile(filepath.Join(dir, "var"), []byte("not a directory"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "var"), []byte("not a directory"), 0o600)
 	up, hits := upstreamCounting(t)
 	rec := do(srv, "GET", up.URL+"/x")
 	if hits.Load() != 0 {
@@ -83,9 +83,9 @@ func TestNoUpstreamBytesWithoutReceipt(t *testing.T) {
 func TestNoReceiptFailOpenStillForwards(t *testing.T) {
 	dir := t.TempDir()
 	chainFile := filepath.Join(dir, "var", "receipts.jsonl")
-	srv, _ := receiptServer(t, "allow", chainFile)
+	srv := receiptServer(t, "allow", chainFile)
 	srv.failOpen = true
-	os.WriteFile(filepath.Join(dir, "var"), []byte("x"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "var"), []byte("x"), 0o600)
 	up, hits := upstreamCounting(t)
 	do(srv, "GET", up.URL+"/x")
 	if hits.Load() != 1 {
@@ -99,7 +99,7 @@ func TestNoReceiptFailOpenStillForwards(t *testing.T) {
 func TestReceiptV2Fields(t *testing.T) {
 	dir := t.TempDir()
 	chainFile := filepath.Join(dir, "receipts.jsonl")
-	srv, _ := receiptServer(t, "escalate", chainFile)
+	srv := receiptServer(t, "escalate", chainFile)
 	srv.SetClientAuth("proxy-token")
 	up, hits := upstreamCounting(t)
 	body := []byte(`{"title":"hello"}`)
@@ -116,8 +116,8 @@ func TestReceiptV2Fields(t *testing.T) {
 		t.Fatalf("want attempt + outcome, got %d lines", len(lines))
 	}
 	var a, o receipts.Receipt
-	json.Unmarshal(lines[0], &a)
-	json.Unmarshal(lines[1], &o)
+	_ = json.Unmarshal(lines[0], &a)
+	_ = json.Unmarshal(lines[1], &o)
 	sum := sha256.Sum256(body)
 	tok := sha256.Sum256([]byte("proxy-token"))
 	want := receipts.Receipt{V: 2, Decision: "allow", ApprovalID: "apr_1", Agent: "pt_" + hex.EncodeToString(tok[:])[:16],

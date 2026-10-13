@@ -265,7 +265,7 @@ func (s *signedParamReader) Read(p []byte) (int, error) {
 func (s *signedParamReader) fill() {
 	buf := make([]byte, scrubBufSize)
 	n, err := s.r.Read(buf)
-	data := append(s.carry, buf[:n]...)
+	data := append(append(make([]byte, 0, len(s.carry)+n), s.carry...), buf[:n]...)
 	s.carry = nil
 	if s.inValue {
 		i := 0

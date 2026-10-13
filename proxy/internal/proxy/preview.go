@@ -166,7 +166,7 @@ func bodyPreview(hb *heldBody, ct string, encodings []string) (preview, note str
 			}
 		}
 	}
-	gz := len(enc) == 1 && (enc[0] == "gzip" || enc[0] == "x-gzip")
+	gz := len(enc) == 1 && (enc[0] == encGzip || enc[0] == encXGzip)
 	if len(enc) > 0 && !gz {
 		return "", fmt.Sprintf("contents not shown: %d bytes of %s, encoded %s", size, kind, truncate(strings.Join(enc, ", "), 40)), 0
 	}

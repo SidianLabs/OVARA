@@ -114,7 +114,7 @@ func (r *Receipt) canonicalV2() []byte {
 	b := []byte(domainV2)
 	lp := func(s string) {
 		var n [4]byte
-		binary.BigEndian.PutUint32(n[:], uint32(len(s)))
+		binary.BigEndian.PutUint32(n[:], uint32(len(s))) //nolint:gosec // a receipt field is never 4 GiB (lines are capped far below)
 		b = append(b, n[:]...)
 		b = append(b, s...)
 	}

@@ -9,7 +9,7 @@ func TestRecoveredExecutionIsOutcomeUnknown(t *testing.T) {
 	s := NewInMemoryStore()
 	c := NewContinuation("dec_1", "git.push", "refs/heads/main")
 	c.State = StateExecuting
-	s.Create(c)
+	_ = s.Create(c)
 	rec, ok := s.RecoverFromExecuting(c.ContinuationID)
 	if !ok {
 		t.Fatal("recover failed")

@@ -62,10 +62,10 @@ func newTier1Fixture(t *testing.T) *tier1Fixture {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(f.work, "hello.txt"), []byte("workspace"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(f.work, "hello.txt"), []byte("workspace"), 0o644); err != nil { //nolint:gosec // world-readable on purpose: only the box may keep the agent out
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(f.ca, []byte("PUBLIC CERT"), 0o644); err != nil {
+	if err := os.WriteFile(f.ca, []byte("PUBLIC CERT"), 0o644); err != nil { //nolint:gosec // world-readable on purpose: only the box may keep the agent out
 		t.Fatal(err)
 	}
 	// the original project: world-readable, so only the box keeps it out
@@ -78,14 +78,14 @@ func newTier1Fixture(t *testing.T) *tier1Fixture {
 		t.Fatal(err)
 	}
 	f.project = filepath.Join(proj, ".env")
-	if err := os.WriteFile(f.project, []byte("API_KEY=real"), 0o644); err != nil {
+	if err := os.WriteFile(f.project, []byte("API_KEY=real"), 0o644); err != nil { //nolint:gosec // world-readable on purpose: only the box may keep the agent out
 		t.Fatal(err)
 	}
 	rf, err := os.CreateTemp("/root", "ovara-t1-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rf.WriteString("root's")
+	_, _ = rf.WriteString("root's")
 	rf.Close()
 	f.rootFile = rf.Name()
 	t.Cleanup(func() { os.Remove(f.rootFile) })

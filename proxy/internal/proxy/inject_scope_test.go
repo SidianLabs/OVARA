@@ -37,7 +37,7 @@ func tunnelReq(t *testing.T, srv *Server, upstream *httptest.Server, c interface
 	}
 	caPool := x509.NewCertPool()
 	caPool.AppendCertsFromPEM(c.CertPEM())
-	tc := tls.Client(conn, &tls.Config{RootCAs: caPool, ServerName: mustHost(t, upstream.URL)})
+	tc := tls.Client(conn, &tls.Config{RootCAs: caPool, ServerName: mustHost(t, upstream.URL), MinVersion: tls.VersionTLS12})
 	if err := tc.Handshake(); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func (a *authRecorder) server() *httptest.Server {
 		a.mu.Lock()
 		a.saw[r.Method+" "+r.URL.Path] = r.Header.Get("Authorization")
 		a.mu.Unlock()
-		io.WriteString(w, "ok")
+		_, _ = io.WriteString(w, "ok")
 	}))
 }
 
@@ -99,7 +99,7 @@ func TestPathScopedBindingInjection(t *testing.T) {
 		{"GET", "/repos/acme/app/..%2F..%2Fother", false},
 		{"DELETE", "/repos/acme/app", false},
 	} {
-		tunnelReq(t, f.srv, up, f.ca, c.method, c.path, nil)
+		tunnelReq(t, f.srv, up, f.ca, c.method, c.path, nil) //nolint:bodyclose // the helper reads and closes the body
 		key := c.method + " " + strings.ReplaceAll(c.path, "%2F", "/")
 		if got := rec.get(key) == testSecret; got != c.want {
 			t.Errorf("%s %s: credential sent=%v want %v", c.method, c.path, got, c.want)
@@ -115,7 +115,7 @@ func TestBindingWithoutPortNotSentToOtherPort(t *testing.T) {
 	f := newFixture(t, "allow", []creds.Binding{
 		{Host: mustHost(t, up.URL), Headers: map[string]string{"Authorization": testSecret}},
 	})
-	tunnelReq(t, f.srv, up, f.ca, "GET", "/x", nil)
+	tunnelReq(t, f.srv, up, f.ca, "GET", "/x", nil) //nolint:bodyclose // the helper reads and closes the body
 	if got := rec.get("GET /x"); got == testSecret {
 		t.Fatal("a binding with no port was used on a non-443 port")
 	}
@@ -132,7 +132,7 @@ func TestPlainProxyHTTPSNon443Refused(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("want 403, got %d", rec.Code)
 	}
-	if r := f.lastReceipt(t); r.Decision != "deny" {
+	if r := f.lastReceipt(t); r.Decision != gwDeny {
 		t.Fatalf("want a deny receipt, got %+v", r)
 	}
 }
@@ -143,7 +143,7 @@ func TestConnectionTokenCannotStripInjectedHeader(t *testing.T) {
 	up := rec.server()
 	defer up.Close()
 	f := credFixture(t, up)
-	tunnelReq(t, f.srv, up, f.ca, "GET", "/x", map[string]string{"Connection": "Authorization"})
+	tunnelReq(t, f.srv, up, f.ca, "GET", "/x", map[string]string{"Connection": "Authorization"}) //nolint:bodyclose // the helper reads and closes the body
 	if got := rec.get("GET /x"); got != testSecret {
 		t.Fatalf("injected credential was stripped: upstream saw %q", got)
 	}

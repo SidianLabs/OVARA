@@ -28,7 +28,7 @@ func TestNewCAIsConstrainedAndShortLived(t *testing.T) {
 	if life := time.Until(cert.NotAfter); life > 31*24*time.Hour || life < 29*24*time.Hour {
 		t.Fatalf("CA lifetime %v, want about 30 days", life)
 	}
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != goosWindows {
 		if fi, err := os.Stat(keyFile); err != nil || fi.Mode().Perm() != 0o600 {
 			t.Fatalf("CA key mode = %v (%v)", fi.Mode().Perm(), err)
 		}
@@ -78,8 +78,8 @@ func writeCA(t *testing.T, tmpl *x509.Certificate) (string, string, *x509.Certif
 	}
 	kd, _ := x509.MarshalECPrivateKey(key)
 	certFile, keyFile := filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key")
-	os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
-	os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}), 0o644)
+	_ = os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+	_ = os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kd}), 0o600)
 	cert, _ := x509.ParseCertificate(der)
 	return certFile, keyFile, cert
 }
@@ -122,7 +122,7 @@ func TestLoadOrCreateRotatesWeakOrExpiringCA(t *testing.T) {
 		if err != nil || !again.cert.Equal(c.cert) {
 			t.Errorf("%s: reload after rotation: %v", name, err)
 		}
-		if runtime.GOOS != "windows" {
+		if runtime.GOOS != goosWindows {
 			if fi, _ := os.Stat(keyFile); fi.Mode().Perm() != 0o600 {
 				t.Errorf("%s: rotated key mode %v", name, fi.Mode().Perm())
 			}

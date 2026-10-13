@@ -44,7 +44,10 @@ const (
 	pkgAborted  = "aborted"
 	pkgError    = "error"
 
-	gwEscalate = "escalate" // the gateway's decision string
+	// the gateway's decision strings
+	gwAllow    = "allow"
+	gwDeny     = "deny"
+	gwEscalate = "escalate"
 )
 
 type pkgResult struct {

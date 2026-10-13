@@ -339,7 +339,7 @@ func TestWithout_RenameKeepsBothEnds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var paths []string
+	paths := make([]string, 0, 2*len(snap.Changes))
 	for _, c := range snap.Changes {
 		paths = append(paths, c.Path)
 		if c.OldPath != "" {

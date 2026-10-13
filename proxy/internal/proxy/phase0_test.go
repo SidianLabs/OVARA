@@ -18,7 +18,7 @@ func TestLowercaseMethodStillGuarded(t *testing.T) {
 	var hits atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		io.WriteString(w, "ok")
+		_, _ = io.WriteString(w, "ok")
 	}))
 	defer up.Close()
 	for _, m := range []string{"get", "Get", "gEt", "head"} {
@@ -42,11 +42,11 @@ func TestLowercaseMethodStillGuarded(t *testing.T) {
 func TestDuplicateContentEncodingRefused(t *testing.T) {
 	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header()["Content-Encoding"] = []string{"identity", "gzip"}
-		io.WriteString(w, "opaque "+r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, "opaque "+r.Header.Get("Authorization"))
 	}))
 	defer up.Close()
 	f := credFixture(t, up)
-	resp, b := tunnel(t, f.srv, f.ca, up, nil)
+	resp, b := tunnel(t, f.srv, f.ca, up, nil) //nolint:bodyclose // the helper reads and closes the body
 	if resp.StatusCode != http.StatusBadGateway || strings.Contains(string(b), "SECRET") {
 		t.Fatalf("want 502 and no secret, got %d %q", resp.StatusCode, b)
 	}
@@ -58,13 +58,13 @@ func TestAgentCredentialHeadersStrippedOnBoundHost(t *testing.T) {
 	var got http.Header
 	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Header.Clone()
-		io.WriteString(w, "ok")
+		_, _ = io.WriteString(w, "ok")
 	}))
 	defer up.Close()
 	f := newFixture(t, "allow", []creds.Binding{
 		{Host: mustHostPort(t, up.URL), Headers: map[string]string{"X-Api-Key": "real-key-123456"}},
 	})
-	resp, _ := tunnel(t, f.srv, f.ca, up, map[string]string{
+	resp, _ := tunnel(t, f.srv, f.ca, up, map[string]string{ //nolint:bodyclose // the helper reads and closes the body
 		"Authorization":   "Bearer attacker-key",
 		"X-Custom-Token":  "attacker",
 		"Cookie":          "session=attacker",
@@ -85,7 +85,7 @@ func TestModelGate(t *testing.T) {
 	var hits atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		io.WriteString(w, "{}")
+		_, _ = io.WriteString(w, "{}")
 	}))
 	defer up.Close()
 

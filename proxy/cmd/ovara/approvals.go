@@ -217,7 +217,7 @@ func (c *adminClient) pending() ([]pendingApproval, error) {
 	var resp struct {
 		Approvals []pendingApproval `json:"approvals"`
 	}
-	if err := c.do("GET", "/v1/approval/pending", nil, &resp); err != nil {
+	if err := c.do(http.MethodGet, "/v1/approval/pending", nil, &resp); err != nil {
 		return nil, err
 	}
 	// Oldest first, always: a list that reorders between polls invites
@@ -296,12 +296,12 @@ func describe(resource string) string {
 	// --- API calls sent as GET ---
 	// The Slack Web API acts the same whatever the verb: a GET to
 	// slack.com/api/chat.postMessage posts. Do not call it a read.
-	if call, ok := slackAPICall(target); ok && (method == "GET" || method == "HEAD") {
+	if call, ok := slackAPICall(target); ok && (method == http.MethodGet || method == http.MethodHead) {
 		return "call the Slack API: " + call + " (this can change things in Slack, even as a GET)"
 	}
 	// --- end API calls sent as GET ---
 	switch method {
-	case "GET", "HEAD":
+	case http.MethodGet, http.MethodHead:
 		return "read " + target
 	case "POST":
 		return "send data to " + target

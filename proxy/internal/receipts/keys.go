@@ -115,8 +115,9 @@ func readHistory(path string) ([]KeyRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []KeyRecord
-	for i, line := range bytes.Split(data, []byte{'\n'}) {
+	lines := bytes.Split(data, []byte{'\n'})
+	out := make([]KeyRecord, 0, len(lines))
+	for i, line := range lines {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}

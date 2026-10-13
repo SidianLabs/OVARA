@@ -103,7 +103,7 @@ func loadClientKeys(path string) (map[string]bool, error) {
 }
 
 // operatorTokenEnv is where the reset token may come from instead of a file.
-const operatorTokenEnv = "OVARA_ANCHOR_OPERATOR_TOKEN"
+const operatorTokenEnv = "OVARA_ANCHOR_OPERATOR_TOKEN" //nolint:gosec // the variable's name, not a credential
 
 // loadOperatorToken returns the reset token from file (which must not be
 // readable by group or other) or, failing that, from the environment. ""

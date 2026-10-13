@@ -50,13 +50,21 @@ const actionModelFeature = "model.server_feature"
 // person (default) or a flat refusal.
 func (s *Server) SetModelGateAsk(on bool) { s.modelGateNoAsk = !on }
 
+// Model-gate findings: what the request asks the provider to do.
+const (
+	modelMCPConnector = "model_request_mcp_connector"
+	modelRemoteURL    = "model_request_remote_url"
+	modelServerTool   = "model_request_server_tool"
+	modelNotJSON      = "model_request_not_json"
+)
+
 // modelAskable reports whether a model-gate finding may be put to a person.
 // Only findings about what the request asks the provider to do qualify; a
 // body the gate could not read is refused, since the person could not read
 // it either.
 func modelAskable(why string) bool {
 	switch why {
-	case "model_request_mcp_connector", "model_request_remote_url", "model_request_server_tool", "model_request_not_json":
+	case modelMCPConnector, modelRemoteURL, modelServerTool, modelNotJSON:
 		return true
 	}
 	return false
@@ -95,13 +103,13 @@ func (s *Server) modelRequestRefusal(r *http.Request, hb *heldBody) string {
 	if ct != "" && !strings.Contains(ct, "json") {
 		// Multipart uploads (files, audio) and anything else that is not a
 		// JSON model call: not something the agent needs to do unasked.
-		return "model_request_not_json"
+		return modelNotJSON
 	}
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	if err := dec.Decode(&v); err != nil {
-		return "model_request_not_json"
+		return modelNotJSON
 	}
 	if why := modelValueRefusal(v); why != "" {
 		return why
@@ -143,21 +151,21 @@ func modelValueRefusal(v any) string {
 			switch lk {
 			case "mcp_servers", "server_url", "connector_id":
 				if !isEmptyJSON(val) {
-					return "model_request_mcp_connector"
+					return modelMCPConnector
 				}
 			case "image_url", "file_url", "document_url", "audio_url":
 				if s := jsonURL(val); s != "" && !strings.HasPrefix(strings.ToLower(s), "data:") {
-					return "model_request_remote_url"
+					return modelRemoteURL
 				}
 			case "type":
 				if s, ok := val.(string); ok {
 					ls := strings.ToLower(s)
 					if ls == "url" { // Anthropic {"source": {"type": "url", "url": ...}}
-						return "model_request_remote_url"
+						return modelRemoteURL
 					}
 					for _, p := range serverToolPrefixes {
 						if ls == p || strings.HasPrefix(ls, p+"_") {
-							return "model_request_server_tool"
+							return modelServerTool
 						}
 					}
 				}

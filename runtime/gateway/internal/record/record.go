@@ -143,7 +143,7 @@ func signingPayload(env *Envelope) []byte {
 // version, links and signing time too, which version 1 left unsigned.
 func signingPayloadV2(env *Envelope) []byte {
 	b := []byte("OVARA-RECORD-V2")
-	b = lpu64(b, uint64(env.V))
+	b = lpu64(b, uint64(env.V)) //nolint:gosec // the bits as they are: the encoding stays one-to-one
 	b = lp(b, env.Type)
 	b = lp(b, env.DomainID)
 	b = lpu64(b, env.Seq)
@@ -157,7 +157,7 @@ func signingPayloadV2(env *Envelope) []byte {
 	b = lpb(b, env.Payload)
 	b = lp(b, env.KeyRef.GatewayID)
 	b = lp(b, env.KeyRef.KeyID)
-	return lpu64(b, uint64(env.At))
+	return lpu64(b, uint64(env.At)) //nolint:gosec // the bits as they are: the encoding stays one-to-one
 }
 
 // decodeEnvelope parses one journal line strictly. Unknown keys and

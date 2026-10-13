@@ -280,7 +280,7 @@ func ScopeToRepo(bindings []Binding, host, owner, repo string) []Binding {
 	} else {
 		roots = []string{"/" + owner + "/" + repo, "/" + owner + "/" + repo + ".git"}
 	}
-	var scope []string
+	scope := make([]string, 0, 2*len(roots))
 	for _, r := range roots {
 		scope = append(scope, r, r+"/*")
 	}
