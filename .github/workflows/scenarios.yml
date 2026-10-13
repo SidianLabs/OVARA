@@ -101,6 +101,16 @@ jobs:
       - name: ovara box end to end (privileged container, netns)
         run: tests/box/run.sh
 
+  box-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - name: The box's boundary script on its own (privileged container)
+        run: tests/box/run.sh boundary
+
   box-strict:
     runs-on: ubuntu-latest
     timeout-minutes: 25
