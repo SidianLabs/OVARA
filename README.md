@@ -136,6 +136,63 @@ waiting. What you approve is exactly what is sent: the whole body is read
 before you are asked (up to 1 MB; a larger one is refused), you see its
 SHA-256, and only those bytes go out.
 
+### Short-lived keys instead of a personal token (recommended for GitHub)
+
+A personal access token is long-lived and usually reaches every repository
+you can. With a **GitHub App binding** Ovara holds the App's private key
+and, per run, mints an installation token that lives one hour and is
+limited to the repositories and permissions you list. That token is all
+that ever goes upstream; the agent sees neither.
+
+1. Create a GitHub App (Settings → Developer settings → GitHub Apps) with
+   the permissions the agent needs, for example Contents and Pull requests
+   read/write. No webhook is needed. Generate a private key.
+2. Install the App on the repositories the agent may touch, and note the
+   installation ID (the number at the end of the installation's settings
+   URL).
+3. Keep the key private to you (`chmod 600 app.pem`) and replace the
+   `api.github.com` binding in `mydir/proxy.json`:
+
+   ```json
+   {"host": "api.github.com", "github_app": {
+     "app_id": "${GH_APP_ID}",
+     "installation_id": "${GH_APP_INSTALLATION_ID}",
+     "private_key_file": "/home/me/.config/ovara/app.pem",
+     "repositories": ["app"],
+     "permissions": {"contents": "write", "pull_requests": "write"}
+   }}
+   ```
+
+   `private_key` (for example `"${GH_APP_KEY}"`, the PEM text) can stand in
+   for `private_key_file`. Repository names go without the owner.
+4. `export GH_APP_ID=... GH_APP_INSTALLATION_ID=...` in Ovara's shell and
+   start `ovara run`. `ovara doctor -dir mydir` checks the binding and the
+   key without calling GitHub.
+
+The same token is used for git over `github.com` (as `x-access-token`),
+unless you bind `github.com` yourself. With no `repositories` listed,
+`ovara run -scope-repo owner/repo`, which `ovara box` sets for the project
+it boxes, limits each token to that one repository. Tokens are replaced
+five minutes before they expire. If GitHub cannot issue one, the agent's
+request is refused with `credential_unavailable`; it is never sent with an
+old token or none.
+
+For other APIs, an `oauth2` binding gets a Bearer token from an OAuth 2.0
+token endpoint, by client credentials or by token exchange (RFC 8693):
+
+```json
+{"host": "api.example.com", "oauth2": {
+  "token_url": "https://auth.example.com/oauth/token",
+  "client_id": "${EXAMPLE_CLIENT_ID}", "client_secret": "${EXAMPLE_CLIENT_SECRET}",
+  "scope": "read write", "audience": "https://api.example.com",
+  "grant": "client_credentials"
+}}
+```
+
+For `"grant": "token_exchange"`, set `"subject_token": "${...}"` (and
+`subject_token_type` if it is not an access token). The client is
+authenticated with HTTP Basic, or in the form with `"client_auth": "post"`.
+
 ### What did my agent do?
 
 ```bash
@@ -239,9 +296,10 @@ this page that goes further than it is a mistake.
 - **Keys.** Credentials are only injected over HTTPS, and only on requests
   that match the binding's host, port, paths and methods. Ovara never hands
   the agent a key, but in cooperative mode the agent runs as you: it can
-  read any key you left in your own files. Prefer fine-grained tokens scoped
-  to one repository, and never bind a key to a host that echoes requests
-  back.
+  read any key you left in your own files. For GitHub, prefer a GitHub App
+  binding, which sends only short-lived tokens limited to the repository
+  (see above); otherwise use a fine-grained token scoped to one repository.
+  Never bind a key to a host that echoes requests back.
 - **Plain HTTP and other protocols.** Coverage of non-HTTP protocols is
   uneven.
 - **The model API.** The agent may call its model's inference endpoint without
