@@ -217,9 +217,9 @@ func TestMostSpecific_EscalateStillBeatsWeakerAllow(t *testing.T) {
 	}
 }
 
-// Deny rules written as host rules hold on every port. Allow and escalate
-// rules keep exact port matching: an allow must never grow to cover a
-// port its author did not write.
+// Deny (and escalate) rules written as host rules hold on every port. Allow
+// rules keep exact port matching: an allow must never grow to cover a port
+// its author did not write.
 func TestDenyHostRuleMatchesAnyPort(t *testing.T) {
 	for _, prec := range []string{policy.PrecedenceMostSpecific, policy.PrecedenceOrder} {
 		st := specificStore(
@@ -268,4 +268,25 @@ func decideAction(t *testing.T, st *policy.Store, action models.ActionType, reso
 		t.Fatal(err)
 	}
 	return res.Decision, res.MatchedRule
+}
+
+// An escalate host rule asks on any port too: a broad read allow must not
+// let a non-default port skip the question. (Under "order" precedence the
+// first matching rule decides, so this is a most-specific property.)
+func TestEscalateHostRulesMatchAnyPort(t *testing.T) {
+	for _, prec := range []string{policy.PrecedenceMostSpecific} {
+		st := specificStore(
+			rule("GET https://*/*", "allow", "all reads"),
+			rule("*://pastebin.com/*", "escalate", "ask about the paste site"),
+		)
+		st.SetPrecedence(prec)
+		for _, res := range []string{"GET https://pastebin.com/x", "GET https://pastebin.com:8443/x"} {
+			if d, _ := decide(t, st, models.EnvironmentDev, res); d != models.DecisionEscalate {
+				t.Errorf("%s: %s: got %s, want escalate", prec, res, d)
+			}
+		}
+		if d, _ := decide(t, st, models.EnvironmentDev, "GET https://example.org:8443/x"); d != models.DecisionAllow {
+			t.Errorf("%s: unrelated host on another port: got %s, want allow", prec, d)
+		}
+	}
 }

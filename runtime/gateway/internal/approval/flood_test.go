@@ -23,7 +23,7 @@ func TestOpen_PerAgentPendingCap(t *testing.T) {
 	now := time.Now().UTC()
 	svc := NewService(NewInMemoryStore())
 	svc.SetNow(clockAt(&now))
-	if svc.MaxPendingPerAgent() != DefaultMaxPendingPerAgent || DefaultMaxPendingPerAgent != 16 {
+	if svc.MaxPendingPerAgent() != DefaultMaxPendingPerAgent || DefaultMaxPendingPerAgent != 64 {
 		t.Fatalf("default cap %d", svc.MaxPendingPerAgent())
 	}
 	var first *ApprovalRequest

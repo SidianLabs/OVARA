@@ -26,7 +26,10 @@ var ErrApprovalExpired = errors.New("approval expired: the agent is no longer wa
 
 // DefaultMaxPendingPerAgent is how many approvals one agent may have
 // waiting at once (see Open).
-const DefaultMaxPendingPerAgent = 16
+// It matches the proxy's own limit on requests held for approval, so a
+// legitimate burst (a strict install asking about many new packages) is
+// not refused while still bounding how many questions one agent can pile up.
+const DefaultMaxPendingPerAgent = 64
 
 // ErrTooManyPending is returned by Open when the agent already has the
 // maximum number of approvals waiting.

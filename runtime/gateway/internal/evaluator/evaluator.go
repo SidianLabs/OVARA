@@ -594,15 +594,17 @@ func ruleLabel(r policy.Rule) string {
 }
 
 // ruleMatches reports whether a rule's resource pattern matches resource.
-// Deny rules written as host rules match the host on any port (see
-// policy.MatchResourceAnyPort); allow and escalate rules match the port
-// exactly, so widening never makes anything more permissive.
+// Deny and escalate rules written as host rules match the host on any port
+// (see policy.MatchResourceAnyPort); allow rules match the port exactly, so
+// widening never makes anything more permissive. (Escalate can be widened
+// safely because it never beats a deny, and against an allow it can only
+// ask where the allow would not have.)
 //
 // An allow that names refs (" refs/...") covers a branch or tag deletion
 // only if it says so with "(delete)": "refs/heads/feature/*" allows
 // pushing feature branches, not deleting them.
 func ruleMatches(r policy.Rule, resource string) bool {
-	if r.Deny {
+	if r.Deny || r.Escalate {
 		return policy.MatchResourceAnyPort(r.Resource, resource)
 	}
 	if r.Allow && strings.Contains(r.Resource, " refs/") && !strings.Contains(r.Resource, "(delete)") &&
