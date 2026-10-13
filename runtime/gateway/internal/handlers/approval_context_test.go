@@ -128,3 +128,17 @@ func TestApprovalContext_KeySelectionIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// The agent's name and the taint note are kept however many other entries
+// a request carries: the approver must see who asks, and why.
+func TestApprovalContext_AgentAndTaintSurviveTheCap(t *testing.T) {
+	m := map[string]any{"agent": "ci-bot", "taint": "the agent read untrusted content from x 1m0s ago"}
+	for i := 0; i < 40; i++ {
+		m[fmt.Sprintf("a%02d", i)] = "v"
+	}
+	meta, _ := json.Marshal(map[string]any{"proxy_context": m})
+	got := approvalContextFromMetadata(meta)
+	if got["agent"] != "ci-bot" || got["taint"] == "" {
+		t.Fatalf("agent or taint dropped: %v", got)
+	}
+}

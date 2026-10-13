@@ -264,7 +264,7 @@ func (d *digestReader) check() bool {
 // pkgApproved, pkgDeny, pkgTimeout, pkgAborted or pkgError, and the approval
 // id if a person was asked. why is for the log line.
 func (s *Server) askAction(ctx context.Context, actionType, resource string, preview map[string]string, why string) (string, string) {
-	d, err := s.gw.CheckAction(ctx, actionType, resource, preview)
+	d, err := s.gw.CheckAction(ctx, actionType, resource, withAgentPreview(ctx, preview))
 	if err != nil {
 		log.Printf("%s: gateway check for %s failed: %v", actionType, resource, err)
 		return pkgError, ""

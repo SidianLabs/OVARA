@@ -76,6 +76,23 @@ type Config struct {
 	// doubles that host's allowance for the rest of the run.
 	EgressBudget *EgressBudget `json:"egress_budget"`
 
+	// Agents are named proxy clients, each with its own token (name ->
+	// token). The proxy accepts any of them, and agent_token too, records
+	// the name in receipts and approvals, and keeps the taint rule and the
+	// model budget per name. `ovara agent add|list|remove` edit this map;
+	// a running proxy picks up changes within a second.
+	Agents map[string]string `json:"agents,omitempty"`
+	// RevokedAgentsFile lists agents stopped by `ovara kill` (default
+	// var/revoked_agents.json). The proxy re-reads it within a second and
+	// refuses every request from a stopped agent.
+	RevokedAgentsFile string `json:"revoked_agents_file,omitempty"`
+	// Taint turns on the rule that asks before writes made soon after the
+	// agent read untrusted content. Default on.
+	Taint *Taint `json:"taint,omitempty"`
+	// ModelBudget caps model API use per agent per run. Past it a person is
+	// asked (action type model.budget); an approval doubles the allowance.
+	ModelBudget *ModelBudget `json:"model_budget,omitempty"`
+
 	Credentials []creds.Binding `json:"credentials"`
 
 	// ScopeRepo ("owner/repo"), set by `ovara run -scope-repo` (which
@@ -122,6 +139,12 @@ func Load(path string) (*Config, error) {
 	if c.PubKeyFile == "" {
 		c.PubKeyFile = "var/receipt_pubkey.hex"
 	}
+	if c.RevokedAgentsFile == "" {
+		c.RevokedAgentsFile = "var/revoked_agents.json"
+	}
+	if err := ValidateAgents(c.Agents, c.AgentToken); err != nil {
+		return nil, err
+	}
 	if c.EscalateTimeoutSec <= 0 {
 		c.EscalateTimeoutSec = 60
 	}
@@ -138,7 +161,7 @@ func Load(path string) (*Config, error) {
 // bind MUST authenticate its clients unless the operator explicitly opted
 // in to an open proxy.
 func (c *Config) validateClientAuth() error {
-	if c.AgentToken != "" || c.UnsafeNoAgentAuth {
+	if c.AgentToken != "" || len(c.Agents) > 0 || c.UnsafeNoAgentAuth {
 		return nil
 	}
 	host := c.ListenAddr

@@ -77,7 +77,7 @@ func (u *uiServer) handler() http.Handler {
 				continue
 			}
 			th, _ := trustableHost(a.Resource)
-			it := item{ID: a.ApprovalID, What: describe(a.Resource), Raw: a.Resource, Agent: a.AgentID,
+			it := item{ID: a.ApprovalID, What: describe(a.Resource), Raw: a.Resource, Agent: approvalAgentLabel(a),
 				CreatedAt: a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), Details: contextLines(a), TrustHost: th}
 			if d, ok := destinationOf(a.Resource); ok {
 				it.Destination, it.DestTrusted = d.Domain, d.Trusted

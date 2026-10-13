@@ -76,6 +76,7 @@ func main() {
 	srv.SetModelGate(cfg.ModelGate == nil || *cfg.ModelGate, cfg.ModelHosts)
 	srv.ApplyConfig(cfg)
 	srv.SetClientAuth(cfg.AgentToken)
+	defer srv.WatchAgentFiles(*configPath, cfg.RevokedAgentsFile, 250*time.Millisecond)()
 	log.Printf("ovara executor proxy on %s (gateway=%s env=%s bindings=%d fail_open=%v client_auth=%v)",
 		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen, cfg.AgentToken != "")
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)

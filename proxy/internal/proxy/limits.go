@@ -44,4 +44,5 @@ func (s *Server) ApplyConfig(c *config.Config) {
 	if c.ModelGateAsk != nil {
 		s.modelGateNoAsk = !*c.ModelGateAsk
 	}
+	s.applyAgentConfig(c)
 }

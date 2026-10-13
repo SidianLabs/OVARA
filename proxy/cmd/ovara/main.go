@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -78,6 +79,10 @@ func main() {
 		err = cmdResolve(true, os.Args[2:])
 	case "deny":
 		err = cmdResolve(false, os.Args[2:])
+	case "agent":
+		err = cmdAgent(os.Args[2:])
+	case "kill":
+		err = cmdKill(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -109,6 +114,8 @@ func usage() {
   keys rotate-receipt | revoke-receipt -key K | list-receipt   manage the receipt signing key
   approve <id>          let a waiting request through
   deny <id>             block a waiting request
+  agent add|list|remove|restore NAME   named agents, each with its own proxy token
+  kill [-agent NAME]    stop an agent now (every agent without -agent); ovara agent restore undoes it
   doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
 }
 
@@ -117,13 +124,35 @@ func usage() {
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	force := fs.Bool("force", false, "overwrite existing files (an existing var/receipt.key is always kept)")
+	agents := fs.String("agents", "", "comma-separated names of agents to give their own proxy tokens (more later with `ovara agent add`)")
+	// The directory may come before the flags: `ovara init mydir -agents a,b`.
+	var dir string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		dir, args = args[0], args[1:]
+	}
 	fs.Parse(args)
-	dir := fs.Arg(0)
+	if dir == "" {
+		dir = fs.Arg(0)
+	}
 	if dir == "" {
 		dir = "."
 	}
+	var names []string
+	for _, n := range strings.Split(*agents, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			if err := config.ValidAgentName(n); err != nil {
+				return err
+			}
+			names = append(names, n)
+		}
+	}
 	if _, err := deploy(dir, "8080", *force); err != nil {
 		return err
+	}
+	for _, n := range names {
+		if err := agentAdd(io.Discard, dir, n); err != nil {
+			return err
+		}
 	}
 	fmt.Printf("initialized ovara deployment in %s\n\n", dir)
 	// The token itself is not printed: terminal scrollback and CI logs keep
@@ -470,6 +499,10 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Named agents and stopped agents are re-read while the proxy runs:
+	// `ovara agent add|remove` and `ovara kill` take effect within a second.
+	stopWatch := srv.WatchAgentFiles("proxy.json", cfg.RevokedAgentsFile, 250*time.Millisecond)
+	defer stopWatch()
 	if *packageGate != "" {
 		b, err := os.ReadFile(*packageGate)
 		if err != nil {

@@ -34,6 +34,7 @@ func agentLabel(token string) string {
 type receiptFacts struct {
 	gw       *gateway.Decision // the URL decision, once the gateway answered
 	reasons  []string          // proxy-side reasons when there is no decision
+	agent    agentIdentity     // who sent the request
 	hb       *heldBody
 	approver string
 	looked   bool // approver lookup done
@@ -47,7 +48,7 @@ func (s *Server) receiptEntry(f *receiptFacts, method, url, decision string, sta
 		Decision:   decision,
 		Status:     status,
 		ApprovalID: approvalID,
-		Agent:      agentLabel(s.agentToken),
+		Agent:      f.agentLabel(s),
 		Approver:   f.approver,
 	}
 	if f.gw != nil {
@@ -78,4 +79,13 @@ func (s *Server) lookupApprover(ctx context.Context, f *receiptFacts, approvalID
 		return
 	}
 	f.approver = who
+}
+
+// agentLabel is what the receipt says about the client: the agent's name,
+// or for agent_token the hash of the token.
+func (f *receiptFacts) agentLabel(s *Server) string {
+	if f.agent.label != "" {
+		return f.agent.label
+	}
+	return agentLabel(s.agentToken)
 }
