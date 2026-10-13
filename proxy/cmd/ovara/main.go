@@ -375,6 +375,7 @@ func cmdRun(args []string) error {
 	boundary := fs.String("boundary", "", "set up an egress boundary before starting: netns or docker (requires root)")
 	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
+	noUI := fs.Bool("no-ui", false, "run without the approval page (same as -ui off); without it, a page address that cannot be used stops ovara run")
 	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	fs.Parse(args)
@@ -390,6 +391,24 @@ func cmdRun(args []string) error {
 	cfg, err := config.Load("proxy.json")
 	if err != nil {
 		return fmt.Errorf("proxy.json: %w (run `ovara init` first)", err)
+	}
+	// Hosts trusted for reads from an approval prompt are trusted for one
+	// run: drop what a run that did not stop cleanly left behind, and what
+	// this run adds when it stops.
+	if hosts, err := dropRunTrust("."); err == nil && len(hosts) > 0 {
+		log.Printf("reads from %s are no longer trusted (trusted from an approval prompt in an earlier run)", strings.Join(hosts, ", "))
+	}
+	defer func() {
+		if hosts, err := dropRunTrust("."); err == nil && len(hosts) > 0 {
+			log.Printf("reads from %s are no longer trusted (trusted from an approval prompt in this run)", strings.Join(hosts, ", "))
+		}
+	}()
+	// The approval page's address is taken before anything else starts: if
+	// it cannot be had, ovara run stops here instead of leaving the link a
+	// person opens pointing at whatever holds the port.
+	uiURL, err := openUI(*uiAddr, *noUI, cfg)
+	if err != nil {
+		return err
 	}
 	if *boundary != "" {
 		if err := setupBoundary(*boundary, *boundaryName, cfg); err != nil {
@@ -426,10 +445,8 @@ func cmdRun(args []string) error {
 	log.Printf("ovara executor proxy on %s (env=%s fail_open=%v)", cfg.ListenAddr, cfg.Environment, cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
-	if url, err := startUI(*uiAddr, cfg); err != nil {
-		log.Printf("approval page not started: %v", err)
-	} else if url != "" {
-		log.Printf("approve in your browser: %s", url)
+	if uiURL != "" {
+		log.Printf("approve in your browser: %s", uiURL)
 	}
 	log.Printf("risky requests pause until you answer them (browser page above, or `ovara watch`)")
 	listenAddr := cfg.ListenAddr
@@ -457,6 +474,21 @@ func cmdRun(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// openUI starts the approval page unless it is turned off (-no-ui or -ui
+// off). An address that cannot be used is an error, not a warning: another
+// local user holding the port (the agent's, say) would otherwise serve the
+// page a person opens from an old link or a bookmark.
+func openUI(addr string, off bool, cfg *config.Config) (string, error) {
+	if off {
+		return "", nil
+	}
+	url, err := startUI(addr, cfg)
+	if err != nil {
+		return "", fmt.Errorf("approval page on %s: %w (if another program holds that port, stop it, choose another with -ui 127.0.0.1:PORT, or run without the page with -no-ui)", addr, err)
+	}
+	return url, nil
 }
 
 // startUI serves the local approval page and returns the link to open

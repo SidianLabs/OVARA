@@ -145,15 +145,24 @@
       function arm(b) { b.dataset.id = a.id; if (Date.now() < armedAt) { b.disabled = true; b.setAttribute("data-arming", "1"); } return b; }
       arm(yes); arm(no);
       act.append(yes);
+      var trustWarn = null;
       if (a.trust_host) {
-        var always = el("button", "approve", "Approve and trust " + a.trust_host + " for reads");
-        always.title = "Adds a read-only (GET/HEAD) rule for this one host to policy.json. Writes still ask.";
-        always.onclick = function () { decide("approve", true); };
+        var always = el("button", "approve", "Approve, and stop asking about reads from " + a.trust_host);
+        always.title = "Adds a read (GET/HEAD) allow rule for " + a.trust_host + " to policy.json until ovara run stops. " +
+          "Reads from this host will no longer be asked about, and a read can still carry data out in its path and headers. Writes still ask.";
+        always.onclick = function () {
+          if (!window.confirm("Reads from " + a.trust_host + " will no longer be asked about until ovara run stops.\n\n" +
+            "A read can still carry data out (in its path and headers). Only do this for a host you trust.")) return;
+          decide("approve", true);
+        };
         arm(always);
         act.append(always);
+        trustWarn = el("div", "warn", "Trusting " + a.trust_host + " means reads from it stop asking for the rest of this run" +
+          (a.destination_trusted ? "." : "; it is not a host Ovara trusts by default."));
       }
       act.append(no);
       c.appendChild(act);
+      if (trustWarn) c.appendChild(trustWarn);
       box.appendChild(c);
     });
   }

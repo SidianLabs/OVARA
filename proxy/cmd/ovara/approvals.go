@@ -418,7 +418,7 @@ func cmdResolve(approve bool, args []string) error {
 	}
 	fs, dir := dirFlag(name)
 	reason := fs.String("reason", "", "optional reason, recorded in the audit trail")
-	trust := fs.Bool("trust-host", false, "with approve: also allow future reads (GET/HEAD) from this host without asking")
+	trust := fs.Bool("trust-host", false, "with approve: also allow reads (GET/HEAD) from this host without asking until ovara run stops (a read can still carry data out in its path and headers)")
 	// Accept the id before or after the flags: `ovara approve <id> -dir x`.
 	var id string
 	var rest []string
@@ -467,7 +467,7 @@ func cmdResolve(approve bool, args []string) error {
 		if added, err := trustReadHost(c.dir, host); err != nil {
 			fmt.Printf("approved, but could not trust %s: %v\n", host, err)
 		} else if added {
-			fmt.Printf("trusted %s for reads: GET/HEAD there will no longer ask (edit policy.json to undo).\n", host)
+			fmt.Printf("trusted %s for reads: GET/HEAD there will no longer ask until ovara run stops (edit policy.json to undo sooner). A read can still carry data out in its path and headers.\n", host)
 		}
 	}
 	if approve {
@@ -629,7 +629,7 @@ func askAndResolve(c *adminClient, a pendingApproval, rd *answerReader, out io.W
 			} else if _, e := trustReadHost(c.dir, host); e != nil {
 				fmt.Fprintln(out, "  ✓ approved, but could not trust the host:", e)
 			} else {
-				fmt.Fprintf(out, "  ✓ approved, and %s is trusted for reads from now on\n", host)
+				fmt.Fprintf(out, "  ✓ approved. Reads (GET/HEAD) from %s will no longer be asked about until ovara run stops; a read can still carry data out in its path and headers.\n", host)
 			}
 		case "d", "deny", "n", "no":
 			if e := c.resolve(a.ApprovalID, false, whoAmI(), "denied from ovara watch"); e != nil {
