@@ -38,6 +38,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -46,6 +47,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -245,6 +247,12 @@ func cmdBox(args []string) error {
 	}
 	for _, p := range ws.Excluded {
 		fmt.Fprintf(os.Stderr, "    left out: %s\n", termSafe(p))
+	}
+	for _, p := range slices.Sorted(maps.Keys(ws.SecretContent)) {
+		fmt.Fprintf(os.Stderr, "    left out (looks like a secret: %s): %s\n", ws.SecretContent[p], termSafe(p))
+	}
+	if ws.GitConfigScrubbed {
+		fmt.Fprintln(os.Stderr, "    credentials taken out of URLs in the copy's .git/config")
 	}
 	if err := chownAll(ws.Dir, uid, gid); err != nil {
 		return err
