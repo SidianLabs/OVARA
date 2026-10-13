@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -493,7 +494,7 @@ func cmdWatch(args []string) error {
 // watchLoop polls for pending approvals and asks on in/out for each. A
 // closed stop channel ends the loop (tests); so does closed input.
 func watchLoop(c *adminClient, in io.Reader, out io.Writer, every time.Duration, stop <-chan struct{}) error {
-	rd := bufio.NewReader(in)
+	rd := newAnswerReader(in)
 	fmt.Fprintln(out, "watching for agent requests that need your approval… (Ctrl+C to quit)")
 	seen := map[string]bool{}
 	for {
@@ -523,17 +524,91 @@ func watchLoop(c *adminClient, in io.Reader, out io.Writer, every time.Duration,
 	}
 }
 
+// typeAheadGrace is how soon after a prompt an answer still counts as
+// typed before it: nobody reads an approval in less.
+var typeAheadGrace = 250 * time.Millisecond
+
+// answerReader reads answer lines from the person and notes when each one
+// arrived, so an answer is only taken if it was typed after the question
+// was on screen. Without this, keys typed ahead (a double "a⏎", a paste)
+// answer the next approvals before they are shown.
+type answerReader struct {
+	mu     sync.Mutex
+	more   chan struct{} // a line (or the end) arrived
+	lines  []timedLine
+	closed error
+}
+
+type timedLine struct {
+	text string
+	at   time.Time
+}
+
+func newAnswerReader(in io.Reader) *answerReader {
+	r := &answerReader{more: make(chan struct{}, 1)}
+	go func() {
+		br := bufio.NewReader(in)
+		for {
+			s, err := br.ReadString('\n')
+			r.mu.Lock()
+			if s != "" {
+				r.lines = append(r.lines, timedLine{s, time.Now()})
+			}
+			if err != nil {
+				r.closed = err
+			}
+			r.mu.Unlock()
+			select {
+			case r.more <- struct{}{}:
+			default:
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return r
+}
+
+// answerAfter returns the first line that arrived after shown (plus the
+// grace), and how many earlier lines it dropped. err is set when the input
+// has ended with no such line.
+func (r *answerReader) answerAfter(shown time.Time) (line string, dropped int, err error) {
+	for {
+		r.mu.Lock()
+		for len(r.lines) > 0 {
+			l := r.lines[0]
+			r.lines = r.lines[1:]
+			if l.at.Before(shown.Add(typeAheadGrace)) {
+				dropped++
+				continue
+			}
+			r.mu.Unlock()
+			return l.text, dropped, nil
+		}
+		closed := r.closed
+		r.mu.Unlock()
+		if closed != nil {
+			return "", dropped, closed
+		}
+		<-r.more
+	}
+}
+
 // askAndResolve prompts until it gets a usable answer. Returns false when
 // the input stream is closed.
-func askAndResolve(c *adminClient, a pendingApproval, rd *bufio.Reader, out io.Writer) bool {
+func askAndResolve(c *adminClient, a pendingApproval, rd *answerReader, out io.Writer) bool {
 	for {
 		host, canTrust := trustableHost(a.Resource)
 		if canTrust {
-			fmt.Fprintf(out, "  [a]pprove  [t]rust %s for reads  [d]eny  [s]kip > ", host)
+			fmt.Fprintf(out, "  [a]pprove  [t]rust %s for reads (stops asking about reads from it this run)  [d]eny  [s]kip > ", host)
 		} else {
 			fmt.Fprint(out, "  [a]pprove  [d]eny  [s]kip > ")
 		}
-		line, err := rd.ReadString('\n')
+		line, dropped, err := rd.answerAfter(time.Now())
+		if dropped > 0 {
+			fmt.Fprintf(out, "\n  (ignored %d line(s) typed before this request was shown)\n  > ", dropped)
+		}
 		ans := strings.ToLower(strings.TrimSpace(line))
 		if err != nil && ans == "" {
 			return false

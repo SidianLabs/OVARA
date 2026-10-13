@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -145,18 +146,87 @@ func TestNewAdminClient_ReadsConfig(t *testing.T) {
 	}
 }
 
+// typist answers `ovara watch` the way a person does: each answer is typed
+// after its prompt is on screen. When the answers run out the input ends.
+type typist struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	answers []string
+	w       *io.PipeWriter
+}
+
+func newTypist(t *testing.T, answers ...string) (io.Reader, *typist) {
+	t.Helper()
+	old := typeAheadGrace
+	typeAheadGrace = 20 * time.Millisecond
+	t.Cleanup(func() { typeAheadGrace = old })
+	r, w := io.Pipe()
+	return r, &typist{answers: answers, w: w}
+}
+
+func (p *typist) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.buf.Write(b)
+	if bytes.Contains(b, []byte("[a]pprove")) {
+		if len(p.answers) == 0 {
+			p.w.Close()
+		} else {
+			ans := p.answers[0]
+			p.answers = p.answers[1:]
+			time.AfterFunc(2*typeAheadGrace, func() { p.w.Write([]byte(ans + "\n")) })
+		}
+	}
+	return len(b), nil
+}
+
+func (p *typist) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.buf.String()
+}
+
+// Keys typed before a request is on screen do not answer it: a double
+// "a⏎" or a paste must not approve the next request unseen.
+func TestWatchLoop_IgnoresTypeAhead(t *testing.T) {
+	f, c := newFake(t,
+		pendingApproval{ApprovalID: "a1", Resource: "POST https://api.github.com/x"},
+		pendingApproval{ApprovalID: "a2", Resource: "POST https://attacker.example/y"})
+	old := typeAheadGrace
+	typeAheadGrace = 20 * time.Millisecond
+	defer func() { typeAheadGrace = old }()
+	r, w := io.Pipe()
+	// "a" twice, already waiting before anything is shown; then, once the
+	// first prompt is up, "d"; the second request gets no answer of its own
+	in := io.MultiReader(strings.NewReader("a\na\n"), r)
+	out := &typist{answers: []string{"d"}, w: w}
+	stop := make(chan struct{})
+	time.AfterFunc(400*time.Millisecond, func() { close(stop); w.Close() })
+	if err := watchLoop(c, in, out, 10*time.Millisecond, stop); err != nil {
+		t.Fatal(err)
+	}
+	if f.resolved["a1"] != "deny" {
+		t.Fatalf("a1 = %q, want the answer typed after it was shown (deny)\n%s", f.resolved["a1"], out.String())
+	}
+	if v, ok := f.resolved["a2"]; ok {
+		t.Fatalf("a2 was answered (%s) by keys typed before it was shown", v)
+	}
+	if !strings.Contains(out.String(), "ignored 2 line(s) typed before") {
+		t.Fatalf("the person is not told their early keys were ignored:\n%s", out.String())
+	}
+}
+
 func TestWatchLoop_ApproveDenySkip(t *testing.T) {
 	f, c := newFake(t,
 		pendingApproval{ApprovalID: "a1", Resource: "POST https://api.github.com/x"},
 		pendingApproval{ApprovalID: "a2", Resource: "DELETE https://api.github.com/y"},
 		pendingApproval{ApprovalID: "a3", Resource: "PUT https://example.com/z"})
 
-	var out bytes.Buffer
 	// a → approve a1, bogus answer re-asks, d → deny a2, s → skip a3.
-	in := strings.NewReader("a\nwhat\nd\ns\n")
+	in, out := newTypist(t, "a", "what", "d", "s")
 	stop := make(chan struct{})
 	time.AfterFunc(500*time.Millisecond, func() { close(stop) })
-	if err := watchLoop(c, in, &out, 10*time.Millisecond, stop); err != nil {
+	if err := watchLoop(c, in, out, 10*time.Millisecond, stop); err != nil {
 		t.Fatal(err)
 	}
 	if f.resolved["a1"] != "approve" || f.resolved["a2"] != "deny" {
