@@ -96,8 +96,8 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ### 2.4 Approvals do not pile up or wait forever
 - **Holds in:** all modes.
-- **What it covers:** a pending approval expires after 10 minutes (`approval_pending_ttl_secs`) and can then no longer be approved. One agent can have at most 64 waiting; identical requests share one approval. An answer given in the last poll interval still counts.
-- **Tests:** `runtime/gateway/internal/approval`: `TestPendingApprovalExpires`, `TestPendingTTLConfigurable`, `TestOpen_PerAgentPendingCap`, `TestOpen_DeduplicatesIdenticalPending`; `runtime/gateway/internal/handlers`: `TestApprovalHandler_ExpiredApproval`, `TestApprovalHandler_FloodControl`; `proxy/internal/proxy`: `TestApprovalInTheLastPollIntervalCounts`, `TestEscalationCapRefusesWhenFull`; `proxy/cmd/ovara`: `TestCapToApprovalTTL`.
+- **What it covers:** a pending approval expires after 10 minutes (`approval_pending_ttl_secs`) and can then no longer be approved. One agent can have at most 64 waiting; identical requests share one approval. Named agents behind one proxy each have their own 64 (the gateway counts by the agent name the proxy sends with the request, and bounds one caller at four times that across all names; the proxy holds at most 64 requests per agent, 256 in all), so one agent filling its share does not block another's questions. An answer given in the last poll interval still counts.
+- **Tests:** `runtime/gateway/internal/approval`: `TestPendingApprovalExpires`, `TestPendingTTLConfigurable`, `TestOpen_PerAgentPendingCap`, `TestOpen_PendingCapIsPerNamedAgent`, `TestOpen_DeduplicatesIdenticalPending`; `runtime/gateway/internal/handlers`: `TestApprovalHandler_ExpiredApproval`, `TestApprovalHandler_FloodControl`; `proxy/internal/proxy`: `TestApprovalInTheLastPollIntervalCounts`, `TestEscalationCapRefusesWhenFull`, `TestEscalationCapIsPerAgent`; `proxy/cmd/ovara`: `TestCapToApprovalTTL`.
 
 ---
 
@@ -148,8 +148,8 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 ### 4.2 Deny means deny
 - **Holds in:** all modes.
 - **Conditions:** most-specific precedence (what `ovara init` writes). Older files keep "any deny wins".
-- **What it covers:** a matching deny always beats a matching escalate. An allow beats a deny only if it is more specific and names the host at least as precisely. Deny and escalate host rules apply on every port. A push is decided ref by ref and gets the strictest answer; an allow for refs does not cover deleting them unless it says `(delete)`.
-- **Tests:** `runtime/gateway/internal/evaluator`: `TestMostSpecific_EscalateNeverBeatsDeny`, `TestMostSpecific_URLEscalateNeverBeatsDeny`, `TestMostSpecific_BroadHostAllowNeverBeatsNarrowHostDeny`, `TestMostSpecific_EscalateStillBeatsWeakerAllow`, `TestDenyHostRuleMatchesAnyPort`, `TestEscalateHostRulesMatchAnyPort`, `TestGitPush_EachRefDecidedOnItsOwn`, `TestGitPush_DeleteRules`; `runtime/gateway/internal/policy`: `TestMatchResourceAnyPort`, `FuzzMatchCanonicalResource`; `tests/scenarios/ci-bot.sh`.
+- **What it covers:** a matching deny always beats a matching escalate. An allow beats a deny only if it is more specific and names the host at least as precisely. Deny and escalate host rules apply on every port. A push is decided ref by ref and gets the strictest answer; an allow for refs does not cover deleting them unless it says `(delete)`, while a deny or escalate for a ref also covers deleting it (a deny for `refs/heads/main` refuses `refs/heads/main(delete)`).
+- **Tests:** `runtime/gateway/internal/evaluator`: `TestMostSpecific_EscalateNeverBeatsDeny`, `TestMostSpecific_URLEscalateNeverBeatsDeny`, `TestMostSpecific_BroadHostAllowNeverBeatsNarrowHostDeny`, `TestMostSpecific_EscalateStillBeatsWeakerAllow`, `TestDenyHostRuleMatchesAnyPort`, `TestEscalateHostRulesMatchAnyPort`, `TestGitPush_EachRefDecidedOnItsOwn`, `TestGitPush_DeleteRules`, `TestGitPush_ExactRefDenyCoversDeletion`; `runtime/gateway/internal/policy`: `TestMatchResourceAnyPort`, `FuzzMatchCanonicalResource`; `tests/scenarios/ci-bot.sh`.
 
 ### 4.3 Every decision names the policy that made it
 - **Holds in:** all modes.
@@ -203,8 +203,9 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ### 6.2 The agent cannot read the host's files or the original project
 - **Holds in:** box tier 1 (default `-tier1-fs isolated`), box tier 2.
+- **Conditions:** "other users' processes hidden" needs Linux 5.8 or later (a private `/proc` with `hidepid=invisible`). On an older kernel an isolated tier 1 box refuses to start; with `-allow-visible-procs` it starts and the agent can list the host's processes and their command lines (the rest of 6.2 still holds).
 - **What it covers:** tier 1 runs in a root file system of its own: system directories read-only (with `/etc/shadow`, sudoers and SSH configuration covered), the workspace and a fresh home read-write, nothing from `/home`, `/root`, `/srv`, `/opt`, `/mnt`, `/var` or `/nix`, other users' processes hidden, no_new_privs, and the proxy token on no command line. Tier 2 mounts nothing of the host but the workspace, a fresh home and read-only `-mount` paths; secret locations are refused as mounts in both tiers.
-- **Tests:** `proxy/cmd/ovara`: `TestTier1IsolatedFileSystem` *(root)* (and `TestTier1HostFileSystem` *(root)* as the control), `TestCheckMountsTier1`, `TestMountpointNoFollow`, `TestCheckMounts`; `tests/box/box.sh` (tier 1, and `TIER=2` through `tests/box/host.sh box`).
+- **Tests:** `proxy/cmd/ovara`: `TestTier1IsolatedFileSystem` *(root)* (and `TestTier1HostFileSystem` *(root)* as the control), `TestTier1RefusesAProcThatShowsTheHostsProcesses`, `TestCheckMountsTier1`, `TestMountpointNoFollow`, `TestCheckMounts`; `tests/box/box.sh` (tier 1, and `TIER=2` through `tests/box/host.sh box`).
 
 ### 6.3 Secrets are left out of the project copy
 - **Holds in:** box tier 1, box tier 2.
@@ -245,16 +246,20 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 - **What it covers:** after the agent reads untrusted content (a read a
   person approved, a read allowed by a rule added with "trust this host
   for reads", a read matching `untrusted_reads`: by default GitHub and
-  GitLab issues, pull request comments and discussions by API and on the
-  web, matched on the decoded path; or a model request whose
+  GitLab issues, pull and merge requests (bodies, lists, diffs, comments
+  and reviews), discussions and commit comments, by API (GitHub's
+  numeric repository id paths included) and on the web, matched on the
+  decoded path; or a model request whose
   provider-side fetch was let through), every write the policy would allow
   on its own (any method but GET, HEAD and OPTIONS, a git push allowed by
   ref rules included) pauses, with the source and how long ago it was read
   in the approval. A refused write never goes upstream. Receipts record
   `untrusted_read` and `tainted_by:<source>`. Writes the policy already
   pauses or blocks are unchanged; model calls, git fetches and
-  `exempt_writes` (npm audit) are not asked about.
-- **Tests:** `proxy/internal/proxy`: `TestTaint_UntrustedReadThenAllowedWriteAsks`, `TestTaint_WindowExpires`, `TestTaint_ApprovedReadsTrustedHostsAndModelFetchesTaint`, `TestTaint_LeavesOtherDecisionsAlone`, `TestTaint_AllowedPushAsks`, `TestTaint_Off`, `TestDefaultUntrustedReadPatterns`; `proxy/cmd/ovara`: `TestDefaultPolicy_TaintAndModelBudgetEscalate`, `TestApprovalShowsAgentNameAndTaint`; `runtime/gateway/internal/handlers`: `TestApprovalContext_AgentAndTaintSurviveTheCap`.
+  `exempt_writes` (npm audit) are not asked about. A receipt names every
+  approval its request was asked about: the last in `approval_id`, the
+  earlier ones in `reasons` as `approval:<id>`.
+- **Tests:** `proxy/internal/proxy`: `TestTaint_UntrustedReadThenAllowedWriteAsks`, `TestTaint_WindowExpires`, `TestTaint_ApprovedReadsTrustedHostsAndModelFetchesTaint`, `TestTaint_LeavesOtherDecisionsAlone`, `TestTaint_AllowedPushAsks`, `TestTaint_Off`, `TestDefaultUntrustedReadPatterns`, `TestReceiptNamesEveryApprovalAskedFor`; `proxy/cmd/ovara`: `TestDefaultPolicy_TaintAndModelBudgetEscalate`, `TestApprovalShowsAgentNameAndTaint`; `runtime/gateway/internal/handlers`: `TestApprovalContext_AgentAndTaintSurviveTheCap`.
 
 ### 7.2 Model use is capped per agent
 - **Holds in:** all modes.
@@ -278,8 +283,13 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
   approvals name the agent. Tokens are 32 random bytes, kept in the
   owner-only `proxy.json` and never printed; names are validated and no
   token may be shared. Agents added or removed while Ovara runs take
-  effect within a second; a broken edit keeps the current agents.
-- **Tests:** `proxy/internal/proxy`: `TestNamedAgentsAreAcceptedAndNamed`, `TestNamedAgentsAloneRequireAuth`, `TestAgentsReloadFromProxyJSON`; `proxy/internal/config`: `TestValidateAgents`, `TestLoadAcceptsAgentsAsClientAuth`, `TestWriteAgentsKeepsOtherFields`; `proxy/cmd/ovara`: `TestAgentAddListEnvRemove`, `TestInitCreatesNamedAgents`.
+  effect within a second, also inside tunnels opened before: a removed
+  agent's tunnel (or one opened with a token since replaced) gets 403 and
+  a receipt (reason `agent_removed`) and is closed. A broken edit keeps
+  the current agents. Once any client token is configured, client
+  authentication stays on for the run: removing the last agent leaves a
+  proxy that refuses every client, never one that accepts anyone.
+- **Tests:** `proxy/internal/proxy`: `TestNamedAgentsAreAcceptedAndNamed`, `TestNamedAgentsAloneRequireAuth`, `TestAgentsReloadFromProxyJSON`, `TestRemovingTheLastAgentKeepsAuthOn`, `TestRemovedAgentsOpenTunnelCarriesNoMore`; `proxy/internal/config`: `TestValidateAgents`, `TestLoadAcceptsAgentsAsClientAuth`, `TestWriteAgentsKeepsOtherFields`; `proxy/cmd/ovara`: `TestAgentAddListEnvRemove`, `TestInitCreatesNamedAgents`.
 
 ### 7.4 A stopped agent gets nothing more through
 - **Holds in:** all modes.
@@ -288,11 +298,15 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
   running proxy refuses every request from that agent, including in
   tunnels opened before, with 403 "this agent was stopped by its
   operator" and a receipt (reason `agent_stopped`); its requests waiting
-  for a person stop waiting, and its pending approvals are denied. The
+  for a person stop waiting, its pending approvals are denied, and a
+  response still being relayed to it (an event stream, a download) is cut
+  within about a quarter of a second, with the connection aborted so a
+  cut body cannot pass for a whole one, and a receipt (reason
+  `agent_stopped_mid_response`; also for a removed agent). The
   stop is written before the gateway is contacted, so it holds when the
   gateway is down. A stopped list that cannot be read keeps the agents
   stopped. It lasts across restarts until `ovara agent restore`.
-- **Tests:** `proxy/internal/proxy`: `TestKilledAgentIsRefusedWithinASecond`, `TestKilledAgentsOpenTunnelCarriesNoMore`, `TestKilledAgentsWaitingRequestStops`, `TestBrokenRevokedFileKeepsAgentsStopped`; `proxy/cmd/ovara`: `TestKillStopsOneAgentAndDeniesItsApprovals`, `TestKillWithoutGatewayStillStops`.
+- **Tests:** `proxy/internal/proxy`: `TestKilledAgentIsRefusedWithinASecond`, `TestKilledAgentsOpenTunnelCarriesNoMore`, `TestKilledAgentsWaitingRequestStops`, `TestAgentsStreamingResponseIsCutWhenStoppedOrRemoved`, `TestBrokenRevokedFileKeepsAgentsStopped`; `proxy/cmd/ovara`: `TestKillStopsOneAgentAndDeniesItsApprovals`, `TestKillWithoutGatewayStillStops`.
 
 ## 8. MCP
 
@@ -372,6 +386,10 @@ These are real limits. Some are design limits, some are not built yet.
   arguments from the stopped process. Another process of the same agent
   could change them before the program reads them. The program itself
   cannot change.
+- **Restarting without client tokens.** Client authentication cannot be
+  relaxed while Ovara runs, but a proxy started with no `agent_token` and
+  no agents on a loopback or boundary address runs without it, as it
+  always has.
 - **Shared kernel.** Tiers 1 and 2 share the host's kernel; a kernel
   exploit leaves the box. Tier 1 has no PID namespace: the agent can
   signal host processes of its own user. A microVM tier is not built.
@@ -391,8 +409,9 @@ These are real limits. Some are design limits, some are not built yet.
   client is granted. The token endpoint must be public: the issuer call
   goes through the same destination guard as agent traffic.
 - **GitHub paths spelt differently.** The sensitive-read rules match
-  GitHub API paths as written; a percent-encoded or case-changed path
-  falls back to the host-wide read rule. In `ovara box` the repository
+  GitHub API paths as written (the numeric-id forms `/repositories/<id>/`
+  and `/organizations/<id>/` included); a percent-encoded or case-changed
+  path falls back to the host-wide read rule. In `ovara box` the repository
   scope on the key still applies.
 - **Non-HTTP protocols.** SSH, database protocols and raw TCP are not
   inspected; the boundary drops them. HTTP/2, gRPC and WebSockets are not

@@ -60,6 +60,42 @@ agents, and fix correctness bugs found in an in-depth review.
   403 "this agent was stopped by its operator" and a receipt, its waiting
   requests stop waiting, and its pending approvals are denied. It stays
   stopped across restarts until `ovara agent restore NAME` (or `-all`).
+- **Client authentication never turns itself off.** Once any client token
+  is configured (`agent_token` or an agent), a reload cannot relax it:
+  removing the last agent leaves a proxy that refuses every client (and
+  logs that it does), and `ovara agent remove` warns about it.
+- **Removed agents and stopped agents lose what they already have open.**
+  Each request inside an open tunnel is checked against the agents
+  configured now: a removed agent, or an old token for a name that got a
+  new one, is refused with 403 and an `agent_removed` receipt, and the
+  tunnel is closed. A response still being relayed when its agent is
+  stopped or removed is cut within about a quarter of a second, the
+  client connection is aborted rather than ended cleanly, and a receipt
+  records it (`agent_stopped_mid_response`).
+- **Approval caps are per agent.** The gateway keeps its 64 waiting
+  approvals per agent name behind a proxy (from the approval's `agent`
+  context), not per proxy, with a bound of four times that for one caller
+  across all names; the proxy's own limit on requests held for a person is
+  per agent too (64, and 256 in all).
+- **More untrusted reads by default.** Pull request bodies, lists and
+  diffs, commit comments, GitHub's numeric repository id paths
+  (`/repositories/<id>/...`, which its pagination links use), issue, pull
+  request and commit pages on the web, and GitLab's global lists and
+  commit comments now mark the agent. The default policy also pauses
+  organization member reads by numeric organization id.
+- **Receipts name every approval.** When a request was asked about more
+  than once (its URL, then a package, taint or budget question), the
+  earlier approvals are listed in the receipt's `reasons` as
+  `approval:<id>`; `approval_id` keeps naming the last one. The receipt
+  format is unchanged.
+- **A deny for a ref covers deleting it.** A deny or escalate rule written
+  for a ref (`... refs/heads/main`) now also matches its deletion
+  (`refs/heads/main(delete)`); allow rules still cover a deletion only
+  when they say `(delete)`.
+- **Tier 1 refuses a /proc that shows the host's processes.** On a kernel
+  before 5.8 the box's `/proc` cannot hide other users' processes; an
+  isolated tier 1 box now refuses to start there unless
+  `-allow-visible-procs` is given.
 
 ### Security hardening (October 2026)
 
