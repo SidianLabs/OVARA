@@ -36,6 +36,21 @@ func defaultPolicyRules() []map[string]any {
 			rule("HEAD https://"+h+"/*", "allow", "Reading from "+h+" is allowed"),
 		)
 	}
+	// --- credentialed reads that are not free ---
+	// Reads of api.github.com carry the user's token, so "reading is free"
+	// would let the agent read whatever the token can. These reads return
+	// secret material or account data rather than code, and pause; being
+	// longer than the host-wide allow, they win under most-specific
+	// precedence. Paths are matched as written (GitHub's are lower case).
+	for _, p := range sensitiveGitHubReads {
+		rules = append(rules, rule("GET https://api.github.com"+p, "escalate", "Reading this from GitHub uses your token to fetch secrets or account data: needs approval"))
+	}
+	// The Slack Web API is RPC: slack.com/api/<method> acts the same sent
+	// as GET or POST (chat.postMessage by GET posts a message), so a GET
+	// there is a call, not a read.
+	rules = append(rules,
+		rule("GET https://slack.com/api/*", "escalate", "Slack API call (it can change things even when sent as GET): needs approval"))
+	// --- end credentialed reads that are not free ---
 	// git clone/fetch/pull speak smart-HTTP with a POST to git-upload-pack;
 	// it only reads. The host is part of the rule: a bare "*git-upload-pack"
 	// would match a POST to ANY server whose path ends that way.
@@ -179,6 +194,31 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// sensitiveGitHubReads are api.github.com paths whose GETs escalate even
+// though the host is a trusted read host: secret scanning alerts, Actions,
+// Dependabot, Codespaces and environment secrets and variables, the
+// account's keys and e-mail addresses, org membership, gists, OAuth
+// authorizations and app installation tokens.
+var sensitiveGitHubReads = []string{
+	"/*/secret-scanning/*",
+	"/*/actions/secrets*",
+	"/*/actions/variables*",
+	"/*/environments/*/secrets*",
+	"/*/environments/*/variables*",
+	"/*/dependabot/secrets*",
+	"/*/codespaces/secrets*",
+	"/user/codespaces/secrets*",
+	"/user/keys*",
+	"/user/gpg_keys*",
+	"/user/ssh_signing_keys*",
+	"/user/emails*",
+	"/user/public_emails*",
+	"/orgs/*/members*",
+	"/gists*",
+	"/authorizations*",
+	"/installation/*",
 }
 
 // trustedGitHosts may be cloned/fetched from without approval.

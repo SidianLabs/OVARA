@@ -14,6 +14,6 @@
     {"host": "api.github.com", "headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"}},
     {"host": "api.openai.com", "headers": {"Authorization": "Bearer ${OPENAI_API_KEY}"}},
     {"host": "api.anthropic.com", "headers": {"x-api-key": "${ANTHROPIC_API_KEY}", "anthropic-version": "2023-06-01"}},
-    {"host": "*.slack.com", "headers": {"Authorization": "Bearer ${SLACK_TOKEN}"}}
+    {"host": "slack.com", "headers": {"Authorization": "Bearer ${SLACK_TOKEN}"}}
   ]
 }

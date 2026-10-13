@@ -293,6 +293,13 @@ func describe(resource string) string {
 		}
 		return fmt.Sprintf("%s on %s", what, repo)
 	}
+	// --- API calls sent as GET ---
+	// The Slack Web API acts the same whatever the verb: a GET to
+	// slack.com/api/chat.postMessage posts. Do not call it a read.
+	if call, ok := slackAPICall(target); ok && (method == "GET" || method == "HEAD") {
+		return "call the Slack API: " + call + " (this can change things in Slack, even as a GET)"
+	}
+	// --- end API calls sent as GET ---
 	switch method {
 	case "GET", "HEAD":
 		return "read " + target
@@ -304,6 +311,26 @@ func describe(resource string) string {
 		return "DELETE " + target
 	}
 	return method + " " + target
+}
+
+// slackAPICall returns the Web API method of a slack.com/api URL (or one
+// on a workspace host, <team>.slack.com/api, which serves the same API).
+func slackAPICall(target string) (string, bool) {
+	rest, ok := strings.CutPrefix(target, "https://")
+	if !ok {
+		return "", false
+	}
+	host, path, _ := strings.Cut(rest, "/")
+	host = strings.ToLower(host)
+	if host != "slack.com" && !strings.HasSuffix(host, ".slack.com") {
+		return "", false
+	}
+	call, ok := strings.CutPrefix(path, "api/")
+	if !ok || call == "" {
+		return "", false
+	}
+	call, _, _ = strings.Cut(call, "?")
+	return call, true
 }
 
 // gitRepo extracts "host/org/repo" from a smart-HTTP git URL ending in

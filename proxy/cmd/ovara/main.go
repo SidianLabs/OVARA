@@ -229,7 +229,9 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 			{Host: "api.github.com", Headers: map[string]string{"Authorization": "Bearer ${GITHUB_TOKEN}"}},
 			{Host: "api.openai.com", Headers: map[string]string{"Authorization": "Bearer ${OPENAI_API_KEY}"}},
 			{Host: "api.anthropic.com", Headers: map[string]string{"x-api-key": "${ANTHROPIC_API_KEY}", "anthropic-version": "2023-06-01"}},
-			{Host: "*.slack.com", Headers: map[string]string{"Authorization": "Bearer ${SLACK_TOKEN}"}},
+			// The Slack Web API lives at slack.com/api/*; workspace hosts
+			// (<team>.slack.com) are web pages and get no token.
+			{Host: "slack.com", Headers: map[string]string{"Authorization": "Bearer ${SLACK_TOKEN}"}},
 		},
 	}
 
