@@ -28,6 +28,7 @@ jobs:
           - { module: proxy,           pkg: ./internal/proxy,           target: FuzzReadCarriesData }
           - { module: proxy,           pkg: ./internal/proxy,           target: FuzzModelValueRefusal }
           - { module: proxy,           pkg: ./internal/proxy,           target: FuzzRedactPreviewCount }
+          - { module: proxy,           pkg: ./internal/canonjson,       target: FuzzCanonical }
           - { module: proxy,           pkg: ./cmd/ovara,                target: FuzzTermSafe }
           - { module: proxy,           pkg: ./cmd/ovara,                target: FuzzParseGitHubRemote }
           - { module: proxy,           pkg: ./internal/boxgate,         target: FuzzPolicyLine }

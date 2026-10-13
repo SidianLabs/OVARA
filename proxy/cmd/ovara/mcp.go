@@ -18,7 +18,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -30,8 +29,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
+	"ovara.proxy/internal/canonjson"
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/mcp"
@@ -270,13 +269,18 @@ func (w *wrapper) fromServer(ctx context.Context, r *bufio.Reader, clientOut io.
 			out := line
 			// Every line goes through the check: one that does not start
 			// like JSON may still read as JSON-RPC to a lenient client.
+			// What the client reads is what was checked: the canonical
+			// encoding of the line (mcp.CheckServerBody). A line readers
+			// could disagree on is refused.
 			if t := bytes.TrimSpace(line); len(t) > 0 {
-				res := w.gate.ServerBody(ctx, w.server, t)
-				if res.Verdict.Outcome == mcp.OutcomeAborted {
+				res, canonical := w.gate.CheckServerBody(ctx, w.server, t, true)
+				switch {
+				case res.Verdict.Outcome == mcp.OutcomeAborted:
 					return nil
-				}
-				if !res.Verdict.Allowed() {
+				case !res.Verdict.Allowed():
 					out = mcp.Refusal(res.IDs, res.Batch, res.Verdict, w.server)
+				case canonical != nil:
+					out = canonical
 				}
 			}
 			if werr := writeLine(&w.outMu, clientOut, out); werr != nil {
@@ -314,8 +318,29 @@ func (w *wrapper) fromClient(ctx context.Context, r *bufio.Reader, clientOut io.
 }
 
 func (w *wrapper) fromClientLine(ctx context.Context, line []byte, clientOut, serverIn io.Writer, calls *sync.WaitGroup) {
-	body, err := mcp.Parse(line)
-	if err != nil && !strictJSONLine(line) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		_ = writeLine(&w.inMu, serverIn, line)
+		return
+	}
+	// The server gets the canonical encoding of the line, which is what is
+	// checked below; never the client's bytes, which a server's JSON reader
+	// could read differently (see mcp.Canonical).
+	canonical, cerr := mcp.Canonical(bytes.TrimSpace(line))
+	if canonjson.Ambiguous(cerr) {
+		// JSON to a lenient reader, but readers disagree on it: which of
+		// two members named alike wins, what invalid UTF-8 reads as.
+		fmt.Fprintf(os.Stderr, "[ovara] the client sent a line that can be read in more than one way; it was not passed on\n")
+		v := mcp.RefusedAmbiguous()
+		out := mcp.ErrorResponse(nil, v.Detail, v.ErrorData(w.server))
+		if body, err := mcp.Parse(line); err == nil {
+			out = refuseClientBody(body, nil, v, w.server)
+		}
+		if out != nil {
+			_ = writeLine(&w.outMu, clientOut, out)
+		}
+		return
+	}
+	if cerr != nil {
 		// A line Ovara cannot read strictly is never passed on: a lenient
 		// server (NaN, UTF-16, a second value) could still read a tool call
 		// in it that nobody decided.
@@ -323,6 +348,8 @@ func (w *wrapper) fromClientLine(ctx context.Context, line []byte, clientOut, se
 		_ = writeLine(&w.outMu, clientOut, mcp.ParseErrorResponse(w.server))
 		return
 	}
+	line = canonical
+	body, err := mcp.Parse(line)
 	hasCall := false
 	if err == nil {
 		for _, m := range body.Messages {
@@ -373,12 +400,6 @@ func (w *wrapper) fromClientLine(ctx context.Context, line []byte, clientOut, se
 			_ = writeLine(&w.outMu, clientOut, out)
 		}
 	}()
-}
-
-// strictJSONLine reports a line that is blank or valid UTF-8 JSON.
-func strictJSONLine(line []byte) bool {
-	t := bytes.TrimSpace(line)
-	return len(t) == 0 || (utf8.Valid(t) && json.Valid(t))
 }
 
 // refuseClientBody answers every request in a refused client body with an

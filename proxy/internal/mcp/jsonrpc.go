@@ -16,8 +16,9 @@ import (
 	"errors"
 	"io"
 	"strings"
-	"unicode"
 	"unicode/utf8"
+
+	"ovara.proxy/internal/canonjson"
 )
 
 // MaxMessageBytes bounds one JSON-RPC message (or batch, or SSE event) that
@@ -231,22 +232,9 @@ func (o *Object) Get(name string) (json.RawMessage, bool) {
 func (o *Object) Len() int { return len(o.members) }
 
 // fold maps s to one spelling per case-insensitive equivalence class
-// (Unicode simple folding, which is what case-insensitive JSON readers use:
-// "K" and the Kelvin sign fold together).
-func fold(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		min := r
-		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-			if f < min {
-				min = f
-			}
-		}
-		b.WriteRune(min)
-	}
-	return b.String()
-}
+// (canonjson.Fold: Unicode simple folding, which is what case-insensitive
+// JSON readers use).
+func fold(s string) string { return canonjson.Fold(s) }
 
 // errDuplicateKey reports an object with two members whose names are equal
 // ignoring case.

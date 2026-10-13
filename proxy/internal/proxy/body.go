@@ -18,7 +18,9 @@ import (
 // a preview while the agent, still holding the connection, writes the rest of
 // the body only after the answer: the approval would cover bytes nobody saw.
 // The hash of the held bytes goes into the approval context so the person can
-// tell two otherwise identical requests apart.
+// tell two otherwise identical requests apart. A body the model or MCP gate
+// reads as JSON is replaced by its canonical form before anyone is asked
+// (canonical.go): then those are the held bytes, hashed and sent.
 
 const (
 	defaultMaxHeldBody   = 1 << 20   // ordinary request bodies
@@ -124,6 +126,30 @@ func holdBody(r *http.Request, limit int64) (*heldBody, error) {
 	r.ContentLength = h.size
 	r.TransferEncoding = nil
 	return h, nil
+}
+
+// replace makes data the held body and the body r sends: the canonical form
+// of a body Ovara read as JSON (canonical.go). Every later reader (the
+// approval context, the receipt, the request upstream) sees data and its
+// hash. The body as the agent sent it is gone; nothing of it is forwarded.
+func (h *heldBody) replace(r *http.Request, data []byte) {
+	if h.file != nil {
+		name := h.file.Name()
+		h.file.Close()
+		os.Remove(name)
+		h.file = nil
+	}
+	sum := sha256.Sum256(data)
+	h.mem, h.size, h.sum = data, int64(len(data)), sum[:]
+	h.head = h.mem[:min(len(h.mem), heldHeadBytes)]
+	r.Body = io.NopCloser(h.reader())
+	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(h.reader()), nil }
+	r.ContentLength = h.size
+	r.TransferEncoding = nil
+	r.Header.Del("Content-Length")
+	// The body is decoded already (a gzip MCP request) or was never
+	// encoded: what goes out is the plain canonical bytes.
+	r.Header.Del("Content-Encoding")
 }
 
 // spill moves a body that outgrew memory into a temporary file and reads

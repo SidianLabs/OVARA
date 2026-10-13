@@ -264,6 +264,29 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   SHA-256 of the whole value, and `body_sha256` and `arguments_sha256` are
   always kept when a request carries more entries than the cap.
 
+**What the upstream receives is exactly what was checked**
+
+- A body the model gate or the MCP gate reads as JSON is no longer
+  forwarded as the agent wrote it. It is read strictly (UTF-8, one value,
+  no `NaN` or `Infinity`, no two members with the same name) and the
+  canonical encoding of what was read is sent instead: members sorted by
+  name, no white space, strings escaped one way, numbers byte for byte as
+  written, arrays in order. A server or provider whose JSON reader differs
+  from Ovara's has nothing left to read differently. This covers model
+  requests, MCP requests (a gzip request is sent decoded), checked MCP
+  responses (JSON bodies and the events of an event stream, which keep
+  their name and id; comments inside a checked event are dropped) and
+  both directions of `ovara mcp wrap`.
+- The `body_sha256` in the approval context and in receipts is the hash of
+  the canonical bytes, computed before anyone is asked, so it is still the
+  hash of exactly what is sent.
+- **Breaking:** a model request with duplicate member names is refused
+  (403, `model_request_ambiguous`) instead of being checked on the last
+  value. An MCP message with duplicate or case-variant member names, or
+  invalid UTF-8, is refused whatever it carries, not only when it holds a
+  tool call or a tool list. Upstreams that compared raw request bytes
+  (signatures over the body, byte-exact caches) see the canonical form.
+
 **Removed**
 
 - `policy/compiler`: it produced rules the gateway refuses, and nothing

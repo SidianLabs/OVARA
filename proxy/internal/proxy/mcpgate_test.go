@@ -391,9 +391,14 @@ func TestMCPToolCallsAllowedEscalatedDenied(t *testing.T) {
 	if last.Resource != "mcp:"+key+"/send_email" || strings.Contains(last.Context["arguments"], "sk-abc") || last.Context["warning"] == "" || last.Context["tool_sha256"] == "" {
 		t.Fatalf("question: %+v", last)
 	}
-	// the question binds the exact arguments and request body
-	sent := mcpCall(3, "send_email", `{"to":"a@b.example","token":"sk-abcdefghijklmnopqrstuvwxyz"}`)
-	if last.Context["arguments_sha256"] != mcp.ArgumentsSHA256([]byte(`{"to":"a@b.example","token":"sk-abcdefghijklmnopqrstuvwxyz"}`)) || last.Context["body_sha256"] != mcp.SHA256Hex([]byte(sent)) {
+	// the question binds the exact arguments and request body: the body as
+	// it is sent, which is the canonical encoding of what the agent sent
+	// (it used to be the agent's bytes; those are no longer forwarded)
+	sent, err := mcp.Canonical([]byte(mcpCall(3, "send_email", `{"to":"a@b.example","token":"sk-abcdefghijklmnopqrstuvwxyz"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last.Context["arguments_sha256"] != mcp.ArgumentsSHA256([]byte(`{"to":"a@b.example","token":"sk-abcdefghijklmnopqrstuvwxyz"}`)) || last.Context["body_sha256"] != mcp.SHA256Hex(sent) {
 		t.Fatalf("question does not bind the call: %+v", last.Context)
 	}
 	// denied by a person: a JSON-RPC error, nothing sent
