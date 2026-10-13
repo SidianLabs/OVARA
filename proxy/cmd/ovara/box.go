@@ -324,7 +324,7 @@ func cmdBox(args []string) error {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigs)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	gate := newCommandGate(gw, *dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !*noGate)
+	gate := newCommandGate(gw, *dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !*noGate, agentCmd)
 	a := &boxAgent{
 		dir: *dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: envs, cmd: agentCmd, gate: gate, noGate: *noGate, sigs: sigs,
@@ -808,10 +808,14 @@ type commandGate struct {
 	started bool // the agent itself has been exec'd; before that, our wrappers run
 	mu      sync.Mutex
 	counts  map[string]int
+	// launch is the agent command the person gave; launched is set once
+	// the first checked exec has been compared with it
+	launch   []string
+	launched bool
 }
 
-func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool) *commandGate {
-	return &commandGate{gw: gw, dir: dir, timeout: timeout, on: on, counts: map[string]int{}}
+func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool, launch []string) *commandGate {
+	return &commandGate{gw: gw, dir: dir, timeout: timeout, on: on, counts: map[string]int{}, launch: launch}
 }
 
 // skip exempts the launcher's own chain (ip netns exec → runuser → env)
@@ -833,10 +837,14 @@ func (g *commandGate) skip(e boxgate.Exec) bool {
 }
 
 func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
-	line := boxgate.CommandLine(e)
-	preview := map[string]string{"program": e.Exe, "directory": e.Cwd}
+	// Policy matches one canonical spelling of the command (PolicyLine);
+	// the person sees the command as it was actually run.
+	raw := boxgate.CommandLine(e)
+	line := boxgate.PolicyLine(e)
+	preview := map[string]string{"command": raw, "program": e.Exe, "directory": e.Cwd}
 	d, err := g.gw.CheckAction(context.Background(), "shell", "shell:"+line, preview)
-	shown := termSafe(line) // what is printed; policy and approvals get the real bytes
+	shown := termSafe(raw) // what is printed; policy and approvals get the real bytes
+	launch := g.isLaunch(e)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ovara] command gate: gateway unreachable, refusing: %s (%v)\n", shown, err)
 		g.count(countDenied)
@@ -850,6 +858,13 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", shown)
 		g.count(countDenied)
 		return boxgate.Deny
+	}
+	if launch {
+		// the person typed this command to start the box; asking them to
+		// approve it (say, an agent started with its own checks off)
+		// would be asking them what they just said
+		g.count(countAllowed)
+		return boxgate.Allow
 	}
 	id, err := g.gw.CreateApprovalFor(context.Background(), d, "shell", "shell:"+line)
 	if err != nil {
@@ -869,6 +884,27 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 	}
 	g.count(countApproved)
 	return boxgate.Allow
+}
+
+// isLaunch reports whether e is the agent command `ovara box` was given,
+// exactly as given, the first time it is seen. Later execs, however
+// similar, are the agent's own.
+func (g *commandGate) isLaunch(e boxgate.Exec) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.launched || len(g.launch) == 0 {
+		return false
+	}
+	g.launched = true
+	if len(e.Argv) != len(g.launch) {
+		return false
+	}
+	for i, a := range e.Argv {
+		if a != g.launch[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *commandGate) count(k string) {

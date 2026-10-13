@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"ovara.proxy/internal/boxgate"
 )
 
 // defaultDecision evaluates the default rules the way the gateway does
@@ -94,6 +96,29 @@ func TestDefaultPolicy_CommitBackPaths(t *testing.T) {
 	for p, w := range want {
 		if got := defaultDecision("fs.commit_back.path", "path:"+p); got != w {
 			t.Errorf("%s: %s, want %s", p, got, w)
+		}
+	}
+}
+
+// The shell rules are matched against the normalised command line, so the
+// usual respellings of a destructive command pause like the original.
+func TestDefaultPolicy_ShellRulesSeeThroughRespelling(t *testing.T) {
+	want := map[string][]string{
+		"escalate": {
+			"rm -rf x", "rm -r -f x", "rm --recursive --force x", "rm -Rf x", "/bin/rm -fR x", "rm -r x",
+			"git push", "git -c user.name=x push origin main", "git -C /w push",
+			"find . -name *.o -delete", "shred secret.txt", "truncate -s 0 log",
+			"claude --dangerously-skip-permissions -p hi", "codex exec --dangerously-bypass-approvals-and-sandbox x", "gemini --yolo",
+		},
+		"deny":  {"sudo id", "/usr/bin/sudo -i", "ovara approve x"},
+		"allow": {"ls -la", "go test ./...", "rm x.o", "git status", "find . -name x"},
+	}
+	for effect, lines := range want {
+		for _, l := range lines {
+			line := boxgate.PolicyLine(boxgate.Exec{Argv: strings.Fields(l)})
+			if got := defaultDecision("shell", "shell:"+line); got != effect {
+				t.Errorf("%q (policy sees %q): %s, want %s", l, line, got, effect)
+			}
 		}
 	}
 }

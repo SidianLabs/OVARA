@@ -22,9 +22,9 @@ func TestDescribe(t *testing.T) {
 		"POST https://github.com/org/repo.git/git-receive-pack":                      "push code on github.com/org/repo",
 		"POST https://github.com/o/r.git/git-receive-pack refs/heads/a,refs/tags/v1": "push to refs/heads/a, refs/tags/v1 on github.com/o/r",
 		"weird": "weird",
-		"POST https://github.com/octocat/Hello-World.git/git-upload-pack": "fetch code from github.com/octocat/Hello-World",
-		"GET https://github.com:443/o/r.git/info/refs":                     "look up branches of github.com/o/r",
-		"CONNECT UNAUTH github.com:443": "connect to github.com without the agent's proxy token (refused; git and curl retry with it automatically)",
+		"POST https://github.com/octocat/Hello-World.git/git-upload-pack":     "fetch code from github.com/octocat/Hello-World",
+		"GET https://github.com:443/o/r.git/info/refs":                        "look up branches of github.com/o/r",
+		"CONNECT UNAUTH github.com:443":                                       "connect to github.com without the agent's proxy token (refused; git and curl retry with it automatically)",
 		"GET https://example.com:443/":                                        "read https://example.com/",
 		"POST https://httpbin.org:443/post":                                   "send data to https://httpbin.org/post",
 		"GET http://localhost:8080/x":                                         "read http://localhost:8080/x",
@@ -182,5 +182,22 @@ func TestBoundarySubnet(t *testing.T) {
 	}
 	if boundaryProxyIP(7) != "10.200.7.1" {
 		t.Fatalf("got %s", boundaryProxyIP(7))
+	}
+}
+
+// The keys the proxy adds about a request's body and headers are shown
+// with labels a person understands.
+func TestContextLines_BodyAndHeaders(t *testing.T) {
+	a := sanitizeApproval(pendingApproval{Resource: "POST https://x.example/y", Context: map[string]string{
+		"body_note":   "gzip-encoded, cannot preview",
+		"body_sha256": "ab12",
+		"headers":     "X-Data (40 bytes)",
+		"command":     "rm -r -f /work",
+	}})
+	text := strings.Join(contextLines(a), "\n")
+	for _, want := range []string{"⚠ not shown: gzip-encoded", "body sha256: ab12", "headers: X-Data", "command as run: rm -r -f /work"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
+		}
 	}
 }

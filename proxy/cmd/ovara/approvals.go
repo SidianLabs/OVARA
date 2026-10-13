@@ -77,11 +77,19 @@ type pendingApproval struct {
 func contextLines(a pendingApproval) []string {
 	order := []struct{ key, label string }{
 		{"warning", "⚠ WARNING"},
+		{"body_note", "⚠ not shown"},
 		{"query", "query string"},
 		{"content_type", "body type"},
 		{"body_bytes", "body size"},
+		{"body_sha256", "body sha256"},
 		{"body_preview", "body starts"},
+		{"headers", "headers"},
 		{"method_override", "method override"},
+		// `ovara box` command gate: the command exactly as it was run (the
+		// policy matched a normalised form, shown as the raw request)
+		{"command", "command as run"},
+		{"program", "program"},
+		{"directory", "directory"},
 	}
 	var out []string
 	for _, o := range order {

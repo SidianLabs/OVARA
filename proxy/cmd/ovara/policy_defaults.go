@@ -118,11 +118,26 @@ func defaultPolicyRules() []map[string]any {
 		fsRule("shell", "shell:ip link*", "deny", "The box's network is not the agent's to change"),
 		fsRule("shell", "shell:ip route*", "deny", "The box's network is not the agent's to change"),
 		fsRule("shell", "shell:ovara*", "deny", "The agent may not operate Ovara"),
+		// The command line these match is normalised first (boxgate.PolicyLine):
+		// the program's base name, rm's flags merged ("rm -r -f", "rm
+		// --recursive --force" and "rm -Rf" all read "rm -rf"), git's global
+		// options dropped ("git -c k=v push" reads "git push"). Every program
+		// is checked on its own, so the rm or git that `sh -c "..."` starts
+		// is matched as itself whatever the shell line looked like.
 		fsRule("shell", "shell:*rm -rf*", "escalate", "Recursive deletes pause for a person"),
 		fsRule("shell", "shell:*rm -fr*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:rm -r*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:*find * -delete*", "escalate", "Deleting with find pauses for a person"),
+		fsRule("shell", "shell:*shred *", "escalate", "Destructive: pauses for a person"),
+		fsRule("shell", "shell:*truncate -s 0*", "escalate", "Destructive: pauses for a person"),
 		fsRule("shell", "shell:*git push*", "escalate", "Publishing pauses for a person (and changes come back through commit-back anyway)"),
 		fsRule("shell", "shell:*mkfs*", "escalate", "Destructive: pauses for a person"),
 		fsRule("shell", "shell:*dd if=*", "escalate", "Destructive: pauses for a person"),
+		// An agent starting another agent with its permission checks off.
+		// (The command `ovara box` itself was given to start is not paused.)
+		fsRule("shell", "shell:*--dangerously-skip-permissions*", "escalate", "An agent with its permission checks turned off pauses for a person"),
+		fsRule("shell", "shell:*--dangerously-bypass-approvals-and-sandbox*", "escalate", "An agent with its approvals and sandbox turned off pauses for a person"),
+		fsRule("shell", "shell:*--yolo*", "escalate", "An agent with its approvals turned off pauses for a person"),
 		fsRule("shell", "shell:*", "allow", "Everything else the agent runs in the box is allowed and recorded"),
 		// `ovara box -profile strict`: downloading a package the project's
 		// lockfiles did not pin when the box started (action_type
