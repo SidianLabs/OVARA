@@ -388,6 +388,12 @@ this page that goes further than it is a mistake.
   (MCP connectors, web fetch and search tools, images or documents by URL):
   those pause for approval. Other endpoints on the same hosts (files,
   batches) pause too.
+- **What is checked is what is sent.** A model or MCP body that Ovara reads
+  as JSON is forwarded in a canonical encoding of what it read (members
+  sorted, numbers as written), not as the agent wrote it, so a provider or
+  server cannot read something the check did not. Bodies with duplicate
+  member names are refused. The `body_sha256` you approve is the hash of
+  those canonical bytes.
 
 Honest limits: whoever steals Ovara's signing key can forge receipts. Once you
 revoke the key (`ovara keys revoke-receipt`), receipts dated after the
