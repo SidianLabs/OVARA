@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,11 +78,19 @@ type pendingApproval struct {
 func contextLines(a pendingApproval) []string {
 	order := []struct{ key, label string }{
 		{"warning", "⚠ WARNING"},
+		{"body_note", "⚠ not shown"},
 		{"query", "query string"},
 		{"content_type", "body type"},
 		{"body_bytes", "body size"},
+		{"body_sha256", "body sha256"},
 		{"body_preview", "body starts"},
+		{"headers", "headers"},
 		{"method_override", "method override"},
+		// `ovara box` command gate: the command exactly as it was run (the
+		// policy matched a normalised form, shown as the raw request)
+		{"command", "command as run"},
+		{"program", "program"},
+		{"directory", "directory"},
 	}
 	var out []string
 	for _, o := range order {
@@ -96,15 +105,28 @@ func contextLines(a pendingApproval) []string {
 	if v := a.Context["why"]; v != "" {
 		out = append(out, "asked because: "+v)
 	}
-	// `ovara box` commit-back: what comes back, what policy kept out, the diff
+	// `ovara box` commit-back: sensitive files and an incomplete diff first,
+	// then what comes back, what stays out, the tree, the diff
+	for _, l := range contextList(a.Context["sensitive"]) {
+		out = append(out, "⚠ sensitive file changed: "+l)
+	}
+	if l := contextList(a.Context["diff_not_shown"]); len(l) > 0 {
+		out = append(out, "⚠ diff not shown: "+l[0])
+		for _, more := range l[1:] {
+			out = append(out, "    "+more)
+		}
+	}
 	if v := a.Context["files"]; v != "" {
 		out = append(out, "files: "+v)
 	}
-	if v := a.Context["kept_out"]; v != "" {
-		out = append(out, "kept out by policy: "+v)
+	for _, l := range contextList(a.Context["kept_out"]) {
+		out = append(out, "kept out: "+l)
 	}
 	if v := a.Context["branch"]; v != "" {
 		out = append(out, "lands on branch: "+v)
+	}
+	if v := a.Context["tree"]; v != "" {
+		out = append(out, "reviewed tree: "+v+" (exactly this lands; anything else is refused)")
 	}
 	if v := a.Context["diff"]; v != "" {
 		lines := strings.Split(strings.TrimRight(v, "\n"), "\n")
@@ -115,6 +137,18 @@ func contextLines(a pendingApproval) []string {
 		out = append(out, "diff:")
 		for _, l := range lines {
 			out = append(out, "  "+l)
+		}
+	}
+	return out
+}
+
+// contextList splits a one-item-per-line context value. (The gateway caps
+// each value's length, so the last item may end in "…".)
+func contextList(v string) []string {
+	var out []string
+	for _, l := range strings.Split(strings.ReplaceAll(v, "\r\n", "\n"), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
 		}
 	}
 	return out
@@ -327,6 +361,9 @@ func printApproval(w io.Writer, a pendingApproval) {
 	}
 	fmt.Fprintln(w, "┌─ approval needed ─────────────────────────────────────")
 	fmt.Fprintf(w, "│ agent wants to: %s\n", describe(a.Resource))
+	if d, ok := destinationOf(a.Resource); ok {
+		fmt.Fprintf(w, "│ destination:    %s\n", d.line())
+	}
 	fmt.Fprintf(w, "│ raw request:    %s\n", a.Resource)
 	for _, l := range contextLines(a) {
 		fmt.Fprintf(w, "│ %s\n", l)
@@ -381,7 +418,7 @@ func cmdResolve(approve bool, args []string) error {
 	}
 	fs, dir := dirFlag(name)
 	reason := fs.String("reason", "", "optional reason, recorded in the audit trail")
-	trust := fs.Bool("trust-host", false, "with approve: also allow future reads (GET/HEAD) from this host without asking")
+	trust := fs.Bool("trust-host", false, "with approve: also allow reads (GET/HEAD) from this host without asking until ovara run stops (a read can still carry data out in its path and headers)")
 	// Accept the id before or after the flags: `ovara approve <id> -dir x`.
 	var id string
 	var rest []string
@@ -430,7 +467,7 @@ func cmdResolve(approve bool, args []string) error {
 		if added, err := trustReadHost(c.dir, host); err != nil {
 			fmt.Printf("approved, but could not trust %s: %v\n", host, err)
 		} else if added {
-			fmt.Printf("trusted %s for reads: GET/HEAD there will no longer ask (edit policy.json to undo).\n", host)
+			fmt.Printf("trusted %s for reads: GET/HEAD there will no longer ask until ovara run stops (edit policy.json to undo sooner). A read can still carry data out in its path and headers.\n", host)
 		}
 	}
 	if approve {
@@ -457,7 +494,7 @@ func cmdWatch(args []string) error {
 // watchLoop polls for pending approvals and asks on in/out for each. A
 // closed stop channel ends the loop (tests); so does closed input.
 func watchLoop(c *adminClient, in io.Reader, out io.Writer, every time.Duration, stop <-chan struct{}) error {
-	rd := bufio.NewReader(in)
+	rd := newAnswerReader(in)
 	fmt.Fprintln(out, "watching for agent requests that need your approval… (Ctrl+C to quit)")
 	seen := map[string]bool{}
 	for {
@@ -487,17 +524,91 @@ func watchLoop(c *adminClient, in io.Reader, out io.Writer, every time.Duration,
 	}
 }
 
+// typeAheadGrace is how soon after a prompt an answer still counts as
+// typed before it: nobody reads an approval in less.
+var typeAheadGrace = 250 * time.Millisecond
+
+// answerReader reads answer lines from the person and notes when each one
+// arrived, so an answer is only taken if it was typed after the question
+// was on screen. Without this, keys typed ahead (a double "a⏎", a paste)
+// answer the next approvals before they are shown.
+type answerReader struct {
+	mu     sync.Mutex
+	more   chan struct{} // a line (or the end) arrived
+	lines  []timedLine
+	closed error
+}
+
+type timedLine struct {
+	text string
+	at   time.Time
+}
+
+func newAnswerReader(in io.Reader) *answerReader {
+	r := &answerReader{more: make(chan struct{}, 1)}
+	go func() {
+		br := bufio.NewReader(in)
+		for {
+			s, err := br.ReadString('\n')
+			r.mu.Lock()
+			if s != "" {
+				r.lines = append(r.lines, timedLine{s, time.Now()})
+			}
+			if err != nil {
+				r.closed = err
+			}
+			r.mu.Unlock()
+			select {
+			case r.more <- struct{}{}:
+			default:
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return r
+}
+
+// answerAfter returns the first line that arrived after shown (plus the
+// grace), and how many earlier lines it dropped. err is set when the input
+// has ended with no such line.
+func (r *answerReader) answerAfter(shown time.Time) (line string, dropped int, err error) {
+	for {
+		r.mu.Lock()
+		for len(r.lines) > 0 {
+			l := r.lines[0]
+			r.lines = r.lines[1:]
+			if l.at.Before(shown.Add(typeAheadGrace)) {
+				dropped++
+				continue
+			}
+			r.mu.Unlock()
+			return l.text, dropped, nil
+		}
+		closed := r.closed
+		r.mu.Unlock()
+		if closed != nil {
+			return "", dropped, closed
+		}
+		<-r.more
+	}
+}
+
 // askAndResolve prompts until it gets a usable answer. Returns false when
 // the input stream is closed.
-func askAndResolve(c *adminClient, a pendingApproval, rd *bufio.Reader, out io.Writer) bool {
+func askAndResolve(c *adminClient, a pendingApproval, rd *answerReader, out io.Writer) bool {
 	for {
 		host, canTrust := trustableHost(a.Resource)
 		if canTrust {
-			fmt.Fprintf(out, "  [a]pprove  [t]rust %s for reads  [d]eny  [s]kip > ", host)
+			fmt.Fprintf(out, "  [a]pprove  [t]rust %s for reads (stops asking about reads from it this run)  [d]eny  [s]kip > ", host)
 		} else {
 			fmt.Fprint(out, "  [a]pprove  [d]eny  [s]kip > ")
 		}
-		line, err := rd.ReadString('\n')
+		line, dropped, err := rd.answerAfter(time.Now())
+		if dropped > 0 {
+			fmt.Fprintf(out, "\n  (ignored %d line(s) typed before this request was shown)\n  > ", dropped)
+		}
 		ans := strings.ToLower(strings.TrimSpace(line))
 		if err != nil && ans == "" {
 			return false
@@ -518,7 +629,7 @@ func askAndResolve(c *adminClient, a pendingApproval, rd *bufio.Reader, out io.W
 			} else if _, e := trustReadHost(c.dir, host); e != nil {
 				fmt.Fprintln(out, "  ✓ approved, but could not trust the host:", e)
 			} else {
-				fmt.Fprintf(out, "  ✓ approved, and %s is trusted for reads from now on\n", host)
+				fmt.Fprintf(out, "  ✓ approved. Reads (GET/HEAD) from %s will no longer be asked about until ovara run stops; a read can still carry data out in its path and headers.\n", host)
 			}
 		case "d", "deny", "n", "no":
 			if e := c.resolve(a.ApprovalID, false, whoAmI(), "denied from ovara watch"); e != nil {

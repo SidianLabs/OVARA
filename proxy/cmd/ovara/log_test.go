@@ -103,10 +103,10 @@ func TestWatchLoop_SkipsExpiredApprovals(t *testing.T) {
 		pendingApproval{ApprovalID: "new", ActionType: "http.request", Resource: "POST https://a/y", CreatedAt: time.Now()})
 	c.maxWait = time.Minute
 
-	var out bytes.Buffer
+	in, out := newTypist(t, "a")
 	stop := make(chan struct{})
 	time.AfterFunc(300*time.Millisecond, func() { close(stop) })
-	if err := watchLoop(c, strings.NewReader("a\n"), &out, 10*time.Millisecond, stop); err != nil {
+	if err := watchLoop(c, in, out, 10*time.Millisecond, stop); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "https://a/x") {

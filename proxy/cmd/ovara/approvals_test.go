@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,9 +23,9 @@ func TestDescribe(t *testing.T) {
 		"POST https://github.com/org/repo.git/git-receive-pack":                      "push code on github.com/org/repo",
 		"POST https://github.com/o/r.git/git-receive-pack refs/heads/a,refs/tags/v1": "push to refs/heads/a, refs/tags/v1 on github.com/o/r",
 		"weird": "weird",
-		"POST https://github.com/octocat/Hello-World.git/git-upload-pack": "fetch code from github.com/octocat/Hello-World",
-		"GET https://github.com:443/o/r.git/info/refs":                     "look up branches of github.com/o/r",
-		"CONNECT UNAUTH github.com:443": "connect to github.com without the agent's proxy token (refused; git and curl retry with it automatically)",
+		"POST https://github.com/octocat/Hello-World.git/git-upload-pack":     "fetch code from github.com/octocat/Hello-World",
+		"GET https://github.com:443/o/r.git/info/refs":                        "look up branches of github.com/o/r",
+		"CONNECT UNAUTH github.com:443":                                       "connect to github.com without the agent's proxy token (refused; git and curl retry with it automatically)",
 		"GET https://example.com:443/":                                        "read https://example.com/",
 		"POST https://httpbin.org:443/post":                                   "send data to https://httpbin.org/post",
 		"GET http://localhost:8080/x":                                         "read http://localhost:8080/x",
@@ -145,18 +146,87 @@ func TestNewAdminClient_ReadsConfig(t *testing.T) {
 	}
 }
 
+// typist answers `ovara watch` the way a person does: each answer is typed
+// after its prompt is on screen. When the answers run out the input ends.
+type typist struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	answers []string
+	w       *io.PipeWriter
+}
+
+func newTypist(t *testing.T, answers ...string) (io.Reader, *typist) {
+	t.Helper()
+	old := typeAheadGrace
+	typeAheadGrace = 20 * time.Millisecond
+	t.Cleanup(func() { typeAheadGrace = old })
+	r, w := io.Pipe()
+	return r, &typist{answers: answers, w: w}
+}
+
+func (p *typist) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.buf.Write(b)
+	if bytes.Contains(b, []byte("[a]pprove")) {
+		if len(p.answers) == 0 {
+			p.w.Close()
+		} else {
+			ans := p.answers[0]
+			p.answers = p.answers[1:]
+			time.AfterFunc(2*typeAheadGrace, func() { p.w.Write([]byte(ans + "\n")) })
+		}
+	}
+	return len(b), nil
+}
+
+func (p *typist) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.buf.String()
+}
+
+// Keys typed before a request is on screen do not answer it: a double
+// "a⏎" or a paste must not approve the next request unseen.
+func TestWatchLoop_IgnoresTypeAhead(t *testing.T) {
+	f, c := newFake(t,
+		pendingApproval{ApprovalID: "a1", Resource: "POST https://api.github.com/x"},
+		pendingApproval{ApprovalID: "a2", Resource: "POST https://attacker.example/y"})
+	old := typeAheadGrace
+	typeAheadGrace = 20 * time.Millisecond
+	defer func() { typeAheadGrace = old }()
+	r, w := io.Pipe()
+	// "a" twice, already waiting before anything is shown; then, once the
+	// first prompt is up, "d"; the second request gets no answer of its own
+	in := io.MultiReader(strings.NewReader("a\na\n"), r)
+	out := &typist{answers: []string{"d"}, w: w}
+	stop := make(chan struct{})
+	time.AfterFunc(400*time.Millisecond, func() { close(stop); w.Close() })
+	if err := watchLoop(c, in, out, 10*time.Millisecond, stop); err != nil {
+		t.Fatal(err)
+	}
+	if f.resolved["a1"] != "deny" {
+		t.Fatalf("a1 = %q, want the answer typed after it was shown (deny)\n%s", f.resolved["a1"], out.String())
+	}
+	if v, ok := f.resolved["a2"]; ok {
+		t.Fatalf("a2 was answered (%s) by keys typed before it was shown", v)
+	}
+	if !strings.Contains(out.String(), "ignored 2 line(s) typed before") {
+		t.Fatalf("the person is not told their early keys were ignored:\n%s", out.String())
+	}
+}
+
 func TestWatchLoop_ApproveDenySkip(t *testing.T) {
 	f, c := newFake(t,
 		pendingApproval{ApprovalID: "a1", Resource: "POST https://api.github.com/x"},
 		pendingApproval{ApprovalID: "a2", Resource: "DELETE https://api.github.com/y"},
 		pendingApproval{ApprovalID: "a3", Resource: "PUT https://example.com/z"})
 
-	var out bytes.Buffer
 	// a → approve a1, bogus answer re-asks, d → deny a2, s → skip a3.
-	in := strings.NewReader("a\nwhat\nd\ns\n")
+	in, out := newTypist(t, "a", "what", "d", "s")
 	stop := make(chan struct{})
 	time.AfterFunc(500*time.Millisecond, func() { close(stop) })
-	if err := watchLoop(c, in, &out, 10*time.Millisecond, stop); err != nil {
+	if err := watchLoop(c, in, out, 10*time.Millisecond, stop); err != nil {
 		t.Fatal(err)
 	}
 	if f.resolved["a1"] != "approve" || f.resolved["a2"] != "deny" {
@@ -182,5 +252,22 @@ func TestBoundarySubnet(t *testing.T) {
 	}
 	if boundaryProxyIP(7) != "10.200.7.1" {
 		t.Fatalf("got %s", boundaryProxyIP(7))
+	}
+}
+
+// The keys the proxy adds about a request's body and headers are shown
+// with labels a person understands.
+func TestContextLines_BodyAndHeaders(t *testing.T) {
+	a := sanitizeApproval(pendingApproval{Resource: "POST https://x.example/y", Context: map[string]string{
+		"body_note":   "gzip-encoded, cannot preview",
+		"body_sha256": "ab12",
+		"headers":     "X-Data (40 bytes)",
+		"command":     "rm -r -f /work",
+	}})
+	text := strings.Join(contextLines(a), "\n")
+	for _, want := range []string{"⚠ not shown: gzip-encoded", "body sha256: ab12", "headers: X-Data", "command as run: rm -r -f /work"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
+		}
 	}
 }

@@ -1,6 +1,9 @@
 package main
 
-import "net"
+import (
+	"net"
+	"strings"
+)
 
 // defaultPolicyRules is what `ovara init` writes to policy.json. The idea,
 // in one line: reading is free, writing needs a human, and a few known
@@ -68,6 +71,35 @@ func defaultPolicyRules() []map[string]any {
 		// for a person who sees the diff (fs.commit_back).
 		fsRule("fs.commit_back.path", "path:.github/workflows/*", "deny", "The agent may not change CI workflows without a person editing the policy"),
 		fsRule("fs.commit_back.path", "path:.git/*", "deny", "The agent may not change git hooks or config"),
+	)
+	// Files that make something run on the person's machine or in CI when
+	// they merge, open or build the project: agent hooks and settings, MCP
+	// servers, editor tasks, git hooks and filters, CI and dev containers.
+	// A reviewer reading "the agent's code changes" does not expect them, so
+	// they stay in the workspace unless the policy is edited. Each is
+	// matched at the top and in any subdirectory.
+	for _, p := range []string{
+		".claude/*", ".mcp.json", ".cursor/*", ".vscode/tasks.json", ".vscode/settings.json",
+		".husky/*", ".pre-commit-config.yaml", ".gitattributes", ".gitmodules",
+		".github/*", ".devcontainer/*", ".devcontainer.json",
+	} {
+		desc := "Kept out: " + p + " can make something run on the host or in CI"
+		rules = append(rules,
+			fsRule("fs.commit_back.path", "path:"+p, "deny", desc),
+			fsRule("fs.commit_back.path", "path:*/"+p, "deny", desc))
+	}
+	// Files that come back but are named to the person first ("⚠ sensitive
+	// file changed"): instructions other agents follow, install and build
+	// scripts, and lockfiles. Escalate on a path means exactly that in
+	// `ovara box`; matching a little too much here costs only a warning.
+	for _, p := range []string{
+		"CLAUDE.md", "AGENTS.md", ".cursorrules", "package.json",
+		"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "*.lock", "go.sum",
+		"Makefile", "makefile", "Dockerfile", "Dockerfile.*", "*.dockerfile", "*.sh",
+	} {
+		rules = append(rules, fsRule("fs.commit_back.path", "path:*"+strings.TrimPrefix(p, "*"), "escalate", "Comes back, but flagged for the person: "+p+" changes what agents, installs or builds do"))
+	}
+	rules = append(rules,
 		fsRule("fs.commit_back.path", "path:*", "allow", "Other paths may come back for review"),
 		fsRule("fs.commit_back", "commit:*", "escalate", "Changes come back to the real repository only after a person reads the diff"),
 		// `ovara box` command gate: every program the agent starts is checked
@@ -86,11 +118,26 @@ func defaultPolicyRules() []map[string]any {
 		fsRule("shell", "shell:ip link*", "deny", "The box's network is not the agent's to change"),
 		fsRule("shell", "shell:ip route*", "deny", "The box's network is not the agent's to change"),
 		fsRule("shell", "shell:ovara*", "deny", "The agent may not operate Ovara"),
+		// The command line these match is normalised first (boxgate.PolicyLine):
+		// the program's base name, rm's flags merged ("rm -r -f", "rm
+		// --recursive --force" and "rm -Rf" all read "rm -rf"), git's global
+		// options dropped ("git -c k=v push" reads "git push"). Every program
+		// is checked on its own, so the rm or git that `sh -c "..."` starts
+		// is matched as itself whatever the shell line looked like.
 		fsRule("shell", "shell:*rm -rf*", "escalate", "Recursive deletes pause for a person"),
 		fsRule("shell", "shell:*rm -fr*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:rm -r*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:*find * -delete*", "escalate", "Deleting with find pauses for a person"),
+		fsRule("shell", "shell:*shred *", "escalate", "Destructive: pauses for a person"),
+		fsRule("shell", "shell:*truncate -s 0*", "escalate", "Destructive: pauses for a person"),
 		fsRule("shell", "shell:*git push*", "escalate", "Publishing pauses for a person (and changes come back through commit-back anyway)"),
 		fsRule("shell", "shell:*mkfs*", "escalate", "Destructive: pauses for a person"),
 		fsRule("shell", "shell:*dd if=*", "escalate", "Destructive: pauses for a person"),
+		// An agent starting another agent with its permission checks off.
+		// (The command `ovara box` itself was given to start is not paused.)
+		fsRule("shell", "shell:*--dangerously-skip-permissions*", "escalate", "An agent with its permission checks turned off pauses for a person"),
+		fsRule("shell", "shell:*--dangerously-bypass-approvals-and-sandbox*", "escalate", "An agent with its approvals and sandbox turned off pauses for a person"),
+		fsRule("shell", "shell:*--yolo*", "escalate", "An agent with its approvals turned off pauses for a person"),
 		fsRule("shell", "shell:*", "allow", "Everything else the agent runs in the box is allowed and recorded"),
 		// `ovara box -profile strict`: downloading a package the project's
 		// lockfiles did not pin when the box started (action_type

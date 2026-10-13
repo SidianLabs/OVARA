@@ -7,3 +7,6 @@ func ownerOf(path string) (uid, gid int) { return -1, -1 }
 
 // gitAs runs git as ourselves on Windows.
 func gitAs(owner [2]int, dir string, args ...string) (string, error) { return gitOut(dir, args...) }
+
+// chownTree does nothing on Windows.
+func chownTree(root string, uid, gid int) error { return nil }

@@ -68,6 +68,11 @@ func unsafeRune(r rune) bool {
 	return unicode.Is(unicode.Cf, r) // any other format character
 }
 
+// multiLineContext are the context values whose lines are kept apart (a
+// diff, and the commit-back's one-path-per-line lists); each line is still
+// made safe on its own.
+var multiLineContext = map[string]bool{"diff": true, "kept_out": true, "sensitive": true, "diff_not_shown": true}
+
 // sanitizeApproval makes every agent-influenced field of an approval safe to
 // print, once, where approvals enter the CLI.
 func sanitizeApproval(a pendingApproval) pendingApproval {
@@ -79,7 +84,7 @@ func sanitizeApproval(a pendingApproval) pendingApproval {
 	if a.Context != nil {
 		c := make(map[string]string, len(a.Context))
 		for k, v := range a.Context {
-			if k == "diff" {
+			if multiLineContext[k] {
 				c[termSafe(k)] = termSafeLines(v)
 			} else {
 				c[termSafe(k)] = termSafe(v)

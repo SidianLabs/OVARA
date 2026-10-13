@@ -82,10 +82,7 @@ const (
 	outcomeKept   = "kept"   // something is left for a person: the workspace stays
 	outcomeFailed = "failed" // an error on our side: the workspace stays
 
-	// gateway decisions and approval states
-	decisionAllow    = "allow"
-	decisionDeny     = "deny"
-	decisionEscalate = "escalate"
+	// approval states (the gateway's decisions are in commitback.go)
 	approvalApproved = "approved"
 	approvalError    = "error"
 
@@ -137,6 +134,7 @@ func cmdBox(args []string) error {
 	approveTimeout := fs.Duration("approve-timeout", 10*time.Minute, "how long the commit-back waits for a person")
 	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
 	noCommitBack := fs.Bool("no-commit-back", false, "do not offer to bring changes back; keep the workspace")
+	allowBinary := fs.Bool("allow-binary", false, "let binary files the agent added or changed come back (by default they stay in the workspace: a diff cannot show what is in them)")
 	noGate := fs.Bool("no-command-gate", false, "do not check the agent's commands against policy (the network and file boundaries still hold)")
 	var envs, excludes, mounts multiFlag
 	fs.Var(&envs, "env", "extra NAME=value for the agent (repeatable; values that look like keys are refused)")
@@ -326,7 +324,7 @@ func cmdBox(args []string) error {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigs)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	gate := newCommandGate(gw, *dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !*noGate)
+	gate := newCommandGate(gw, *dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !*noGate, agentCmd)
 	a := &boxAgent{
 		dir: *dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: envs, cmd: agentCmd, gate: gate, noGate: *noGate, sigs: sigs,
@@ -350,48 +348,65 @@ func cmdBox(args []string) error {
 		outcome = outcomeKept
 		return nil
 	}
-	changes, err := ws.Changes()
+	// The workspace's files are read once, into a tree only Ovara can
+	// write. Policy, the diff the person reads and the commit that lands
+	// all come from that tree, so nothing the agent (or a process it left
+	// behind) changes after this point can come back.
+	snap, err := ws.Snapshot()
 	if err != nil {
 		return err
 	}
-	if len(changes) == 0 {
+	if len(snap.Changes) == 0 {
 		fmt.Fprintln(os.Stderr, "==> the agent changed nothing")
 		outcome = outcomeClean
 		return nil
 	}
 	branch := "ovara/box-" + runID
 	ctx := context.Background()
-	var denied, allowed []string
-	for _, c := range changes {
-		d, err := gw.CheckAction(ctx, "fs.commit_back.path", "path:"+c.Path, map[string]string{"status": c.Status})
+	plan, err := planCommitBack(snap.Changes, func(path, status string) (string, error) {
+		d, err := gw.CheckAction(ctx, "fs.commit_back.path", "path:"+path, map[string]string{"status": status})
 		if err != nil {
-			return fmt.Errorf("gateway: %w", err)
+			return "", fmt.Errorf("gateway: %w", err)
 		}
-		if d.Decision == decisionDeny {
-			denied = append(denied, c.Path)
-		} else {
-			allowed = append(allowed, c.Path)
-		}
-	}
-	for _, p := range denied {
-		fmt.Fprintf(os.Stderr, "    policy keeps out: %s\n", termSafe(p))
-	}
-	if len(allowed) == 0 {
-		fmt.Fprintln(os.Stderr, "==> every changed path is kept out by policy; nothing comes back")
-		outcome = outcomeKept
-		return nil
-	}
-	preview, err := ws.Preview(boxPreviewMax)
+		return d.Decision, nil
+	}, *allowBinary)
 	if err != nil {
 		return err
 	}
-	ctxLines := map[string]string{
-		"files":    strconv.Itoa(len(allowed)) + " path(s): " + strings.Join(allowed, ", "),
-		"branch":   branch,
-		"diff":     preview,
-		"kept_out": strings.Join(denied, ", "),
+	for _, p := range plan.policy {
+		fmt.Fprintf(os.Stderr, "    policy keeps out: %s\n", termSafe(p))
 	}
-	resource := fmt.Sprintf("commit:%s (%d files)", filepath.Base(ws.Project), len(allowed))
+	for _, p := range plan.binary {
+		fmt.Fprintf(os.Stderr, "    kept out (binary file, cannot be reviewed; -allow-binary brings it back): %s\n", termSafe(p))
+	}
+	for _, p := range plan.flagged {
+		fmt.Fprintf(os.Stderr, "    ⚠ sensitive file changed: %s\n", termSafe(p))
+	}
+	if len(plan.allowed) == 0 {
+		fmt.Fprintln(os.Stderr, "==> every changed path is kept out; nothing comes back")
+		outcome = outcomeKept
+		return nil
+	}
+	if snap, err = ws.Without(snap, plan.revert); err != nil {
+		return err
+	}
+	if len(snap.Changes) != len(plan.allowed) {
+		return fmt.Errorf("internal: %d path(s) left to bring back, %d expected; nothing comes back", len(snap.Changes), len(plan.allowed))
+	}
+	rev, err := ws.Review(snap, boxPreviewMax)
+	if err != nil {
+		return err
+	}
+	// the whole diff, for when the approval shows only part of it
+	fullDiff := filepath.Join(runDir, "commit-back.diff")
+	if err := os.WriteFile(fullDiff, []byte(rev.Stat+"\n"+rev.Full), 0o600); err != nil {
+		return err
+	}
+	if rev.Truncated() {
+		fmt.Fprintf(os.Stderr, "    ⚠ the diff is too long to show in full: %d of %d bytes are not in the approval; read all of it in %s\n", rev.TotalBytes-rev.ShownBytes, rev.TotalBytes, fullDiff)
+	}
+	ctxLines := commitBackContext(plan, snap, rev, branch, fullDiff)
+	resource := fmt.Sprintf("commit:%s (%d files, tree %s)", filepath.Base(ws.Project), len(plan.allowed), snap.Tree[:12])
 	d, err := gw.CheckAction(ctx, "fs.commit_back", resource, ctxLines)
 	if err != nil {
 		return fmt.Errorf("gateway: %w", err)
@@ -406,7 +421,7 @@ func cmdBox(args []string) error {
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "==> waiting for you to approve the changes (%d files, approval %s): the approval page or `ovara approvals -dir %s`\n", len(allowed), id, *dir)
+		fmt.Fprintf(os.Stderr, "==> waiting for you to approve the changes (%d files, approval %s): the approval page or `ovara approvals -dir %s`\n", len(plan.allowed), id, *dir)
 		status, err := waitApproval(ctx, gw, id, *approveTimeout)
 		if err != nil {
 			return err
@@ -417,7 +432,8 @@ func cmdBox(args []string) error {
 			return nil
 		}
 	}
-	commit, err := ws.CommitBack(branch, denied)
+	// exactly the reviewed tree, or nothing
+	commit, err := ws.CommitTree(branch, snap)
 	if err != nil {
 		return err
 	}
@@ -792,10 +808,14 @@ type commandGate struct {
 	started bool // the agent itself has been exec'd; before that, our wrappers run
 	mu      sync.Mutex
 	counts  map[string]int
+	// launch is the agent command the person gave; launched is set once
+	// the first checked exec has been compared with it
+	launch   []string
+	launched bool
 }
 
-func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool) *commandGate {
-	return &commandGate{gw: gw, dir: dir, timeout: timeout, on: on, counts: map[string]int{}}
+func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool, launch []string) *commandGate {
+	return &commandGate{gw: gw, dir: dir, timeout: timeout, on: on, counts: map[string]int{}, launch: launch}
 }
 
 // skip exempts the launcher's own chain (ip netns exec → runuser → env)
@@ -817,10 +837,14 @@ func (g *commandGate) skip(e boxgate.Exec) bool {
 }
 
 func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
-	line := boxgate.CommandLine(e)
-	preview := map[string]string{"program": e.Exe, "directory": e.Cwd}
+	// Policy matches one canonical spelling of the command (PolicyLine);
+	// the person sees the command as it was actually run.
+	raw := boxgate.CommandLine(e)
+	line := boxgate.PolicyLine(e)
+	preview := map[string]string{"command": raw, "program": e.Exe, "directory": e.Cwd}
 	d, err := g.gw.CheckAction(context.Background(), "shell", "shell:"+line, preview)
-	shown := termSafe(line) // what is printed; policy and approvals get the real bytes
+	shown := termSafe(raw) // what is printed; policy and approvals get the real bytes
+	launch := g.isLaunch(e)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ovara] command gate: gateway unreachable, refusing: %s (%v)\n", shown, err)
 		g.count(countDenied)
@@ -834,6 +858,13 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", shown)
 		g.count(countDenied)
 		return boxgate.Deny
+	}
+	if launch {
+		// the person typed this command to start the box; asking them to
+		// approve it (say, an agent started with its own checks off)
+		// would be asking them what they just said
+		g.count(countAllowed)
+		return boxgate.Allow
 	}
 	id, err := g.gw.CreateApprovalFor(context.Background(), d, "shell", "shell:"+line)
 	if err != nil {
@@ -853,6 +884,27 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 	}
 	g.count(countApproved)
 	return boxgate.Allow
+}
+
+// isLaunch reports whether e is the agent command `ovara box` was given,
+// exactly as given, the first time it is seen. Later execs, however
+// similar, are the agent's own.
+func (g *commandGate) isLaunch(e boxgate.Exec) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.launched || len(g.launch) == 0 {
+		return false
+	}
+	g.launched = true
+	if len(e.Argv) != len(g.launch) {
+		return false
+	}
+	for i, a := range e.Argv {
+		if a != g.launch[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *commandGate) count(k string) {

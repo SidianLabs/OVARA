@@ -8,9 +8,24 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
+
+// chownTree hands root and everything under it to uid:gid when we are root
+// and that is someone else; otherwise it does nothing.
+func chownTree(root string, uid, gid int) error {
+	if os.Geteuid() != 0 || uid <= 0 || gid < 0 {
+		return nil
+	}
+	return filepath.Walk(root, func(p string, _ os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Lchown(p, uid, gid)
+	})
+}
 
 // ownerOf returns the uid/gid owning path, or -1 when unknown.
 func ownerOf(path string) (uid, gid int) {
