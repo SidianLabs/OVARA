@@ -1,9 +1,25 @@
 # Ovara Box: a sandbox whose boundary is intent
 
-Status: **design, not built.** This document is the plan. Where it describes
-code that exists, it says so and names the file. Everything else is a
-proposal to build and test, in the order given in §12. Nothing in here is a
-promise to users until the acceptance tests in §12 pass in CI.
+Status: **milestones 1-5 are built** (tier 1, the command gate, tier 2, strict
+installs; see §14). Milestones 6-9 are not. This document started as the plan
+and still reads that way in places: where it describes code that exists it
+names the file, and the 2026-10 audit corrections below take precedence over
+older text.
+
+> **Corrections from the October 2026 audit (read these first).**
+> - **Tier 1 isolates the network and the user, not the file system.** The
+>   agent runs as `ovara-agent` in a network namespace with the project copy as
+>   its working directory, but there is no mount namespace: it can read any
+>   host file that user can read, including the original project and
+>   world-readable files under home directories. "Secrets left out" applies
+>   to the copy only. Use tier 2 (`-tier 2`) when the host holds secrets the
+>   agent must not read. A tier 1 with its own minimal root is planned.
+> - **The command gate's mechanism is sound; its default rules are a
+>   speed bump.** Every exec is seen, but the shipped rules match command-line
+>   text, so `rm -r -f` or `find -delete` is not caught by `*rm -rf*`. Treat
+>   the default shell rules as catching mistakes, not as enforcement.
+> - `OVARA_EXEC_GATE`/`ovara-exec` (§8) do not exist; the gate is ptrace in
+>   `proxy/internal/boxgate`. `/scratch` is a tmpfs, not persistent.
 
 Read `threat-model.md` first for what Ovara is today. Sections 1-7 describe the
 problem, promise, threat model, launcher and file boundary; 8-11 the command

@@ -59,7 +59,10 @@ ovara run -dir mydir             # starts the gateway and the proxy
 
 On Linux there is a one-command form that also contains the agent:
 `sudo ovara box ./myrepo -- claude` runs it in a network namespace, as a
-separate user, in a copy of the project with your keys and secrets left out,
+separate user, in a copy of the project with your keys and secrets left out
+(tier 1 does not hide the rest of the file system: the agent's user can still
+read whatever files on the host it has permission to, so use `-tier 2` on a
+machine that holds secrets),
 checks every command it runs against the policy, and brings its changes
 back as a branch after you have read the diff. See
 `docs/use-cases.md` scenario 2.
@@ -136,7 +139,9 @@ afterwards (to hide something, say), `ovara log` reports it as tampered.
 
 ### Your rules live in `mydir/policy.json`
 
-The default policy `ovara init` writes is short and readable:
+The default policy `ovara init` writes is short and readable (shown here
+without the `"action_type": "http.request", "environment": "*"` every rule
+carries; a rule missing them never matches, so Ovara refuses to load it):
 
 ```json
 { "resource": "GET https://pypi.org/*", "allow": true },
@@ -194,6 +199,11 @@ Be clear about what you are buying:
   firewall rules.
 - **Plain HTTP and other protocols.** Credentials are only injected over HTTPS.
   Coverage of non-HTTP protocols is uneven.
+- **The model API.** The agent may call its model's inference endpoint without
+  asking (it has to). The proxy reads those requests and refuses features that
+  would make the provider fetch a URL or connect to a server for the agent
+  (MCP connectors, web fetch and search tools, images or documents by URL).
+  Other endpoints on the same hosts (files, batches) pause for approval.
 
 Honest limits: whoever steals Ovara's signing key can forge receipts. Once you
 revoke the key, receipts dated after the revocation are rejected, but backdated

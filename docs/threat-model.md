@@ -22,7 +22,9 @@ decision is written to a signed, hash-chained receipt log.
 | A reflected secret (a debug endpoint echoes the Authorization header) | Injected values and the bare token are scrubbed from response headers, body and trailers; encoded or ranged responses on credentialed requests are refused | The request was credentialed |
 | The agent reads private data and sends it to a server it controls | Reads are allowed only from a short list of trusted hosts; any other host pauses for approval; a read carrying a body or a long query is refused | The default policy is kept |
 | Data smuggled in a host name (DNS exfiltration) | A host name is not resolved until policy has approved a request to it | Always |
-| Edits to the log after the fact | Receipts are Ed25519-signed and hash-chained; `ovara log` and `ovara doctor` verify the chain | The signing key and the log are not both under the agent's control (see below) |
+| The agent sends data out through its own model API (an MCP connector, a web-fetch tool, an image "by URL" that the provider fetches) | Only the inference endpoints are allowed by default, and the proxy reads every model request body and refuses those features (`model_gate`) | The default policy is kept, and `model_gate` is on |
+| The agent adds its own credential (an account it controls) next to the one Ovara injects | On a host Ovara holds a key for, the agent's own credential headers are removed before the real one is attached | Always |
+| Edits to the log after the fact | Receipts are Ed25519-signed and hash-chained; `ovara log` and `ovara doctor` verify the chain and check it against the anchors written as it grew, so a log that was cut short, or cut and continued, fails | The signing key, the log and the local anchors are not all under the agent's control (see below) |
 | A crash re-running an approved action | The "executing" claim is written to disk before the action runs; if that write fails the action is refused | Always |
 | Silent loss of approvals/receipts after tampering | A configured store that cannot be opened stops startup instead of starting empty | Always |
 
@@ -41,14 +43,27 @@ decision is written to a signed, hash-chained receipt log.
 - **An agent with another way out.** Without a network boundary, anything the
   agent can reach directly (a second proxy, a mounted socket, another process)
   is outside Ovara.
-- **Approving the wrong thing.** The approval screen shows the method and URL
-  but not the request body or query string. A human who approves "send data to
-  github.com" has not seen what is sent.
+- **Approving the wrong thing.** The approval screen shows the method, the URL,
+  the query and the first 400 bytes of a text body. Values that look like
+  credentials or encoded blobs are masked but flagged with a warning and
+  their size. Bodies that are not text, compressed or streamed are not shown.
+  (Being fixed: the approval will be bound to the exact bytes sent.)
+- **Data moved through a trusted read host.** Reads from the trusted hosts are
+  free. The query of a read is capped, but an agent that controls an account
+  on a trusted host can still carry data in the URL path. The policy limits
+  *where*, not *what* (see below).
+- **`ovara box` tier 1 and the file system.** Tier 1 gives the agent its own
+  user and network namespace, not its own file system: it can read any file
+  that user can read, including the original project. Use tier 2 when that
+  matters.
 - **A stolen signing key.** Whoever holds the receipt or gateway key can forge
   receipts. Revoking the key makes later-dated forgeries fail, not backdated
   ones. Keys are files, not hardware-backed.
-- **Truncating the log's tail**, unless you configured an off-host anchor
-  (`gateway_anchor_url`). `ovara doctor` warns when you have not.
+- **Rewriting the log and its local anchors together.** The local anchors
+  (`var/anchors.jsonl`) catch a log that was cut or edited on its own, but
+  they sit next to it. Only an off-host anchor (`gateway_anchor_mode` with
+  `gateway_anchor_url`) survives someone who can write both. `ovara doctor`
+  warns when it is off.
 - **Non-HTTP protocols.** Only HTTP and HTTPS through the proxy are inspected.
   CONNECT is limited to port 443; HTTP/2, gRPC and WebSockets are not
   supported through the interception.
