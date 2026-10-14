@@ -47,15 +47,25 @@ func (c *adminClient) stale(a pendingApproval) bool {
 }
 
 // proxyWait reads the proxy's escalation window from proxy.json (the
-// proxy's own default is 60s).
+// proxy's own default is 60s): after it, approving changes nothing for the
+// agent, so older approvals are hidden. Under the retry answer
+// (escalate_on_timeout "retry", what `ovara init` writes) the agent sends
+// the request again and an approval given later still runs it, so nothing
+// is hidden: the window is reported as zero.
 func proxyWait(dir string) time.Duration {
 	sec := 60
 	if raw, err := os.ReadFile(filepath.Join(dir, "proxy.json")); err == nil {
 		var p struct {
-			Sec int `json:"escalate_timeout_sec"`
+			Sec    int    `json:"escalate_timeout_sec"`
+			Answer string `json:"escalate_on_timeout"`
 		}
-		if json.Unmarshal(raw, &p) == nil && p.Sec > 0 {
-			sec = p.Sec
+		if json.Unmarshal(raw, &p) == nil {
+			if p.Answer == "retry" {
+				return 0
+			}
+			if p.Sec > 0 {
+				sec = p.Sec
+			}
 		}
 	}
 	return time.Duration(sec) * time.Second

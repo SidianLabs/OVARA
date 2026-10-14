@@ -81,7 +81,7 @@ if ID=$(waitpending); then
   curl -s -H "Authorization: Bearer $TOK" http://127.0.0.1:9090/api/pending | grep -q "hello-body-marker" && ok "browser page gets the same preview" || bad "browser page has no preview" ""
   ovara deny "$ID" -dir /tmp/d >/dev/null 2>&1; wait $P
 else wait $P; bad "POST with a body did not pause" "got $(cat /tmp/c4)"; fi
-check "unanswered approval times out (neither hangs nor passes)" 504 "$(agent curl -s -o /dev/null -w '%{http_code}' --max-time 50 https://example.net/)"
+check "unanswered approval is held, then the agent is told to retry (503; neither hangs nor passes)" 503 "$(agent curl -s -o /dev/null -w '%{http_code}' --max-time 50 https://example.net/)"
 
 echo "=== D. keys stay with Ovara"
 if agent env | grep -q "$SECRET"; then bad "agent environment contains the real key" "found"; else ok "real key is NOT in the agent's environment"; fi

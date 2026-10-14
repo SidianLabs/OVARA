@@ -286,8 +286,11 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   `proxy.json` files keep `timeout` and 60 seconds until edited. It applies
   to HTTP requests, the proxy's own questions (packages, budgets, taint,
   model features) and MCP tool calls. `ovara log` shows such requests as
-  "told to retry". The agents battery's unanswered POST (A1) now expects
-  503.
+  "told to retry". The agents battery's unanswered POST (A1) and the
+  scenario suites' unanswered requests now expect 503. `ovara approvals`,
+  `ovara watch` and the approval page no longer hide a request once the
+  hold has elapsed under the retry answer: approving it still makes the
+  agent's retry run (under the timeout answer they hide it as before).
 - The box command gate and `ovara mcp wrap` claim approvals too, so every
   poller in the binary treats an approval as single-use.
 - Every refusal names the policy rule that decided (`rule` in the JSON
