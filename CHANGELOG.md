@@ -294,6 +294,14 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   CA. Names are then resolved by the upstream proxy after policy allowed
   the request; a non-public IP literal is still refused. `ovara doctor`
   checks both and warns when the shell's proxy is not in `proxy.json`.
+- **A GitHub Action.** `uses: SidianLabs/OVARA@<ref>` (action.yml at the
+  root) builds Ovara from the action's checkout, starts it for the job with
+  a profile, extra rules or a whole policy, and hands every later step the
+  environment that routes it through Ovara (`ovara env -shell github`, new:
+  NAME=value lines for `$GITHUB_ENV`; the proxy token is masked in logs).
+  Its post step stops Ovara and writes the verified receipts to the job
+  summary, with `ovara policy suggest` under the observe profile. The
+  `Action` workflow runs it against this repository.
 
 **`ovara run -- <agent>`: one command**
 

@@ -1,0 +1,33 @@
+name: "Ovara"
+description: "Put the rest of the job behind Ovara: a policy checkpoint for AI agents, with signed receipts. Nothing leaves without a rule, keys stay with Ovara, every decision is recorded."
+author: "SidianLabs"
+branding:
+  icon: shield
+  color: gray-dark
+inputs:
+  profile:
+    description: "Policy profile: strict (reads only from the trusted hosts; the default), balanced (reads from any public host, bounded and receipted) or observe (reads free; writes refused at once, never held; the job summary lists the rules a strict policy would need)."
+    default: "strict"
+  rules:
+    description: "Extra rules as a JSON array, put in front of the policy's rules: the one write this job makes, a host it reads. Each rule needs action_type, environment, resource and allow/deny/escalate."
+    default: ""
+  policy:
+    description: "A whole policy.json to use instead of the default, as a path in the workspace."
+    default: ""
+  hold-seconds:
+    description: "How long a request without a rule is held for an approval before the agent is told to retry (HTTP 503). Nobody answers in CI, so keep it short."
+    default: "10"
+  binary:
+    description: "An ovara binary to use instead of building one from this action's checkout."
+    default: ""
+outputs:
+  dir:
+    description: "The deployment directory: policy.json, proxy.json, run.log, var/receipts.jsonl."
+  receipts:
+    description: "The receipt chain, one signed line per decision."
+  binary:
+    description: "The ovara binary, for `ovara log`, `ovara policy suggest` and `ovara approve` in later steps."
+runs:
+  using: node24
+  main: action/main.js
+  post: action/post.js

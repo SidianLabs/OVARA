@@ -1,0 +1,59 @@
+name: Action
+
+# The GitHub Action at the root (action.yml), used from this checkout the
+# way another repository uses SidianLabs/OVARA@<ref>: it builds Ovara,
+# starts it for the job, and every later step goes through it; its post
+# step stops Ovara and writes the receipts summary.
+
+on:
+  pull_request:
+    paths: ["action.yml", "action/**", "proxy/**", ".github/workflows/action.yml"]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+      - name: Ovara (balanced profile, one allowed write)
+        id: ovara
+        uses: ./
+        with:
+          profile: balanced
+          hold-seconds: "5"
+          rules: '[{"action_type":"http.request","environment":"*","resource":"POST https://httpbin.org/anything/action/expected","allow":true,"description":"the one write this job makes"}]'
+      - name: Later steps go through Ovara
+        shell: bash
+        run: |
+          set -u
+          code() { curl -s -o /dev/null -w '%{http_code}' --max-time 40 "$@"; }
+          fail=0
+          check() { if [ "$2" = "$3" ]; then echo "PASS  $1"; else echo "FAIL  $1 -- want $2, got $3"; fail=1; fi; }
+          [ -n "${HTTPS_PROXY:-}" ] && echo "PASS  HTTPS_PROXY set by the action" || { echo "FAIL  HTTPS_PROXY is not set"; fail=1; }
+          check "a read from a trusted host" 200 "$(code https://pypi.org/simple/)"
+          check "balanced: a read from an unlisted host" 200 "$(code https://example.org/)"
+          check "the one allowed write" 200 "$(code -X POST -d x https://httpbin.org/anything/action/expected)"
+          check "any other write is held, then told to retry (503)" 503 "$(code -X POST -d x https://httpbin.org/anything/action/other)"
+          check "a known dump site is refused" 403 "$(code https://pastebin.com/)"
+          [ -s "${{ steps.ovara.outputs.receipts }}" ] && echo "PASS  receipts written" || { echo "FAIL  no receipts"; fail=1; }
+          "${{ steps.ovara.outputs.binary }}" log -dir "$OVARA_DIR" -verify-only || fail=1
+          exit $fail
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ovara-evidence
+          if-no-files-found: ignore
+          path: |
+            ${{ steps.ovara.outputs.dir }}/var/receipts.jsonl
+            ${{ steps.ovara.outputs.dir }}/var/anchors.jsonl
+            ${{ steps.ovara.outputs.dir }}/var/receipt_pubkey.hex
+            ${{ steps.ovara.outputs.dir }}/var/receipt_keys.jsonl
+            ${{ steps.ovara.outputs.dir }}/policy.json

@@ -234,3 +234,30 @@ func TestWriteEnv_Shells(t *testing.T) {
 		t.Error("unknown shell must error")
 	}
 }
+
+// -shell github prints one NAME=value per line, for $GITHUB_ENV: no quoting,
+// comments on their own lines, and secret-looking variables emptied since an
+// environment file cannot unset them.
+func TestAgentEnv_GitHubFormat(t *testing.T) {
+	vars := []envVar{{"HTTPS_PROXY", "http://agent:tok@127.0.0.1:9443", "every request goes through Ovara"}, {"SSL_CERT_FILE", "/d/var/ca.pem", ""}}
+	var b bytes.Buffer
+	if err := writeEnv(&b, "github", vars, []string{"a note"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUnsets(&b, "github", []string{"AWS_SECRET_ACCESS_KEY"}); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(b.String()), "\n") {
+		if !strings.HasPrefix(l, "#") {
+			lines = append(lines, l)
+		}
+	}
+	want := []string{"HTTPS_PROXY=http://agent:tok@127.0.0.1:9443", "SSL_CERT_FILE=/d/var/ca.pem", "AWS_SECRET_ACCESS_KEY="}
+	if strings.Join(lines, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q\nwant %q\n%s", lines, want, b.String())
+	}
+	if !strings.Contains(b.String(), "# NOTE: a note") || !strings.Contains(b.String(), "# every request goes through Ovara") {
+		t.Fatalf("comments:\n%s", b.String())
+	}
+}

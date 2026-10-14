@@ -110,7 +110,7 @@ func cmdEnv(args []string) error {
 	if runtime.GOOS == "windows" {
 		def = "powershell"
 	}
-	shell := fs.String("shell", def, "bash | powershell | cmd")
+	shell := fs.String("shell", def, "bash | powershell | cmd | github (NAME=value lines for a CI environment file such as $GITHUB_ENV)")
 	host := fs.String("host", "127.0.0.1", "address the agent uses to reach the proxy")
 	keepEnv := fs.Bool("keep-env", false, "do not unset other secret-looking variables (tokens, cloud keys) found in this shell")
 	agent := fs.String("agent", "", "the named agent this shell is for (ovara agent add NAME): its own proxy token, so receipts and approvals name it and ovara kill can stop it alone")
@@ -202,8 +202,10 @@ func writeUnsets(w io.Writer, shell string, names []string) error {
 	case "cmd":
 		comment = "rem"
 		line = func(n string) string { return "set \"" + n + "=\"" }
+	case "github", "env":
+		line = func(n string) string { return n + "=" } // an environment file cannot unset; empty is the next best
 	default:
-		return fmt.Errorf("unknown -shell %q (use bash, powershell or cmd)", shell)
+		return fmt.Errorf("unknown -shell %q (use bash, powershell, cmd or github)", shell)
 	}
 	fmt.Fprintf(w, "%s other secrets in this shell, removed so the agent does not inherit them (keep them with -keep-env)\n", comment)
 	for _, n := range names {
@@ -351,8 +353,12 @@ func writeEnv(w io.Writer, shell string, vars []envVar, notes []string) error {
 	case "cmd":
 		comment = "rem"
 		line = func(v envVar) string { return "set \"" + v.name + "=" + v.value + "\"" }
+	case "github", "env":
+		// one NAME=value per line, what $GITHUB_ENV and dotenv readers take
+		comment = "#"
+		line = func(v envVar) string { return v.name + "=" + v.value }
 	default:
-		return fmt.Errorf("unknown -shell %q (use bash, powershell or cmd)", shell)
+		return fmt.Errorf("unknown -shell %q (use bash, powershell, cmd or github)", shell)
 	}
 	fmt.Fprintf(w, "%s Ovara agent environment: run your agent in a shell with these set.\n", comment)
 	for _, n := range notes {

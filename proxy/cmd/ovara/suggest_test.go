@@ -33,6 +33,8 @@ func TestPolicySuggest_FromReceipts(t *testing.T) {
 		{Method: "GET", URL: "http://plain.example/", Decision: "allow", Status: 200, Rule: open, Agent: "a"},
 		{Method: "GET", URL: "https://10.0.0.5/", Decision: "escalate", Status: 503, Agent: "a"},
 		{Method: "DELETE", URL: "https://api.github.com/repos/acme/app", Decision: "escalate", Status: 503, Agent: "a"},
+		{Method: "GET", URL: "https://crates.io:443/api/v1/crates/serde", Decision: "escalate", Status: 503, Agent: "a"},
+		{Method: "POST", URL: "https://api.example.com:8443/v1/items", Decision: "escalate", Status: 503, Agent: "a"},
 		{Method: "POST", URL: "https://api.anthropic.com/v1/messages", Decision: "allow", Status: 200, Rule: "The agent may call its model", Agent: "a"},
 	} {
 		if _, err := chain.Append(e, false); err != nil {
@@ -54,13 +56,15 @@ func TestPolicySuggest_FromReceipts(t *testing.T) {
 		"GET https://docs.rs/*", "HEAD https://docs.rs/*",
 		"GET https://internal.example/*", "HEAD https://internal.example/*",
 		"POST https://api.example.com/v1/items", "DELETE https://api.github.com/repos/acme/app",
+		"GET https://crates.io/*", "HEAD https://crates.io/*", // the default port is dropped
+		"POST https://api.example.com:8443/v1/items",       // another port is kept
 	} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("missing %q in %v", want, got)
 		}
 	}
-	if len(got) != 6 {
-		t.Errorf("%d rules, want 6: %v", len(got), got)
+	if len(got) != 9 {
+		t.Errorf("%d rules, want 9: %v", len(got), got)
 	}
 	if d := got["GET https://docs.rs/*"]; !strings.Contains(d, "3 request(s)") || !strings.HasPrefix(d, "[suggested ") {
 		t.Errorf("docs.rs: %q", d)
@@ -68,7 +72,7 @@ func TestPolicySuggest_FromReceipts(t *testing.T) {
 	if d := got["POST https://api.example.com/v1/items"]; !strings.Contains(d, "2 time(s)") || !strings.Contains(d, "exactly this write") {
 		t.Errorf("write: %q", d)
 	}
-	if !strings.Contains(summary, "2 host(s) to read, 2 write(s) to decide") || !strings.Contains(summary, "verifies") {
+	if !strings.Contains(summary, "3 host(s) to read, 3 write(s) to decide") || !strings.Contains(summary, "verifies") {
 		t.Errorf("summary: %s", summary)
 	}
 

@@ -332,6 +332,39 @@ policy has allowed the request; an IP literal that is not public is still
 refused by Ovara. `ovara doctor` checks both settings, and warns when this
 shell has a proxy in its environment that `proxy.json` does not know about.
 
+### In GitHub Actions
+
+One step puts the rest of the job behind Ovara. The action builds Ovara from
+its own checkout (pin a release tag once there is one):
+
+```yaml
+- uses: SidianLabs/OVARA@main
+  id: ovara
+  with:
+    profile: balanced          # strict (default) | balanced | observe
+    rules: '[{"action_type":"http.request","environment":"*","resource":"POST https://api.github.com/repos/acme/app/pulls","allow":true}]'
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # keys go to Ovara, never to the agent
+- run: opencode run "fix the failing test"     # HTTPS_PROXY and the CA are set: this goes through Ovara
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: ovara-evidence
+    path: |
+      ${{ steps.ovara.outputs.dir }}/var/receipts.jsonl
+      ${{ steps.ovara.outputs.dir }}/var/receipt_pubkey.hex
+```
+
+Every later step inherits Ovara's environment: its requests go through Ovara,
+the real keys stay with Ovara (the steps see placeholders, and other
+secret-looking variables are emptied), a request without a rule is held for
+`hold-seconds` (10) and then told to retry (503), and when the job ends the
+action's post step stops Ovara and writes the verified receipts to the job
+summary, with the rules an `observe` run would have needed. Inputs: `profile`,
+`rules` (a JSON array put in front of the policy), `policy` (a whole
+`policy.json`), `hold-seconds`, `binary`. `.github/workflows/action.yml` runs
+it against this repository on every change.
+
 ### Several agents, and stopping one
 
 Give each agent its own proxy token, so the log and every approval say

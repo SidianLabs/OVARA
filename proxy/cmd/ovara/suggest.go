@@ -154,7 +154,7 @@ func suggestFor(r receipts.Receipt) (resource string, write, ok bool) {
 	if !hostPattern.MatchString(host) || net_isIP(host) {
 		return "", false, false
 	}
-	if p := u.Port(); p != "" {
+	if p := u.Port(); p != "" && p != "443" { // receipts carry the canonical URL, default port included
 		host += ":" + p
 	}
 	path := u.EscapedPath()

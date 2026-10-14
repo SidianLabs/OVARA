@@ -193,7 +193,9 @@ policy file without that field any deny wins, so the catch-all would also
 block the allowed write; add the field, or keep the catch-all as an
 escalation with a short timeout.
 
-Run Ovara in the same job as a background step (`ovara run -dir d -ui off &`,
+In GitHub Actions, `uses: SidianLabs/OVARA@main` does all of this in one step
+(README, "In GitHub Actions"). By hand:
+run Ovara in the same job as a background step (`ovara run -dir d -ui off &`,
 wait for the proxy port, `eval "$(ovara env -dir d)"`). It stops on SIGTERM
 when the job ends. This is cooperative mode: it limits what an agent does by
 mistake, not what a compromised job can do.
