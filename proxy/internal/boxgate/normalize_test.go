@@ -31,6 +31,18 @@ func TestPolicyLine(t *testing.T) {
 		// a shell's -c line, tidied
 		{[]string{"/bin/bash", "-c", "rm   -rf\t/tmp/x"}, "rm -rf /tmp/x"},
 		{[]string{"sh", "-c", "a && b"}, "a && b"},
+		// a git subcommand hidden behind a shell alias (leading "!") is
+		// flattened, not dropped: the alias body's own execs are stopped
+		// at their exec, and the flattened line still reads "git push".
+		{[]string{"git", "-c", "alias.ship=!git push --force", "ship"}, "git push --force"},
+		// an unknown git global option must not swallow the subcommand:
+		// --exec-path=... is skipped, "push" is still read.
+		{[]string{"git", "--exec-path=/x", "push", "origin"}, "git push origin"},
+		// -c with its value attached (-ckey=value) is still a global option.
+		{[]string{"git", "-cuser.name=x", "push"}, "git push"},
+		// a recursive delete stays visible when its flags are split and
+		// reordered around the operands, long and short forms mixed.
+		{[]string{"rm", "--force", "-v", "x", "-r", "y"}, "rm -rfv x y"},
 		// anything else: just white space
 		{[]string{"find", ".", "-name", "*.o", "-delete"}, "find . -name *.o -delete"},
 		{[]string{"python3", "-c", "print( 1 )"}, "python3 -c print( 1 )"},
@@ -47,6 +59,8 @@ func TestPolicyLine(t *testing.T) {
 		{Exe: "/usr/bin/rm", Argv: []string{"rm", "--r", "--f", "x"}},
 		{Exe: "/usr/bin/rm", Argv: []string{"tidy", "-rf", "/w"}},
 		{Exe: "/usr/bin/rm", Argv: []string{"sh", "-rf", "/w"}},
+		// a copy of rm renamed to "git" is read as rm, not git.
+		{Exe: "/usr/bin/rm", Argv: []string{"git", "-rf", "/w"}},
 	} {
 		if got := PolicyLine(e); !strings.HasPrefix(got, "rm -rf") {
 			t.Errorf("%q (image %s): %q", e.Argv, e.Exe, got)

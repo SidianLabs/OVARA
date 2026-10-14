@@ -43,7 +43,15 @@ func PolicyLine(e Exec) string {
 	args := e.Argv[1:]
 	switch name {
 	case "git":
-		args = gitArgs(args)
+		var shell bool
+		args, shell = gitArgs(args)
+		if shell {
+			// A "!" git alias runs an arbitrary shell command, not a git
+			// subcommand, so it reads as that command with no "git" before
+			// it (the same way an `sh -c` line does). The command's own
+			// execs are stopped and judged at their exec regardless.
+			return strings.Join(strings.Fields(strings.Join(args, " ")), " ")
+		}
 	case "rm":
 		args = rmArgs(args)
 	}
@@ -77,8 +85,10 @@ var gitOptsWithValue = map[string]bool{
 }
 
 // gitArgs drops git's global options and resolves a -c alias for the
-// subcommand.
-func gitArgs(args []string) []string {
+// subcommand. shell is true when the resolved alias was a "!" shell alias,
+// in which case the returned words are a whole command line, not git's
+// arguments (see PolicyLine).
+func gitArgs(args []string) (rest []string, shell bool) {
 	aliases := map[string]string{}
 	i := 0
 	for i < len(args) && strings.HasPrefix(args[i], "-") {
@@ -99,14 +109,15 @@ func gitArgs(args []string) []string {
 		}
 		i++ // --git-dir=x, --no-pager, -P, --bare, ...
 	}
-	rest := args[i:]
+	rest = args[i:]
 	if len(rest) > 0 {
 		if expansion, ok := aliases[strings.ToLower(rest[0])]; ok {
-			expansion = strings.TrimPrefix(expansion, "!") // a shell alias runs its own execs anyway
-			rest = append(strings.Fields(expansion), rest[1:]...)
+			body, isShell := strings.CutPrefix(expansion, "!")
+			rest = append(strings.Fields(body), rest[1:]...)
+			shell = isShell
 		}
 	}
-	return rest
+	return rest, shell
 }
 
 func addAlias(aliases map[string]string, kv string) {
