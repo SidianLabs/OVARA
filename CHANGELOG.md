@@ -670,6 +670,45 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   pauses at its first request; npm install scripts are off. `dev`
   (default) is unchanged. Tested end to end with real npm and pip
   (`tests/box/strict.sh`, 23 checks).
+- **The box image is published with each release** to
+  `ghcr.io/sidianlabs/ovara-box` (amd64 and arm64, SBOM, signed
+  provenance), and a released `ovara` defaults to it by digest, so tier 2
+  needs no local build. The release's Docker actions are pinned by commit;
+  every pull request builds the image for both architectures.
+- **Receipt retention for long runs.** Before a receipt is appended to a
+  current file that has reached `receipts_segment_bytes` (default 64 MiB;
+  a negative value never), the file is synced, compressed into a numbered
+  segment next to it (`receipts.000001.jsonl.gz`, ...) and emptied, and
+  the same chain goes on in the fresh file. The segments are part of the
+  chain: `ovara log`, the approval page, exports, bundles, attestations
+  and every verification walk them in order, and a segment missing, edited
+  or out of order fails verification like any other cut (`ovara run` then
+  refuses to resume). Nothing is deleted by Ovara; a rotation a crash cut
+  short is finished at the next start. `ovara doctor` reports the chain's
+  size on disk, segments and all, and warns over `receipts_warn_bytes`
+  (default 256 MiB), since every verification still reads the whole
+  chain. 100k receipts: 46 MB raw, 12 MB on disk, verified end to end.
+- **Ready-made agent images and `ovara box -agent-image`.** Releases
+  publish `ghcr.io/sidianlabs/ovara-box-<agent>` for claude, codex,
+  opencode and aider (`box/agents/Dockerfile`); `sudo ovara box
+  -agent-image codex ./repo -- codex` needs nothing else (`-agent NAME`
+  remains the named agent a run acts as). The tier 2 agent tests now run
+  from these images. The battery's raw-TCP check (B5) uses bash's
+  `/dev/tcp`, so a missing `nc` can no longer make it pass.
+- **Aider tested behind Ovara**, in cooperative, enforced, tier 1 box and
+  tier 2 box modes, with the same 27-command battery as the other three
+  agents (`tests/agents/aider.sh`).
+- **Box image: pip works in a virtualenv.** `box/Dockerfile` set
+  `PIP_USER=1`, which makes pip refuse every install inside a virtualenv;
+  removed, and the tier 2 box test checks it.
+- **`ovara box -profile ci`: nothing waits for a person.** Strict installs
+  plus an unattended run (`ovara run -unattended`): anything policy would
+  pause (a request to an untrusted host, an unpinned package, a command
+  like `rm -rf`, the commit-back) is refused at once, and no approval is
+  opened. Unattended, every gate that would hold a request refuses it the
+  same way, whatever asked: a TCP connection, an MCP tool call, an API
+  operation, a download, a content or flow rule; the refusal and its
+  receipt say `unattended`. Tested in `tests/box/strict.sh`.
 - **The docker boundary recipe is now tested.** `setup-egress-boundary.sh
   docker` (`ovara run --boundary docker`) had never been run. The red team
   now runs against it (`tests/redteam/boundary/docker.sh`) with a probe

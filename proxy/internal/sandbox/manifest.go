@@ -37,8 +37,9 @@ type Manifest struct {
 	// Deployment is Ovara's own directory for this run (policy.json,
 	// proxy.json, keys); empty means the default (~/.ovara/box).
 	Deployment string `json:"deployment,omitempty"`
-	// Profile is "dev" (installs are free) or "strict" (a dependency not
-	// in the project's lockfiles pauses once). The default is "dev".
+	// Profile is "dev" (installs are free), "strict" (a dependency not in
+	// the project's lockfiles pauses once) or "ci" (strict, and whatever
+	// would pause is refused at once: no one answers). The default is "dev".
 	Profile string `json:"profile,omitempty"`
 	// UntrustedLockfiles, with the strict profile, trusts nothing the
 	// project's lockfiles pin (a repository under review, not one's own).
@@ -131,6 +132,7 @@ type CommitBack struct {
 const (
 	ProfileDev     = "dev"
 	ProfileStrict  = "strict"
+	ProfileCI      = "ci"
 	RootFSIsolated = "isolated"
 	RootFSHost     = "host"
 	ScopeRepo      = "repo"
@@ -201,12 +203,12 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	switch m.Profile {
-	case "", ProfileDev, ProfileStrict:
+	case "", ProfileDev, ProfileStrict, ProfileCI:
 	default:
-		return fmt.Errorf("profile %q: want %q or %q", m.Profile, ProfileDev, ProfileStrict)
+		return fmt.Errorf("profile %q: want %q, %q or %q", m.Profile, ProfileDev, ProfileStrict, ProfileCI)
 	}
-	if m.UntrustedLockfiles && m.Profile != ProfileStrict {
-		return errors.New("untrusted_lockfiles is for the strict profile (the dev profile asks about no package)")
+	if m.UntrustedLockfiles && m.Profile != ProfileStrict && m.Profile != ProfileCI {
+		return errors.New("untrusted_lockfiles is for the strict profile, or ci (the dev profile asks about no package)")
 	}
 	switch m.Isolation.RootFS {
 	case "", RootFSIsolated, RootFSHost:

@@ -309,7 +309,7 @@ func auditPermissions(dir string, cfg *config.Config) []check {
 	// Activity records name every host and path the agent used (some APIs
 	// carry secrets in the path); other users must not read them.
 	var records []string
-	for _, f := range []string{cfg.ReceiptsFile, receipts.AnchorPathFor(cfg.ReceiptsFile), "var/log/decisions.jsonl", "var/log", "var/data", "var"} {
+	for _, f := range recordFiles(dir, cfg) {
 		if f == "" {
 			continue
 		}
@@ -438,4 +438,17 @@ func auditReceipts(dir string, cfg *config.Config) []check {
 		return []check{{"receipt chain", "WARN", fmt.Sprintf("%d receipts verified, but no anchors: a log cut short at the end would not be noticed", res.Total)}}
 	}
 	return []check{{"receipt chain", "PASS", fmt.Sprintf("%d receipts verified against %d local anchors", res.Total, res.Anchors)}}
+}
+
+// recordFiles are the files of the deployment that hold activity records,
+// relative to dir: the receipt chain and its segments, the anchors and the
+// gateway's own logs.
+func recordFiles(dir string, cfg *config.Config) []string {
+	files := []string{cfg.ReceiptsFile, receipts.AnchorPathFor(cfg.ReceiptsFile), "var/log/decisions.jsonl", "var/log", "var/data", "var"}
+	for _, s := range receipts.SegmentFiles(filepath.Join(dir, cfg.ReceiptsFile)) {
+		if rel, err := filepath.Rel(dir, s); err == nil {
+			files = append(files, rel)
+		}
+	}
+	return files
 }

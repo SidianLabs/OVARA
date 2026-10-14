@@ -127,10 +127,17 @@ cat var/data/events.jsonl | jq -r '.event_type' | sort | uniq -c | sort -rn
 
 The receipt chain is append-only and verified whole: `ovara log`, `ovara
 log export`, the incident bundle and every run's attestation read it from
-the first line. It grows with every request (a few hundred bytes each),
-and a deployment that runs for months should plan for that rather than let
-one file carry a year. `ovara doctor` says how big it is and warns past
-256 MiB.
+the first line. It grows with every request (a few hundred bytes each).
+Past `receipts_segment_bytes` (64 MiB by default; a negative value turns
+this off) the current file is compressed into a numbered segment next to
+it (`receipts.000001.jsonl.gz`, then `000002`, ...) and the chain goes on
+in a fresh file. The segments are part of the chain, not an archive:
+every reader and the verifier walk them in order, and a segment missing,
+edited or out of order fails verification like any other cut. Nothing is
+deleted by Ovara. A deployment that runs for months should still plan for
+the whole: `ovara doctor` says how big the chain is on disk and warns past
+`receipts_warn_bytes` (256 MiB by default), because every verification
+reads all of it.
 
 What keeps the record whole and checkable:
 
@@ -145,13 +152,15 @@ What keeps the record whole and checkable:
   ```
 
 - **Bundle before you rotate.** `ovara incident bundle -dir D -out
-  case.tar.gz` packs the chain, anchors, key history, policy and the
-  attestations; it verifies offline, and it is what you hand to an auditor.
+  case.tar.gz` packs the chain (every segment and the current file, as one
+  file), anchors, key history, policy and the attestations; it verifies
+  offline, and it is what you hand to an auditor.
 - **Rotate the deployment, not the file.** To start afresh, stop Ovara,
   bundle, and begin a new deployment directory (`ovara init`) for new
-  runs; keep the old one read-only. Do not cut the live chain by hand: the
-  resume check refuses a chain whose start does not match its anchors, and
-  that is the point of it.
+  runs; keep the old one read-only. Do not cut the live chain by hand, and
+  do not move its segments away: the resume check refuses a chain whose
+  start does not match its anchors or whose segments are not all there,
+  and that is the point of it.
 - **Attestations** are one small file per run under `var/attestations`;
   they travel with the bundle and can be archived with the exports.
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"ovara.proxy/internal/config"
+	"ovara.proxy/internal/receipts"
 	"ovara.proxy/internal/sandbox"
 	"ovara.runtime.gateway/pkg/server"
 )
@@ -157,24 +158,20 @@ func printRunSummary(receiptsFile string, skip int) (c sandbox.Counts, hosts int
 // tallyReceipts counts the receipts after the first skip lines by decision,
 // and the distinct hosts they name.
 func tallyReceipts(receiptsFile string, skip int) (c sandbox.Counts, hosts, total int) {
-	b, _ := os.ReadFile(receiptsFile) // absent: a run that made no request
 	seen := map[string]bool{}
 	n := 0
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		if line == "" {
-			continue
-		}
+	_ = receipts.ForEachLine(receiptsFile, func(line []byte) error { // absent: a run that made no request
 		n++
 		if n <= skip {
-			continue
+			return nil
 		}
 		total++
 		var r struct {
 			Decision string `json:"decision"`
 			URL      string `json:"url"`
 		}
-		if json.Unmarshal([]byte(line), &r) != nil {
-			continue
+		if json.Unmarshal(line, &r) != nil {
+			return nil
 		}
 		switch r.Decision {
 		case "allow":
@@ -193,16 +190,13 @@ func tallyReceipts(receiptsFile string, skip int) (c sandbox.Counts, hosts, tota
 			}
 			seen[h] = true
 		}
-	}
+		return nil
+	})
 	return c, len(seen), total
 }
 
-// receiptLineCount is the number of lines in the receipts file (0 when it
-// does not exist yet).
+// receiptLineCount is the number of receipts in the chain, segments
+// included (0 when it does not exist yet).
 func receiptLineCount(path string) int {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	return strings.Count(string(b), "\n")
+	return receipts.Count(path)
 }

@@ -34,6 +34,13 @@ type Config struct {
 	ReceiptKeyFile string `json:"receipt_key_file"` // ed25519 private key (hex) for receipt signing
 	ReceiptsFile   string `json:"receipts_file"`    // JSONL append-only receipt chain
 	PubKeyFile     string `json:"pubkey_file"`      // where to write the receipt verify pubkey
+	// ReceiptsSegmentBytes is the size at which the current receipts file is
+	// compressed into a numbered segment and started afresh (0: 64 MiB;
+	// negative: never, one file that grows without limit).
+	ReceiptsSegmentBytes int64 `json:"receipts_segment_bytes,omitempty"`
+	// ReceiptsWarnBytes is the chain's size on disk, segments included,
+	// past which `ovara doctor` says to export and start afresh (0: 256 MiB).
+	ReceiptsWarnBytes int64 `json:"receipts_warn_bytes,omitempty"`
 
 	FailOpen bool `json:"fail_open"` // DANGEROUS: allow when gateway unreachable
 
@@ -209,6 +216,12 @@ func Load(path string) (*Config, error) {
 	}
 	if c.PubKeyFile == "" {
 		c.PubKeyFile = "var/receipt_pubkey.hex"
+	}
+	if c.ReceiptsSegmentBytes == 0 {
+		c.ReceiptsSegmentBytes = 64 << 20
+	}
+	if c.ReceiptsWarnBytes <= 0 {
+		c.ReceiptsWarnBytes = 256 << 20
 	}
 	if c.RevokedAgentsFile == "" {
 		c.RevokedAgentsFile = "var/revoked_agents.json"

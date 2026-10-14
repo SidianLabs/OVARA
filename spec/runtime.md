@@ -37,7 +37,7 @@ are refused, so a misspelt member never silently means the default.
 | `agent.name` | a named agent (`ovara agent add NAME`): its own proxy token, so receipts and approvals name it |
 | `agent.env` | extra variables for the agent; a name containing key, token, secret, password, passwd or credential is refused, whatever the value |
 | `deployment` | Ovara's directory for the run (policy, keys, receipts); default `~/.ovara/box` |
-| `profile` | `dev` (default): installs are free; `strict`: a dependency the project's lockfiles do not pin pauses once |
+| `profile` | `dev` (default): installs are free; `strict`: a dependency the project's lockfiles do not pin pauses once; `ci`: strict, and nothing waits for a person: whatever would pause is refused at once |
 | `untrusted_lockfiles` | strict: trust nothing the lockfiles pin |
 | `isolation` | tier 1: `name` (network namespace), `user`, `root_fs` (`isolated`, default, or `host`), `allow_visible_procs`; tier 2: `image` |
 | `mounts` | read-only `SRC:DST` pairs; secret and system locations are refused by the launcher |

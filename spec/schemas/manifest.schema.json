@@ -12,7 +12,7 @@
     "workspace": { "$ref": "#/$defs/workspace" },
     "agent": { "$ref": "#/$defs/agent" },
     "deployment": { "type": "string", "description": "Ovara's own directory for the run (policy.json, proxy.json, keys); empty means the default." },
-    "profile": { "type": "string", "enum": ["dev", "strict"], "description": "dev: installs are free. strict: a dependency not in the project's lockfiles pauses once, and npm install scripts are off." },
+    "profile": { "type": "string", "enum": ["dev", "strict", "ci"], "description": "dev: installs are free. strict: a dependency not in the project's lockfiles pauses once, and npm install scripts are off. ci: strict, and nothing waits for a person: whatever would pause is refused at once." },
     "untrusted_lockfiles": { "type": "boolean", "description": "strict: trust nothing the project's lockfiles pin." },
     "isolation": { "$ref": "#/$defs/isolation" },
     "mounts": { "type": "array", "items": { "type": "string", "pattern": "^[^:]+:[^:]+$" }, "description": "Host paths mounted read-only into the box, as SRC:DST. Secret locations are refused by the launcher." },

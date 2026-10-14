@@ -8,9 +8,9 @@
 #   tests/agents/run.sh harness           a custom agent harness against the
 #                                         gateway's decision API (SDK + agent token)
 #
-# AGENT is opencode (default), anthropic or codex. PROFILE=balanced runs the
-# deployment under the balanced profile; UPSTREAM=1 puts a CONNECT proxy
-# between Ovara and the internet (battery.sh).
+# AGENT is opencode (default), anthropic, codex or aider. PROFILE=balanced
+# runs the deployment under the balanced profile; UPSTREAM=1 puts a CONNECT
+# proxy between Ovara and the internet (battery.sh).
 #
 # Needs Docker and outbound internet. It builds the checked-out commit inside
 # a Linux container, so it tests what is committed, not your working tree
@@ -25,10 +25,10 @@ if command -v cygpath >/dev/null 2>&1; then repo="$(cygpath -w "$repo")"; here="
 
 case "$what" in
   coop|enforced|box)
-    case "$agent" in opencode|anthropic|codex) ;; *) echo "unknown agent: $agent" >&2; exit 2 ;; esac
+    case "$agent" in opencode|anthropic|codex|aider) ;; *) echo "unknown agent: $agent" >&2; exit 2 ;; esac
     script=$agent.sh; expect='^RESULT\[.*\]: [0-9]+ passed, 0 failed' ;;
   harness)       script=harness.sh;  expect='^HARNESS_RESULT [0-9]+ passed 0 failed' ;;
-  *) echo "usage: $0 coop|enforced|box|harness [opencode|anthropic|codex]" >&2; exit 2 ;;
+  *) echo "usage: $0 coop|enforced|box|harness [opencode|anthropic|codex|aider]" >&2; exit 2 ;;
 esac
 flags=()
 [ "$what" = enforced ] || [ "$what" = box ] && flags+=(--privileged)

@@ -224,6 +224,9 @@ type Chain struct {
 	f         *os.File // the chain file, opened on first append
 	size      int64    // bytes of whole lines in the file
 
+	segmentBytes   int64 // rotate the current file into a compressed segment at this size (segments.go); 0 = never
+	rotatedThrough int   // seq the last rotation synced to disk before compressing the file
+
 	// Group commit: a durable append waits until an fsync that started
 	// after its write has finished. Concurrent waiters share one fsync.
 	syncMu sync.Mutex
@@ -237,10 +240,14 @@ type Chain struct {
 // LoadOrCreate opens (or creates) the receipt chain and signing key.
 // The public key is written to pubKeyFile for verifier distribution.
 func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
+	if err := repairInterruptedRotation(path); err != nil {
+		return nil, fmt.Errorf("receipts %s: %w", path, err)
+	}
 	data, readErr := os.ReadFile(path)
 	if readErr != nil && !os.IsNotExist(readErr) {
 		return nil, fmt.Errorf("receipts %s: %w", path, readErr)
 	}
+	segs := SegmentFiles(path)
 	key, err := loadKey(keyFile)
 	if err != nil {
 		// A missing key generates a fresh one; a corrupt one must never be
@@ -251,7 +258,7 @@ func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
 		// A missing key next to existing receipts is not a fresh start: a
 		// new key would replace the public key those receipts verify
 		// against. Restore the key, or rotate it on purpose.
-		if len(bytes.TrimSpace(data)) > 0 {
+		if len(bytes.TrimSpace(data)) > 0 || len(segs) > 0 {
 			return nil, fmt.Errorf("receipt key %s is missing but %s holds receipts: restore the key, or run `ovara keys rotate-receipt` to start a new one on purpose", keyFile, path)
 		}
 		_, key, err = ed25519.GenerateKey(rand.Reader)
@@ -273,7 +280,8 @@ func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
 	}
 	c := &Chain{key: key, keyID: KeyID(pub), sessionID: newID(), path: path}
 	// Resume chain head and length so restarts continue the chain rather
-	// than fork it.
+	// than fork it: the head is the last receipt of the current file, or,
+	// right after a rotation, of the newest segment.
 	if len(data) > 0 {
 		c.seq = bytes.Count(data, []byte{'\n'})
 		if data[len(data)-1] != '\n' {
@@ -286,7 +294,18 @@ func LoadOrCreate(path, keyFile, pubKeyFile string) (*Chain, error) {
 			return nil, fmt.Errorf("receipts %s: unparseable last line: %w (refusing to fork chain)", path, err)
 		}
 		c.prevHash = hashLine(lastLine)
+	} else if len(segs) > 0 {
+		lastLine, err := lastLineOf(segs[len(segs)-1])
+		if err != nil {
+			return nil, fmt.Errorf("receipts %s: %w (refusing to fork chain)", segs[len(segs)-1], err)
+		}
+		if _, err := parseLine(lastLine); err != nil {
+			return nil, fmt.Errorf("receipts %s: unparseable last line: %w (refusing to fork chain)", segs[len(segs)-1], err)
+		}
+		c.prevHash = hashLine(lastLine)
 	}
+	// seq is the position in the whole chain, segments included
+	c.seq += countLines(segs)
 	return c, nil
 }
 
@@ -382,6 +401,7 @@ func (c *Chain) Append(e Entry, durable bool) (*Receipt, error) {
 		c.mu.Unlock()
 		return nil, err
 	}
+	c.rotateIfFullLocked()
 	if err := c.writeLocked(append(line, '\n')); err != nil {
 		c.mu.Unlock()
 		return nil, err
@@ -403,25 +423,8 @@ func (c *Chain) Append(e Entry, durable bool) (*Receipt, error) {
 // off, so a full disk never leaves half a line that would break the chain
 // for every later receipt. Called with c.mu held.
 func (c *Chain) writeLocked(line []byte) error {
-	if c.f == nil {
-		if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
-			return err
-		}
-		_, statErr := os.Stat(c.path)
-		// 0600: receipts contain request URLs — not world-readable.
-		f, err := os.OpenFile(c.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-		if err != nil {
-			return err
-		}
-		fi, err := f.Stat()
-		if err != nil {
-			f.Close()
-			return err
-		}
-		if os.IsNotExist(statErr) {
-			syncDir(filepath.Dir(c.path)) // the new file's name must survive a crash too
-		}
-		c.f, c.size = f, fi.Size()
+	if err := c.openLocked(); err != nil {
+		return err
 	}
 	n, err := c.f.Write(line)
 	if err == nil && n != len(line) {
@@ -437,6 +440,32 @@ func (c *Chain) writeLocked(line []byte) error {
 	return nil
 }
 
+// openLocked opens the chain file unless it is open. Called with c.mu held.
+func (c *Chain) openLocked() error {
+	if c.f != nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
+		return err
+	}
+	_, statErr := os.Stat(c.path)
+	// 0600: receipts contain request URLs — not world-readable.
+	f, err := os.OpenFile(c.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return err
+	}
+	if os.IsNotExist(statErr) {
+		syncDir(filepath.Dir(c.path)) // the new file's name must survive a crash too
+	}
+	c.f, c.size = f, fi.Size()
+	return nil
+}
+
 // syncThrough returns once the file is synced through receipt seq. The
 // first waiter syncs everything written so far; waiters that arrive while
 // it runs find their receipt covered and return without a second fsync.
@@ -447,9 +476,17 @@ func (c *Chain) syncThrough(seq int) error {
 		return nil
 	}
 	c.mu.Lock()
-	upto, f := c.seq, c.f
+	upto, f, rotated := c.seq, c.f, c.rotatedThrough
 	c.mu.Unlock()
 	if f == nil {
+		// no file open: receipts up to the last rotation went to disk
+		// before their segment was made
+		if rotated >= seq {
+			if rotated > c.synced {
+				c.synced = rotated
+			}
+			return nil
+		}
 		return errors.New("receipt file not open")
 	}
 	if err := f.Sync(); err != nil {
@@ -528,24 +565,35 @@ type Segment struct {
 }
 
 func verifySegment(path string, ring *KeyRing, seg Segment) (*VerifyResult, []string, []Verified) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return &VerifyResult{Reason: err.Error()}, nil, nil
+	segs := segmentsOf(path)
+	if n := missingSegment(segs); n != 0 {
+		return &VerifyResult{Reason: fmt.Sprintf("receipt segment %06d is missing: the chain is cut at the front", n)}, nil, nil
 	}
-	return verifyData(data, ring, seg)
+	if len(segs) == 0 {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return &VerifyResult{Reason: err.Error()}, nil, nil
+		}
+		return verifyData(data, ring, seg)
+	}
+	// a rotated chain is read segment by segment, never all at once
+	v := newChainVerifier(ring, seg)
+	reason := ""
+	err := ForEachLine(path, func(line []byte) error {
+		if reason = v.step(line); reason != "" {
+			return errStopWalk
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errStopWalk) {
+		return v.fail(err.Error())
+	}
+	return v.result(reason)
 }
 
 // verifyData is verifySegment over chain bytes already read.
 func verifyData(data []byte, ring *KeyRing, seg Segment) (*VerifyResult, []string, []Verified) {
-	prevHash := seg.PrevHash
-	var heads []string
-	var recs []Verified
-	attempts := map[string]bool{}
-	total, v1 := 0, 0
-	seenV2 := false
-	fail := func(reason string) (*VerifyResult, []string, []Verified) {
-		return &VerifyResult{Total: total, FailAt: total, Reason: reason, V1: v1}, heads, recs
-	}
+	v := newChainVerifier(ring, seg)
 	start := 0
 	for i := 0; i <= len(data); i++ {
 		if i < len(data) && data[i] != '\n' {
@@ -556,59 +604,99 @@ func verifyData(data []byte, ring *KeyRing, seg Segment) (*VerifyResult, []strin
 		if len(line) == 0 {
 			continue
 		}
-		r, err := parseLine(line)
-		if err != nil {
-			return fail(err.Error())
+		if reason := v.step(line); reason != "" {
+			return v.fail(reason)
 		}
-		if r.PrevHash != prevHash {
-			return fail("chain link broken (prev_hash mismatch)")
-		}
-		switch r.V {
-		case 0:
-			if seenV2 {
-				return fail("legacy v1 receipt after v2 receipts")
-			}
-			if r.hasV2Fields() {
-				return fail("v1 receipt carries fields its signature does not cover")
-			}
-			if !strings.HasPrefix(r.Signature, sigV1Prefix) {
-				return fail("signature invalid")
-			}
-			if err := ring.verify(r, []byte(r.canonicalV1()), r.Signature[len(sigV1Prefix):]); err != nil {
-				return fail(err.Error())
-			}
-			v1++
-		case 2:
-			seenV2 = true
-			if !strings.HasPrefix(r.Signature, sigV2Prefix) {
-				return fail("signature invalid")
-			}
-			if err := ring.verify(r, r.canonicalV2(), r.Signature[len(sigV2Prefix):]); err != nil {
-				return fail(err.Error())
-			}
-			switch r.Phase {
-			case "", "attempt":
-			case "outcome":
-				// In a segment the attempt may sit just before the cut.
-				if !attempts[r.AttemptID] && seg.After == 0 {
-					return fail("outcome receipt names no earlier attempt")
-				}
-				delete(attempts, r.AttemptID)
-			default:
-				return fail("unknown receipt phase")
-			}
-			if r.Phase == "attempt" {
-				attempts[r.ReceiptID] = true
-			}
-		default:
-			return fail(fmt.Sprintf("unknown receipt version %d", r.V))
-		}
-		prevHash = hashLine(line)
-		heads = append(heads, prevHash)
-		recs = append(recs, Verified{Receipt: r, Line: append([]byte(nil), line...)})
-		total++
 	}
-	return &VerifyResult{Total: total, Valid: true, V1: v1}, heads, recs
+	return v.result("")
+}
+
+const reasonSignatureInvalid = "signature invalid"
+
+// chainVerifier checks a chain one line at a time: links, signatures, key
+// history, version order and the attempt/outcome pairing.
+type chainVerifier struct {
+	ring     *KeyRing
+	seg      Segment
+	prevHash string
+	heads    []string
+	recs     []Verified
+	attempts map[string]bool
+	total    int
+	v1       int
+	seenV2   bool
+}
+
+func newChainVerifier(ring *KeyRing, seg Segment) *chainVerifier {
+	return &chainVerifier{ring: ring, seg: seg, prevHash: seg.PrevHash, attempts: map[string]bool{}}
+}
+
+// step verifies one line and returns why it fails, or "".
+func (v *chainVerifier) step(line []byte) string {
+	r, err := parseLine(line)
+	if err != nil {
+		return err.Error()
+	}
+	if r.PrevHash != v.prevHash {
+		return "chain link broken (prev_hash mismatch)"
+	}
+	switch r.V {
+	case 0:
+		if v.seenV2 {
+			return "legacy v1 receipt after v2 receipts"
+		}
+		if r.hasV2Fields() {
+			return "v1 receipt carries fields its signature does not cover"
+		}
+		if !strings.HasPrefix(r.Signature, sigV1Prefix) {
+			return reasonSignatureInvalid
+		}
+		if err := v.ring.verify(r, []byte(r.canonicalV1()), r.Signature[len(sigV1Prefix):]); err != nil {
+			return err.Error()
+		}
+		v.v1++
+	case 2:
+		v.seenV2 = true
+		if !strings.HasPrefix(r.Signature, sigV2Prefix) {
+			return reasonSignatureInvalid
+		}
+		if err := v.ring.verify(r, r.canonicalV2(), r.Signature[len(sigV2Prefix):]); err != nil {
+			return err.Error()
+		}
+		switch r.Phase {
+		case "", "attempt":
+		case "outcome":
+			// In a segment the attempt may sit just before the cut.
+			if !v.attempts[r.AttemptID] && v.seg.After == 0 {
+				return "outcome receipt names no earlier attempt"
+			}
+			delete(v.attempts, r.AttemptID)
+		default:
+			return "unknown receipt phase"
+		}
+		if r.Phase == "attempt" {
+			v.attempts[r.ReceiptID] = true
+		}
+	default:
+		return fmt.Sprintf("unknown receipt version %d", r.V)
+	}
+	v.prevHash = hashLine(line)
+	v.heads = append(v.heads, v.prevHash)
+	v.recs = append(v.recs, Verified{Receipt: r, Line: append([]byte(nil), line...)})
+	v.total++
+	return ""
+}
+
+func (v *chainVerifier) fail(reason string) (*VerifyResult, []string, []Verified) {
+	return &VerifyResult{Total: v.total, FailAt: v.total, Reason: reason, V1: v.v1}, v.heads, v.recs
+}
+
+// result is the verdict: a failure with its reason, or a whole valid chain.
+func (v *chainVerifier) result(reason string) (*VerifyResult, []string, []Verified) {
+	if reason != "" {
+		return v.fail(reason)
+	}
+	return &VerifyResult{Total: v.total, Valid: true, V1: v.v1}, v.heads, v.recs
 }
 
 // syncDir fsyncs a directory so a file created in it survives a crash.

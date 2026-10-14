@@ -5,7 +5,6 @@ package main
 // the whole chain. The same data feeds the browser page (ui.go).
 
 import (
-	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -170,30 +169,20 @@ var outcomeOrder = []string{"allowed", "approved", "BLOCKED", "not approved", "t
 
 func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
 	act := &activity{Counts: map[string]int{}}
-	f, err := os.Open(receiptsFile)
-	if os.IsNotExist(err) {
+	if _, err := os.Stat(receiptsFile); os.IsNotExist(err) && len(receipts.SegmentFiles(receiptsFile)) == 0 {
 		return act, nil
 	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
+	// every segment, then the current file
 	var all []receipts.Receipt
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
+	err := receipts.ForEachLine(receiptsFile, func(line []byte) error {
 		var r receipts.Receipt
-		if json.Unmarshal([]byte(line), &r) != nil || r.ReceiptID == "" {
-			continue // anchor or other non-receipt lines
+		if json.Unmarshal(line, &r) != nil || r.ReceiptID == "" {
+			return nil // anchor or other non-receipt lines
 		}
 		all = append(all, r)
-	}
-	if err := sc.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	act.Total = len(all)
