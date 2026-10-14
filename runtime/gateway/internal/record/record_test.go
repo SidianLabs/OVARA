@@ -391,8 +391,14 @@ func TestCompactReopen(t *testing.T) {
 	j4.Close()
 
 	// floor exactly at the compaction boundary must match the marker's
-	// stated prior tip — a mismatch is equivocation and refuses.
-	bad := Floor{Known: true, Seq: seq, Hash: "00" + tip[2:]}
+	// stated prior tip — a mismatch is equivocation and refuses. The wrong
+	// hash must differ from the tip whatever the tip starts with: "00" alone
+	// equalled a tip that happened to begin with 00, one run in 256.
+	wrong := "00" + tip[2:]
+	if wrong == tip {
+		wrong = "ff" + tip[2:]
+	}
+	bad := Floor{Known: true, Seq: seq, Hash: wrong}
 	if _, err := Open("continuation", dst, e.domain, e.signer, e.resolve, bad, fold); err == nil {
 		t.Fatal("floor/prior_tip mismatch accepted")
 	}
