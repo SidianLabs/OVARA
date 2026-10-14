@@ -57,7 +57,7 @@ func TestPolicySuggest_FromReceipts(t *testing.T) {
 		"GET https://internal.example/*", "HEAD https://internal.example/*",
 		"POST https://api.example.com/v1/items", "DELETE https://api.github.com/repos/acme/app",
 		"GET https://crates.io/*", "HEAD https://crates.io/*", // the default port is dropped
-		"POST https://api.example.com:8443/v1/items",       // another port is kept
+		"POST https://api.example.com:8443/v1/items", // another port is kept
 	} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("missing %q in %v", want, got)
