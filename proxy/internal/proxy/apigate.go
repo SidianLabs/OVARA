@@ -72,10 +72,7 @@ func (s *Server) apiOperationOf(r *http.Request, hb *heldBody, br *bodyRead) *ap
 	if br != nil && br.mcp != nil {
 		return nil // the MCP gate's
 	}
-	host := normalizeHost(r.URL.Hostname())
-	if p := r.URL.Port(); p != "" && p != "443" && p != "80" {
-		host += ":" + p
-	}
+	host := hostForResource(r)
 	ct := strings.ToLower(r.Header.Get("Content-Type"))
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = strings.TrimSpace(ct[:i])
@@ -141,6 +138,16 @@ func (s *Server) readableBody(r *http.Request, hb *heldBody) ([]byte, bool) {
 		return out, true
 	}
 	return nil, false
+}
+
+// hostForResource is the host as a gate's resource names it: normalised,
+// with the port when it is not the scheme's default.
+func hostForResource(r *http.Request) string {
+	host := normalizeHost(r.URL.Hostname())
+	if p := r.URL.Port(); p != "" && p != "443" && p != "80" {
+		host += ":" + p
+	}
+	return host
 }
 
 // --- AWS ------------------------------------------------------------------

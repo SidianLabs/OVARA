@@ -1083,6 +1083,24 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An executable or installer coming back on a read a rule allowed is a
+	// question of its own (downloads.go): the person sees the file before
+	// the agent does. A refusal drops the response; the request stays on
+	// record as sent.
+	if !failedOpen && d.Decision == gwAllow && r.Method == http.MethodGet && resp.StatusCode == http.StatusOK && len(pkgDigests) == 0 {
+		if _, isPkg := s.packageDownload(r.URL.Hostname(), r.URL.Path); !isPkg {
+			if name, kind, ok := executableDownload(r, resp); ok {
+				facts.reasons = append(facts.reasons, "download:"+name)
+				outcome, id := s.askAction(r.Context(), actionDownload, "download:"+hostForResource(r)+r.URL.EscapedPath(), downloadPreview(name, kind, resp.ContentLength), "delivers an executable")
+				if !second(outcome, id, map[string]any{"error": "download not allowed", "reasons": []string{"download_refused"}, "file": name}) {
+					if decision == gwDeny {
+						facts.reasons = append(facts.reasons, "download_refused")
+					}
+					return
+				}
+			}
+		}
+	}
 	var set *secretSet
 	if len(injected) > 0 {
 		set = newSecretSet(injected)

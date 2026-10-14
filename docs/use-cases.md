@@ -279,6 +279,44 @@ the key is absent from the agent's environment, the upstream receives it, and a
 reflected copy in a response is replaced with `[REDACTED]`. Keys are only
 injected over HTTPS.
 
+## 8. A browser or computer-use agent  — *mechanism tested*
+
+A browser agent acts through pages: its writes are form posts and fetches,
+its reads are navigations. Everything goes over HTTP(S), so it is a client
+like any other, once the browser is pointed at Ovara and trusts its CA:
+
+```sh
+eval "$(ovara env -dir mydir)"            # HTTPS_PROXY and the CA path
+chromium --proxy-server="$HTTPS_PROXY" --proxy-bypass-list="<-loopback>" ...
+```
+
+Chromium reads the system (NSS) store on Linux (`certutil -d sql:$HOME/.pki/nssdb -A -t C -n ovara -i "$SSL_CERT_FILE"`);
+Playwright takes `proxy: { server }` and, under `ovara run`, `NODE_EXTRA_CA_CERTS`
+is already set for Node. What changes for the person:
+
+- **A form post** pauses like any write and is shown field by field, with the
+  page it was submitted from (the Referer, without its query); a password or
+  credential-shaped field is masked, an uploaded file is named with its type
+  and size. The body hash still binds the approval to exactly those bytes.
+- **An executable or installer** coming back on an allowed read (`.exe`,
+  `.dmg`, `.sh`, `.msi`, ... by name or media type) is held and asked about
+  before the browser gets it (`download.file` on `download:<host><path>`).
+  Archives and documents are not asked about.
+- **Logins stay out of the agent.** A site's session cookie, or an API
+  token a site takes in a header, is a credential binding
+  (`{"host": "app.example.com", "headers": {"Cookie": "session=${APP_SESSION}"}}`):
+  the agent's own cookie is dropped on that host and the real one attached
+  upstream of it, and it is scrubbed from what comes back.
+- **A GraphQL mutation** behind a page's API, or a JSON-RPC method, is
+  decided by the operation (§5 of the README: APIs whose verb is in the
+  body), not only by its URL.
+
+What it does not do yet: show the page's title or a screenshot (only its
+URL), fill a password into a form from a binding, or decide a write a site
+makes through a GET or a WebSocket. A browser that does not go through the
+proxy (its own proxy settings, QUIC) is not seen; the box boundary stops
+it from going elsewhere.
+
 ## What Ovara is not for
 
 - **Reading non-HTTP traffic.** SSH, database protocols and raw TCP that go

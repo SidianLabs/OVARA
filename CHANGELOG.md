@@ -409,6 +409,20 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   JSON-RPC method ..."; `ovara policy suggest` proposes rules for held
   operations. `api_gate: false` in `proxy.json` turns it off.
   `docs/GUARANTEES.md` 1.12.
+- **Browser agents: forms and downloads.** A form post (url-encoded or
+  multipart) is shown to the person field by field (`form`), a password
+  or credential-shaped field masked, uploads named with type and size
+  (`uploads`), with the page it was submitted from (`from_page`: the
+  Referer or Origin without its query); the body preview and hash stay.
+  An executable or installer coming back on a read a rule allowed (`.exe`,
+  `.msi`, `.dmg`, `.pkg`, `.deb`, `.rpm`, `.apk`, `.sh`, `.ps1`, `.bat`,
+  `.jar`, ... by the name `Content-Disposition` gives, the URL's last
+  segment or the media type) is held and asked about before the agent
+  gets it (`download.file` on `download:<host><path>`, the file's name,
+  type and size shown); a refusal drops the response and is receipted.
+  The observe profile refuses such downloads. `docs/use-cases.md` §8 says
+  how to point Chromium or Playwright at Ovara and how a session cookie
+  binding keeps a login out of the agent. `docs/GUARANTEES.md` 1.13, 2.2.
 - Spec 0.1, later: the decision API gains `POST /v1/runtime/outcome` (the
   caller reports how an allowed action went; §2.1) and the resource model
   the `tool.call` action type with `tool:<name>` resources (an agent

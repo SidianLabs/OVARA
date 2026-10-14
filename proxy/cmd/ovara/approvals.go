@@ -98,6 +98,10 @@ func contextLines(a pendingApproval) []string {
 		{"body_preview", "body starts"},
 		{"headers", "headers"},
 		{"method_override", "method override"},
+		// a browser agent's form: the fields, the files, the page it was on
+		{"from_page", "from page"},
+		{"form", "form fields"},
+		{"uploads", "uploads"},
 		// `ovara box` command gate: the command exactly as it was run (the
 		// policy matched a normalised form, shown as the raw request)
 		{"command", "command as run"},
@@ -339,6 +343,11 @@ func describe(resource string) string {
 			return "call JSON-RPC method " + method + " at " + rest[:i]
 		}
 		return "call JSON-RPC method " + rest
+	}
+	// an executable download (download.file) or a registry download that
+	// names no package (package.install): "download:<host><path>"
+	if rest, ok := strings.CutPrefix(resource, "download:"); ok {
+		return "download " + rest
 	}
 	// the TCP gate: a connection that is not HTTPS, "tcp:<host>:<port>"
 	if rest, ok := strings.CutPrefix(resource, "tcp:"); ok {

@@ -137,6 +137,12 @@ func requestContext(r *http.Request, hb *heldBody) map[string]string {
 			out["body_note"] = note
 		}
 	}
+	// A form, field by field, and the page it was submitted from
+	// (forms.go): what a browser agent's writes look like.
+	masked += formContext(r, hb, out)
+	if page := pageOf(r); page != "" {
+		out["from_page"] = page
+	}
 	if masked > 0 {
 		out["warning"] = fmt.Sprintf("this request carries %d credential-shaped or encoded value(s), masked below: data in this form may be leaving", masked)
 	}
@@ -156,7 +162,7 @@ const maxPreviewInflate = 64 << 10
 // would read as "nothing to see".
 func bodyPreview(hb *heldBody, ct string, encodings []string) (preview, note string, masked int) {
 	size := hb.size
-	kind := "undeclared type"
+	kind := undeclaredType
 	if mt, _, err := mime.ParseMediaType(ct); err == nil {
 		kind = mt
 	} else if ct != "" {

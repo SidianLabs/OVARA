@@ -29,6 +29,7 @@ func TestDescribe(t *testing.T) {
 		"graphql:api.github.com/graphql/mutation:CreateIssue":                 "run GraphQL mutation CreateIssue at api.github.com/graphql",
 		"graphql:api.example.com/v2/gql/query:we%20ird":                       "run GraphQL query we ird at api.example.com/v2/gql",
 		"aws:ec2:TerminateInstances":                                          "call AWS ec2 TerminateInstances",
+		"download:releases.example.com/v2/setup.exe":                          "download releases.example.com/v2/setup.exe",
 		"jsonrpc:node.example.com/rpc/eth_sendTransaction":                    "call JSON-RPC method eth_sendTransaction at node.example.com/rpc",
 		"POST https://github.com/octocat/Hello-World.git/git-upload-pack":     "fetch code from github.com/octocat/Hello-World",
 		"GET https://github.com:443/o/r.git/info/refs":                        "look up branches of github.com/o/r",

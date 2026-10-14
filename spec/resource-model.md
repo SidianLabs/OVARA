@@ -21,6 +21,7 @@ Used by the reference implementation's own components:
 | `graphql.operation` | the proxy's API gate, for a GraphQL operation in an allowed POST | `graphql:<host><path>/<query|mutation|subscription>:<name>` |
 | `aws.action` | the proxy's API gate, for an AWS JSON or Query API call in an allowed POST | `aws:<service>:<Action>` |
 | `jsonrpc.call` | the proxy's API gate, for a JSON-RPC call in an allowed POST (MCP excepted) | `jsonrpc:<host><path>/<method>` |
+| `download.file` | the proxy, when an allowed read comes back as an executable or installer | `download:<host><path>` |
 | `package.install` | the proxy, per package download | `npm:<name>@<version>`, `pypi:<name>@<version>`, `download:<host><path>` |
 | `model.server_feature` | the proxy's model gate | `model:<host> <finding>` |
 | `model.budget` | the proxy, past the per-run model budget | `model-budget:<host>` |
@@ -127,7 +128,7 @@ normalised line is for rules written by people.
 | `jsonrpc:<host><path>/<method>` | the method name escaped like a tool name. A method whose name (after its `eth_`, `net_`, `Service.` namespace) says it reads (`get`, `list`, `read`, `describe`, `query`, `fetch`, `search`, `find`, `count`, `exists`, `has`, `is`, `status`, `ping`, `health`, `version`, `info`, `call`, `estimate`, ...) passes; a batch is refused; an MCP method is the MCP gate's. |
 | `tool:<name>` | the tool a framework is about to call in-process, its name escaped as an MCP tool's is (letters, digits, `_`, `-` and `.` kept; every other byte `%XX`). The arguments are not in the resource: the request's `metadata.proxy_context` carries their size, SHA-256 and a redacted preview, which bind the approval to the exact call. |
 | `npm:<name>@<version>`, `pypi:<name>@<version>` | the package a registry download names; scoped npm names keep their `@scope/`. |
-| `download:<host><path>` | a registry download that names no package. |
+| `download:<host><path>` | under `package.install`, a registry download that names no package; under `download.file`, a response that delivers an executable or an installer (by the file name `Content-Disposition` gives, else the URL's last segment, or by the media type): `.exe`, `.msi`, `.dmg`, `.pkg`, `.deb`, `.rpm`, `.apk`, `.appimage`, `.sh`, `.ps1`, `.bat`, `.jar` and the like. Archives and documents are not asked about. |
 | `model:<host> <finding>` | `<finding>` is one of `model_request_mcp_connector`, `model_request_remote_url`, `model_request_server_tool`, `model_request_not_json`. |
 | `model-budget:<host>`, `budget:<host>` | the host whose budget was passed. |
 | `taint:<METHOD> <url>` | the write that followed an untrusted read, as a URL resource. |

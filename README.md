@@ -535,6 +535,19 @@ read heuristics go by name (`Describe`, `List`, `Get`, a GraphQL `query`);
 reads of secrets, parameters and tokens are not reads. `api_gate: false`
 in `proxy.json` turns the gate off.
 
+### Browser agents
+
+A browser agent's writes are form posts, and what it fetches may be an
+installer. Point the browser at Ovara like any other tool (`ovara env`
+prints the proxy; Chromium takes `--proxy-server` and must trust the
+interception CA, Playwright its `proxy` option) and a form post pauses like
+any write, shown field by field with the page it was on, passwords and
+credential-shaped values masked, uploads named with their type and size.
+An executable or installer coming back on an allowed read is held and
+asked about before the agent gets it (`download.file`). A site's session
+cookie can be a credential binding (`"headers": {"Cookie": "..."}`): the
+agent is logged in without ever holding the login. `docs/use-cases.md` §8.
+
 ### Any agent, any framework
 
 The proxy sees what leaves over the network. What a framework's tools do
