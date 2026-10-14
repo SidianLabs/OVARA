@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -85,6 +86,17 @@ func TestAgentEnv_FromInitDeployment(t *testing.T) {
 	}
 }
 
+// setNoProxy sets NO_PROXY and no_proxy for one test. On Windows they are
+// one variable (names are case-insensitive there), so setting the second
+// would replace the first: only the upper-case name is set.
+func setNoProxy(t *testing.T, upper, lower string) {
+	t.Helper()
+	t.Setenv("NO_PROXY", upper)
+	if runtime.GOOS != "windows" {
+		t.Setenv("no_proxy", lower)
+	}
+}
+
 // A shell often carries a NO_PROXY list (corporate setups, CI images, and
 // the sandbox this was found in). The hosts on it are contacted directly, so
 // an agent that inherits it goes around Ovara for them: no decision and no
@@ -107,11 +119,11 @@ func TestAgentEnv_PinsNoProxyToLoopback(t *testing.T) {
 		"nothing":       "",
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv("NO_PROXY", inherited)
-			t.Setenv("no_proxy", "")
-			if name != "upper only" {
-				t.Setenv("no_proxy", inherited)
+			lower := inherited
+			if name == "upper only" {
+				lower = ""
 			}
+			setNoProxy(t, inherited, lower)
 			vars, notes, err := agentEnv(dir, cfg, "127.0.0.1")
 			if err != nil {
 				t.Fatal(err)
@@ -179,8 +191,7 @@ func TestAgentEnv_NoProxyNoteCannotInjectCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("NO_PROXY", "good.example,\ntouch /tmp/pwned\n,$(id),`id`,a b,;rm -rf ~")
-	t.Setenv("no_proxy", "")
+	setNoProxy(t, "good.example,\ntouch /tmp/pwned\n,$(id),`id`,a b,;rm -rf ~", "")
 	vars, notes, err := agentEnv(dir, cfg, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
