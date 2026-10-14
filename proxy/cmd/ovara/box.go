@@ -1026,6 +1026,9 @@ func waitApproval(ctx context.Context, gw *gateway.Client, id string, timeout ti
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		st, err := gw.ApprovalStatus(ctx, id)
+		if err == nil {
+			st = settleApproval(ctx, gw, id, st) // single use: claimed before the command runs
+		}
 		if err != nil {
 			return "", fmt.Errorf("gateway: %w", err)
 		}

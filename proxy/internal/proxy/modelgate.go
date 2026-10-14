@@ -20,6 +20,10 @@ import (
 // defaultModelHosts are the hosts whose request bodies are checked.
 var defaultModelHosts = []string{"api.anthropic.com", "api.openai.com"}
 
+// DefaultModelHosts returns a copy of the hosts the model gate checks when
+// the configuration names none, for callers that extend the list.
+func DefaultModelHosts() []string { return append([]string(nil), defaultModelHosts...) }
+
 // maxModelBody bounds how much of a model request is read to check it. A
 // request larger than this is refused rather than forwarded unchecked.
 const maxModelBody = 32 << 20

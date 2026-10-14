@@ -157,7 +157,7 @@ func (a *gatewayAsker) Ask(ctx context.Context, actionType, resource string, pre
 			return mcp.OutcomeAborted, id
 		case <-deadline.C:
 			if st, err := a.gw.ApprovalStatus(ctx, id); err == nil && st != "pending" {
-				return approvalOutcome(st), id
+				return approvalOutcome(settleApproval(ctx, a.gw, id, st)), id
 			}
 			return mcp.OutcomeTimeout, id
 		case <-tick.C:
@@ -165,7 +165,7 @@ func (a *gatewayAsker) Ask(ctx context.Context, actionType, resource string, pre
 			if err != nil || st == "pending" {
 				continue
 			}
-			return approvalOutcome(st), id
+			return approvalOutcome(settleApproval(ctx, a.gw, id, st)), id
 		}
 	}
 }

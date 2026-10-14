@@ -233,6 +233,25 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
 - A git push is decided ref by ref; an allow for refs does not cover
   deleting them unless it says `(delete)`.
 
+**`ovara run -- <agent>`: one command**
+
+- `ovara run -- opencode` (or `claude`, `codex`, any command) starts Ovara,
+  runs the agent with Ovara's environment (`ovara env`, applied to the
+  process: proxy, certificates, `NO_PROXY` pinned, placeholders, secrets
+  removed), stops Ovara when the agent exits (the gateway is shut down
+  cleanly, not killed), prints what the run did and exits with the
+  agent's status. Without `-dir`, the deployment in the current directory
+  is used if there is one, else `~/.ovara/run`, created on first use.
+- Presets: for a program it recognises (`opencode`, `claude`, `codex`)
+  the hosts that agent reads on its own at start-up are allowed, and its
+  model API is allowed for POST and added to `model_hosts` so the model
+  gate reads every body (opencode: `models.opencode.ai`,
+  `opencode.ai/zen/v1`; codex: `chatgpt.com`, `ab.chatgpt.com`; claude:
+  nothing beyond the defaults). Rules are marked `[preset NAME]` in
+  `policy.json`, added once, and never override a rule you wrote. `-preset
+  none` skips them; `-preset NAME` forces one. Writes still ask.
+- `-agent NAME` runs the command as that named agent (its own token).
+
 **Approvals: used once, and a late answer is not wasted**
 
 - Before an approved request runs, the proxy claims the approval
@@ -245,13 +264,18 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   gateway digest) gets that approval back from `/v1/approval/create` while
   it is unused and within the pending TTL, then claims it. Before, a card
   answered between two retries was wasted and the person was asked twice.
-- `proxy.json` `escalate_on_timeout`: `"timeout"` (default, 504 as before)
-  or `"retry"`: an unanswered hold is answered 503 with `Retry-After` set to
-  the poll interval, the approval id and a hint; the approval stays open.
-  With a short `escalate_timeout_sec` this is the fail-fast setting: the
-  agent is told at once instead of being held. It applies to HTTP requests,
-  the proxy's own questions (packages, budgets, taint, model features) and
-  MCP tool calls. `ovara log` shows such requests as "told to retry".
+- `proxy.json` `escalate_on_timeout`: `"retry"`: an unanswered hold is
+  answered 503 with `Retry-After` set to the poll interval, the approval id
+  and a hint; the approval stays open. `"timeout"` is the older 504. **New
+  deployments (`ovara init`) get `retry` with a 10-second hold**, so an
+  agent is told quickly instead of being held for a minute; existing
+  `proxy.json` files keep `timeout` and 60 seconds until edited. It applies
+  to HTTP requests, the proxy's own questions (packages, budgets, taint,
+  model features) and MCP tool calls. `ovara log` shows such requests as
+  "told to retry". The agents battery's unanswered POST (A1) now expects
+  503.
+- The box command gate and `ovara mcp wrap` claim approvals too, so every
+  poller in the binary treats an approval as single-use.
 - Every refusal names the policy rule that decided (`rule` in the JSON
   body) when one did, so the agent and the person reading its output see
   what to change.

@@ -735,7 +735,7 @@ project extends.
 gateway (literal host only; no DNS before the decision) → allow: inject
 key, forward, scrub response, receipt before the response is released;
 escalate: approval created with the preview, person answers, then as
-allow or a 403/504; deny: 403 with reason, receipt.
+allow or a 403, or a 503 "held, retry" (the default) / 504 once the hold ends; deny: 403 with reason, receipt.
 
 **A command runs.** The agent's tool starts a program → the launcher's
 ptrace gate stops it at exec → gateway check on the normalised line → run

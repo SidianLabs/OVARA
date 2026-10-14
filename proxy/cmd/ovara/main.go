@@ -93,6 +93,10 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	var exit *agentExit
+	if errors.As(err, &exit) {
+		os.Exit(exit.code)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -104,6 +108,9 @@ func usage() {
   version               print the ovara version
   init [dir] [-force]   generate a working gateway+proxy deployment
   run [-dir .]          start the gateway and the executor proxy
+  run -- <agent cmd>    the same, around one agent: it runs with Ovara's
+                        environment (preset for opencode / claude / codex),
+                        and Ovara stops with it and sums up what it did
   box <dir> -- <agent>  run an agent in a box: a copy of the project, no keys,
                         no network except through Ovara; changes come back as a
                         reviewed branch (Linux, sudo)
@@ -263,16 +270,22 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	proxyCfg := &config.Config{
 		// Loopback only: an agent on this machine reaches it; the rest of
 		// the network cannot. Use --boundary (or edit this) to expose it.
-		ListenAddr:     "127.0.0.1:9443",
-		GatewayURL:     "http://localhost:" + gatewayPort,
-		GatewayToken:   agentToken,
-		AgentToken:     proxyToken,
-		Environment:    "dev",
-		CACertFile:     "var/ca.pem",
-		CAKeyFile:      "var/ca.key",
-		ReceiptKeyFile: "var/receipt.key",
-		ReceiptsFile:   "var/receipts.jsonl",
-		PubKeyFile:     "var/receipt_pubkey.hex",
+		ListenAddr:   "127.0.0.1:9443",
+		GatewayURL:   "http://localhost:" + gatewayPort,
+		GatewayToken: agentToken,
+		AgentToken:   proxyToken,
+		Environment:  "dev",
+		// Fail fast: a request a person has not answered within 10 seconds
+		// is answered "held for approval, retry" (503 with Retry-After);
+		// the approval stays open and the same request runs once approved.
+		// "timeout" with a longer window is the older behaviour (504).
+		EscalateTimeoutSec: 10,
+		EscalateOnTimeout:  "retry",
+		CACertFile:         "var/ca.pem",
+		CAKeyFile:          "var/ca.key",
+		ReceiptKeyFile:     "var/receipt.key",
+		ReceiptsFile:       "var/receipts.jsonl",
+		PubKeyFile:         "var/receipt_pubkey.hex",
 		Credentials: []creds.Binding{
 			{Host: "api.github.com", Headers: map[string]string{"Authorization": "Bearer ${GITHUB_TOKEN}"}},
 			{Host: "api.openai.com", Headers: map[string]string{"Authorization": "Bearer ${OPENAI_API_KEY}"}},
@@ -496,14 +509,53 @@ func cmdRun(args []string) error {
 	allowUnhardened := fs.Bool("allow-unhardened-boundary", false, "with --boundary: go on when the host side of the boundary cannot be firewalled (neither iptables nor nft on the host); the agent can then reach every service on the host's boundary address")
 	scopeRepo := fs.String("scope-repo", "", "limit the GitHub credentials to one repository (owner/repo) for this run: requests about any other repository go out without the key; \"none\" withholds them entirely. `ovara box` sets it for the project it boxes")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
+	agentName := fs.String("agent", "", "with a command: run it as this named agent (ovara agent add NAME), with its own proxy token")
+	presetName := fs.String("preset", "auto", "with a command: the agent preset applied to the deployment: auto (by the program's name), none, or opencode | claude | codex")
 	fs.Parse(args)
+	command := fs.Args() // after "--": the agent to run through Ovara
 	server.RepairIdentityRegistry = *repairRegistry
 	if *packageGate != "" { // read after the chdir below: make it absolute now
 		if abs, err := filepath.Abs(*packageGate); err == nil {
 			*packageGate = abs
 		}
 	}
-	if err := os.Chdir(*dir); err != nil {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	// With a command and no -dir, a deployment in the current directory is
+	// used if there is one; otherwise the default one, created on first use.
+	if len(command) > 0 && !flagSet(fs, "dir") {
+		if _, err := os.Stat(filepath.Join(*dir, "proxy.json")); err != nil {
+			*dir = defaultRunDir()
+		}
+	}
+	absDir, err := filepath.Abs(*dir)
+	if err != nil {
+		return err
+	}
+	if len(command) > 0 {
+		if _, err := os.Stat(filepath.Join(absDir, "proxy.json")); err != nil {
+			if _, err := deploy(absDir, "8080", false); err != nil {
+				return fmt.Errorf("creating the deployment in %s: %w", absDir, err)
+			}
+			log.Printf("new deployment in %s (what `ovara init` makes); its policy.json is yours to edit", absDir)
+		}
+		p, ok, err := runPreset(command[0], *presetName)
+		if err != nil {
+			return err
+		}
+		if ok {
+			added, err := applyPreset(absDir, p)
+			if err != nil {
+				return fmt.Errorf("preset %s: %w", p.Name, err)
+			}
+			if len(added) > 0 {
+				log.Printf("preset %s: allowed %s (marked %q in policy.json)", p.Name, strings.Join(added, ", "), presetMarker(p))
+			}
+		}
+	}
+	if err := os.Chdir(absDir); err != nil {
 		return err
 	}
 	cfg, err := config.Load("proxy.json")
@@ -601,17 +653,33 @@ func cmdRun(args []string) error {
 			hs.Close() // paused requests waiting on a human: drop them
 		}
 	}()
-	for _, ln := range lns[1:] {
+	served := make(chan error, len(lns))
+	for _, ln := range lns {
 		go func(ln net.Listener) {
 			if err := hs.Serve(ln); err != http.ErrServerClosed {
 				log.Printf("proxy on %s: %v", ln.Addr(), err)
+				served <- err
+				return
 			}
+			served <- nil
 		}(ln)
 	}
-	if err := hs.Serve(lns[0]); err != http.ErrServerClosed {
-		return err
+	if len(command) == 0 {
+		// Serve until the gateway stops (a signal).
+		return <-served
 	}
-	return nil
+	return runAgent(command, cwd, absDir, cfg, *agentName, gatewayDone)
+}
+
+// flagSet reports whether a flag was given on the command line.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 // openUI starts the approval page unless it is turned off (-no-ui or -ui

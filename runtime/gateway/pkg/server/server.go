@@ -817,10 +817,14 @@ func Run(configPath string) error {
 	}
 
 	shutdownDone := make(chan struct{})
+	stopRequested := registerStop()
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
+		select {
+		case <-sigChan:
+		case <-stopRequested:
+		}
 		log.Println("shutting down...")
 		if watcher != nil {
 			watcher.Close()
@@ -900,6 +904,32 @@ type gatewayTrust struct {
 // back or corrupted" into silent data loss plus a gateway that happily
 // serves with no approvals, continuations or receipts. Refusing to start
 // leaves the evidence in place for the operator.
+// stopCh is how the process that embeds the gateway stops it the way a
+// signal would (`ovara run` with an agent command, once the agent exits).
+// One Run at a time.
+var (
+	stopMu sync.Mutex
+	stopCh chan struct{}
+)
+
+func registerStop() chan struct{} {
+	stopMu.Lock()
+	defer stopMu.Unlock()
+	stopCh = make(chan struct{})
+	return stopCh
+}
+
+// Stop shuts the running gateway down as SIGTERM would: its stores are
+// closed and Run returns. It does nothing when no gateway is running.
+func Stop() {
+	stopMu.Lock()
+	defer stopMu.Unlock()
+	if stopCh != nil {
+		close(stopCh)
+		stopCh = nil
+	}
+}
+
 func failClosedStore(name, path string, err error) error {
 	return fmt.Errorf("%s store %s cannot be opened: %w (refusing to start with an empty in-memory store; inspect or move the file aside deliberately)", name, path, err)
 }

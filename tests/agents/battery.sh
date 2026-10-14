@@ -165,7 +165,7 @@ echo "=== [$mode] normal developer work through real $AGENT"
 [ "$(val N3)" = ok ]  && ok "N3 npm install (with its audit POST)" || bad "N3 npm install" "$(val N3)"
 echo "=== [$mode] things Ovara must stop"
 for p in "S1 paste site" "S2 request-capture POST" "S3 GET carrying a body"; do k=${p%% *}; [ "$(val $k)" = 403 ] && ok "$p -> 403" || bad "$p" "got $(val $k)"; done
-[ "$(val A1)" = 504 ] && ok "A1 unapproved POST waits, then times out (504)" || bad "A1 unapproved POST" "got $(val A1)"
+[ "$(val A1)" = 503 ] && ok "A1 unapproved POST is held, then told to retry (503)" || bad "A1 unapproved POST" "got $(val A1)"
 [ "$(val K1)" = ok ]  && ok "K1 the real key is not in the agent's environment" || bad "K1 key custody" "$(val K1)"
 echo "=== [$mode] evading the POLICY through the proxy (must never succeed)"
 for k in P1 P2 P3 P5 P6 P7 P8 P9 P10 P11; do

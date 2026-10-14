@@ -110,7 +110,19 @@ ovara watch -dir mydir
   [a]pprove  [d]eny  [s]kip >
 ```
 
-Then start your agent from a shell that routes it through Ovara:
+Or do it all in one command: Ovara starts, your agent runs inside its
+environment, and Ovara stops with it and sums up what it did.
+
+```bash
+ovara run -- opencode          # or claude, codex, or any command
+```
+
+The first run creates a deployment in `~/.ovara/run` (or uses the one in the
+current directory), applies a preset for the agent it recognises (the hosts
+that agent reads on its own, and its model API; writes still ask), and opens
+the approval page. `ovara run -dir mydir -- claude` uses a deployment of yours.
+
+Prefer to start the agent yourself? Give it Ovara's environment:
 
 ```bash
 eval "$(ovara env -dir mydir)"                 # bash / zsh
@@ -131,14 +143,16 @@ environment only: do not install it system-wide.
 
 Prefer not to sit at a terminal? `ovara approvals` lists what is waiting, and
 `ovara approve <id>` / `ovara deny <id>` answer one request. A paused request
-waits 60 seconds (`escalate_timeout_sec` in `proxy.json`); after that the agent
-gets a timeout and can simply retry. Prefer not to hold the agent at all? Set
-`"escalate_on_timeout": "retry"` and a short `escalate_timeout_sec`: the agent
-is told at once (503 with `Retry-After` and the approval id), the request stays
-on your list, and the same request sent again runs once you approve it, once.
-Either way an approval is used once; an identical request after that asks
-again. An approval left unanswered expires after 10 minutes and can no longer
-be approved, and one agent can have at most 64 waiting. What you approve is exactly what is sent: the whole body is read
+is held for 10 seconds (`escalate_timeout_sec` in `proxy.json`); if you have
+not answered by then the agent is told so (503 with `Retry-After` and the
+approval id), the request stays on your list, and the same request sent again
+runs once you approve it, once. Agents and model SDKs retry on that answer, so
+approving later still works. Prefer the older behaviour, holding the request
+until you answer or a timeout (504)? Set `"escalate_on_timeout": "timeout"` and
+a longer `escalate_timeout_sec`. Either way an approval is used once; an
+identical request after that asks again. An approval left unanswered expires
+after 10 minutes and can no longer be approved, and one agent can have at most
+64 waiting. What you approve is exactly what is sent: the whole body is read
 before you are asked (up to 1 MB; a larger one is refused), you see its
 SHA-256, and only those bytes go out.
 
