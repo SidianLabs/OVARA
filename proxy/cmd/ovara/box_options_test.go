@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -54,7 +56,7 @@ func TestBoxArgs_ManifestWithOverrides(t *testing.T) {
 	m := `{"version":"0.1","tier":2,"workspace":{"source":"/srv/app","exclude":["dist/*"]},
 	 "agent":{"name":"reviewer","command":["opencode","run","fix"],"env":{"CI":"1"}},
 	 "profile":"strict","isolation":{"image":"ghcr.io/x/box"},"limits":{"pids":100},
-	 "commit_back":{"approve_timeout":"15m","disabled":true},"command_gate":false,"ui":"off"}`
+	 "commit_back":{"approve_timeout":"15m","disabled":true},"command_gate":false,"ui":"127.0.0.1:9191"}`
 	if err := os.WriteFile(path, []byte(m), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +67,7 @@ func TestBoxArgs_ManifestWithOverrides(t *testing.T) {
 	}
 	if o.tier != 2 || o.image != "ghcr.io/x/box" || o.project != "/srv/app" || !reflect.DeepEqual(o.cmd, []string{"opencode", "run", "fix"}) ||
 		o.agent != "reviewer" || !reflect.DeepEqual([]string(o.envs), []string{"CI=1"}) || !reflect.DeepEqual([]string(o.excludes), []string{"dist/*"}) ||
-		o.profile != boxProfileStrict || o.pids != 100 || o.approveTimeout != 15*time.Minute || !o.noCommitBack || !o.noGate || o.ui != "off" {
+		o.profile != boxProfileStrict || o.pids != 100 || o.approveTimeout != 15*time.Minute || !o.noCommitBack || !o.noGate || o.ui != "127.0.0.1:9191" {
 		t.Fatalf("from the manifest: %+v", o)
 	}
 	if o.user != boxDefaultUser || o.ghScope != "repo" || o.name != "ovara-box" {
@@ -85,17 +87,11 @@ func TestBoxArgs_ManifestWithOverrides(t *testing.T) {
 		t.Fatalf("project override: %v %+v", err, o)
 	}
 
-	for _, c := range []struct {
-		args []string
-		want string
-	}{
-		{[]string{"-manifest", path, "--"}, "nothing after --"},
-		{[]string{"-manifest", filepath.Join(dir, "missing.json")}, "no such file"},
-	} {
-		_, _, err := parseBoxArgs(c.args)
-		if err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%v: err=%v, want %q", c.args, err, c.want)
-		}
+	if _, _, err := parseBoxArgs([]string{"-manifest", path, "--"}); err == nil || !strings.Contains(err.Error(), "nothing after --") {
+		t.Errorf("-- with nothing after it: %v", err)
+	}
+	if _, _, err := parseBoxArgs([]string{"-manifest", filepath.Join(dir, "missing.json")}); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("missing manifest: %v", err)
 	}
 	bad := filepath.Join(dir, "bad.json")
 	_ = os.WriteFile(bad, []byte(strings.Replace(m, `"tier":2`, `"tier":2,"tire":1`, 1)), 0o600)

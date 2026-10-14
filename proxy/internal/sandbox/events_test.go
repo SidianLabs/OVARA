@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -87,7 +88,7 @@ func TestOpenEventsAppendsToAnOwnerOnlyFile(t *testing.T) {
 	if n := strings.Count(string(b), "\n"); n != 2 || !strings.Contains(string(b), `"run_id":"a"`) || !strings.Contains(string(b), `"run_id":"b"`) {
 		t.Fatalf("two runs, one file:\n%s", b)
 	}
-	if st, _ := os.Stat(p); st.Mode().Perm() != 0o600 {
+	if st, _ := os.Stat(p); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", st.Mode().Perm())
 	}
 	// a symbolic link in the way is refused, whatever it points at
