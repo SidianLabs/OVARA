@@ -355,9 +355,10 @@ its own checkout (pin a release tag once there is one):
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # keys go to Ovara, never to the agent
 - run: opencode run "fix the failing test"     # HTTPS_PROXY and the CA are set: this goes through Ovara
+- run: printf 'HTTPS_PROXY=\nHTTP_PROXY=\nhttps_proxy=\nhttp_proxy=\n' >> "$GITHUB_ENV"   # the rest of the job leaves Ovara (see below)
+  if: always()
 - uses: actions/upload-artifact@v4
   if: always()
-  env: { HTTPS_PROXY: "", HTTP_PROXY: "", https_proxy: "", http_proxy: "" }   # see below
   with:
     name: ovara-evidence
     path: |
@@ -378,9 +379,12 @@ it against this repository on every change.
 Everything after the step goes through Ovara, first-party actions included:
 `upload-artifact` or `cache` would have their uploads to GitHub's services
 held like any other write without a rule. Nothing of the agent's happens in
-such a step, so give it an empty `HTTPS_PROXY`/`https_proxy` (and the
-`HTTP_` pair) in its own `env:` to run it outside Ovara, as above; or allow
-those hosts in `rules` if you want them receipted.
+such a step, so take the rest of the job back out of Ovara first, as above:
+one step writes empty `HTTPS_PROXY`, `HTTP_PROXY`, `https_proxy` and
+`http_proxy` to `$GITHUB_ENV`. (Not in the step's own `env:`: the workflow
+parser reads names without case, so the upper and lower spellings count as
+one name given twice and the whole file is refused.) Or allow those hosts in
+`rules` if you want them receipted.
 
 ### Several agents, and stopping one
 
