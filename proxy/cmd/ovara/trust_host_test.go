@@ -10,10 +10,10 @@ import (
 
 func TestTrustableHost(t *testing.T) {
 	for res, want := range map[string]string{
-		"GET https://docs.example.com/page":       "docs.example.com",
-		"HEAD https://API.Example.COM:443/x":      "api.example.com",
-		"GET https://example.com./x":              "example.com",
-		"GET https://sub.domain.example.co.uk/a":  "sub.domain.example.co.uk",
+		"GET https://docs.example.com/page":      "docs.example.com",
+		"HEAD https://API.Example.COM:443/x":     "api.example.com",
+		"GET https://example.com./x":             "example.com",
+		"GET https://sub.domain.example.co.uk/a": "sub.domain.example.co.uk",
 	} {
 		if got, ok := trustableHost(res); !ok || got != want {
 			t.Errorf("trustableHost(%q) = %q,%v want %q", res, got, ok, want)
