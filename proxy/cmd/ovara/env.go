@@ -202,7 +202,7 @@ func writeUnsets(w io.Writer, shell string, names []string) error {
 	case "cmd":
 		comment = "rem"
 		line = func(n string) string { return "set \"" + n + "=\"" }
-	case "github", "env":
+	case "github":
 		line = func(n string) string { return n + "=" } // an environment file cannot unset; empty is the next best
 	default:
 		return fmt.Errorf("unknown -shell %q (use bash, powershell, cmd or github)", shell)
@@ -353,8 +353,8 @@ func writeEnv(w io.Writer, shell string, vars []envVar, notes []string) error {
 	case "cmd":
 		comment = "rem"
 		line = func(v envVar) string { return "set \"" + v.name + "=" + v.value + "\"" }
-	case "github", "env":
-		// one NAME=value per line, what $GITHUB_ENV and dotenv readers take
+	case "github":
+		// one NAME=value per line, what $GITHUB_ENV takes
 		comment = "#"
 		line = func(v envVar) string { return v.name + "=" + v.value }
 	default:
