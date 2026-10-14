@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf16"
 
 	"ovara.proxy/internal/mcp"
@@ -329,5 +330,31 @@ func TestMCPKnownServersSurviveFlooding(t *testing.T) {
 	rec := send(srv, "POST", ts.URL+"/never-seen", "application/json", strings.NewReader("\x00\x01br-bytes"), map[string]string{"Content-Encoding": "br"})
 	if rec.Code != http.StatusBadRequest || up.count() != 0 {
 		t.Errorf("br-encoded JSON body to an unknown server: status %d, upstream %d", rec.Code, up.count())
+	}
+}
+
+// With the retry answer configured, a tool call a person has not answered
+// within the hold is answered 503 with Retry-After (the approval stays
+// open), not 504; the error body is still a JSON-RPC error.
+func TestMCPToolCallHoldGetsTheRetryAnswer(t *testing.T) {
+	srv, g, _ := newMCPProxy(t)
+	srv.SetEscalateWindow(120*time.Millisecond, 10*time.Millisecond)
+	srv.SetEscalateAnswer(true)
+	up := newFakeMCP(t, mcpSearch, mcpSend)
+	key := serverKey(up, "/mcp")
+	g.set(g.byResource, "mcp:"+key+"/search", "allow")
+	if rec := postMCP(srv, up.URL+"/mcp", mcpList(1)); rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	g.set(g.answer, mcp.ActionToolCall, "pending")
+	rec := postMCP(srv, up.URL+"/mcp", mcpCall(3, "send_email", `{"to":"a@b.example"}`))
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("held tool call: %d retry-after=%q body=%s", rec.Code, rec.Header().Get("Retry-After"), rec.Body)
+	}
+	if code, _, _ := jsonrpcError(t, rec.Body.Bytes()); code == 0 {
+		t.Fatalf("not a JSON-RPC error: %s", rec.Body)
+	}
+	if n := len(up.called()); n != 0 {
+		t.Fatalf("the held call ran (%d calls)", n)
 	}
 }

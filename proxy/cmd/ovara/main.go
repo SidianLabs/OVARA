@@ -434,6 +434,7 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	}
 	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
+	srv.SetEscalateAnswer(cfg.EscalateOnTimeout == "retry")
 	if cfg.GitGate != nil {
 		srv.SetGitGate(*cfg.GitGate)
 	}

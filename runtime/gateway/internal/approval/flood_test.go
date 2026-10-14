@@ -86,13 +86,20 @@ func TestOpen_DeduplicatesIdenticalPending(t *testing.T) {
 			t.Errorf("%s: deduplicated a different request (%v)", r.DecisionID, err)
 		}
 	}
-	// once resolved, the same request opens a fresh card
+	// once approved, the same request gets that approval back until it is
+	// claimed (see reuse_test.go); after that it opens a fresh card
 	if _, err := svc.Approve(a.ApprovalID, "operator"); err != nil {
 		t.Fatal(err)
 	}
-	c, reused, err := svc.Open(openReq("dec_7", "agent-1", "POST https://x.example/a", ctx))
+	if b, reused, err := svc.Open(openReq("dec_7", "agent-1", "POST https://x.example/a", ctx)); err != nil || !reused || b.ApprovalID != a.ApprovalID {
+		t.Fatalf("after approval, before the claim: reused=%v err=%v", reused, err)
+	}
+	if _, claimed, err := svc.Claim(a.ApprovalID); err != nil || !claimed {
+		t.Fatal(err, claimed)
+	}
+	c, reused, err := svc.Open(openReq("dec_7b", "agent-1", "POST https://x.example/a", ctx))
 	if err != nil || reused || c.ApprovalID == a.ApprovalID {
-		t.Fatalf("after approval: reused=%v err=%v", reused, err)
+		t.Fatalf("after the claim: reused=%v err=%v", reused, err)
 	}
 	// and an expired one is not reused either
 	now = now.Add(DefaultPendingTTL + time.Second)

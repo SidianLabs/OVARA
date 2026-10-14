@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"ovara.proxy/internal/canonjson"
@@ -188,6 +189,7 @@ type mcpRefusal struct {
 	approvalID string
 	reasons    []string
 	aborted    bool // the client went away: nothing to write
+	retryAfter int  // seconds, for a hold answered with 503 (see Server.heldAnswer)
 }
 
 // write sends the refusal and returns the decision and status to receipt.
@@ -196,9 +198,25 @@ func (f *mcpRefusal) write(w http.ResponseWriter) (string, int) {
 		return f.decision, 0
 	}
 	w.Header().Set("Content-Type", mediaJSON)
+	if f.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(f.retryAfter))
+	}
 	w.WriteHeader(f.status)
 	_, _ = w.Write(append(f.body, '\n'))
 	return f.decision, f.status
+}
+
+// retryHold turns a tool call's unanswered hold into the retry answer when
+// that is configured: 503 with Retry-After, the approval staying open, so
+// the same call sent again runs once it is approved.
+func (s *Server) retryHold(ref *mcpRefusal) *mcpRefusal {
+	if ref != nil && ref.status == http.StatusGatewayTimeout && s.escalateRetry {
+		ref.status = http.StatusServiceUnavailable
+		if ref.retryAfter = int(s.escalatePoll / time.Second); ref.retryAfter < 1 {
+			ref.retryAfter = 1
+		}
+	}
+	return ref
 }
 
 func acceptsEventStream(r *http.Request) bool {
@@ -367,7 +385,7 @@ func (s *Server) mcpRequest(ctx context.Context, r *http.Request, p *mcpPrep) (*
 	if first == nil {
 		return x, nil
 	}
-	return nil, refuseMessages(body, refused, *first, server)
+	return nil, s.retryHold(refuseMessages(body, refused, *first, server))
 }
 
 // refuseMessages answers a refused request body: every request in it gets

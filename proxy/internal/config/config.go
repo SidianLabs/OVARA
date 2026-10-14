@@ -45,6 +45,12 @@ type Config struct {
 
 	EscalateTimeoutSec int `json:"escalate_timeout_sec"` // hold escalated requests this long; default 60
 	EscalatePollSec    int `json:"escalate_poll_sec"`    // approval status poll interval; default 2
+	// EscalateOnTimeout is what an unanswered hold is answered with:
+	// "timeout" (default): 504; "retry": 503 with Retry-After and the
+	// approval id, the approval stays open, and the same request sent
+	// again runs once it is approved. With a short escalate_timeout_sec
+	// this is the fail-fast setting: the agent is told at once.
+	EscalateOnTimeout string `json:"escalate_on_timeout,omitempty"`
 
 	SensitiveHosts []string `json:"sensitive_hosts"` // host globs that always escalate (pivot-risk services)
 
@@ -160,6 +166,13 @@ func Load(path string) (*Config, error) {
 	}
 	if c.EscalatePollSec <= 0 {
 		c.EscalatePollSec = 2
+	}
+	switch c.EscalateOnTimeout {
+	case "":
+		c.EscalateOnTimeout = "timeout"
+	case "timeout", "retry":
+	default:
+		return nil, fmt.Errorf("escalate_on_timeout %q: use \"timeout\" or \"retry\"", c.EscalateOnTimeout)
 	}
 	if err := c.validateClientAuth(); err != nil {
 		return nil, err

@@ -88,6 +88,9 @@ func newMCPProxy(t *testing.T) (*Server, *mcpGW, string) {
 			g.approvals[id] = body.ActionType
 			g.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]string{"approval_id": id})
+		case strings.HasPrefix(r.URL.Path, "/v1/approval/apr_") && strings.HasSuffix(r.URL.Path, "/claim"):
+			// single use is the real gateway's job; here every claim succeeds
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "approved", "claimed": true})
 		case strings.HasPrefix(r.URL.Path, "/v1/approval/apr_"):
 			g.mu.Lock()
 			st := g.answer[g.approvals[strings.TrimPrefix(r.URL.Path, "/v1/approval/")]]

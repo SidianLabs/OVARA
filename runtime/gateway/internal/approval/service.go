@@ -35,6 +35,10 @@ const DefaultMaxPendingPerAgent = 64
 // maximum number of approvals waiting.
 var ErrTooManyPending = errors.New("too many approvals waiting")
 
+// ErrApprovalUsed: the approval was approved and the action it allows has
+// already been claimed once; an identical request is a new question.
+var ErrApprovalUsed = errors.New("approval already used")
+
 type Service struct {
 	store Store
 
@@ -155,6 +159,15 @@ func (s *Service) Open(req *CreateRequest) (a *ApprovalRequest, reused bool, err
 			waiting++
 		}
 	}
+	// A request approved after its caller stopped waiting is not asked
+	// again: the identical request (same key, same gateway digest) gets the
+	// approval back while it is unused and recent. Claim marks it used;
+	// after that an identical request is a new question. The window is the
+	// pending TTL: an answer is good for as long as the question would have
+	// been.
+	if reusable := s.approvedFor(req, key); reusable != nil {
+		return reusable, true, nil
+	}
 	if max := s.MaxPendingPerAgent(); max > 0 {
 		who := req.AgentID
 		if name != "" {
@@ -172,6 +185,51 @@ func (s *Service) Open(req *CreateRequest) (a *ApprovalRequest, reused bool, err
 	}
 	a, err = s.CreateApproval(req)
 	return a, false, err
+}
+
+// approvedFor returns the agent's approved, unused, recent approval for
+// the same request as req (dedupe key and gateway digest), or nil.
+func (s *Service) approvedFor(req *CreateRequest, key string) *ApprovalRequest {
+	window := s.PendingTTL()
+	if window <= 0 {
+		window = DefaultPendingTTL
+	}
+	now := s.clock()
+	for _, a := range s.store.ListByStatus(StatusApproved) {
+		if a.AgentID != req.AgentID || !a.CanResume() || a.ResolvedAt == nil || now.Sub(*a.ResolvedAt) > window {
+			continue
+		}
+		if a.RequestHash != "" && req.RequestHash != "" && a.RequestHash != req.RequestHash {
+			continue
+		}
+		if dedupeKey(a.AgentID, string(a.ActionType), string(a.Environment), a.Resource, a.Context) == key {
+			return a
+		}
+	}
+	return nil
+}
+
+// Claim marks an approved approval used, so the action it allows runs
+// once: the caller may go ahead only when claimed is true. A pending,
+// denied or expired approval is returned as it is with claimed false; one
+// already claimed fails with ErrApprovalUsed. The mark is atomic in the
+// store, so two identical requests cannot both ride one approval.
+func (s *Service) Claim(approvalID string) (a *ApprovalRequest, claimed bool, err error) {
+	a, err = s.GetApproval(approvalID)
+	if err != nil {
+		return nil, false, err
+	}
+	if a.Status != StatusApproved {
+		return a, false, nil
+	}
+	got, err := s.store.ConsumeResume(approvalID)
+	if err != nil {
+		if cur, gerr := s.store.Get(approvalID); gerr == nil && cur.Status == StatusApproved && cur.ResumedAt != nil {
+			return cur, false, ErrApprovalUsed
+		}
+		return nil, false, err
+	}
+	return got, true, nil
 }
 
 // PrincipalPendingFactor bounds the approvals one gateway principal may

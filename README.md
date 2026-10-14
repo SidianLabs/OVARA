@@ -132,9 +132,13 @@ environment only: do not install it system-wide.
 Prefer not to sit at a terminal? `ovara approvals` lists what is waiting, and
 `ovara approve <id>` / `ovara deny <id>` answer one request. A paused request
 waits 60 seconds (`escalate_timeout_sec` in `proxy.json`); after that the agent
-gets a timeout and can simply retry. An approval left unanswered expires after
-10 minutes and can no longer be approved, and one agent can have at most 64
-waiting. What you approve is exactly what is sent: the whole body is read
+gets a timeout and can simply retry. Prefer not to hold the agent at all? Set
+`"escalate_on_timeout": "retry"` and a short `escalate_timeout_sec`: the agent
+is told at once (503 with `Retry-After` and the approval id), the request stays
+on your list, and the same request sent again runs once you approve it, once.
+Either way an approval is used once; an identical request after that asks
+again. An approval left unanswered expires after 10 minutes and can no longer
+be approved, and one agent can have at most 64 waiting. What you approve is exactly what is sent: the whole body is read
 before you are asked (up to 1 MB; a larger one is refused), you see its
 SHA-256, and only those bytes go out.
 

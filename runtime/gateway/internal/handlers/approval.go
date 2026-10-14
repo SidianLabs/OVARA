@@ -79,6 +79,42 @@ func (h *ApprovalHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/approval/pending", h.handleListPending)
 	mux.HandleFunc("GET /v1/approvals", h.handleListApprovals)
 	mux.HandleFunc("POST /v1/approval/{id}/resume", h.handleResume)
+	mux.HandleFunc("POST /v1/approval/{id}/claim", h.handleClaim)
+}
+
+// handleClaim marks an approved approval used, so the action it allows
+// runs once; the caller goes ahead only when the answer says claimed. A
+// pending, denied or expired approval is reported as it is. An approval
+// already claimed answers 409: an identical request is a new question.
+func (h *ApprovalHandler) handleClaim(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		api.JSONBadRequest(w, "approval id is required")
+		return
+	}
+	a, err := h.service.GetApproval(id)
+	if err != nil {
+		api.JSONNotFound(w, err.Error())
+		return
+	}
+	// OWNERSHIP: as handleGet, a foreign id reads as absent.
+	if caller := auth.PrincipalID(r); caller != "" &&
+		auth.Principal(r) != string(auth.RoleOperator) &&
+		a.AgentID != caller {
+		api.JSONNotFound(w, "approval not found: "+id)
+		return
+	}
+	got, claimed, err := h.service.Claim(id)
+	switch {
+	case errors.Is(err, approval.ErrApprovalUsed):
+		api.JSONError(w, http.StatusConflict, "approval already used: an identical request has to be asked again")
+		return
+	case err != nil:
+		api.JSONInternalError(w, "failed to claim approval: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"approval_id": got.ApprovalID, "status": got.Status, "claimed": claimed})
 }
 
 func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {

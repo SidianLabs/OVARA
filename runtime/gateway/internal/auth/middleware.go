@@ -54,6 +54,10 @@ func agentAllowed(method, path string) bool {
 	// /pending list is a bulk read and stays operator-only.
 	case method == http.MethodGet && strings.HasPrefix(path, "/v1/approval/") && path != "/v1/approval/pending":
 		return true
+	// Claim an approved approval before acting on it (single use). It
+	// grants nothing the approval did not; the handler checks ownership.
+	case method == http.MethodPost && strings.HasPrefix(path, "/v1/approval/") && strings.HasSuffix(path, "/claim"):
+		return true
 	// whoami lets any authenticated credential resolve its stable
 	// identity (proxy/agents need it under P2.2); it reveals only the
 	// caller's own identity.

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -204,6 +205,47 @@ func (c *Client) ApprovalStatus(ctx context.Context, approvalID string) (string,
 		return "", err
 	}
 	return out.Status, nil
+}
+
+// ErrClaimUnsupported: the gateway has no claim route (an older one), so
+// approvals are not single-use there. Callers may go ahead on an approved
+// status, as they did before the route existed.
+var ErrClaimUnsupported = errors.New("the gateway has no approval claim route")
+
+// ClaimApproval marks an approved approval used, so the action it allows
+// runs once. It returns the approval's status and whether this call
+// claimed it: the caller goes ahead only when claimed is true. An approval
+// already used answers claimed=false with status approved.
+func (c *Client) ClaimApproval(ctx context.Context, approvalID string) (status string, claimed bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/approval/"+approvalID+"/claim", nil)
+	if err != nil {
+		return "", false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusConflict:
+		return "approved", false, nil
+	case resp.StatusCode == http.StatusNotFound:
+		return "", false, ErrClaimUnsupported
+	case resp.StatusCode >= 300:
+		return "", false, fmt.Errorf("gateway returned %d", resp.StatusCode)
+	}
+	var out struct {
+		Status  string `json:"status"`
+		Claimed bool   `json:"claimed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", false, err
+	}
+	return out.Status, out.Claimed, nil
 }
 
 // ApprovalResolvedBy returns who resolved an approval ("" while pending).

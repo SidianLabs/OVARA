@@ -134,6 +134,9 @@ func outcome(r receipts.Receipt) string {
 		if r.Status == 504 {
 			return "timed out"
 		}
+		if r.Status == 503 {
+			return "told to retry"
+		}
 		return "not approved"
 	case decisionError:
 		return decisionError

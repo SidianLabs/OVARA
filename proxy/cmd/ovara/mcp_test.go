@@ -126,6 +126,8 @@ func newWrapGateway(t *testing.T) (*wrapGateway, string) {
 			id := fmt.Sprintf("apr_%d", len(g.approvals)+1)
 			g.approvals[id] = body.ActionType
 			_ = json.NewEncoder(w).Encode(map[string]string{"approval_id": id})
+		case strings.HasSuffix(r.URL.Path, "/claim"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "approved", "claimed": true})
 		case strings.HasPrefix(r.URL.Path, "/v1/approval/"):
 			st := g.answer[g.approvals[strings.TrimPrefix(r.URL.Path, "/v1/approval/")]]
 			if st == "" {

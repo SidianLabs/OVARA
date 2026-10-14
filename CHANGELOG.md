@@ -233,6 +233,31 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
 - A git push is decided ref by ref; an allow for refs does not cover
   deleting them unless it says `(delete)`.
 
+**Approvals: used once, and a late answer is not wasted**
+
+- Before an approved request runs, the proxy claims the approval
+  (`POST /v1/approval/{id}/claim`, an agent-callable route; single use in
+  the gateway's store). An identical request that finds it already used is
+  refused (`approval_used`) and asked afresh, so one approval never runs an
+  action twice.
+- A request approved after the proxy stopped waiting is not asked again:
+  the identical request (same agent, action, resource, body hash and
+  gateway digest) gets that approval back from `/v1/approval/create` while
+  it is unused and within the pending TTL, then claims it. Before, a card
+  answered between two retries was wasted and the person was asked twice.
+- `proxy.json` `escalate_on_timeout`: `"timeout"` (default, 504 as before)
+  or `"retry"`: an unanswered hold is answered 503 with `Retry-After` set to
+  the poll interval, the approval id and a hint; the approval stays open.
+  With a short `escalate_timeout_sec` this is the fail-fast setting: the
+  agent is told at once instead of being held. It applies to HTTP requests,
+  the proxy's own questions (packages, budgets, taint, model features) and
+  MCP tool calls. `ovara log` shows such requests as "told to retry".
+- Every refusal names the policy rule that decided (`rule` in the JSON
+  body) when one did, so the agent and the person reading its output see
+  what to change.
+- A proxy talking to an older gateway without the claim route says so once
+  and behaves as before (approvals are not single-use there).
+
 **MCP**
 
 - MCP traffic that Ovara cannot read strictly is refused, not passed as

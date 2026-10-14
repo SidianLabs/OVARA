@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,17 +42,23 @@ type Server struct {
 	connectPort443  bool // CONNECT targets restricted to :443
 	escalateTimeout time.Duration
 	escalatePoll    time.Duration
-	gitGate         bool
-	sensitiveHosts  []string
-	agentToken      string // if set, proxy clients must authenticate
-	unauthLimiter   *rateLimiter
-	escalateSem     chan struct{} // caps requests parked awaiting approval
-	pkgGate         *packageGate  // strict installs (packages.go); nil = off
-	modelGateOff    bool          // model-API body check (modelgate.go) disabled
-	modelHosts      []string      // hosts the model gate applies to; nil = defaults
-	modelGateNoAsk  bool          // model-gate findings are refused, not asked
-	limits          limits        // body, push and read size bounds (limits.go)
-	budget          *egressBudget // per-host allowance for allowed traffic; nil = off
+	// escalateRetry: an unanswered hold is answered with 503 and
+	// Retry-After (the approval stays open; the same request sent again
+	// runs once it is approved) instead of 504.
+	escalateRetry bool
+	// claimNote says once that the gateway has no claim route.
+	claimNote      sync.Once
+	gitGate        bool
+	sensitiveHosts []string
+	agentToken     string // if set, proxy clients must authenticate
+	unauthLimiter  *rateLimiter
+	escalateSem    chan struct{} // caps requests parked awaiting approval
+	pkgGate        *packageGate  // strict installs (packages.go); nil = off
+	modelGateOff   bool          // model-API body check (modelgate.go) disabled
+	modelHosts     []string      // hosts the model gate applies to; nil = defaults
+	modelGateNoAsk bool          // model-gate findings are refused, not asked
+	limits         limits        // body, push and read size bounds (limits.go)
+	budget         *egressBudget // per-host allowance for allowed traffic; nil = off
 
 	// per-agent state
 	ids         *agentRegistry // named agents and stopped agents (agents.go)
@@ -133,6 +140,12 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 // SetEscalateWindow configures the hold-and-resume bounds for escalate
 // decisions: how long to hold the client request and how often to poll the
 // gateway approval status.
+// SetEscalateAnswer chooses what an unanswered hold is answered with:
+// retry true is 503 with Retry-After and the approval id (the approval
+// stays open and the same request sent again runs once it is approved);
+// false, the default, is 504.
+func (s *Server) SetEscalateAnswer(retry bool) { s.escalateRetry = retry }
+
 func (s *Server) SetEscalateWindow(timeout, poll time.Duration) {
 	if timeout > 0 {
 		s.escalateTimeout = timeout
@@ -733,9 +746,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			return true
 		case pkgTimeout:
 			decision = gwEscalate
-			about["error"] = "approval timeout"
-			about["approval_id"] = approvalID
-			writeJSON(http.StatusGatewayTimeout, about)
+			code, body := s.heldAnswer(w, "", approvalID, "")
+			for k, v := range body {
+				about[k] = v
+			}
+			writeJSON(code, about)
 		case pkgAborted:
 			decision = gwEscalate
 		case pkgError:
@@ -754,7 +769,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	case gwAllow:
 		// proceed to execution below
 	case gwDeny:
-		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes})
+		writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes}, d.MatchedRule))
 		return
 	case gwEscalate:
 		outcome, id := s.awaitEscalation(r.Context(), d, r.Method, url)
@@ -763,12 +778,16 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		case "approved":
 			decision = gwAllow
 		case "timeout":
-			writeJSON(http.StatusGatewayTimeout, map[string]any{"error": "approval timeout", "decision_id": d.DecisionID, "approval_id": approvalID})
+			code, body := s.heldAnswer(w, d.DecisionID, approvalID, d.MatchedRule)
+			writeJSON(code, body)
 			return
 		case "aborted":
 			return
+		case "used":
+			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "this approval was already used by an identical request; send it again to be asked afresh", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": []string{"approval_used"}}, d.MatchedRule))
+			return
 		default:
-			writeJSON(http.StatusForbidden, map[string]any{"error": "action requires approval", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": d.ReasonCodes})
+			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "action requires approval", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": d.ReasonCodes}, d.MatchedRule))
 			return
 		}
 	default:
@@ -1077,6 +1096,37 @@ func encodedValue(vals []string) string {
 	return ""
 }
 
+// heldAnswer is the status and body for a request a person has not
+// answered within the hold: 504 "approval timeout", or with the retry
+// answer 503 "held for approval" with Retry-After set to the poll interval,
+// so the agent comes back and the same request runs once it is approved.
+func (s *Server) heldAnswer(w http.ResponseWriter, decisionID, approvalID, rule string) (int, map[string]any) {
+	if !s.escalateRetry {
+		return http.StatusGatewayTimeout, withRule(map[string]any{"error": "approval timeout", "decision_id": decisionID, "approval_id": approvalID}, rule)
+	}
+	after := int(s.escalatePoll / time.Second)
+	if after < 1 {
+		after = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(after))
+	return http.StatusServiceUnavailable, withRule(map[string]any{
+		"error":           "held for approval",
+		"decision_id":     decisionID,
+		"approval_id":     approvalID,
+		"retry_after_sec": after,
+		"hint":            "a person is deciding; send the same request again after retry_after_sec and it will run once approved",
+	}, rule)
+}
+
+// withRule adds the policy rule that decided, when one did, so a refusal
+// says what to change.
+func withRule(m map[string]any, rule string) map[string]any {
+	if rule != "" {
+		m["rule"] = rule
+	}
+	return m
+}
+
 // awaitEscalation registers an approval request for an escalated decision and
 // holds until it is approved, denied, the escalate window elapses, or the
 // client disconnects. Returns the outcome and the approval_id ("" if the
@@ -1133,7 +1183,7 @@ func (s *Server) holdForApproval(ctx context.Context, what string, create func()
 			// must not be lost, or the person approves a request that then
 			// reports a timeout and comes back as a retry.
 			if status, err := s.gw.ApprovalStatus(ctx, approvalID); err == nil && status != "pending" {
-				return status, approvalID
+				return s.claimed(ctx, approvalID, status), approvalID
 			}
 			return "timeout", approvalID
 		case <-ticker.C:
@@ -1149,8 +1199,33 @@ func (s *Server) holdForApproval(ctx context.Context, what string, create func()
 				continue
 			}
 			if status != "pending" {
-				return status, approvalID
+				return s.claimed(ctx, approvalID, status), approvalID
 			}
 		}
 	}
+}
+
+// claimed turns an approved status into "approved" only once the approval
+// is claimed, so the action it allows runs once: an identical request that
+// finds it already used gets "used" and is asked again. Other statuses
+// pass through. A gateway without the claim route (an older one) is noted
+// once and the approval is taken as before.
+func (s *Server) claimed(ctx context.Context, approvalID, status string) string {
+	if status != "approved" {
+		return status
+	}
+	_, ok, err := s.gw.ClaimApproval(ctx, approvalID)
+	switch {
+	case errors.Is(err, gateway.ErrClaimUnsupported):
+		s.claimNote.Do(func() {
+			log.Printf("the gateway has no approval claim route: an approval is not single-use until it is upgraded")
+		})
+		return "approved"
+	case err != nil:
+		log.Printf("escalate: claim approval %s: %v", approvalID, err)
+		return "error"
+	case !ok:
+		return "used"
+	}
+	return "approved"
 }

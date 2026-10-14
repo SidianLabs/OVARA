@@ -55,6 +55,9 @@ func newPkgServer(t *testing.T, gate bool, pinned ...string) (*Server, *pkgGatew
 		case r.URL.Path == "/v1/approval/create":
 			n := pg.creates.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]string{"approval_id": fmt.Sprintf("apr_%d", n)})
+		case strings.HasPrefix(r.URL.Path, "/v1/approval/apr_") && strings.HasSuffix(r.URL.Path, "/claim"):
+			// single use is the real gateway's job; here every claim succeeds
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "approved", "claimed": true})
 		case strings.HasPrefix(r.URL.Path, "/v1/approval/apr_"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": pg.approvalStatus.Load().(string)})
 		default:
