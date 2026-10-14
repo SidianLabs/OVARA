@@ -39,7 +39,7 @@ func TestCommandGate_PolicyLineAndLaunch(t *testing.T) {
 	}))
 	defer srv.Close()
 	launch := []string{"agent", "--dangerously-skip-permissions"}
-	g := newCommandGate(gateway.New(srv.URL, "", "dev"), t.TempDir(), time.Millisecond, true, launch)
+	g := newCommandGate(gateway.New(srv.URL, "", "dev"), t.TempDir(), time.Millisecond, true, launch, nil)
 	if v := g.decide(boxgate.Exec{Argv: launch}); v != boxgate.Allow {
 		t.Fatal("the command the person gave the box was paused")
 	}

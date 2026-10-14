@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ovara.dev/spec/0.1/manifest.schema.json",
+  "title": "Sandbox manifest (contract C5, spec 0.1)",
+  "description": "The portable description of one sandbox run: what `ovara box` is told, as a file another tool can write, keep in a repository or hand to a service. It names no secret; credentials stay in Ovara's deployment. See spec/runtime.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "workspace", "agent"],
+  "properties": {
+    "version": { "type": "string", "const": "0.1" },
+    "tier": { "type": "integer", "enum": [1, 2], "description": "1: separate user, network namespace, own root file system (default). 2: a container." },
+    "workspace": { "$ref": "#/$defs/workspace" },
+    "agent": { "$ref": "#/$defs/agent" },
+    "deployment": { "type": "string", "description": "Ovara's own directory for the run (policy.json, proxy.json, keys); empty means the default." },
+    "profile": { "type": "string", "enum": ["dev", "strict"], "description": "dev: installs are free. strict: a dependency not in the project's lockfiles pauses once, and npm install scripts are off." },
+    "untrusted_lockfiles": { "type": "boolean", "description": "strict: trust nothing the project's lockfiles pin." },
+    "isolation": { "$ref": "#/$defs/isolation" },
+    "mounts": { "type": "array", "items": { "type": "string", "pattern": "^[^:]+:[^:]+$" }, "description": "Host paths mounted read-only into the box, as SRC:DST. Secret locations are refused by the launcher." },
+    "limits": { "$ref": "#/$defs/limits" },
+    "credentials": { "$ref": "#/$defs/credentials" },
+    "commit_back": { "$ref": "#/$defs/commit_back" },
+    "command_gate": { "type": "boolean", "description": "false runs the agent without the check on every program it starts; the network and file boundaries still hold. Absent means true." },
+    "ui": { "type": "string", "description": "The approval page address (loopback only), or \"off\"." }
+  },
+  "$defs": {
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": { "type": "string", "description": "The project directory on the host (a git repository). The agent works on a copy." },
+        "exclude": { "type": "array", "items": { "type": "string" }, "description": "Extra path globs left out of the copy; .ovaraignore is read too." }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "name": { "type": "string", "description": "The named agent the run is attributed to (its own proxy token)." },
+        "command": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "The agent's command line, program first." },
+        "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra variables for the agent. A name that says it is a key, with a value, is refused." }
+      }
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Tier 1: the network namespace name (one box per name)." },
+        "user": { "type": "string", "description": "Tier 1: the unprivileged user the agent runs as." },
+        "root_fs": { "type": "string", "enum": ["isolated", "host"], "description": "Tier 1: a root file system of its own (default), or the host's (unsafe on a machine with secrets)." },
+        "allow_visible_procs": { "type": "boolean", "description": "Tier 1: start on a kernel that cannot hide other users' processes from the box." },
+        "image": { "type": "string", "description": "Tier 2: the box image." }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pids": { "type": "integer", "minimum": 0 },
+        "memory": { "type": "string", "description": "docker syntax, e.g. 8g" },
+        "cpus": { "type": "string", "description": "e.g. 2" }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "github_scope": { "type": "string", "enum": ["repo", "all"], "description": "repo (default): the GitHub key only goes with requests about the project's own repository." }
+      }
+    },
+    "commit_back": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "disabled": { "type": "boolean", "description": "Leave the changes in the workspace; offer nothing." },
+        "allow_binary": { "type": "boolean", "description": "Let binary files the agent added or changed come back." },
+        "approve_timeout": { "type": "string", "description": "How long the commit-back waits for a person, as a duration (\"10m\")." },
+        "keep_workspace": { "type": "boolean", "description": "Keep the workspace after the run whatever happened." }
+      }
+    }
+  }
+}

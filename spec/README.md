@@ -13,11 +13,12 @@ to each type the schemas describe).
 | C2 Policy: the document, matching, precedence | [`policy.md`](policy.md) | [`schemas/policy.schema.json`](schemas/policy.schema.json) | `runtime/gateway/internal/policy`, `internal/evaluator` |
 | C3 Decision API: check, approvals, claim, roles | [`decision-api.md`](decision-api.md) | [`schemas/decision-request.schema.json`](schemas/decision-request.schema.json), [`schemas/decision-response.schema.json`](schemas/decision-response.schema.json) | `runtime/gateway/internal/handlers`, `internal/auth`, `internal/approval` |
 | C4 Evidence: the receipt chain, its signing form, keys, anchors | [`evidence.md`](evidence.md) | [`schemas/receipt-v2.schema.json`](schemas/receipt-v2.schema.json) | `proxy/internal/receipts`; vectors in `sdk/testdata/receipts_v2.json` |
+| C5 Sandbox runtime: the manifest a run is written as, the events it emits, the summary it ends with | [`runtime.md`](runtime.md) | [`schemas/manifest.schema.json`](schemas/manifest.schema.json), [`schemas/event.schema.json`](schemas/event.schema.json) | `proxy/internal/sandbox`; `ovara box` (`proxy/cmd/ovara/box_options.go`, `box.go`) |
 
-A fifth contract, the sandbox runtime interface (create a sandbox from a
-manifest, start the agent, stream events, finish), is not in 0.1: `ovara
-box` does it as a command, and the programmatic form is being extracted from
-it.
+C5 in 0.1 is the command's arguments and results: `ovara box` reads and
+writes the manifest and streams the events. The in-process form (create,
+start, events, stop, finish as calls) is still being extracted from the
+command and will join the contract without changing those documents.
 
 ## Status and versioning
 

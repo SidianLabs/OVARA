@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ovara.dev/spec/0.1/event.schema.json",
+  "title": "Sandbox run event (contract C5, spec 0.1)",
+  "description": "One line of the events stream a run emits (`ovara box -events FILE`): JSON lines, one event each, written as they happen. The members after `event` are filled by the events that use them and omitted otherwise. See spec/runtime.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "time", "run_id", "event"],
+  "properties": {
+    "v": { "type": "integer", "const": 1 },
+    "time": { "type": "string", "format": "date-time", "description": "RFC 3339, UTC." },
+    "run_id": { "type": "string", "description": "The run the event belongs to; runs may share a stream." },
+    "event": {
+      "type": "string",
+      "enum": [
+        "run.created", "workspace.copied", "proxy.started", "agent.started",
+        "command.allowed", "command.refused", "command.paused", "command.approved", "command.not_approved",
+        "agent.exited",
+        "commit_back.disabled", "commit_back.nothing", "commit_back.kept", "commit_back.refused",
+        "commit_back.waiting", "commit_back.not_approved", "commit_back.landed",
+        "run.finished"
+      ]
+    },
+    "manifest": { "$ref": "manifest.schema.json", "description": "run.created: the run written down as a manifest." },
+    "workspace": { "type": "string", "description": "workspace.copied: the copy's path." },
+    "command": { "type": "string", "description": "agent.started, command.*: the command line as run." },
+    "approval_id": { "type": "string", "description": "command.paused/approved/not_approved, commit_back.waiting/not_approved." },
+    "status": { "type": "string", "description": "*.not_approved: denied, expired or timed out." },
+    "code": { "type": "integer", "description": "agent.exited: the agent's exit status." },
+    "files": { "type": "integer", "description": "commit_back.waiting/landed: files offered or landed." },
+    "branch": { "type": "string", "description": "commit_back.landed: the branch in the project." },
+    "commit": { "type": "string", "description": "commit_back.landed: its head." },
+    "error": { "type": "string", "description": "run.finished: why the run failed." },
+    "summary": { "$ref": "#/$defs/summary", "description": "run.finished." }
+  },
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "exit_code", "requests", "hosts", "commit_back"],
+      "properties": {
+        "outcome": { "type": "string", "enum": ["clean", "kept", "failed"] },
+        "exit_code": { "type": "integer", "description": "The agent's exit status." },
+        "requests": { "$ref": "#/$defs/counts", "description": "Through the proxy during the run." },
+        "hosts": { "type": "integer", "description": "Distinct hosts requested." },
+        "commands": { "$ref": "#/$defs/counts", "description": "Through the command gate; absent when the gate was off." },
+        "commit_back": { "type": "string", "enum": ["", "disabled", "nothing", "kept", "refused", "not_approved", "landed"], "description": "How the changes ended; empty when the run failed before that." },
+        "branch": { "type": "string" },
+        "commit": { "type": "string" }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed", "paused", "approved", "denied"],
+      "properties": {
+        "allowed": { "type": "integer" },
+        "paused": { "type": "integer", "description": "Requests held for a person; commands that waited for one." },
+        "approved": { "type": "integer", "description": "Commands a person approved." },
+        "denied": { "type": "integer" }
+      }
+    }
+  }
+}

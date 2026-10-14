@@ -292,6 +292,13 @@ flags (built)
   -no-command-gate  run without the exec gate (the network and file boundaries still hold)
   -ui ADDR|off      approval page (default 127.0.0.1:9090)
   -approve-timeout  how long the commit-back waits for a person (default 10m)
+  -agent NAME       run as this named agent (ovara agent add NAME): receipts and
+                    approvals name it, and ovara kill can stop it alone
+  -manifest FILE    read the run from a manifest (§6.5); a flag given here wins
+                    over it, a project directory or -- command replaces its
+  -print-manifest   write the run these flags describe as a manifest on stdout
+                    and stop (no root; works on any platform)
+  -events FILE      append the run's events to FILE, one JSON line each (§6.5)
 
   -profile dev|strict  dev (default): installs free; strict: a dependency the
                     project's lockfiles do not pin pauses once (§9)
@@ -386,6 +393,36 @@ Limits of tier 2, stated plainly: it shares the host's kernel (a kernel
 exploit leaves the box; tier 3 is the answer); it needs root on the host
 today; `-mount` exposes whatever the person mounts, read-only; and the
 person's Docker daemon is trusted.
+
+### 6.5 Driving the box from a tool: manifest and events
+
+The command line is for a person. A CI job, an orchestrator or a service
+drives the box through two documents instead (contract C5,
+`spec/runtime.md`):
+
+- the **manifest** is the run written down: tier, workspace, agent command
+  and name, profile, isolation, mounts, limits, credential scope,
+  commit-back settings. `ovara box -print-manifest [flags] <project> --
+  <command>` writes the one a command line describes (on any platform, no
+  root); `ovara box -manifest sandbox.json` runs it, flags given next to it
+  winning, a `-- command` next to it replacing the file's. It carries no
+  secret: a variable whose name says it is a key is refused, and real keys
+  stay in the deployment. Kept in the repository, it says what the agent
+  may do, not what it may use.
+- the **events stream** (`-events FILE`) is what happens, one JSON line
+  each, as it happens: `run.created` (with the manifest, defaults resolved),
+  `workspace.copied`, `proxy.started`, `agent.started`, one `command.*`
+  event per program the gate decided (allowed, refused, paused, approved,
+  not_approved, with the approval id), `agent.exited` (the code), one
+  `commit_back.*` event for how the changes ended (disabled, nothing, kept,
+  refused, waiting, not_approved, landed with the branch), and always
+  `run.finished` last, carrying the summary: outcome (clean, kept, failed),
+  the agent's exit code, request and command tallies, the commit-back's
+  end, and the error when the run failed.
+
+A tool that watches the stream can answer `command.paused` and
+`commit_back.waiting` through the approval API or `ovara approve <id>`,
+and read the receipts (`ovara log export`) for the full record.
 
 ## 7. The file boundary
 

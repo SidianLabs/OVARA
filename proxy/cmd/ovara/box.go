@@ -32,11 +32,9 @@ package main
 // Both need root on the host today.
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"maps"
 	"net"
@@ -45,8 +43,6 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
-	"regexp"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -60,31 +56,21 @@ import (
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/lockfiles"
+	"ovara.proxy/internal/sandbox"
 	"ovara.proxy/internal/workspace"
 )
 
 const (
-	boxDefaultUser = "ovara-agent"
-	boxRunsRoot    = "/var/lib/ovara/runs"
-	boxPreviewMax  = 64 << 10
+	boxRunsRoot   = "/var/lib/ovara/runs"
+	boxPreviewMax = 64 << 10
 
 	// tier 2: the box image's agent user, and where things are inside it
 	boxContainerUID  = 10001
-	boxDefaultImage  = "ovara-box"
 	boxInWork        = "/work"
 	boxInHome        = "/home/agent"
 	boxInCA          = "/etc/ovara/ca.pem"
 	boxInBinary      = "/opt/ovara/ovara"
 	boxContainerName = "ovara-box-"
-
-	// profiles (docs/box.md §11.4)
-	boxProfileDev    = "dev"
-	boxProfileStrict = "strict"
-
-	// run outcomes
-	outcomeClean  = "clean"  // everything came back or nothing changed: the workspace is removed
-	outcomeKept   = "kept"   // something is left for a person: the workspace stays
-	outcomeFailed = "failed" // an error on our side: the workspace stays
 
 	// approval states (the gateway's decisions are in commitback.go)
 	approvalApproved = "approved"
@@ -92,11 +78,10 @@ const (
 
 	// command-gate tallies
 	countAllowed  = "allowed"
+	countPaused   = "paused"
 	countApproved = "approved"
 	countDenied   = "denied"
 )
-
-var keyLikeName = regexp.MustCompile(`(?i)(key|token|secret|password|passwd|credential)`)
 
 // boxAgent is what both tiers need to start the agent.
 type boxAgent struct {
@@ -126,110 +111,61 @@ type boxAgent struct {
 	selfPath     string
 }
 
-func cmdBox(args []string) error {
-	fs := flag.NewFlagSet("box", flag.ContinueOnError)
-	dir := fs.String("dir", "", "Ovara deployment directory (default: ~/.ovara/box of the invoking user; created on first use)")
-	tier := fs.Int("tier", 1, "isolation: 1 = separate user in a network namespace with its own root file system (see -tier1-fs); 2 = a container (no network but Ovara, no capabilities, read-only root, no host files)")
-	name := fs.String("name", "ovara-box", "tier 1: network namespace name (one box per name at a time)")
-	agentUser := fs.String("user", boxDefaultUser, "tier 1: unprivileged user the agent runs as (created if missing)")
-	tier1FS := fs.String("tier1-fs", tier1FSIsolated, "tier 1: isolated = a root file system of its own (the host's system directories read-only, the workspace, a fresh home; nothing of /home, /root, /srv, /opt or the original project); host = the host's file system, where the agent reads whatever its user may (UNSAFE on a machine with secrets)")
-	visibleProcs := fs.Bool("allow-visible-procs", false, "tier 1 isolated: on a kernel before 5.8, which cannot hide other users' processes in the box's /proc, start anyway (the agent can then list every process on the host and its command line); without it such a box is refused")
-	image := fs.String("image", boxDefaultImage, "tier 2: the box image (build it from box/Dockerfile; extend it with your agent)")
-	pids := fs.Int("pids", 4096, "tier 2: most processes the box may have at once")
-	memory := fs.String("memory", "", "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
-	cpus := fs.String("cpus", "", "tier 2: CPU limit for the box (e.g. 2; default none)")
-	profile := fs.String("profile", boxProfileDev, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9)")
-	untrustedLockfiles := fs.Bool("untrusted-lockfiles", false, "strict: the project's lockfiles are not trusted (a repository you are reviewing, not your own): nothing they pin is let through without a question")
-	uiAddr := fs.String("ui", "127.0.0.1:9090", "approval page address (loopback only; \"off\" to disable)")
-	approveTimeout := fs.Duration("approve-timeout", 10*time.Minute, "how long the commit-back waits for a person")
-	keep := fs.Bool("keep", false, "keep the workspace after the run (default: kept only when something went wrong)")
-	noCommitBack := fs.Bool("no-commit-back", false, "do not offer to bring changes back; keep the workspace")
-	allowBinary := fs.Bool("allow-binary", false, "let binary files the agent added or changed come back (by default they stay in the workspace: a diff cannot show what is in them)")
-	ghScope := fs.String("github-scope", "repo", "repo: the GitHub key only goes with requests about the project's own repository (from its origin remote); all: every request to GitHub gets it")
-	noGate := fs.Bool("no-command-gate", false, "do not check the agent's commands against policy (the network and file boundaries still hold)")
-	var envs, excludes, mounts multiFlag
-	fs.Var(&envs, "env", "extra NAME=value for the agent (repeatable; values that look like keys are refused)")
-	fs.Var(&excludes, "exclude", "extra path glob to leave out of the workspace (repeatable; .ovaraignore is read too)")
-	fs.Var(&mounts, "mount", "SRC:DST, a host path mounted READ-ONLY into the box (repeatable; secret locations are refused; not with -tier1-fs host)")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: ovara box [flags] <project-dir> -- <agent command...>")
-		fs.PrintDefaults()
-	}
-	if err := fs.Parse(args); err != nil {
+func cmdBox(args []string) (err error) {
+	o, x, err := parseBoxArgs(args)
+	if err != nil {
 		return err
 	}
-	rest := fs.Args()
-	if len(rest) < 3 || rest[1] != "--" {
-		fs.Usage()
-		return errors.New("need a project directory, then --, then the agent command")
-	}
-	project, agentCmd := rest[0], rest[2:]
-	if runtime.GOOS != "linux" {
-		return errors.New("ovara box needs Linux (a network namespace); on macOS/Windows run it inside a Linux VM")
-	}
-	if *tier != 1 && *tier != 2 {
-		return fmt.Errorf("-tier %d: want 1 or 2", *tier)
-	}
-	if *profile != boxProfileDev && *profile != boxProfileStrict {
-		return fmt.Errorf("-profile %s: want dev or strict", *profile)
-	}
-	if *untrustedLockfiles && *profile != boxProfileStrict {
-		return errors.New("-untrusted-lockfiles is for -profile strict (the dev profile asks about no package)")
+	if x.printManifest {
+		return printManifest(o)
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("ovara box needs root (tier 1: the network namespace; tier 2: handing the workspace to the box's user and keeping Ovara's sockets out of its reach): run it with sudo; the agent itself runs as an unprivileged user")
 	}
-	if *tier1FS != tier1FSIsolated && *tier1FS != tier1FSHost {
-		return fmt.Errorf("-tier1-fs %s: want isolated or host", *tier1FS)
-	}
-	if *tier == 1 && *tier1FS == tier1FSHost && len(mounts) > 0 {
-		return errors.New("-mount needs a box file system: with -tier1-fs host the agent already sees the host's files its user may read")
-	}
-	for _, kv := range envs {
-		k, _, ok := strings.Cut(kv, "=")
-		if !ok {
-			return fmt.Errorf("-env %q: want NAME=value", kv)
-		}
-		if keyLikeName.MatchString(k) {
-			return fmt.Errorf("-env %s: looks like a secret; put real keys in Ovara's environment (proxy.json credentials), never in the box", k)
-		}
-	}
-	project, err := filepath.Abs(project)
+	project, err := filepath.Abs(o.project)
 	if err != nil {
 		return err
 	}
-	if *dir == "" {
-		*dir = defaultBoxDir()
+	o.project = project
+	if o.dir == "" {
+		o.dir = defaultBoxDir()
 	}
-	if *tier == 1 {
-		if err := checkMountsFor(mounts, *dir, tier1DstRefused); err != nil {
+	if o.tier == 1 {
+		if err := checkMountsFor(o.mounts, o.dir, tier1DstRefused); err != nil {
 			return err
 		}
 	}
-	if *tier == 2 {
-		if err := checkMounts(mounts, *dir); err != nil {
+	if o.tier == 2 {
+		if err := checkMounts(o.mounts, o.dir); err != nil {
 			return err
 		}
-		if err := ensureImage(*image); err != nil {
-			return err
-		}
-	}
-	if _, err := os.Stat(filepath.Join(*dir, "config.json")); err != nil {
-		fmt.Fprintf(os.Stderr, "==> first run: ovara init %s\n", *dir)
-		if err := cmdInit([]string{*dir}); err != nil {
+		if err := ensureImage(o.image); err != nil {
 			return err
 		}
 	}
-	if err := os.Chmod(*dir, 0o700); err != nil {
+	if _, err := os.Stat(filepath.Join(o.dir, "config.json")); err != nil {
+		fmt.Fprintf(os.Stderr, "==> first run: ovara init %s\n", o.dir)
+		if err := cmdInit([]string{o.dir}); err != nil {
+			return err
+		}
+	}
+	if err := os.Chmod(o.dir, 0o700); err != nil {
 		return err
 	}
-	cfg, err := config.Load(filepath.Join(*dir, "proxy.json"))
+	cfg, err := config.Load(filepath.Join(o.dir, "proxy.json"))
 	if err != nil {
-		return fmt.Errorf("%s/proxy.json: %w", *dir, err)
+		return fmt.Errorf("%s/proxy.json: %w", o.dir, err)
+	}
+	if o.agent != "" {
+		tok, err := agentProxyToken(cfg, o.agent)
+		if err != nil {
+			return err
+		}
+		cfg.AgentToken = tok
 	}
 	uid, gid := boxContainerUID, boxContainerUID
-	if *tier == 1 {
-		if uid, gid, err = ensureUser(*agentUser); err != nil {
+	if o.tier == 1 {
+		if uid, gid, err = ensureUser(o.user); err != nil {
 			return err
 		}
 	}
@@ -243,15 +179,33 @@ func cmdBox(args []string) error {
 	if err := os.Mkdir(runDir, 0o711); err != nil {
 		return err
 	}
+	var events *sandbox.Events
+	if x.events != "" {
+		if events, err = sandbox.OpenEvents(x.events, runID); err != nil {
+			return err
+		}
+		defer events.Close()
+	}
+	// the run's summary: filled in as it goes, written last whatever happens
+	summary := &sandbox.Summary{Outcome: sandbox.OutcomeFailed}
+	defer func() {
+		last := sandbox.Event{Event: sandbox.EventRunFinished, Summary: summary}
+		if err != nil {
+			last.Error = err.Error()
+		}
+		events.Emit(last)
+	}()
+	events.Emit(sandbox.Event{Event: sandbox.EventRunCreated, Manifest: o.manifest()})
 	home := filepath.Join(runDir, "home")
 	if err := os.Mkdir(home, 0o700); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "==> copying %s into the workspace (history kept, secrets left out)\n", project)
-	ws, err := workspace.Create(project, filepath.Join(runDir, "work"), workspace.Options{ExtraExcludes: excludes})
+	ws, err := workspace.Create(project, filepath.Join(runDir, "work"), workspace.Options{ExtraExcludes: o.excludes})
 	if err != nil {
 		return err
 	}
+	events.Emit(sandbox.Event{Event: sandbox.EventWorkspaceCopied, Workspace: ws.Dir})
 	for _, p := range ws.Excluded {
 		fmt.Fprintf(os.Stderr, "    left out: %s\n", termSafe(p))
 	}
@@ -270,8 +224,8 @@ func cmdBox(args []string) error {
 	// strict installs: what the project has pinned goes through; anything
 	// else the agent adds pauses once (the proxy's package gate)
 	pinnedFile := ""
-	if *profile == boxProfileStrict {
-		pins, files := strictPins(ws.Dir, *untrustedLockfiles)
+	if o.profile == boxProfileStrict {
+		pins, files := strictPins(ws.Dir, o.untrusted)
 		pinnedFile = filepath.Join(runDir, "pinned-packages.txt")
 		if err := os.WriteFile(pinnedFile, []byte(lockfiles.FormatPins(pins)), 0o600); err != nil {
 			return err
@@ -283,29 +237,28 @@ func cmdBox(args []string) error {
 			}
 		}
 		switch {
-		case *untrustedLockfiles:
+		case o.untrusted:
 			fmt.Fprintln(os.Stderr, "==> strict installs: -untrusted-lockfiles: the project's lockfiles pin nothing, so every package the agent installs pauses once")
 		case len(files) == 0:
 			fmt.Fprintln(os.Stderr, "==> strict installs: no lockfile in the project, so every package the agent installs pauses once")
 		default:
 			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through (%d checked against the lockfile's digest); any other package pauses once\n", len(pins), strings.Join(files, ", "), withDigest)
 		}
-		if b, err := os.ReadFile(filepath.Join(*dir, "policy.json")); err == nil && !strings.Contains(string(b), `"package.install"`) {
+		if b, err := os.ReadFile(filepath.Join(o.dir, "policy.json")); err == nil && !strings.Contains(string(b), `"package.install"`) {
 			fmt.Fprintln(os.Stderr, "    warning: policy.json has no package.install rule; without one a new package is refused, not paused (add {\"action_type\": \"package.install\", \"resource\": \"*\", \"escalate\": true})")
 		}
 		// install scripts are the package manager's to stop; -env can turn them back on
-		envs = append(multiFlag{"npm_config_ignore_scripts=true"}, envs...)
+		o.envs = append(multiFlag{"npm_config_ignore_scripts=true"}, o.envs...)
 	}
-	envs = append(multiFlag{"OVARA_BOX_PROFILE=" + *profile}, envs...)
+	o.envs = append(multiFlag{"OVARA_BOX_PROFILE=" + o.profile}, o.envs...)
 
 	// the PUBLIC certificate, where the agent can read it (the deployment dir is 0700)
 	caPub := filepath.Join(runDir, "ovara-ca.pem")
-	if b, err := os.ReadFile(inDir(*dir, cfg.CACertFile)); err == nil {
+	if b, err := os.ReadFile(inDir(o.dir, cfg.CACertFile)); err == nil {
 		_ = os.WriteFile(caPub, b, 0o644) //nolint:gosec // the PUBLIC certificate: the agent must be able to read it
 	}
-	outcome := outcomeFailed
 	defer func() {
-		if *keep || *noCommitBack || outcome != outcomeClean {
+		if o.keep || o.noCommitBack || summary.Outcome != sandbox.OutcomeClean {
 			fmt.Fprintf(os.Stderr, "==> workspace kept at %s\n", ws.Dir)
 			return
 		}
@@ -319,16 +272,16 @@ func cmdBox(args []string) error {
 	if err != nil {
 		return err
 	}
-	runArgs := []string{"run", "-dir", *dir, "-ui", *uiAddr}
-	if *tier == 1 {
-		runArgs = append(runArgs, "--boundary", "netns", "--boundary-name", *name)
+	runArgs := []string{"run", "-dir", o.dir, "-ui", o.ui}
+	if o.tier == 1 {
+		runArgs = append(runArgs, "--boundary", "netns", "--boundary-name", o.name)
 	}
 	if pinnedFile != "" {
 		runArgs = append(runArgs, "-package-gate", pinnedFile)
 	}
 	// The agent works on this one project: the GitHub key only goes with
 	// requests about its repository, not every repository the key can see.
-	if *ghScope == "repo" {
+	if o.ghScope == sandbox.ScopeRepo {
 		if or := githubRepoOf(project); or != "" {
 			runArgs = append(runArgs, "-scope-repo", or)
 			fmt.Fprintf(os.Stderr, "==> the GitHub key is limited to %s for this run (-github-scope all to lift it)\n", or)
@@ -362,27 +315,29 @@ func cmdBox(args []string) error {
 	if err := waitPort("127.0.0.1:"+port, 60*time.Second, run); err != nil {
 		return fmt.Errorf("ovara run did not come up: %w", err)
 	}
+	events.Emit(sandbox.Event{Event: sandbox.EventProxyStarted})
 	// the certificate is created by the first `ovara run`; copy it now if it was not there before
 	if _, err := os.Stat(caPub); err != nil {
-		if b, err := os.ReadFile(inDir(*dir, cfg.CACertFile)); err == nil {
+		if b, err := os.ReadFile(inDir(o.dir, cfg.CACertFile)); err == nil {
 			_ = os.WriteFile(caPub, b, 0o644) //nolint:gosec // the PUBLIC certificate: the agent must be able to read it
 		}
 	}
-	receiptsBefore := countLines(inDir(*dir, cfg.ReceiptsFile))
+	receiptsBefore := receiptLineCount(inDir(o.dir, cfg.ReceiptsFile))
 
 	// 4. the agent, inside
 	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigs)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	gate := newCommandGate(gw, *dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !*noGate, agentCmd)
+	gate := newCommandGate(gw, o.dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !o.noGate, o.cmd, events)
 	a := &boxAgent{
-		dir: *dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
-		envs: envs, cmd: agentCmd, gate: gate, noGate: *noGate, sigs: sigs,
-		user: *agentUser, uid: uid, gid: gid, name: *name, tier1FS: *tier1FS, visibleProcs: *visibleProcs, image: *image, mounts: mounts, pids: *pids, memory: *memory, cpus: *cpus, selfPath: self,
+		dir: o.dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
+		envs: o.envs, cmd: o.cmd, gate: gate, noGate: o.noGate, sigs: sigs,
+		user: o.user, uid: uid, gid: gid, name: o.name, tier1FS: o.tier1FS, visibleProcs: o.visibleProcs, image: o.image, mounts: o.mounts, pids: o.pids, memory: o.memory, cpus: o.cpus, selfPath: self,
 	}
+	events.Emit(sandbox.Event{Event: sandbox.EventAgentStarted, Command: strings.Join(o.cmd, " ")})
 	var exitCode int
-	if *tier == 2 {
+	if o.tier == 2 {
 		exitCode, err = runTier2(a)
 	} else {
 		exitCode, err = runTier1(a)
@@ -391,12 +346,22 @@ func cmdBox(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "==> agent exited with status %d\n", exitCode)
-	printBoxSummary(inDir(*dir, cfg.ReceiptsFile), receiptsBefore)
+	summary.ExitCode = exitCode
+	events.Emit(sandbox.Event{Event: sandbox.EventAgentExited, Code: &exitCode})
+	summary.Requests, summary.Hosts = printRunSummary(inDir(o.dir, cfg.ReceiptsFile), receiptsBefore)
 	gate.summary()
+	summary.Commands = gate.tally()
 
+	// how the changes end, for the summary and the stream
+	ended := func(event string, ev sandbox.Event) {
+		summary.CommitBack = strings.TrimPrefix(event, "commit_back.")
+		ev.Event = event
+		events.Emit(ev)
+	}
 	// 5. what comes back
-	if *noCommitBack {
-		outcome = outcomeKept
+	if o.noCommitBack {
+		summary.Outcome = sandbox.OutcomeKept
+		ended(sandbox.EventCommitBackDisabled, sandbox.Event{})
 		return nil
 	}
 	// The workspace's files are read once, into a tree only Ovara can
@@ -409,7 +374,8 @@ func cmdBox(args []string) error {
 	}
 	if len(snap.Changes) == 0 {
 		fmt.Fprintln(os.Stderr, "==> the agent changed nothing")
-		outcome = outcomeClean
+		summary.Outcome = sandbox.OutcomeClean
+		ended(sandbox.EventCommitBackNothing, sandbox.Event{})
 		return nil
 	}
 	branch := "ovara/box-" + runID
@@ -420,7 +386,7 @@ func cmdBox(args []string) error {
 			return "", fmt.Errorf("gateway: %w", err)
 		}
 		return d.Decision, nil
-	}, *allowBinary)
+	}, o.allowBinary)
 	if err != nil {
 		return err
 	}
@@ -435,7 +401,8 @@ func cmdBox(args []string) error {
 	}
 	if len(plan.allowed) == 0 {
 		fmt.Fprintln(os.Stderr, "==> every changed path is kept out; nothing comes back")
-		outcome = outcomeKept
+		summary.Outcome = sandbox.OutcomeKept
+		ended(sandbox.EventCommitBackKept, sandbox.Event{})
 		return nil
 	}
 	if snap, err = ws.Without(snap, plan.revert); err != nil {
@@ -465,21 +432,24 @@ func cmdBox(args []string) error {
 	switch d.Decision {
 	case decisionDeny:
 		fmt.Fprintln(os.Stderr, "==> policy refuses the commit-back; the workspace is kept")
-		outcome = outcomeKept
+		summary.Outcome = sandbox.OutcomeKept
+		ended(sandbox.EventCommitBackRefused, sandbox.Event{})
 		return nil
 	case decisionEscalate:
 		id, err := gw.CreateApprovalFor(ctx, d, "fs.commit_back", resource)
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "==> waiting for you to approve the changes (%d files, approval %s): the approval page or `ovara approvals -dir %s`\n", len(plan.allowed), id, *dir)
-		status, err := waitApproval(ctx, gw, id, capToApprovalTTL(*dir, *approveTimeout))
+		fmt.Fprintf(os.Stderr, "==> waiting for you to approve the changes (%d files, approval %s): the approval page or `ovara approvals -dir %s`\n", len(plan.allowed), id, o.dir)
+		events.Emit(sandbox.Event{Event: sandbox.EventCommitBackWaiting, ApprovalID: id, Files: len(plan.allowed)})
+		status, err := waitApproval(ctx, gw, id, capToApprovalTTL(o.dir, o.approveTimeout))
 		if err != nil {
 			return err
 		}
 		if status != approvalApproved {
 			fmt.Fprintf(os.Stderr, "==> %s; nothing comes back, the workspace is kept\n", status)
-			outcome = outcomeKept
+			summary.Outcome = sandbox.OutcomeKept
+			ended(sandbox.EventCommitBackNotApproved, sandbox.Event{ApprovalID: id, Status: status})
 			return nil
 		}
 	}
@@ -489,7 +459,9 @@ func cmdBox(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "==> changes are on branch %s of %s (%s); review and merge it like a pull request\n", branch, ws.Project, commit[:12])
-	outcome = outcomeClean
+	summary.Outcome = sandbox.OutcomeClean
+	summary.Branch, summary.Commit = branch, commit[:12]
+	ended(sandbox.EventCommitBackLanded, sandbox.Event{Branch: branch, Commit: commit[:12], Files: len(plan.allowed)})
 	if exitCode != 0 {
 		return fmt.Errorf("agent exited with status %d", exitCode)
 	}
@@ -918,10 +890,16 @@ type commandGate struct {
 	// the first checked exec has been compared with it
 	launch   []string
 	launched bool
+	events   *sandbox.Events // the run's stream; nil writes nothing
 }
 
-func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool, launch []string) *commandGate {
-	return &commandGate{gw: gw, dir: dir, timeout: timeout, on: on, counts: map[string]int{}, launch: launch}
+func newCommandGate(gw *gateway.Client, dir string, timeout time.Duration, on bool, launch []string, events *sandbox.Events) *commandGate {
+	return &commandGate{gw: gw, dir: dir, timeout: timeout, on: on, counts: map[string]int{}, launch: launch, events: events}
+}
+
+// emit reports one decision on the run's stream.
+func (g *commandGate) emit(event, command, approvalID, status string) {
+	g.events.Emit(sandbox.Event{Event: event, Command: command, ApprovalID: approvalID, Status: status})
 }
 
 // skip exempts the launcher's own box-init -tier1, the first program in
@@ -946,15 +924,18 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ovara] command gate: gateway unreachable, refusing: %s (%v)\n", shown, err)
 		g.count(countDenied)
+		g.emit(sandbox.EventCommandRefused, raw, "", "")
 		return boxgate.Deny
 	}
 	switch d.Decision {
 	case decisionAllow:
 		g.count(countAllowed)
+		g.emit(sandbox.EventCommandAllowed, raw, "", "")
 		return boxgate.Allow
 	case decisionDeny:
 		fmt.Fprintf(os.Stderr, "[ovara] command refused by policy: %s\n", shown)
 		g.count(countDenied)
+		g.emit(sandbox.EventCommandRefused, raw, "", "")
 		return boxgate.Deny
 	}
 	if launch {
@@ -962,15 +943,19 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		// approve it (say, an agent started with its own checks off)
 		// would be asking them what they just said
 		g.count(countAllowed)
+		g.emit(sandbox.EventCommandAllowed, raw, "", "")
 		return boxgate.Allow
 	}
 	id, err := g.gw.CreateApprovalFor(context.Background(), d, "shell", "shell:"+line)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ovara] command gate: could not open an approval, refusing: %s (%v)\n", shown, err)
 		g.count(countDenied)
+		g.emit(sandbox.EventCommandRefused, raw, "", "")
 		return boxgate.Deny
 	}
 	fmt.Fprintf(os.Stderr, "[ovara] command paused for your approval (%s): %s\n", id, shown)
+	g.count(countPaused)
+	g.emit(sandbox.EventCommandPaused, raw, id, "")
 	status, err := waitApproval(context.Background(), g.gw, id, g.timeout)
 	if err != nil || status != approvalApproved {
 		if status == "" {
@@ -978,9 +963,11 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		}
 		fmt.Fprintf(os.Stderr, "[ovara] command %s: %s\n", status, shown)
 		g.count(countDenied)
+		g.emit(sandbox.EventCommandNotApproved, raw, id, status)
 		return boxgate.Deny
 	}
 	g.count(countApproved)
+	g.emit(sandbox.EventCommandApproved, raw, id, "")
 	return boxgate.Allow
 }
 
@@ -1022,6 +1009,16 @@ func (g *commandGate) summary() {
 		g.counts[countAllowed]+g.counts[countApproved]+g.counts[countDenied], g.counts[countAllowed], g.counts[countApproved], g.counts[countDenied])
 }
 
+// tally is the gate's part of the run's summary; nil when the gate was off.
+func (g *commandGate) tally() *sandbox.Counts {
+	if !g.on {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return &sandbox.Counts{Allowed: g.counts[countAllowed], Paused: g.counts[countPaused], Approved: g.counts[countApproved], Denied: g.counts[countDenied]}
+}
+
 func waitApproval(ctx context.Context, gw *gateway.Client, id string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -1038,61 +1035,6 @@ func waitApproval(ctx context.Context, gw *gateway.Client, id string, timeout ti
 		time.Sleep(2 * time.Second)
 	}
 	return "timed out", nil
-}
-
-// printBoxSummary tallies the receipts this run added.
-func printBoxSummary(receipts string, skip int) {
-	f, err := os.Open(receipts)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	counts := map[string]int{}
-	hosts := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	n := 0
-	for sc.Scan() {
-		n++
-		if n <= skip {
-			continue
-		}
-		line := sc.Text()
-		dec := jsonField(line, "decision")
-		counts[dec]++
-		if u := jsonField(line, "url"); u != "" {
-			h := u
-			if i := strings.Index(h, "://"); i >= 0 {
-				h = h[i+3:]
-			}
-			if i := strings.IndexAny(h, "/?"); i >= 0 {
-				h = h[:i]
-			}
-			hosts[h] = true
-		}
-	}
-	fmt.Fprintf(os.Stderr, "==> %d request(s) through Ovara: %d allowed, %d paused, %d denied; %d host(s)\n",
-		n-skip, counts[decisionAllow], counts[decisionEscalate], counts[decisionDeny], len(hosts))
-}
-
-func jsonField(line, key string) string {
-	i := strings.Index(line, `"`+key+`":"`)
-	if i < 0 {
-		return ""
-	}
-	rest := line[i+len(key)+4:]
-	if j := strings.IndexByte(rest, '"'); j >= 0 {
-		return rest[:j]
-	}
-	return ""
-}
-
-func countLines(path string) int {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	return strings.Count(string(b), "\n")
 }
 
 func waitPort(addr string, timeout time.Duration, proc *exec.Cmd) error {
@@ -1159,11 +1101,6 @@ func envOr(k, def string) string {
 	}
 	return def
 }
-
-type multiFlag []string
-
-func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
-func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 // capToApprovalTTL keeps a wait within the time the gateway keeps an
 // approval open (approval_pending_ttl_secs in config.json, default 10

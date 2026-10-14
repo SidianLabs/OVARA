@@ -41,12 +41,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// tier 1 file system modes (-tier1-fs)
-const (
-	tier1FSIsolated = "isolated"
-	tier1FSHost     = "host"
-)
-
 // the pipe box-init -tier1 reads its spec from
 const tier1SpecFD = 3
 

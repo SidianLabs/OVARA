@@ -114,6 +114,8 @@ func usage() {
   box <dir> -- <agent>  run an agent in a box: a copy of the project, no keys,
                         no network except through Ovara; changes come back as a
                         reviewed branch (Linux, sudo)
+  box -manifest FILE    the same run from a manifest (box -print-manifest writes
+                        one); -events FILE streams what happens as JSON lines
   demo                  self-contained end-to-end demo (no network, no root)
   env [-dir .]          print the environment to run your agent through Ovara
   policy [-dir .]       explain the rules in plain English

@@ -246,6 +246,19 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   `proxy/internal/receipts`) fail when a member is added to the code or a
   schema without the other. 0.1 means "what the code does today"; 1.0
   waits for the external review and a second implementation.
+- **C5, the sandbox runtime, as the box's arguments and results**
+  (`spec/runtime.md`, `proxy/internal/sandbox`). `ovara box -print-manifest`
+  writes the run a command line describes as a manifest (tier, workspace,
+  agent, profile, isolation, mounts, limits, credential scope, commit-back;
+  never a secret: a variable whose name says it is a key is refused); `ovara
+  box -manifest FILE` runs one, flags next to it winning. `ovara box -events
+  FILE` streams what happens as JSON lines: `run.created` with the manifest,
+  the workspace, the proxy, the agent, every command the gate decided with
+  its approval id, the agent's exit, how the changes ended, and `run.finished`
+  with a summary (outcome, exit code, request and command tallies, the
+  branch that landed, the error). `ovara box -agent NAME` runs the box as a
+  named agent. Schemas `manifest.schema.json` and `event.schema.json` with
+  drift tests; the box end-to-end suites check a real run's stream.
 
 **`ovara run -- <agent>`: one command**
 
