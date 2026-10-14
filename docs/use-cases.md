@@ -170,18 +170,20 @@ agent can open outbound connections that bypass a configured proxy.
 
 ## 4. A bot or agent in CI  — *tested*
 
-Nobody is there to click Approve. An unanswered approval times out (HTTP 504)
-rather than passing, which is safe but means a default policy will fail the job
-the first time the agent does something that needs approval. So write the
-policy you actually want and leave nothing to a human:
+Nobody is there to click Approve. An unanswered approval never passes: after
+the hold the agent is told to retry later (HTTP 503 with `Retry-After`; the
+`escalate_on_timeout` setting in `proxy.json`), which is safe but means a
+default policy will fail the job the first time the agent does something that
+needs approval. So write the policy you actually want and leave nothing to a
+human:
 
 - allow exactly the hosts the job reads from (the defaults cover the package
   registries and code hosts; add `GET https://your.artifacts.host/*` …),
 - allow the specific write you expect
   (`POST https://api.github.com/repos/acme/app/pulls`),
 - deny the places you never want reached (`*://pastebin.com/*`, …),
-- set a short `escalate_timeout_sec` in `proxy.json` (for example 10), because
-  every other write waits that long and then fails with 504.
+- keep `escalate_timeout_sec` in `proxy.json` short (new deployments hold for
+  10 seconds), because every other write waits that long and then gets 503.
 
 "Allow this one write, deny every other write" is the natural CI policy:
 `POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *`
@@ -197,8 +199,9 @@ when the job ends. This is cooperative mode: it limits what an agent does by
 mistake, not what a compromised job can do.
 
 Verified by `tests/scenarios/run.sh ci-bot` against the real binary: allowed
-reads pass; an unapproved write and a read from an unlisted host time out with
-504 after the configured timeout and leave nothing pending; the one allowed
+reads pass; an unapproved write and a read from an unlisted host are held for
+the configured timeout and then told to retry (503), and their approvals stay
+open for a person (approving one makes the job's retry run); the one allowed
 write passes while a different write to the same host still stops; a dump site
 is refused at once; a catch-all deny refuses instantly but also blocks the
 allowed write; every decision is in the receipts, the chain verifies, and

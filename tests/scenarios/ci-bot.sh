@@ -45,7 +45,7 @@ el=$((t1 - t0))
 [ $el -ge $TIMEOUT ] && [ $el -le $((TIMEOUT + 8)) ] && ok "A3 the job waited about the configured timeout (${el}s for ${TIMEOUT}s)" || bad "A3 wait time" "${el}s for a ${TIMEOUT}s timeout"
 check "A4 a read from a host not on the list also waits, then is told to retry (503)" 503 "$(code https://example.org/)"
 n=$(ovara approvals -dir /tmp/d 2>/dev/null | grep -c 'apr_')
-check "A5 timed-out requests leave nothing waiting for a human" 0 "$n"
+check "A5 the held requests stay open for a person (approving one makes the job's retry run)" 2 "$n"
 
 echo "=== B. an explicit CI policy: allow exactly the expected write"
 setpolicy '{"action_type":"http.request","environment":"*","resource":"POST https://httpbin.org/anything/ci/expected","allow":true,"description":"the one write this job makes"}'
