@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +86,7 @@ func TestAttestation_BuildSignWriteVerify(t *testing.T) {
 	if err != nil || rel != "var/attestations/20261014-050000.intoto.json" {
 		t.Fatalf("write: %v %q", err, rel)
 	}
-	if st, err := os.Stat(filepath.Join(dir, rel)); err != nil || st.Mode().Perm() != 0o600 {
+	if st, err := os.Stat(filepath.Join(dir, rel)); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) {
 		t.Fatalf("file: %v %v", err, st)
 	}
 	// a second one for the same run id is not written over the first
