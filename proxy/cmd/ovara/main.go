@@ -73,6 +73,8 @@ func main() {
 		err = cmdKeys(os.Args[2:])
 	case "attest":
 		err = cmdAttest(os.Args[2:])
+	case "status":
+		err = cmdStatus(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "policy":
@@ -145,6 +147,8 @@ func usage() {
   deny <id>             block a waiting request
   agent add|list|remove|restore NAME   named agents, each with its own proxy token
   kill [-agent NAME]    stop an agent now (every agent without -agent); ovara agent restore undoes it
+  status [-dir .] [-json]  the deployment at a glance: policy, the record, every
+                        agent's state, what it waits on, what it last did, its last run
   doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
 }
 

@@ -430,6 +430,12 @@ one name given twice and the whole file is refused.) Or allow those hosts in
 
 ### Several agents, and stopping one
 
+`ovara status -dir mydir` is the deployment at a glance: the profile and policy
+hash in force, whether an organisation baseline is set, the state of the
+record, and for every agent whether it is active or stopped, how many requests
+wait on a person, what it last did and how its last run ended (`-json` for a
+dashboard).
+
 Give each agent its own proxy token, so the log and every approval say
 which agent it was, and you can stop one without stopping the rest:
 

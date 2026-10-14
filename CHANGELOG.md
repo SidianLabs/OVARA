@@ -329,6 +329,12 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   and the GitHub Action's job summary shows the verification. Spec:
   `spec/evidence.md` §8, `spec/schemas/attestation.schema.json`;
   `docs/GUARANTEES.md` 5.7.
+- **`ovara status`**: the deployment at a glance, the fleet view at the
+  scale of one deployment: profile, policy hash, organisation baseline, the
+  record's state, and for every agent (named ones, the default token,
+  stopped ones, and labels the receipts name that have no token now) its
+  state, the approvals waiting on a person, what it last did and how its
+  last run ended, from the attestations. `-json` for a dashboard.
 - **Approvals from Slack.** `chat.slack` in `proxy.json` (a channel ID, the
   user IDs allowed to decide, a bot token in `var/slack.token` or a named
   variable) makes `ovara run` post every paused request to the channel as
