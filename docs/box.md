@@ -792,8 +792,9 @@ HTTPS; the response is scrubbed of the value and its encoded forms.
 
 **The person answers.** Approval page (per-run page token) or `ovara watch`;
 the approval carries the gateway's own record of the request, never the
-agent's text; "approve and trust host" adds a reads-only rule for that one
-host.
+agent's text; "approve and remember" adds a rule for exactly one thing: reads
+from that host (for the run or the project), this command line for the run, or
+this MCP tool for the run; never a write, never a wildcard.
 
 **The record.** Every decision is a signed receipt in a hash chain; `ovara
 log` verifies; `gateway_anchor_url` pushes tips off-host so a host-side
@@ -827,10 +828,11 @@ Order matters: 0 before anything (today's release cannot restart); 1 before
    overlay mount. Overlay is fastest and still a copy-on-write boundary;
    it needs root or a user namespace. Default proposal: shared clone,
    overlay as a tier-2 option.
-2. **Approval fatigue**: should "approve" offer "and allow this command
-   pattern for the rest of the run"? Proposal: yes, run-scoped only, shown
-   in the exit summary; persistent rules only through "trust host" (reads)
-   and explicit policy edits.
+2. **Approval fatigue**: answered. "Approve" offers "and allow exactly this
+   command until ovara run stops" (run-scoped, the exact normalised line,
+   never a wildcard; the rule names who, when and the approval); persistent
+   rules only through "remember reads for the project" and explicit policy
+   edits.
 3. **Where the model API key lives for Aider/opencode-style agents that
    want it in a config file**: placeholder in the file, substituted at the
    proxy, same as env vars. Needs a test per agent.

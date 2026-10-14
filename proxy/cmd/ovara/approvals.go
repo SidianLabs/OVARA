@@ -483,6 +483,7 @@ func cmdResolve(approve bool, args []string) error {
 	fs, dir := dirFlag(name)
 	reason := fs.String("reason", "", "optional reason, recorded in the audit trail")
 	trust := fs.Bool("trust-host", false, "with approve: also allow reads (GET/HEAD) from this host without asking until ovara run stops (a read can still carry data out in its path and headers)")
+	rememberAs := fs.String("remember", "", "with approve: also remember the decision as a rule: reads-run (reads from this host until ovara run stops; what -trust-host does), reads-project (reads from this host, kept after the run), command-run (exactly this command line, this run), tool-run (this MCP tool, this run); a write is never remembered")
 	// Accept the id before or after the flags: `ovara approve <id> -dir x`.
 	var id string
 	var rest []string
@@ -503,35 +504,38 @@ func cmdResolve(approve bool, args []string) error {
 	if err != nil {
 		return err
 	}
-	var host string
-	if approve && *trust {
+	scope := *rememberAs
+	if approve && *trust && scope == "" {
+		scope = scopeReadsRun
+	}
+	var remembered *pendingApproval
+	if approve && scope != "" {
 		// Look the request up BEFORE approving, so a request that cannot be
-		// trusted for reads (a POST, say) fails before anything is approved.
+		// remembered that way (a write, say) fails before anything is approved.
 		list, err := c.pending()
 		if err != nil {
 			return err
 		}
-		for _, a := range list {
-			if a.ApprovalID == id {
-				h, ok := trustableHost(a.Resource)
-				if !ok {
-					return fmt.Errorf("-trust-host only applies to reads (GET/HEAD) from a named https host; this request is %q", a.Resource)
-				}
-				host = h
+		for i := range list {
+			if list[i].ApprovalID == id {
+				remembered = &list[i]
 			}
 		}
-		if host == "" {
+		if remembered == nil {
 			return fmt.Errorf("approval %s is not pending", id)
+		}
+		if !offersScope(*remembered, scope) {
+			return fmt.Errorf("-remember %s does not apply to this request (%s); it offers %s", scope, remembered.Resource, rememberKeys(*remembered))
 		}
 	}
 	if err := c.resolve(id, approve, whoAmI(), *reason); err != nil {
 		return err
 	}
-	if host != "" {
-		if added, err := trustReadHost(c.dir, host); err != nil {
-			fmt.Printf("approved, but could not trust %s: %v\n", host, err)
+	if remembered != nil {
+		if added, err := remember(c.dir, *remembered, scope, whoAmI()); err != nil {
+			fmt.Printf("approved, but could not remember it: %v\n", err)
 		} else if added {
-			fmt.Printf("trusted %s for reads: GET/HEAD there will no longer ask until ovara run stops (edit policy.json to undo sooner). A read can still carry data out in its path and headers.\n", host)
+			fmt.Println(rememberedNote(*remembered, scope))
 		}
 	}
 	if approve {
@@ -663,12 +667,12 @@ func (r *answerReader) answerAfter(shown time.Time) (line string, dropped int, e
 // the input stream is closed.
 func askAndResolve(c *adminClient, a pendingApproval, rd *answerReader, out io.Writer) bool {
 	for {
-		host, canTrust := trustableHost(a.Resource)
-		if canTrust {
-			fmt.Fprintf(out, "  [a]pprove  [t]rust %s for reads (stops asking about reads from it this run)  [d]eny  [s]kip > ", host)
-		} else {
-			fmt.Fprint(out, "  [a]pprove  [d]eny  [s]kip > ")
+		options := rememberOptions(a)
+		prompt := "  [a]pprove"
+		for i, o := range options {
+			prompt += fmt.Sprintf("  [%d] %s", i+1, strings.TrimPrefix(o.Label, "Approve, and "))
 		}
+		fmt.Fprint(out, prompt+"  [d]eny  [s]kip > ")
 		line, dropped, err := rd.answerAfter(time.Now())
 		if dropped > 0 {
 			fmt.Fprintf(out, "\n  (ignored %d line(s) typed before this request was shown)\n  > ", dropped)
@@ -684,16 +688,22 @@ func askAndResolve(c *adminClient, a pendingApproval, rd *answerReader, out io.W
 			} else {
 				fmt.Fprintln(out, "  ✓ approved")
 			}
-		case "t", "trust":
-			if !canTrust {
+		case "t", "trust", "1", "2", "3":
+			// "t" is the first option, as it always was for reads
+			n := 1
+			if ans != "t" && ans != "trust" {
+				n = int(ans[0] - '0')
+			}
+			if n < 1 || n > len(options) {
 				continue
 			}
+			scope := options[n-1].Key
 			if e := c.resolve(a.ApprovalID, true, whoAmI(), ""); e != nil {
 				fmt.Fprintln(out, "  could not approve:", e)
-			} else if _, e := trustReadHost(c.dir, host); e != nil {
-				fmt.Fprintln(out, "  ✓ approved, but could not trust the host:", e)
+			} else if _, e := remember(c.dir, a, scope, whoAmI()); e != nil {
+				fmt.Fprintln(out, "  ✓ approved, but could not remember it:", e)
 			} else {
-				fmt.Fprintf(out, "  ✓ approved. Reads (GET/HEAD) from %s will no longer be asked about until ovara run stops; a read can still carry data out in its path and headers.\n", host)
+				fmt.Fprintln(out, "  ✓ approved; "+rememberedNote(a, scope))
 			}
 		case "d", "deny", "n", "no":
 			if e := c.resolve(a.ApprovalID, false, whoAmI(), "denied from ovara watch"); e != nil {

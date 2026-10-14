@@ -275,6 +275,16 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   write, never a wildcard write). A profile's rules are marked and
   switching replaces only them. (`ovara box -profile dev|strict` is
   unchanged: it is about installs.)
+- **Approve and remember, with scopes.** "Trust this host for reads"
+  becomes one of four: reads from this host until `ovara run` stops
+  (`reads-run`, as before) or for the project (`reads-project`, kept after
+  the run), exactly this command line in the box for the run
+  (`command-run`), this MCP tool for the run (`tool-run`). Each is offered
+  only where it applies (the approval page shows one button per scope,
+  `ovara watch` one numbered choice each, `ovara approve -remember SCOPE`),
+  a write is never remembered, a resource with a wildcard offers nothing,
+  and every remembered rule names who, when and the approval. Run-scoped
+  rules go when the run ends, whatever they were for.
 
 **`ovara run -- <agent>`: one command**
 

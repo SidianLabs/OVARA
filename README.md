@@ -263,9 +263,12 @@ a long query string, or a long path and headers (over 2 KB together) is
 **refused** with an explanation (all of these can carry data out), even on a
 trusted host. Allowed traffic is also metered per host: past about 600
 requests or 8 MB a minute (ten times that for package registries) a person is
-asked once. To trust another host, add a rule for it to `policy.json`, or use
-"approve and trust this host for reads" on the approval page, which lasts until
-`ovara run` stops.
+asked once. To trust another host, add a rule for it to `policy.json`, or
+"approve and remember" on the approval page (or `ovara approve -remember`):
+reads from that host until `ovara run` stops or for the project, exactly this
+command for the run (the box's command gate), this MCP tool for the run. A
+write is never remembered and a remembered rule is never a wildcard; each one
+says who remembered it, when, and from which approval.
 
 That is the **strict** policy profile, the default. If listing hosts is the
 wrong fit (an agent that reads documentation all over the web), switch the

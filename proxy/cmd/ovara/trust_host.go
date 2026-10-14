@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // "Approve and remember": after a human lets one read through, they can trust
@@ -59,46 +58,16 @@ func net_isIP(h string) bool {
 // person who wants to keep one deletes the marker from its description.
 const runTrustMarker = "[this run only]"
 
-// trustReadHost adds "GET/HEAD https://<host>/*" allow rules to policy.json,
-// at the front, unless they are already there. The gateway reloads the file
-// on its own. The write is atomic (temp file + rename). The rules say they
-// came from an approval prompt, when, and that they last this run only.
-//
-// Once a host is trusted, reads from it no longer ask, and a read can still
-// carry data out in its path and headers; so the prompt that offers this
-// says so, and the trust ends with the run.
+// trustReadHost is "remember reads from host for this run" (remember.go):
+// GET/HEAD https://<host>/* allow rules in policy.json, at the front,
+// unless they are already there; the gateway reloads the file on its own.
 func trustReadHost(dir, host string) (added bool, err error) {
-	doc, rules, err := readPolicyDoc(dir)
-	if err != nil {
-		return false, err
-	}
-	var fresh []any
-	for _, m := range []string{"GET", "HEAD"} {
-		resource := m + " https://" + host + "/*"
-		exists := false
-		for _, r := range rules {
-			if rm, ok := r.(map[string]any); ok && rm["resource"] == resource && rm["allow"] == true {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			fresh = append(fresh, map[string]any{
-				"action_type": "http.request", "environment": "*", "resource": resource, "allow": true,
-				"description": fmt.Sprintf("%s Reads from %s trusted from the approval prompt (page or ovara watch) on %s; removed when ovara run stops (delete %q from this description to keep it)",
-					runTrustMarker, host, time.Now().Format("2006-01-02"), runTrustMarker),
-			})
-		}
-	}
-	if len(fresh) == 0 {
-		return false, nil
-	}
-	doc["rules"] = append(fresh, rules...)
-	return true, writePolicyDoc(dir, doc)
+	return remember(dir, pendingApproval{ActionType: actionHTTPRequest, Resource: "GET https://" + host + "/"}, scopeReadsRun, "")
 }
 
-// dropRunTrust removes the rules trustReadHost added (they still carry the
-// marker) and returns the hosts they were for. Nothing else is touched.
+// dropRunTrust removes the rules remembered for one run (they still carry
+// the marker) and returns what they were for: a host (its reads), or
+// "command `...`" / "tool ...". Nothing else is touched.
 func dropRunTrust(dir string) (hosts []string, err error) {
 	doc, rules, err := readPolicyDoc(dir)
 	if err != nil {
@@ -126,22 +95,33 @@ func dropRunTrust(dir string) (hosts []string, err error) {
 	return hosts, writePolicyDoc(dir, doc)
 }
 
-// runTrustRule reports whether r is exactly a rule trustReadHost adds, with
-// the marker still in place, and for which host.
+// runTrustRule reports whether r is exactly a rule remember adds for one
+// run, with the marker still in place, and what it is for.
 func runTrustRule(r any) (string, bool) {
 	rm, ok := r.(map[string]any)
-	if !ok || rm["allow"] != true || rm["action_type"] != "http.request" {
+	if !ok || rm["allow"] != true {
 		return "", false
 	}
 	if desc, _ := rm["description"].(string); !strings.HasPrefix(desc, runTrustMarker) {
 		return "", false
 	}
 	res, _ := rm["resource"].(string)
-	for _, m := range []string{"GET", "HEAD"} {
-		if host, ok := strings.CutPrefix(res, m+" https://"); ok {
-			if host, ok = strings.CutSuffix(host, "/*"); ok && hostPattern.MatchString(host) {
-				return host, true
+	switch rm["action_type"] {
+	case actionHTTPRequest:
+		for _, m := range []string{"GET", "HEAD"} {
+			if host, ok := strings.CutPrefix(res, m+" https://"); ok {
+				if host, ok = strings.CutSuffix(host, "/*"); ok && hostPattern.MatchString(host) {
+					return host, true
+				}
 			}
+		}
+	case actionShell:
+		if line, ok := strings.CutPrefix(res, "shell:"); ok && line != "" {
+			return "command `" + line + "`", true
+		}
+	case actionMCPToolCall:
+		if strings.HasPrefix(res, "mcp:") {
+			return "tool " + res, true
 		}
 	}
 	return "", false

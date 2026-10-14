@@ -104,7 +104,7 @@
   var lastSig = "", armedAt = 0, ARM_MS = 800;
   function renderPending(list) {
     var box = document.getElementById("pending");
-    var sig = JSON.stringify(list.map(function (a) { return [a.id, a.what, a.raw, a.details, a.trust_host, a.destination, a.destination_note]; }));
+    var sig = JSON.stringify(list.map(function (a) { return [a.id, a.what, a.raw, a.details, a.trust_host, a.remember, a.destination, a.destination_note]; }));
     if (sig === lastSig) {
       Array.prototype.forEach.call(box.querySelectorAll("[data-created]"), function (m) { m.textContent = m.dataset.prefix + ago(m.dataset.created) + m.dataset.suffix; });
       return;
@@ -133,9 +133,9 @@
       var yes = el("button", "approve", "Approve");
       var no = el("button", "deny", "Deny");
       function setButtons(off) { Array.prototype.forEach.call(act.querySelectorAll("button"), function (b) { b.disabled = off; }); }
-      function decide(verb, trust) {
+      function decide(verb, scope) {
         busy[a.id] = true; setButtons(true);
-        api("POST", "/api/" + verb + "/" + encodeURIComponent(a.id) + (trust ? "?trust=1" : ""))
+        api("POST", "/api/" + verb + "/" + encodeURIComponent(a.id) + (scope ? "?remember=" + encodeURIComponent(scope) : ""))
           .then(function () { showBanner(""); lastSig = ""; refresh(); })
           .catch(function (e) { busy[a.id] = false; setButtons(false); showBanner(e.message); });
       }
@@ -146,18 +146,18 @@
       arm(yes); arm(no);
       act.append(yes);
       var trustWarn = null;
+      // "Approve, and remember": one button per scope the server offers for
+      // this request (reads this run or for the project, this command, this
+      // tool); each asks first, in the same words as the CLI
+      (a.remember || []).forEach(function (opt) {
+        var b = el("button", "approve", opt.label);
+        b.title = opt.confirm;
+        b.onclick = function () { if (!window.confirm(opt.confirm)) return; decide("approve", opt.key); };
+        arm(b);
+        act.append(b);
+      });
       if (a.trust_host) {
-        var always = el("button", "approve", "Approve, and stop asking about reads from " + a.trust_host);
-        always.title = "Adds a read (GET/HEAD) allow rule for " + a.trust_host + " to policy.json until ovara run stops. " +
-          "Reads from this host will no longer be asked about, and a read can still carry data out in its path and headers. Writes still ask.";
-        always.onclick = function () {
-          if (!window.confirm("Reads from " + a.trust_host + " will no longer be asked about until ovara run stops.\n\n" +
-            "A read can still carry data out (in its path and headers). Only do this for a host you trust.")) return;
-          decide("approve", true);
-        };
-        arm(always);
-        act.append(always);
-        trustWarn = el("div", "warn", "Trusting " + a.trust_host + " means reads from it stop asking for the rest of this run" +
+        trustWarn = el("div", "warn", "Trusting " + a.trust_host + " means reads from it stop asking until ovara run stops, or for the project until the rule is removed" +
           (a.destination_trusted ? "." : "; it is not a host Ovara trusts by default."));
       }
       act.append(no);

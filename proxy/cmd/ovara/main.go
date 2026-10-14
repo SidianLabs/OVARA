@@ -132,7 +132,8 @@ func usage() {
   keys rotate-receipt | revoke-receipt -key K | list-receipt   manage the receipt signing key
   mcp wrap -dir D -name NAME -- <server cmd>  run a stdio MCP server through
                         Ovara: tool definitions pinned, every tool call decided
-  approve <id>          let a waiting request through
+  approve <id>          let a waiting request through (-remember SCOPE also keeps it:
+                        this host's reads, this command, this tool; see -h)
   deny <id>             block a waiting request
   agent add|list|remove|restore NAME   named agents, each with its own proxy token
   kill [-agent NAME]    stop an agent now (every agent without -agent); ovara agent restore undoes it
@@ -576,15 +577,15 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return fmt.Errorf("proxy.json: %w (run `ovara init` first)", err)
 	}
-	// Hosts trusted for reads from an approval prompt are trusted for one
-	// run: drop what a run that did not stop cleanly left behind, and what
-	// this run adds when it stops.
-	if hosts, err := dropRunTrust("."); err == nil && len(hosts) > 0 {
-		log.Printf("reads from %s are no longer trusted (trusted from an approval prompt in an earlier run)", strings.Join(hosts, ", "))
+	// What an approval prompt remembered for one run (reads from a host, a
+	// command, a tool) goes with the run: drop what a run that did not stop
+	// cleanly left behind, and what this run adds when it stops.
+	if what, err := dropRunTrust("."); err == nil && len(what) > 0 {
+		log.Printf("no longer allowed without asking (remembered from an approval prompt in an earlier run): %s", describeRemembered(what))
 	}
 	defer func() {
-		if hosts, err := dropRunTrust("."); err == nil && len(hosts) > 0 {
-			log.Printf("reads from %s are no longer trusted (trusted from an approval prompt in this run)", strings.Join(hosts, ", "))
+		if what, err := dropRunTrust("."); err == nil && len(what) > 0 {
+			log.Printf("no longer allowed without asking (remembered from an approval prompt in this run): %s", describeRemembered(what))
 		}
 	}()
 	// The approval page's address is taken before anything else starts: if

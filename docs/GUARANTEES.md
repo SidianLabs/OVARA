@@ -55,8 +55,8 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ### 1.5 Only hosts on the trusted list are read without asking
 - **Holds in:** all modes, under the `strict` policy profile (the default).
-- **Conditions:** the default policy from `ovara init` is kept. "Trust this host for reads" from an approval adds a reads-only rule for one host that is removed when `ovara run` stops. Under the `balanced` and `observe` profiles (`ovara policy profile`) reads from any public host are allowed instead; 1.4, 1.7 and 1.10 bound them, and the trusted list then says which hosts are not counted against the cap.
-- **Tests:** `tests/scenarios/scenarios.sh`; `proxy/cmd/ovara`: `TestTrustReadHost_AddsReadOnlyRulesOnce`, `TestTrustReadHost_SaysWhereAndWhenAndLastsOneRun`, `TestUI_TrustButtonSaysWhatItDoes`, `TestDefaultPolicyHasNoHostlessAllow`, `TestProfiles_SwitchReplacesOnlyTheProfileRules`.
+- **Conditions:** the default policy from `ovara init` is kept. "Approve and remember" from an approval adds a rule for exactly one thing: reads from one host (for the run, removed when `ovara run` stops, or for the project), one command line in the box, or one MCP tool (both for the run); never a write, never a wildcard; each rule names who, when and the approval. Under the `balanced` and `observe` profiles (`ovara policy profile`) reads from any public host are allowed instead; 1.4, 1.7 and 1.10 bound them, and the trusted list then says which hosts are not counted against the cap.
+- **Tests:** `tests/scenarios/scenarios.sh`; `proxy/cmd/ovara`: `TestTrustReadHost_AddsReadOnlyRulesOnce`, `TestTrustReadHost_SaysWhereAndWhenAndLastsOneRun`, `TestUI_RememberOptionsAndScopes`, `TestRememberOptions`, `TestRemember_ScopesAndTheRun`, `TestDefaultPolicyHasNoHostlessAllow`, `TestProfiles_SwitchReplacesOnlyTheProfileRules`.
 
 ### 1.6 The model API is limited to inference, and its bodies are read
 - **Holds in:** all modes.
