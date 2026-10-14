@@ -46,8 +46,17 @@ jobs:
           [ -s "${{ steps.ovara.outputs.receipts }}" ] && echo "PASS  receipts written" || { echo "FAIL  no receipts"; fail=1; }
           "${{ steps.ovara.outputs.binary }}" log -dir "$OVARA_DIR" -verify-only || fail=1
           exit $fail
+      # A first-party action after the Ovara step goes through Ovara too, and
+      # its upload to GitHub's artifact service is a write no rule allows: it
+      # would be held and told to retry. Nothing of the agent's happens in
+      # this step, so it runs outside Ovara.
       - uses: actions/upload-artifact@v4
         if: always()
+        env:
+          HTTPS_PROXY: ""
+          HTTP_PROXY: ""
+          https_proxy: ""
+          http_proxy: ""
         with:
           name: ovara-evidence
           if-no-files-found: ignore

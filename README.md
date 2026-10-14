@@ -348,6 +348,7 @@ its own checkout (pin a release tag once there is one):
 - run: opencode run "fix the failing test"     # HTTPS_PROXY and the CA are set: this goes through Ovara
 - uses: actions/upload-artifact@v4
   if: always()
+  env: { HTTPS_PROXY: "", HTTP_PROXY: "", https_proxy: "", http_proxy: "" }   # see below
   with:
     name: ovara-evidence
     path: |
@@ -364,6 +365,13 @@ summary, with the rules an `observe` run would have needed. Inputs: `profile`,
 `rules` (a JSON array put in front of the policy), `policy` (a whole
 `policy.json`), `hold-seconds`, `binary`. `.github/workflows/action.yml` runs
 it against this repository on every change.
+
+Everything after the step goes through Ovara, first-party actions included:
+`upload-artifact` or `cache` would have their uploads to GitHub's services
+held like any other write without a rule. Nothing of the agent's happens in
+such a step, so give it an empty `HTTPS_PROXY`/`https_proxy` (and the
+`HTTP_` pair) in its own `env:` to run it outside Ovara, as above; or allow
+those hosts in `rules` if you want them receipted.
 
 ### Several agents, and stopping one
 
