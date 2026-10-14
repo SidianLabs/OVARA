@@ -232,17 +232,13 @@ func addDemoDenyRule(policyPath, upstreamAddr string) error {
 
 // printReceipts lists one line per receipt in the chain.
 func printReceipts(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	_ = receipts.ForEachLine(path, func(line []byte) error {
 		var r receipts.Receipt
-		if json.Unmarshal([]byte(line), &r) != nil {
-			continue
+		if json.Unmarshal(line, &r) == nil {
+			fmt.Printf("   • %-5s %-7s %s\n", strings.ToUpper(r.Decision), r.Method, r.URL)
 		}
-		fmt.Printf("   • %-5s %-7s %s\n", strings.ToUpper(r.Decision), r.Method, r.URL)
-	}
+		return nil
+	})
 }
 
 func mustRead(path string) string {
@@ -255,13 +251,13 @@ func mustRead(path string) string {
 
 // printLastReceipt prints the most recent chain entry's decision fields.
 func printLastReceipt(path string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var last []byte
+	_ = receipts.ForEachLine(path, func(line []byte) error {
+		last = append(last[:0], line...)
+		return nil
+	})
 	var r receipts.Receipt
-	if json.Unmarshal([]byte(lines[len(lines)-1]), &r) != nil {
+	if len(last) == 0 || json.Unmarshal(last, &r) != nil {
 		return
 	}
 	fmt.Printf("  receipt %s: %s %s → %s (%d)\n", r.ReceiptID, r.Method, r.URL, r.Decision, r.Status)

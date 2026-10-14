@@ -303,7 +303,11 @@ func cmdIncident(args []string) error {
 	seg := receipts.Segment{}
 	cut := ""
 	if verr != nil {
-		if chainBytes, err = os.ReadFile(chainFile); err != nil && !os.IsNotExist(err) {
+		// as found: every segment and the current file, unverified
+		if err := receipts.ForEachLine(chainFile, func(line []byte) error {
+			chainBytes = append(append(chainBytes, line...), '\n')
+			return nil
+		}); err != nil {
 			return err
 		}
 	} else {

@@ -21,6 +21,10 @@ import (
 // The tier 1 tests run box-init from this test binary.
 func TestMain(m *testing.M) {
 	if os.Getenv("OVARA_TEST_BOXINIT") == "1" && len(os.Args) > 1 && os.Args[1] == "box-init" {
+		// the tier 1 tests scan every command line on the host while the
+		// box runs, and the scan must have seen this one; box-init is
+		// quick, so it waits a moment before it becomes the agent
+		time.Sleep(100 * time.Millisecond)
 		if err := cmdBoxInit(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)

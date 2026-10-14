@@ -25,6 +25,7 @@ const (
 	// profiles (docs/box.md §11.4)
 	boxProfileDev    = "dev"
 	boxProfileStrict = "strict"
+	boxProfileCI     = "ci"
 
 	// tier 1 file systems (box_tier1.go)
 	tier1FSIsolated = "isolated"
@@ -66,13 +67,14 @@ type boxOptions struct {
 
 func defaultBoxOptions() *boxOptions {
 	return &boxOptions{
-		tier: 1, name: "ovara-box", user: boxDefaultUser, tier1FS: tier1FSIsolated, image: boxDefaultImage, pids: 4096,
+		tier: 1, name: "ovara-box", user: boxDefaultUser, tier1FS: tier1FSIsolated, image: defaultBoxImage(), pids: 4096,
 		profile: boxProfileDev, ui: "127.0.0.1:9090", approveTimeout: 10 * time.Minute, ghScope: sandbox.ScopeRepo,
 	}
 }
 
 // boxExtra is what a command line says besides the run itself.
 type boxExtra struct {
+	agentImage    string // -agent-image: a published image, resolved into image and tier before validation
 	manifest      string // read the run from this file
 	printManifest bool   // write the run down and stop
 	events        string // append the events stream to this file
@@ -88,12 +90,13 @@ func boxFlags(o *boxOptions, x *boxExtra) *flag.FlagSet {
 	fs.StringVar(&o.user, "user", o.user, "tier 1: unprivileged user the agent runs as (created if missing)")
 	fs.StringVar(&o.tier1FS, "tier1-fs", o.tier1FS, "tier 1: isolated = a root file system of its own (the host's system directories read-only, the workspace, a fresh home; nothing of /home, /root, /srv, /opt or the original project); host = the host's file system, where the agent reads whatever its user may (UNSAFE on a machine with secrets)")
 	fs.BoolVar(&o.visibleProcs, "allow-visible-procs", o.visibleProcs, "tier 1 isolated: on a kernel before 5.8, which cannot hide other users' processes in the box's /proc, start anyway (the agent can then list every process on the host and its command line); without it such a box is refused")
-	fs.StringVar(&o.image, "image", o.image, "tier 2: the box image (build it from box/Dockerfile; extend it with your agent)")
+	fs.StringVar(&o.image, "image", o.image, "tier 2: the box image (a release pins its own published image by digest; build it from box/Dockerfile, or extend it with your agent)")
+	fs.StringVar(&x.agentImage, "agent-image", "", "tier 2: the published box image with this agent installed: claude, codex, opencode or aider (implies -tier 2; -image names any other image)")
 	fs.IntVar(&o.pids, "pids", o.pids, "tier 2: most processes the box may have at once")
 	fs.StringVar(&o.memory, "memory", o.memory, "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
 	fs.StringVar(&o.cpus, "cpus", o.cpus, "tier 2: CPU limit for the box (e.g. 2; default none)")
-	fs.StringVar(&o.profile, "profile", o.profile, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9)")
-	fs.BoolVar(&o.untrusted, "untrusted-lockfiles", o.untrusted, "strict: the project's lockfiles are not trusted (a repository you are reviewing, not your own): nothing they pin is let through without a question")
+	fs.StringVar(&o.profile, "profile", o.profile, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9); ci: strict, and no one answers: anything policy would pause (a request, a new package, a command, the commit-back) is refused at once (§11.4)")
+	fs.BoolVar(&o.untrusted, "untrusted-lockfiles", o.untrusted, "strict or ci: the project's lockfiles are not trusted (a repository you are reviewing, not your own): nothing they pin is let through without a question")
 	fs.StringVar(&o.ui, "ui", o.ui, "approval page address (loopback only; \"off\" to disable)")
 	fs.DurationVar(&o.approveTimeout, "approve-timeout", o.approveTimeout, "how long the commit-back waits for a person")
 	fs.BoolVar(&o.keep, "keep", o.keep, "keep the workspace after the run (default: kept only when something went wrong)")
@@ -137,6 +140,21 @@ func parseBoxArgs(args []string) (*boxOptions, *boxExtra, error) {
 		if err := fs.Parse(args); err != nil {
 			return nil, nil, err
 		}
+	}
+	if x.agentImage != "" {
+		set := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		img, err := agentImage(x.agentImage)
+		if err != nil {
+			return nil, nil, err
+		}
+		if set["image"] {
+			return nil, nil, errors.New("-agent-image and -image both name the image: use one")
+		}
+		if set["tier"] && o.tier != 2 {
+			return nil, nil, errors.New("-agent-image is for tier 2 (a container image)")
+		}
+		o.tier, o.image = 2, img
 	}
 	project, cmd, err := boxPositional(args, fs)
 	if err != nil {
@@ -187,11 +205,11 @@ func (o *boxOptions) validate() error {
 	if o.tier != 1 && o.tier != 2 {
 		return fmt.Errorf("-tier %d: want 1 or 2", o.tier)
 	}
-	if o.profile != boxProfileDev && o.profile != boxProfileStrict {
-		return fmt.Errorf("-profile %s: want dev or strict", o.profile)
+	if o.profile != boxProfileDev && o.profile != boxProfileStrict && o.profile != boxProfileCI {
+		return fmt.Errorf("-profile %s: want dev, strict or ci", o.profile)
 	}
-	if o.untrusted && o.profile != boxProfileStrict {
-		return errors.New("-untrusted-lockfiles is for -profile strict (the dev profile asks about no package)")
+	if o.untrusted && o.profile == boxProfileDev {
+		return errors.New("-untrusted-lockfiles is for -profile strict, or ci (the dev profile asks about no package)")
 	}
 	if o.tier1FS != tier1FSIsolated && o.tier1FS != tier1FSHost {
 		return fmt.Errorf("-tier1-fs %s: want isolated or host", o.tier1FS)
@@ -325,3 +343,27 @@ type multiFlag []string
 
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// boxAgents are the agents with a published image (box/agents/Dockerfile).
+var boxAgents = map[string]bool{"claude": true, "codex": true, "opencode": true, "aider": true}
+
+// agentImage names the box image with agent installed: the release's
+// published image for this version, or the local development build.
+func agentImage(agent string) (string, error) {
+	if !boxAgents[agent] {
+		return "", fmt.Errorf("-agent-image %q: want claude, codex, opencode or aider (or -image for your own image)", agent)
+	}
+	if repo, _, ok := strings.Cut(boxImage, "@"); ok && repo != "" && version != devVersion {
+		return repo + "-" + agent + ":" + version, nil
+	}
+	return boxDefaultImage + "-" + agent, nil
+}
+
+// defaultBoxImage is the image this build was released with, or the local
+// development image.
+func defaultBoxImage() string {
+	if boxImage != "" {
+		return boxImage
+	}
+	return boxDefaultImage
+}

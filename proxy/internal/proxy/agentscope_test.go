@@ -106,7 +106,17 @@ func TestAgentScope_CoversTunnels(t *testing.T) {
 	if accepts.Load() != 1 {
 		t.Fatalf("destination accepts %d", accepts.Load())
 	}
-	if r := lastReceiptOf(t, chainFile); r.Decision != gwDeny || !containsString(r.Reasons, "agent_scope") {
-		t.Fatalf("receipt: %+v", r)
+	// the first tunnel's outcome receipt is written when the proxy sees it
+	// close, which can land after the refusal, so the refusal is looked
+	// for rather than assumed last
+	all := allReceiptsOf(t, chainFile)
+	refused := false
+	for _, r := range all {
+		if r.Decision == gwDeny && containsString(r.Reasons, "agent_scope") && strings.Contains(r.URL, other) {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Fatalf("no agent_scope refusal receipt for %s: %+v", other, all)
 	}
 }

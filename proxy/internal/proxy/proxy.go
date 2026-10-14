@@ -53,6 +53,9 @@ type Server struct {
 	// Retry-After (the approval stays open; the same request sent again
 	// runs once it is approved) instead of 504.
 	escalateRetry bool
+	// unattended: no one answers (ovara run -unattended), so a hold is
+	// refused at once and no approval is opened.
+	unattended bool
 	// claimNote says once that the gateway has no claim route.
 	claimNote      sync.Once
 	gitGate        bool
@@ -154,6 +157,10 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 // stays open and the same request sent again runs once it is approved);
 // false, the default, is 504.
 func (s *Server) SetEscalateAnswer(retry bool) { s.escalateRetry = retry }
+
+// SetUnattended makes every hold a refusal: no approval is opened and the
+// request is refused at once, its receipt saying "unattended".
+func (s *Server) SetUnattended(on bool) { s.unattended = on }
 
 func (s *Server) SetEscalateWindow(timeout, poll time.Duration) {
 	if timeout > 0 {
@@ -815,6 +822,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		case "used":
 			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "this approval was already used by an identical request; send it again to be asked afresh", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": []string{"approval_used"}}, d.MatchedRule))
 			return
+		case outcomeUnattended:
+			decision = gwDeny
+			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "refused: unattended run, no one can approve this", "decision_id": d.DecisionID, "reasons": []string{outcomeUnattended}}, d.MatchedRule))
+			return
 		default:
 			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "action requires approval", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": d.ReasonCodes}, d.MatchedRule))
 			return
@@ -1252,9 +1263,17 @@ func (s *Server) awaitEscalation(ctx context.Context, d *gateway.Decision, metho
 	})
 }
 
+// outcomeUnattended is a hold's outcome under ovara run -unattended.
+const outcomeUnattended = "unattended"
+
 // holdForApproval opens an approval with create and waits for its answer,
-// within the escalate window and the cap on parked requests.
+// within the escalate window and the cap on parked requests. Unattended,
+// it refuses at once instead.
 func (s *Server) holdForApproval(ctx context.Context, what string, create func() (string, error)) (string, string) {
+	if s.unattended {
+		log.Printf("unattended: %s needs a person and no one answers; refused", what)
+		return outcomeUnattended, ""
+	}
 	// Bound the number of requests parked on a human: an agent that opens
 	// hundreds of escalating requests must not exhaust goroutines, sockets
 	// or the approval queue. Over the cap the request is refused.

@@ -36,7 +36,16 @@ import (
 )
 
 // version is stamped by release builds: -ldflags "-X main.version=v0.10.0".
-var version = "dev"
+var version = devVersion
+
+// devVersion is the version of a build that no release stamped.
+const devVersion = "dev"
+
+// boxImage is stamped by release builds: the box image this ovara was
+// released with, by digest (ghcr.io/sidianlabs/ovara-box@sha256:...), so
+// `ovara box -tier 2` pulls exactly that image. Development builds leave it
+// empty and use a locally built "ovara-box".
+var boxImage = ""
 
 // boxInitCmd is the subcommand a box runs as its first program (tier 1) or
 // PID 1 (tier 2); people do not run it.
@@ -52,6 +61,9 @@ func main() {
 	switch os.Args[1] {
 	case "version", "-version", "--version":
 		fmt.Println("ovara", version)
+		if boxImage != "" {
+			fmt.Println("box image", boxImage)
+		}
 		return
 	case "init":
 		err = cmdInit(os.Args[2:])
@@ -458,6 +470,7 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	}
 	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
+	chain.SetRotation(cfg.ReceiptsSegmentBytes)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
 	bindings, skipped, err := creds.LoadReport(cfg.Credentials)
 	if err != nil {
@@ -562,6 +575,7 @@ func cmdRun(args []string) error {
 	agentName := fs.String("agent", "", "with a command: run it as this named agent (ovara agent add NAME), with its own proxy token")
 	presetName := fs.String("preset", "auto", "with a command: the agent preset applied to the deployment: auto (by the program's name), none, or opencode | claude | codex")
 	noAttest := fs.Bool("no-attest", false, "do not write the run's attestation when Ovara stops (ovara box writes one for the whole run)")
+	unattended := fs.Bool("unattended", false, "no one will answer: anything policy would pause is refused at once and no approval is opened (CI; what ovara box -profile ci does)")
 	fs.Parse(args)
 	started := time.Now()
 	command := fs.Args() // after "--": the agent to run through Ovara
@@ -662,6 +676,10 @@ func cmdRun(args []string) error {
 	// `ovara agent add|remove` and `ovara kill` take effect within a second.
 	stopWatch := srv.WatchAgentFiles("proxy.json", cfg.RevokedAgentsFile, 250*time.Millisecond)
 	defer stopWatch()
+	if *unattended {
+		srv.SetUnattended(true)
+		log.Printf("unattended: anything policy would pause is refused at once; no approval is opened")
+	}
 	if *packageGate != "" {
 		b, err := os.ReadFile(*packageGate)
 		if err != nil {

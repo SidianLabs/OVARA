@@ -41,7 +41,7 @@ func TestBoxArgs_FlagsAndPositional(t *testing.T) {
 		{[]string{"-untrusted-lockfiles", "./proj", "--", "x"}, "is for -profile strict"},
 		{[]string{"-tier1-fs", "host", "-mount", "/a:/b", "./proj", "--", "x"}, "-mount needs a box file system"},
 		{[]string{"-github-scope", "org", "./proj", "--", "x"}, "want repo or all"},
-		{[]string{"-profile", "lax", "./proj", "--", "x"}, "want dev or strict"},
+		{[]string{"-profile", "lax", "./proj", "--", "x"}, "want dev, strict or ci"},
 	} {
 		_, _, err := parseBoxArgs(c.args)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

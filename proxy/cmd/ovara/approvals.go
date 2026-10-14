@@ -589,6 +589,11 @@ func cmdResolve(approve bool, args []string) error {
 		rest = append(rest, a)
 	}
 	if id == "" {
+		if len(rest) > 0 && (rest[0] == "-h" || rest[0] == "-help" || rest[0] == "--help") {
+			fmt.Fprintf(os.Stderr, "usage: ovara %s <approval-id> [flags]\n", name)
+			fs.PrintDefaults()
+			return nil
+		}
 		return fmt.Errorf("usage: ovara %s <approval-id> [-dir .] [-reason ...]", name)
 	}
 	if err := fs.Parse(rest); err != nil {

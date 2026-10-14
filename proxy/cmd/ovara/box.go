@@ -238,7 +238,8 @@ func cmdBox(args []string) (err error) {
 	// strict installs: what the project has pinned goes through; anything
 	// else the agent adds pauses once (the proxy's package gate)
 	pinnedFile := ""
-	if o.profile == boxProfileStrict {
+	unattended := o.profile == boxProfileCI // no one answers: a pause is a refusal
+	if o.profile == boxProfileStrict || unattended {
 		pins, files := strictPins(ws.Dir, o.untrusted)
 		pinnedFile = filepath.Join(runDir, "pinned-packages.txt")
 		if err := os.WriteFile(pinnedFile, []byte(lockfiles.FormatPins(pins)), 0o600); err != nil {
@@ -250,13 +251,17 @@ func cmdBox(args []string) (err error) {
 				withDigest++
 			}
 		}
+		other := "pauses once"
+		if unattended {
+			other = "is refused (ci profile)"
+		}
 		switch {
 		case o.untrusted:
-			fmt.Fprintln(os.Stderr, "==> strict installs: -untrusted-lockfiles: the project's lockfiles pin nothing, so every package the agent installs pauses once")
+			fmt.Fprintf(os.Stderr, "==> strict installs: -untrusted-lockfiles: the project's lockfiles pin nothing, so every package the agent installs %s\n", other)
 		case len(files) == 0:
-			fmt.Fprintln(os.Stderr, "==> strict installs: no lockfile in the project, so every package the agent installs pauses once")
+			fmt.Fprintf(os.Stderr, "==> strict installs: no lockfile in the project, so every package the agent installs %s\n", other)
 		default:
-			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through (%d checked against the lockfile's digest); any other package pauses once\n", len(pins), strings.Join(files, ", "), withDigest)
+			fmt.Fprintf(os.Stderr, "==> strict installs: %d pinned package(s) from %s go through (%d checked against the lockfile's digest); any other package %s\n", len(pins), strings.Join(files, ", "), withDigest, other)
 		}
 		if b, err := os.ReadFile(filepath.Join(o.dir, "policy.json")); err == nil && !strings.Contains(string(b), `"package.install"`) {
 			fmt.Fprintln(os.Stderr, "    warning: policy.json has no package.install rule; without one a new package is refused, not paused (add {\"action_type\": \"package.install\", \"resource\": \"*\", \"escalate\": true})")
@@ -292,6 +297,10 @@ func cmdBox(args []string) (err error) {
 	}
 	if pinnedFile != "" {
 		runArgs = append(runArgs, "-package-gate", pinnedFile)
+	}
+	if unattended {
+		runArgs = append(runArgs, "-unattended")
+		fmt.Fprintln(os.Stderr, "==> ci profile: no one answers; anything policy would pause is refused at once")
 	}
 	// The agent works on this one project: the GitHub key only goes with
 	// requests about its repository, not every repository the key can see.
@@ -345,6 +354,7 @@ func cmdBox(args []string) (err error) {
 	defer signal.Stop(sigs)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
 	gate := newCommandGate(gw, o.dir, time.Duration(cfg.EscalateTimeoutSec)*time.Second, !o.noGate, o.cmd, events)
+	gate.unattended = unattended
 	a := &boxAgent{
 		dir: o.dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: o.envs, cmd: o.cmd, gate: gate, noGate: o.noGate, sigs: sigs,
@@ -451,6 +461,12 @@ func cmdBox(args []string) (err error) {
 		ended(sandbox.EventCommitBackRefused, sandbox.Event{})
 		return nil
 	case decisionEscalate:
+		if unattended {
+			fmt.Fprintln(os.Stderr, "==> ci profile: the commit-back needs a person, and no one answers; the workspace is kept (allow fs.commit_back in policy to bring changes back unattended)")
+			summary.Outcome = sandbox.OutcomeKept
+			ended(sandbox.EventCommitBackRefused, sandbox.Event{})
+			return nil
+		}
 		id, err := gw.CreateApprovalFor(ctx, d, "fs.commit_back", resource)
 		if err != nil {
 			return fmt.Errorf("gateway: %w", err)
@@ -895,13 +911,14 @@ func isTerminal(f *os.File) bool {
 
 // commandGate decides each exec in the box through the gateway.
 type commandGate struct {
-	gw      *gateway.Client
-	dir     string
-	timeout time.Duration
-	on      bool
-	started bool // the agent itself has been exec'd; before that, our wrappers run
-	mu      sync.Mutex
-	counts  map[string]int
+	unattended bool // ci profile: a pause is a refusal, no approval is opened
+	gw         *gateway.Client
+	dir        string
+	timeout    time.Duration
+	on         bool
+	started    bool // the agent itself has been exec'd; before that, our wrappers run
+	mu         sync.Mutex
+	counts     map[string]int
 	// launch is the agent command the person gave; launched is set once
 	// the first checked exec has been compared with it
 	launch   []string
@@ -961,6 +978,12 @@ func (g *commandGate) decide(e boxgate.Exec) boxgate.Verdict {
 		g.count(countAllowed)
 		g.emit(sandbox.EventCommandAllowed, raw, "", "")
 		return boxgate.Allow
+	}
+	if g.unattended {
+		fmt.Fprintf(os.Stderr, "[ovara] command refused (needs a person; unattended run): %s\n", shown)
+		g.count(countDenied)
+		g.emit(sandbox.EventCommandRefused, raw, "", "")
+		return boxgate.Deny
 	}
 	id, err := g.gw.CreateApprovalFor(context.Background(), d, "shell", "shell:"+line)
 	if err != nil {

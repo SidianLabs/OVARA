@@ -1,5 +1,9 @@
 # The box image for `ovara box -tier 2`: what an agent's box is made of.
 #
+# Released as ghcr.io/sidianlabs/ovara-box:<tag> (amd64 and arm64, with an
+# SBOM and signed provenance); a released ovara pins it by digest, so
+# `sudo ovara box -tier 2 ./myrepo -- bash` needs no build. From source:
+#
 #   docker build -t ovara-box box/
 #   sudo ovara box -tier 2 ./myrepo -- bash
 #
@@ -37,10 +41,12 @@ RUN apt-get update -qq \
  && mkdir -p /work /home/agent /scratch \
  && chown ovara-agent:ovara-agent /work /home/agent /scratch
 
-# npm and pip install into the agent's own (per-run) home, never the image
+# npm installs into the agent's own (per-run) home, never the image. Python
+# packages go in a virtualenv (python3 -m venv), as Debian's system Python
+# refuses pip installs; PIP_USER is deliberately not set: it breaks pip
+# inside every virtualenv.
 ENV HOME=/home/agent \
     NPM_CONFIG_PREFIX=/home/agent/.npm-global \
-    PIP_USER=1 \
     PATH=/home/agent/.npm-global/bin:/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 USER ovara-agent

@@ -6,9 +6,9 @@ package receipts
 import (
 	"crypto/ed25519"
 	"encoding/hex"
-	"strings"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
