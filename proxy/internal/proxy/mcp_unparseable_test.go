@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -111,6 +112,80 @@ func TestMCPUnparseableRefusedWithoutMCPHeaders(t *testing.T) {
 		if rec.Code != 200 {
 			t.Errorf("%q: status %d", b, rec.Code)
 		}
+	}
+}
+
+// Readers such as Gson and JSON5 take single-quoted and unquoted member
+// names and = or ; as separators. A tools/call written that way, aimed at a
+// server Ovara has never seen speak MCP, is refused like any other body a
+// lenient reader could take for JSON-RPC; text that merely resembles it is not.
+func TestMCPLenientMemberNamesAreRefusedWithoutMCPHeaders(t *testing.T) {
+	srv, _, _ := newMCPProxy(t)
+	ts, up := recordingUpstream(t)
+	pad := strings.Repeat(" ", 2000)
+	for i, b := range []string{
+		`{'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'delete_everything'}}`,
+		`{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"delete_everything"}}`,
+		`{"id":2,"method"` + pad + `:"tools/call","params":{"name":"delete_everything"},}`,
+		`[{id=2;method=>"tools/call";params={name="delete_everything"}}]`,
+		"{\"id\":2,m\\u0065thod:\"tools/call\"}",
+	} {
+		for _, ct := range []string{"application/json", ""} {
+			rec := send(srv, "POST", ts.URL+"/rpc", ct, strings.NewReader(b), nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("variant %d (content type %q): status %d, want 400", i, ct, rec.Code)
+			}
+		}
+	}
+	if n := up.count(); n != 0 {
+		t.Fatalf("%d lenient tool calls reached the server", n)
+	}
+	// Bodies that only resemble it still pass.
+	for _, b := range []string{`{methods:1,`, `{x_method:1,`, `[1,2,3`, `{"note":"methodology"`} {
+		rec := send(srv, "POST", ts.URL+"/rpc", "text/plain", strings.NewReader(b), nil)
+		if rec.Code != 200 {
+			t.Errorf("%q: status %d", b, rec.Code)
+		}
+	}
+}
+
+// A tools/call spelt so that only a lenient dispatcher would run it as one
+// ("Tools/Call", a trailing space, text after a NUL, U+017F for s) is refused
+// outright, for a server that is known and for one that is not. The tool is
+// allowed by rule, so nothing but the spelling can stop the call.
+func TestMCPMisspeltToolCallIsRefused(t *testing.T) {
+	srv, g, _ := newMCPProxy(t)
+	up := newFakeMCP(t, mcpSearch, mcpSend)
+	key := serverKey(up, "/mcp")
+	g.set(g.byResource, "mcp:"+key+"/search", "allow")
+	if rec := postMCP(srv, up.URL+"/mcp", mcpList(1)); rec.Code != 200 {
+		t.Fatal(rec.Code)
+	}
+	if rec := postMCP(srv, up.URL+"/mcp", mcpCall(2, "search", `{"q":"x"}`)); rec.Code != 200 || !strings.Contains(rec.Body.String(), "ran search") {
+		t.Fatalf("the correctly spelt call: %d %s", rec.Code, rec.Body)
+	}
+	ran := len(up.called())
+	for _, method := range []string{"Tools/Call", "TOOLS/CALL", "tools/call ", "\ttools/call", "tools/call\x00", "tools/call\x00junk", "tool\u017f/call"} {
+		q, _ := json.Marshal(method)
+		body := strings.Replace(mcpCall(5, "search", `{"q":"x"}`), `"tools/call"`, string(q), 1)
+		for _, target := range []struct {
+			name string
+			rec  *httptest.ResponseRecorder
+		}{
+			{"known server", postMCP(srv, up.URL+"/mcp", body)},
+			{"unknown server, no MCP headers", send(srv, "POST", up.URL+"/rpc", "application/json", strings.NewReader(body), nil)},
+		} {
+			if target.rec.Code == 200 {
+				t.Errorf("%s, method %q: let through", target.name, method)
+				continue
+			}
+			if _, _, data := jsonrpcError(t, target.rec.Body.Bytes()); fmt.Sprint(data["reasons"]) != "[mcp_message_ambiguous]" {
+				t.Errorf("%s, method %q: reasons %v", target.name, method, data["reasons"])
+			}
+		}
+	}
+	if n := len(up.called()); n != ran {
+		t.Errorf("the server ran %d calls, want %d: a misspelt call reached it", n, ran)
 	}
 }
 

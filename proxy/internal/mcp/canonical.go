@@ -28,7 +28,7 @@ func Canonical(data []byte) ([]byte, error) {
 // RefusedAmbiguous is the verdict on a message that can be read in more
 // than one way.
 func RefusedAmbiguous() Verdict {
-	return Refused("the message can be read in more than one way (duplicate or case-variant keys, or invalid UTF-8)", "mcp_message_ambiguous")
+	return Refused("the message can be read in more than one way (duplicate or case-variant keys, or invalid UTF-8)", ReasonAmbiguous)
 }
 
 // CheckServerBody is ServerBody over the canonical form of data. It

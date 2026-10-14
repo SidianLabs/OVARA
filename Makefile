@@ -70,6 +70,9 @@ FUZZ_TARGETS := \
 	proxy:./internal/proxy:FuzzReadCarriesData \
 	proxy:./internal/proxy:FuzzModelValueRefusal \
 	proxy:./internal/proxy:FuzzRedactPreviewCount \
+	proxy:./internal/canonjson:FuzzCanonical \
+	proxy:./internal/mcp:FuzzSnifferSplitInvariance \
+	proxy:./internal/mcp:FuzzToolCallNameIsAlwaysGated \
 	proxy:./cmd/ovara:FuzzTermSafe \
 	proxy:./cmd/ovara:FuzzParseGitHubRemote \
 	proxy:./internal/boxgate:FuzzPolicyLine \

@@ -353,7 +353,7 @@ func (w *wrapper) fromClientLine(ctx context.Context, line []byte, clientOut, se
 	hasCall := false
 	if err == nil {
 		for _, m := range body.Messages {
-			if m.Method == "tools/call" {
+			if m.IsToolCall() {
 				hasCall = true
 			}
 		}

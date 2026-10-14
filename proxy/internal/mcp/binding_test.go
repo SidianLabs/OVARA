@@ -77,8 +77,21 @@ func TestLooksLikeJSONRPC(t *testing.T) {
 		"\x00{\x00\"\x00m\x00e\x00t\x00h\x00o\x00d\x00\"\x00:",
 		"\xef\xbb\xbf{\"JSONRPC\":1,",
 		"  \n{\"method\":\"a\"}{}",
+		// Readers that take single-quoted or unquoted member names
+		// (Gson, JSON5, lenient Kotlin) and = or ; as separators.
+		`{'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'x'}}`,
+		`{'method':'x'`,
+		`{jsonrpc:"2.0",id:1,method:"tools/call"}`,
+		`{ method : "tools/call" }`,
+		"{\n  method\t:\n\"tools/call\"}",
+		`[{id=1;method=>"tools/call"}]`,
+		`{"a":1,/*c*/method:2}`,
+		"{\\u006dethod:1}",
+		"\x00{\x00m\x00e\x00t\x00h\x00o\x00d\x00:\x001\x00",
 	}
-	no := []string{``, `hello "method"`, `{"a":"financial"`, `{"nanny":1,`, `--boundary "jsonrpc"`, `{"a":"b"}`}
+	no := []string{``, `hello "method"`, `{"a":"financial"`, `{"nanny":1,`, `--boundary "jsonrpc"`, `{"a":"b"}`,
+		// near-misses of the names above
+		`{methods:1,`, `{x_method:1,`, `{$method:1,`, `{"a":"methodology"`, `{prejsonrpc:1,`, `{method`, `[1,2,3`, `method:1`}
 	for _, s := range yes {
 		if !LooksLikeJSONRPC([]byte(s)) {
 			t.Errorf("%q: not seen as JSON-RPC", s)

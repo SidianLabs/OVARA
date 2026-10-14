@@ -243,6 +243,18 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   is known to speak MCP, or the client sends MCP session headers, any body
   that is not valid JSON is refused. `ovara mcp wrap` answers such a line
   with a parse error (-32700) and does not pass it on.
+- Readers that take single-quoted or unquoted member names and `=` or `;`
+  as separators (Gson, JSON5) are covered by the same refusal: a body that
+  opens with `{` or `[`, is not valid JSON, and names `jsonrpc` or `method`
+  that way is refused with 400 (`mcp_unparseable`). White space between a
+  name and its separator, however long, does not hide it, and the answer
+  does not depend on how the body was cut into pieces on the way in.
+- A `tools/call` whose method name is spelt differently (`Tools/Call`,
+  `tools/call ` with white space, text after a NUL, `ſ` for `s`) is refused
+  (`mcp_message_ambiguous`), in the proxy and in `ovara mcp wrap`: a server
+  that ignores case, trims the name or ends it at a NUL would run it as a
+  tool call nobody decided. Other method names (`Ping`, `tools/calls`) are
+  not affected.
 - Responses to MCP requests must be `application/json` or
   `text/event-stream` (parameters allowed), named by one Content-Type
   header. Anything else with a body is refused (502,

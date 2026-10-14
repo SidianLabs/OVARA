@@ -10,6 +10,11 @@ import (
 // it cannot be read strictly (see ErrUnparseable).
 const ReasonUnparseable = "mcp_unparseable"
 
+// ReasonAmbiguous is the reason given when a message is refused because it
+// can be read in more than one way (duplicate or case-variant keys, invalid
+// UTF-8, or a method name only a lenient dispatcher would read as tools/call).
+const ReasonAmbiguous = "mcp_message_ambiguous"
+
 // RefusedUnparseable is the verdict on a message that cannot be read
 // strictly: what cannot be read cannot be checked.
 func RefusedUnparseable() Verdict {
@@ -30,14 +35,16 @@ type CallCheck struct {
 func (g *Gate) ClientBody(ctx context.Context, server string, b *Body) []CallCheck {
 	out := make([]CallCheck, 0, len(b.Messages))
 	for i, m := range b.Messages {
-		if m.Method != "tools/call" {
+		if !m.IsToolCall() {
 			continue
 		}
 		c := CallCheck{Index: i, ID: m.ID}
 		name, args, err := ToolCall(m.Params)
 		switch {
+		case m.MisspeltToolCall():
+			c.Verdict = Refused("the method name is not tools/call as written, but a server that ignores case, white space or text after a NUL would run it as one", ReasonAmbiguous)
 		case b.Ambiguous || err == ErrAmbiguous:
-			c.Verdict = Refused("the request can be read in more than one way (duplicate or case-variant keys, or invalid UTF-8)", "mcp_message_ambiguous")
+			c.Verdict = Refused("the request can be read in more than one way (duplicate or case-variant keys, or invalid UTF-8)", ReasonAmbiguous)
 		case err != nil:
 			c.Verdict = Refused("a tools/call without a tool name", "mcp_message_malformed")
 		default:
@@ -97,7 +104,7 @@ func (g *Gate) ServerBody(ctx context.Context, server string, data []byte) Serve
 		res.HasTools = true
 		switch {
 		case err == ErrAmbiguous:
-			bad, reason = "the tool list can be read in more than one way (duplicate or case-variant keys)", "mcp_message_ambiguous"
+			bad, reason = "the tool list can be read in more than one way (duplicate or case-variant keys)", ReasonAmbiguous
 		case err != nil:
 			bad = "the tool list is malformed: " + err.Error()
 		default:
@@ -106,7 +113,7 @@ func (g *Gate) ServerBody(ctx context.Context, server string, data []byte) Serve
 	}
 	if b.Ambiguous && res.IsMCP {
 		res.HasTools = res.HasTools || len(res.IDs) > 0
-		bad, reason = "the message can be read in more than one way (duplicate or case-variant keys, or invalid UTF-8)", "mcp_message_ambiguous"
+		bad, reason = "the message can be read in more than one way (duplicate or case-variant keys, or invalid UTF-8)", ReasonAmbiguous
 	}
 	if bad != "" {
 		res.Verdict = Refused(bad, reason)

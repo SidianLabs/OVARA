@@ -16,6 +16,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"ovara.proxy/internal/canonjson"
@@ -40,6 +41,29 @@ var methods = map[string]bool{
 
 // IsMethod reports whether m is an MCP method name.
 func IsMethod(m string) bool { return methods[m] || strings.HasPrefix(m, "notifications/") }
+
+// toolCallMethod is the method whose spelling is a security decision: every
+// tools/call is decided one by one.
+const toolCallMethod = "tools/call"
+
+var foldedToolCall = canonjson.Fold(toolCallMethod)
+
+// misspeltToolCall reports a method name that is not "tools/call" as written
+// but that a dispatcher which normalises names would run as one: it differs
+// only in case (Unicode simple folding, as strings.EqualFold reads it), in
+// white space or control characters around it, or in what follows a NUL (a C
+// string ends there). Official SDKs match the name exactly; a hand-written
+// router may not, and what such a router runs must not pass as other traffic.
+func misspeltToolCall(method string) bool {
+	if method == toolCallMethod {
+		return false
+	}
+	if i := strings.IndexByte(method, 0); i >= 0 {
+		method = method[:i]
+	}
+	method = strings.TrimFunc(method, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+	return canonjson.Fold(method) == foldedToolCall
+}
 
 var (
 	// ErrNotJSONRPC: the bytes are not a JSON object or array of objects.
@@ -66,10 +90,19 @@ func (m Message) IsRequest() bool { return m.Method != "" && m.ID != nil }
 // IsResponse reports a response (result or error, no method).
 func (m Message) IsResponse() bool { return m.Method == "" && (m.Result != nil || m.Error != nil) }
 
-// IsMCP reports whether the message is MCP traffic: an MCP method, or a
-// JSON-RPC 2.0 response.
+// IsToolCall reports a tools/call, or a message a lenient dispatcher would
+// run as one (see MisspeltToolCall). Every such message is decided.
+func (m Message) IsToolCall() bool { return m.Method == toolCallMethod || misspeltToolCall(m.Method) }
+
+// MisspeltToolCall reports a method name that is not tools/call as written
+// but would be run as one by a dispatcher that ignores case, trims the name,
+// or ends it at a NUL. Parse marks such a message ambiguous.
+func (m Message) MisspeltToolCall() bool { return misspeltToolCall(m.Method) }
+
+// IsMCP reports whether the message is MCP traffic: an MCP method (or a
+// misspelling of tools/call), or a JSON-RPC 2.0 response.
 func (m Message) IsMCP() bool {
-	return IsMethod(m.Method) || (m.JSONRPC == "2.0" && m.IsResponse())
+	return IsMethod(m.Method) || misspeltToolCall(m.Method) || (m.JSONRPC == "2.0" && m.IsResponse())
 }
 
 // Body is a parsed JSON-RPC body: one message or a batch.
@@ -171,6 +204,9 @@ func parseMessage(raw json.RawMessage) (Message, bool, error) {
 		if json.Unmarshal(v, &m.Method) != nil || m.Method == "" {
 			// a method that is not a string: nothing a server dispatches on
 			return Message{}, false, ErrNotJSONRPC
+		}
+		if misspeltToolCall(m.Method) {
+			o.Ambiguous = true // read as tools/call by some, as another method by others
 		}
 	}
 	if v, ok := o.Get("id"); ok && string(v) != "null" {

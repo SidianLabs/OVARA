@@ -25,8 +25,14 @@ var ErrUnparseable = errors.New("the message looks like JSON-RPC but cannot be r
 // LooksLikeJSONRPC reports whether a lenient JSON reader could take data
 // for JSON-RPC: once BOMs and the NUL bytes of UTF-16/32 are set aside and
 // \u escapes of ASCII characters are read, it starts with '{' or '[' and
-// either names a "jsonrpc" or "method" member (in any case) or holds a NaN
-// or Infinity literal.
+// either names a "jsonrpc" or "method" member (in any case; in double
+// quotes, in single quotes, or bare, with ':' or '=' after it: Gson and
+// JSON5 readers take those) or holds a NaN or Infinity literal.
+//
+// A comment before the opening brace is not looked through: a body that
+// starts with "/*" or "//" is not seen as JSON-RPC here. A server that reads
+// such a body is covered only once it is known to speak MCP, where every body
+// that is not valid JSON is refused.
 func LooksLikeJSONRPC(data []byte) bool {
 	var s Sniffer
 	_, _ = s.Write(data)
@@ -41,9 +47,9 @@ type Sniffer struct {
 	tail    []byte // the end of the previous piece, read again with the next
 }
 
-// sniffOverlap is how much of one piece is read again with the next, so a
-// token split between pieces is still seen. It covers the longest token
-// written in UTF-32 with every character escaped.
+// sniffOverlap is how much of one piece (normalised) is read again with the
+// next, so a token split between pieces is still seen. It covers the longest
+// token with every character escaped.
 const sniffOverlap = 512
 
 // Write never fails.
@@ -51,8 +57,10 @@ func (s *Sniffer) Write(p []byte) (int, error) {
 	if s.found || (s.decided && !s.jsonish) {
 		return len(p), nil
 	}
-	window := append(append([]byte(nil), s.tail...), p...)
-	norm := normalizeLenient(window)
+	// The tail is kept in normalised form: white space already collapsed, so
+	// a name and the ':' after it stay close however much white space a body
+	// puts between them (and across however many pieces).
+	norm := normalizeLenient(append(append([]byte(nil), s.tail...), p...))
 	if !s.decided {
 		rest := bytes.TrimLeft(norm, " \t\r\n\xef\xbb\xbf\xfe\xff")
 		if len(rest) > 0 {
@@ -60,13 +68,13 @@ func (s *Sniffer) Write(p []byte) (int, error) {
 			s.jsonish = rest[0] == '{' || rest[0] == '['
 		}
 	}
-	if s.jsonish && (bytes.Contains(norm, []byte(`"jsonrpc"`)) || bytes.Contains(norm, []byte(`"method"`)) || hasNonFinite(norm)) {
+	if s.jsonish && (hasMemberName(norm) || hasNonFinite(norm)) {
 		s.found = true
 	}
-	if len(window) > sniffOverlap {
-		window = window[len(window)-sniffOverlap:]
+	if len(norm) > sniffOverlap {
+		norm = norm[len(norm)-sniffOverlap:]
 	}
-	s.tail = window
+	s.tail = norm
 	return len(p), nil
 }
 
@@ -75,7 +83,8 @@ func (s *Sniffer) Found() bool { return s.found }
 
 // normalizeLenient drops NUL bytes (what is left of UTF-16/32 text once
 // they are gone is its ASCII), turns \u escapes of ASCII characters into
-// the characters and folds ASCII to lower case.
+// the characters, folds ASCII to lower case and makes every run of white
+// space one space. It can be applied to its own output.
 func normalizeLenient(b []byte) []byte {
 	stripped := make([]byte, 0, len(b))
 	for _, c := range b {
@@ -95,9 +104,63 @@ func normalizeLenient(b []byte) []byte {
 		if 'A' <= c && c <= 'Z' {
 			c += 'a' - 'A'
 		}
+		if c == '\t' || c == '\r' || c == '\n' {
+			c = ' '
+		}
+		if c == ' ' && len(out) > 0 && out[len(out)-1] == ' ' {
+			continue
+		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// hasMemberName reports a "jsonrpc" or "method" member name written as a
+// lenient reader would take it: in double quotes, in single quotes, or bare
+// (after '{', '[', ',', ';', a comment or white space, and before ':', '='
+// or "=>"). b is normalised (lower case, white space collapsed).
+func hasMemberName(b []byte) bool {
+	for _, name := range [...]string{"jsonrpc", "method"} {
+		for from := 0; from < len(b); {
+			i := bytes.Index(b[from:], []byte(name))
+			if i < 0 {
+				break
+			}
+			i += from
+			from = i + 1
+			if i == 0 {
+				// Nothing before it in this window: it is the start of the text
+				// kept between pieces, and the name was judged, with what
+				// stood before it, when that text was last read. (A body's own
+				// first character is '{' or '[', never a name.)
+				continue
+			}
+			before, after := b[i-1], byte(0)
+			j := i + len(name)
+			if j < len(b) {
+				after = b[j]
+			}
+			if after == ' ' && j+1 < len(b) {
+				after = b[j+1] // one space at most: runs are collapsed
+			}
+			switch {
+			case before == '"' && after == '"', before == '\'' && after == '\'':
+				return true
+			case (after == ':' || after == '=') && bareNameStart(before):
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// bareNameStart reports a byte after which an unquoted member name may begin.
+func bareNameStart(c byte) bool {
+	switch c {
+	case '{', '[', ',', ';', ' ', '/':
+		return true
+	}
+	return false
 }
 
 func hex4(b []byte) (int, bool) {
