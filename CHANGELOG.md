@@ -451,6 +451,19 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   approvals of a kind (by action type or resource pattern) to a channel of
   their own, decided only by the people listed for the route.
   `docs/GUARANTEES.md` 1.14, 2.3, 7.6.
+- **Agents that never stop, and many deployments.** `attest_every_minutes`
+  in `proxy.json` makes `ovara run` attest the run as it goes: a signed
+  statement every so many minutes covering the receipts since the previous
+  one (`var/attestations/<run>.<NNN>.intoto.json`, `sequence`,
+  `previous`, `interim` in the predicate; spec C4 §8), and a last one when
+  it stops; `ovara attest verify` verifies the sequence as one and `attest
+  list` shows the parts. `ovara fleet -dirs A,B | -root D` prints every
+  deployment on one line (profile, gateway, agents and stopped ones,
+  pending approvals, the record and its last activity; `-json`).
+  `deploy/kubernetes/` is a sidecar recipe: Ovara next to the agent in one
+  pod, the agent holding only the CA and its token, receipts on a volume,
+  a NetworkPolicy as the backstop (documented, not yet run in CI).
+  `docs/GUARANTEES.md` 5.8; `docs/operations.md`.
 - Spec 0.1, later: the decision API gains `POST /v1/runtime/outcome` (the
   caller reports how an allowed action went; §2.1) and the resource model
   the `tool.call` action type with `tool:<name>` resources (an agent

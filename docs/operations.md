@@ -158,6 +158,24 @@ What keeps the record whole and checkable:
 Receipt keys: rotate them on a schedule of your own (`ovara keys
 rotate-receipt`); the history keeps older receipts verifiable.
 
+## Many deployments
+
+One deployment per agent host, pod or job is the normal shape. `ovara
+fleet -dirs A,B` (or `-root /srv/ovara`, every subdirectory with a
+`proxy.json`) prints every deployment on one line: profile, whether the
+gateway runs, agents and how many are stopped, approvals waiting on a
+person, whether the record verifies and when it was last written; `-json`
+for a dashboard. A deployment that cannot be read is a line with the
+error, never a missing line. `ovara status -dir D` is the detail for one.
+
+An agent that never stops is attested as it goes: `attest_every_minutes`
+in `proxy.json` makes `ovara run` write a signed statement every so many
+minutes covering the receipts since the previous one, each naming the
+previous statement's digest, and a last one when it stops
+(`var/attestations/<run>.<NNN>.intoto.json`). `ovara attest verify -dir D`
+verifies the whole sequence as one; `ovara log export` bundles every
+statement with the chain. `deploy/kubernetes/` has a sidecar recipe.
+
 ## Performance Baseline
 
 On Apple M4:

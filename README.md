@@ -476,6 +476,13 @@ requests are refused within a second ("this agent was stopped by its
 operator"), what it was waiting on is denied, and it stays stopped after a
 restart until you restore it.
 
+Many deployments (one per host, pod or job): `ovara fleet -root /srv/ovara`
+prints each on one line (profile, gateway, agents, pending approvals, the
+record), `-json` for a dashboard. An agent that never stops is attested as
+it goes (`attest_every_minutes` in `proxy.json`: a signed statement every
+so many minutes, each naming the one before, verified as a sequence by
+`ovara attest verify`). `deploy/kubernetes/` is the sidecar recipe.
+
 An agent can be narrowed beyond the policy, and act for someone:
 
 ```bash

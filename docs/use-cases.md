@@ -91,6 +91,9 @@ will see it as missing entries in `ovara log`.
 
 ## 2. An agent in a container or VM you control  — *tested (netns, docker, `ovara box` tiers 1 and 2)*
 
+*In Kubernetes, run Ovara as a sidecar: `deploy/kubernetes/` (a documented
+recipe with manifests, not yet run in CI).*
+
 This is the setup to use when you do not fully trust the agent: an untrusted
 tool, a model you are evaluating, a long unattended run.
 

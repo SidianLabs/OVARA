@@ -1,0 +1,132 @@
+# An agent with Ovara as its sidecar. See README.md in this directory.
+# Replace the agent image and command; keep the two Secrets:
+#   ovara-deployment   the directory `ovara init` made (policy, tokens, keys)
+#   ovara-agent-token  the agent's proxy token (`ovara agent add worker`)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  labels:
+    app: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+        # Copies the deployment into a writable volume (a Secret mount is
+        # read-only) and creates the CA once, so the agent can trust it.
+        - name: ovara-init
+          image: ghcr.io/sidianlabs/ovara:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              cp -R /ovara-secret/. /ovara/ && chmod 700 /ovara && chmod 600 /ovara/*.json
+              cd /ovara && timeout 20 ovara run -dir /ovara -ui off >/dev/null 2>&1 || true
+              cp /ovara/ca.pem /ovara-ca/ca.pem
+          volumeMounts:
+            - { name: ovara-secret, mountPath: /ovara-secret, readOnly: true }
+            - { name: ovara-dir, mountPath: /ovara }
+            - { name: ovara-ca, mountPath: /ovara-ca }
+            - { name: ovara-var, mountPath: /ovara/var }
+      containers:
+        - name: ovara
+          image: ghcr.io/sidianlabs/ovara:latest
+          command: ["ovara", "run", "-dir", "/ovara", "-ui", "off"]
+          env:
+            - name: OVARA_SLACK_TOKEN          # only with chat.slack in proxy.json
+              valueFrom:
+                secretKeyRef: { name: ovara-slack, key: token, optional: true }
+          volumeMounts:
+            - { name: ovara-dir, mountPath: /ovara }
+            - { name: ovara-var, mountPath: /ovara/var }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+        - name: agent
+          image: YOUR_AGENT_IMAGE
+          command: ["YOUR_AGENT_COMMAND"]
+          env:
+            - name: OVARA_PROXY_TOKEN
+              valueFrom:
+                secretKeyRef: { name: ovara-agent-token, key: token }
+            # What `ovara env -agent worker` would print, with the token
+            # from the Secret: every request goes through Ovara.
+            - { name: HTTPS_PROXY, value: "http://agent:$(OVARA_PROXY_TOKEN)@127.0.0.1:9443" }
+            - { name: HTTP_PROXY, value: "http://agent:$(OVARA_PROXY_TOKEN)@127.0.0.1:9443" }
+            - { name: https_proxy, value: "http://agent:$(OVARA_PROXY_TOKEN)@127.0.0.1:9443" }
+            - { name: http_proxy, value: "http://agent:$(OVARA_PROXY_TOKEN)@127.0.0.1:9443" }
+            - { name: NO_PROXY, value: "127.0.0.1,localhost" }
+            - { name: NODE_USE_ENV_PROXY, value: "1" }
+            - { name: SSL_CERT_FILE, value: /ovara-ca/ca.pem }
+            - { name: REQUESTS_CA_BUNDLE, value: /ovara-ca/ca.pem }
+            - { name: NODE_EXTRA_CA_CERTS, value: /ovara-ca/ca.pem }
+            - { name: GIT_SSL_CAINFO, value: /ovara-ca/ca.pem }
+          volumeMounts:
+            - { name: ovara-ca, mountPath: /ovara-ca, readOnly: true }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: ovara-secret
+          secret: { secretName: ovara-deployment, defaultMode: 0400 }
+        - name: ovara-dir
+          emptyDir: {}
+        - name: ovara-ca
+          emptyDir: {}
+        - name: ovara-var
+          persistentVolumeClaim: { claimName: ovara-var }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ovara-var
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+# The pod may talk to DNS and the internet only through Ovara: the agent
+# container never dials out itself (it has no credentials and its tools
+# are pointed at the proxy), and this policy is the backstop for the pod.
+# Narrow `egress` further to the hosts your policy.json allows if your
+# CNI supports FQDN rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: agent
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.169.254/32"]
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }

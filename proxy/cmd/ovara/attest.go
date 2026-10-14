@@ -8,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -77,7 +76,7 @@ func attestationFile(dir, run string) (string, error) {
 		return filepath.Join(attest.Dir(dir), names[0]), nil
 	}
 	for _, n := range names {
-		if n == run+".intoto.json" || strings.HasPrefix(n, run+"-") {
+		if n == run+".intoto.json" || strings.HasPrefix(n, run+"-") || strings.HasPrefix(n, run+".") {
 			return filepath.Join(attest.Dir(dir), n), nil
 		}
 	}
@@ -114,7 +113,11 @@ func attestList(args []string) error {
 		if p.Summary.Commit != "" {
 			changes = p.Summary.Branch + " " + p.Summary.Commit
 		}
-		fmt.Printf("%-24s %-10s %-12s %-20s %-7s %-28s %s\n", p.RunID, strings.TrimPrefix(p.Runtime, "ovara "), p.Agent, p.Finished.Format("2006-01-02 15:04:05Z"), p.Summary.Outcome,
+		run := p.RunID
+		if p.Sequence > 0 {
+			run = fmt.Sprintf("%s #%d", p.RunID, p.Sequence)
+		}
+		fmt.Printf("%-24s %-10s %-12s %-20s %-7s %-28s %s\n", run, strings.TrimPrefix(p.Runtime, "ovara "), p.Agent, p.Finished.Format("2006-01-02 15:04:05Z"), p.Summary.Outcome,
 			fmt.Sprintf("%d: %d ok, %d paused, %d denied", p.Receipts.Count, p.Summary.Requests.Allowed, p.Summary.Requests.Paused, p.Summary.Requests.Denied), changes)
 	}
 	return nil
@@ -202,18 +205,72 @@ func attestVerify(args []string) error {
 	if rep.Statement != nil {
 		fmt.Print(attest.Describe(rep.Statement))
 	}
-	if rep.Valid {
-		anchors := ""
-		if rep.Chain.Anchors > 0 {
-			anchors = fmt.Sprintf(" against %d anchor(s)", rep.Chain.Anchors)
+	if !rep.Valid {
+		for _, p := range rep.Problems {
+			fmt.Println("FAIL:", p)
 		}
-		fmt.Printf("attestation verifies: signed with receipt key %s; the chain's %d receipt(s) verified%s; the run's receipts, approvals, hosts and summary are what the statement says\n", rep.KeyID, rep.Chain.Total, anchors)
-		return nil
+		return errors.New("the attestation does not verify")
 	}
-	for _, p := range rep.Problems {
-		fmt.Println("FAIL:", p)
+	anchors := ""
+	if rep.Chain.Anchors > 0 {
+		anchors = fmt.Sprintf(" against %d anchor(s)", rep.Chain.Anchors)
 	}
-	return errors.New("the attestation does not verify")
+	fmt.Printf("attestation verifies: signed with receipt key %s; the chain's %d receipt(s) verified%s; the run's receipts, approvals, hosts and summary are what the statement says\n", rep.KeyID, rep.Chain.Total, anchors)
+	// A run attested as it goes: every statement of the sequence, and the
+	// chain between them (a bundle's single file is checked on its own).
+	if rep.Statement.Predicate.Sequence > 0 && file == "" || rep.Statement.Predicate.Sequence > 0 && strings.HasPrefix(file, attest.Dir(*dir)) {
+		return verifySequence(*dir, rep.Statement.Predicate.RunID, chain, pub, seg)
+	}
+	return nil
+}
+
+// verifySequence verifies every statement of the run's sequence in the
+// deployment and that they chain (attest.VerifySequence).
+func verifySequence(dir, runID, chain, pub string, seg receipts.Segment) error {
+	names, err := attestationFiles(dir)
+	if err != nil {
+		return err
+	}
+	var parts []string
+	for _, n := range names {
+		if strings.HasPrefix(n, runID+".") {
+			parts = append(parts, n)
+		}
+	}
+	sort.Strings(parts)
+	envelopes := make([][]byte, 0, len(parts))
+	problems := 0
+	for _, n := range parts {
+		raw, err := os.ReadFile(filepath.Join(attest.Dir(dir), n)) //nolint:gosec // the deployment's own attestations
+		if err != nil {
+			return err
+		}
+		envelopes = append(envelopes, raw)
+		if r := attest.Verify(raw, chain, pub, seg, nil); !r.Valid {
+			for _, p := range r.Problems {
+				fmt.Printf("FAIL: %s: %s\n", n, p)
+			}
+			problems++
+		}
+	}
+	for _, p := range attest.VerifySequence(envelopes) {
+		fmt.Println("FAIL: sequence:", p)
+		problems++
+	}
+	if problems > 0 {
+		return errors.New("the run's sequence of attestations does not verify")
+	}
+	first, err := attest.Decode(envelopes[0])
+	if err != nil {
+		return err
+	}
+	last, err := attest.Decode(envelopes[len(envelopes)-1])
+	if err != nil {
+		return err
+	}
+	fmt.Printf("sequence of %d statement(s) verifies: receipts %d to %d, each statement naming the one before, the last one final\n",
+		len(envelopes), first.Predicate.Receipts.After, last.Predicate.Receipts.After+last.Predicate.Receipts.Count)
+	return nil
 }
 
 // --- writing one at the end of a run ------------------------------------------
@@ -236,19 +293,7 @@ func writeAttestation(dir string, cfg *config.Config, run attest.Run, before int
 // stopped: the receipts it added, as one signed statement. A failure to
 // write it is said, not fatal: the run already happened.
 func attestAfterRun(dir string, cfg *config.Config, agent string, started time.Time, before, exitCode int, clean bool) {
-	counts, hosts, _ := tallyReceipts(inDir(dir, cfg.ReceiptsFile), before)
-	outcome := sandbox.OutcomeClean
-	if !clean {
-		outcome = sandbox.OutcomeFailed
-	}
-	run := attest.Run{ID: started.UTC().Format("20060102-150405"), Runtime: attest.RuntimeRun, Agent: agent, Started: started, Finished: time.Now(),
-		Summary: sandbox.Summary{Outcome: outcome, ExitCode: exitCode, Requests: counts, Hosts: hosts}}
-	rel, err := writeAttestation(dir, cfg, run, before)
-	if err != nil {
-		log.Printf("no attestation for this run: %v", err)
-		return
-	}
-	log.Printf("attestation: %s (ovara attest verify -dir %s)", rel, dir)
+	newRolling(dir, cfg, agent, started, before).final(exitCode, clean)
 }
 
 // attestBoxRun writes the attestation of a box run once the Ovara it

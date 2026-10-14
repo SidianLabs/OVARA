@@ -70,6 +70,15 @@ type Predicate struct {
 	Approvals []Approval      `json:"approvals"`
 	Hosts     []Host          `json:"hosts"`
 	Summary   sandbox.Summary `json:"summary"`
+	// A run that is attested as it goes (attest_every_minutes) is a
+	// sequence of statements: Sequence places this one (1 is the first;
+	// 0 for a run attested once, at its end), Previous is the SHA-256 of
+	// the previous statement's envelope file, and Interim says the run
+	// went on after this statement, which covers the receipts since the
+	// previous one.
+	Sequence int     `json:"sequence,omitempty"`
+	Previous *Digest `json:"previous,omitempty"`
+	Interim  bool    `json:"interim,omitempty"`
 }
 
 // Digest names bytes by their SHA-256, hex.
@@ -133,6 +142,11 @@ type Run struct {
 	Branch   string // where the changes landed, with the full commit; empty otherwise
 	Commit   string
 	Summary  sandbox.Summary
+	// A statement in a sequence (rolling attestation): its place, the
+	// previous statement's envelope digest (hex), and whether the run goes on.
+	Sequence int
+	Previous string
+	Interim  bool
 }
 
 // Build reads the run's receipts, the ones after the first `after` in the
@@ -158,7 +172,11 @@ func Build(run Run, chainPath, pubFile string, after int) (*Statement, error) {
 	if run.Finished.IsZero() {
 		run.Finished = time.Now()
 	}
-	p := Predicate{RunID: run.ID, Runtime: run.Runtime, Agent: agentName(run.Agent), Started: run.Started.UTC(), Finished: run.Finished.UTC(), Summary: run.Summary}
+	p := Predicate{RunID: run.ID, Runtime: run.Runtime, Agent: agentName(run.Agent), Started: run.Started.UTC(), Finished: run.Finished.UTC(), Summary: run.Summary,
+		Sequence: run.Sequence, Interim: run.Interim}
+	if run.Previous != "" {
+		p.Previous = &Digest{SHA256: run.Previous}
+	}
 	if len(run.Manifest) > 0 {
 		p.Manifest = &Digest{SHA256: sha256Hex(run.Manifest)}
 	}
@@ -314,8 +332,9 @@ func pae(payloadType string, payload []byte) []byte {
 func Dir(deployment string) string { return filepath.Join(deployment, "var", "attestations") }
 
 // Write stores the envelope as var/attestations/<run>.intoto.json under
-// the deployment, owner-only, never over an existing one, and returns the
-// path relative to the deployment.
+// the deployment (<run>.<NNN>.intoto.json for a statement in a sequence),
+// owner-only, never over an existing one, and returns the path relative
+// to the deployment.
 func Write(deployment, runID string, env *Envelope) (string, error) {
 	if err := os.MkdirAll(Dir(deployment), 0o700); err != nil {
 		return "", err
@@ -326,6 +345,9 @@ func Write(deployment, runID string, env *Envelope) (string, error) {
 	}
 	b = append(b, '\n')
 	name := runID + ".intoto.json"
+	if st, err := Decode(b); err == nil && st.Predicate.Sequence > 0 {
+		name = fmt.Sprintf("%s.%03d.intoto.json", runID, st.Predicate.Sequence)
+	}
 	for i := 2; ; i++ {
 		f, err := os.OpenFile(filepath.Join(Dir(deployment), name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, fs.ErrExist) {
@@ -522,4 +544,56 @@ func Describe(st *Statement) string {
 		fmt.Fprintf(&b, "outcome %s, exit %d\n", p.Summary.Outcome, p.Summary.ExitCode)
 	}
 	return b.String()
+}
+
+// VerifySequence checks that envelopes, the statements of one run in the
+// order written, chain: the same run, runtime and agent throughout;
+// sequence numbers 1, 2, ...; each statement's previous digest is the
+// SHA-256 of the previous envelope's bytes; each statement's receipts
+// start where the previous one's ended; every statement but the last is
+// interim, and the last is not. It checks nothing a single statement's
+// Verify checks: call that on each.
+func VerifySequence(envelopes [][]byte) []string {
+	var problems []string
+	fail := func(format string, a ...any) { problems = append(problems, fmt.Sprintf(format, a...)) }
+	if len(envelopes) == 0 {
+		return []string{"no statements"}
+	}
+	var prev *Statement
+	prevDigest := ""
+	for i, raw := range envelopes {
+		st, err := Decode(raw)
+		if err != nil {
+			fail("statement %d: %v", i+1, err)
+			return problems
+		}
+		p := st.Predicate
+		if p.Sequence != i+1 {
+			fail("statement %d carries sequence %d", i+1, p.Sequence)
+		}
+		if i == 0 {
+			if p.Previous != nil {
+				fail("the first statement names a previous one")
+			}
+		} else {
+			q := prev.Predicate
+			if p.RunID != q.RunID || p.Runtime != q.Runtime || p.Agent != q.Agent {
+				fail("statement %d is about run %s (%s, agent %s), the one before about %s (%s, agent %s)", i+1, p.RunID, p.Runtime, p.Agent, q.RunID, q.Runtime, q.Agent)
+			}
+			if p.Previous == nil || p.Previous.SHA256 != prevDigest {
+				fail("statement %d does not name the previous statement's digest", i+1)
+			}
+			if p.Receipts.After != q.Receipts.After+q.Receipts.Count {
+				fail("statement %d starts at receipt %d, the one before ended at %d", i+1, p.Receipts.After, q.Receipts.After+q.Receipts.Count)
+			}
+			if !q.Interim {
+				fail("statement %d follows one that said the run had ended", i+1)
+			}
+		}
+		if i == len(envelopes)-1 && p.Interim {
+			fail("the last statement says the run goes on: the sequence is not complete")
+		}
+		prev, prevDigest = st, sha256Hex(raw)
+	}
+	return problems
 }

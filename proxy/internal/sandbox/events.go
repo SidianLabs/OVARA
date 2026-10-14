@@ -44,6 +44,9 @@ const (
 	OutcomeClean  = "clean"  // the agent ran, and whatever came back is on its branch
 	OutcomeKept   = "kept"   // the run ended with the workspace kept for a person
 	OutcomeFailed = "failed" // the launcher could not finish the run
+	// OutcomeRunning is the summary so far of a run attested as it goes
+	// (an interim statement, spec C4 section 8): the run has not ended.
+	OutcomeRunning = "running"
 )
 
 // Event is one line of the events stream. The members after Event are

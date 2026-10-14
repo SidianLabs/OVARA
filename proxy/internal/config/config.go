@@ -117,6 +117,12 @@ type Config struct {
 	// var/revoked_agents.json). The proxy re-reads it within a second and
 	// refuses every request from a stopped agent.
 	RevokedAgentsFile string `json:"revoked_agents_file,omitempty"`
+	// AttestEveryMinutes makes `ovara run` attest the run as it goes: a
+	// signed statement every so many minutes covering the receipts since
+	// the previous one, chained to it, and a last one when the run ends
+	// (an agent that never stops still has a verifiable record). 0, the
+	// default, attests once, at the end.
+	AttestEveryMinutes int `json:"attest_every_minutes,omitempty"`
 	// Taint turns on the rule that asks before writes made soon after the
 	// agent read untrusted content. Default on.
 	Taint *Taint `json:"taint,omitempty"`

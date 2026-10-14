@@ -75,6 +75,8 @@ func main() {
 		err = cmdAttest(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "fleet":
+		err = cmdFleet(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "policy":
@@ -149,6 +151,7 @@ func usage() {
   kill [-agent NAME]    stop an agent now (every agent without -agent); ovara agent restore undoes it
   status [-dir .] [-json]  the deployment at a glance: policy, the record, every
                         agent's state, what it waits on, what it last did, its last run
+  fleet -dirs A,B | -root D   every deployment at a glance on one line each (-json)
   doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
 }
 
@@ -712,6 +715,12 @@ func cmdRun(args []string) error {
 			hs.Close() // paused requests waiting on a human: drop them
 		}
 	}()
+	// The run's attestation: once at the end, or as it goes
+	// (attest_every_minutes), each statement chained to the one before.
+	roll := newRolling(absDir, cfg, *agentName, started, before)
+	if cfg.AttestEveryMinutes > 0 && !*noAttest {
+		defer roll.every(time.Duration(cfg.AttestEveryMinutes) * time.Minute)()
+	}
 	served := make(chan error, len(lns))
 	for _, ln := range lns {
 		go func(ln net.Listener) {
@@ -727,7 +736,7 @@ func cmdRun(args []string) error {
 		// Serve until the gateway stops (a signal).
 		err := <-served
 		if !*noAttest {
-			attestAfterRun(absDir, cfg, *agentName, started, before, 0, err == nil)
+			roll.final(0, err == nil)
 		}
 		return err
 	}
@@ -738,7 +747,7 @@ func cmdRun(args []string) error {
 		if errors.As(err, &ae) {
 			code = ae.code
 		}
-		attestAfterRun(absDir, cfg, *agentName, started, before, code, err == nil || ae != nil)
+		roll.final(code, err == nil || ae != nil)
 	}
 	return err
 }

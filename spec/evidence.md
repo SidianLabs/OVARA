@@ -133,7 +133,12 @@ Schema: [`schemas/attestation.schema.json`](schemas/attestation.schema.json).
   hash) and `sha256` (over the lines); `approvals`, one per approval id
   with the resource, the approver and the time; `hosts`, one per
   authority with how its requests were decided; `summary`, the run's
-  (C5 §3).
+  (C5 §3). A run attested as it goes (`attest_every_minutes`) is a
+  sequence of statements, `var/attestations/<run>.<NNN>.intoto.json`:
+  `sequence` (1, 2, ...), `previous` (the SHA-256 of the previous
+  statement's envelope file), `interim` (true on every statement but the
+  last), each covering the receipts since the previous one (`after` is
+  where the previous one ended) and carrying the summary so far.
 - **Signature.** DSSE: Ed25519 over `"DSSEv1 " + len(payloadType) + " " +
   payloadType + " " + len(payload) + " " + payload`, with the receipt
   key; `keyid` is the receipt key's id (§5). The two messages this key
@@ -150,7 +155,10 @@ Schema: [`schemas/attestation.schema.json`](schemas/attestation.schema.json).
   from them; the subjects name those receipts and, when present, the
   summary's branch and commit; a manifest given must digest to
   `manifest.sha256`. Any difference fails. A chain that does not verify is
-  never attested.
+  never attested. A sequence verifies when every statement does and they
+  chain: one run, runtime and agent; `sequence` 1, 2, ...; each `previous`
+  is the digest of the previous envelope; each `after` is where the
+  previous one ended; all but the last are `interim` and the last is not.
 
 ## 9. Vectors and tests
 
@@ -172,7 +180,8 @@ pass them.
 The attestation (§8): `proxy/internal/attest`:
 `TestAttestation_BuildSignWriteVerify`, `TestAttestation_TamperingFails`,
 `TestAttestation_VerifiesFromABundleCut`, `TestAttestation_EmptyRun`,
-`TestPAEIsDSSEv1`, `TestSpecAttestationSchemaMatchesTheCode`;
+`TestAttestation_SequenceChains`, `TestPAEIsDSSEv1`,
+`TestSpecAttestationSchemaMatchesTheCode`;
 `proxy/cmd/ovara`: `TestAttestCLI_VerifyListShow`; end to end,
 `tests/scenarios/ci-bot.sh` (D5, D6: a real run's statement, from the
 deployment and from its incident bundle) and `tests/box/box.sh` (a box
