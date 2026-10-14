@@ -332,8 +332,10 @@ func TestOrchestrator_StartupSweepStuckExecuting(t *testing.T) {
 	if updated.State != StateExecuted {
 		t.Errorf("stuck executing should be swept to executed on startup, got %v", updated.State)
 	}
-	if !updated.CanRetry() {
-		t.Error("swept continuation should be retryable")
+	if updated.CanRetry() || !updated.OutcomeUnknown {
+		// It was executing when recovered: it may have run, so it is
+		// not "failed, retryable" (that invited a second execution).
+		t.Error("swept continuation must be outcome-unknown and not retryable")
 	}
 }
 
@@ -441,8 +443,10 @@ func TestOrchestrator_RecoverAllExecuting(t *testing.T) {
 	if updated1.State != StateExecuted {
 		t.Errorf("c1 state = %v, want executed", updated1.State)
 	}
-	if !updated1.CanRetry() {
-		t.Error("c1 should be retryable after recovery")
+	if updated1.CanRetry() || !updated1.OutcomeUnknown {
+		// It was executing when recovered: it may have run, so it is
+		// not "failed, retryable" (that invited a second execution).
+		t.Error("c1 must be outcome-unknown and not retryable")
 	}
 
 	updated3, _ := store.Get(c3.ContinuationID)
@@ -559,8 +563,10 @@ func TestOrchestrator_SweepStuckExecutingThreshold_RecoversOld(t *testing.T) {
 	if updated1.State != StateExecuted {
 		t.Errorf("old item should be recovered, got %v", updated1.State)
 	}
-	if !updated1.CanRetry() {
-		t.Error("recovered item should be retryable")
+	if updated1.CanRetry() || !updated1.OutcomeUnknown {
+		// It was executing when recovered: it may have run, so it is
+		// not "failed, retryable" (that invited a second execution).
+		t.Error("recovered item must be outcome-unknown and not retryable")
 	}
 
 	updated2, _ := store.Get(c2.ContinuationID)
@@ -640,8 +646,10 @@ func TestOrchestrator_PeriodicSweep_RunsAndRecovers(t *testing.T) {
 	if updated.State != StateExecuted {
 		t.Errorf("periodic sweep should have recovered stuck item, got %v", updated.State)
 	}
-	if !updated.CanRetry() {
-		t.Error("recovered item should be retryable")
+	if updated.CanRetry() || !updated.OutcomeUnknown {
+		// It was executing when recovered: it may have run, so it is
+		// not "failed, retryable" (that invited a second execution).
+		t.Error("recovered item must be outcome-unknown and not retryable")
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -99,6 +100,13 @@ type Decision struct {
 	ApprovalID       string   `json:"approval_id"`
 	TrustScore       float64  `json:"trust_score"`
 	TrustLevel       string   `json:"trust_level"`
+	// MatchedRule names the policy rule that decided, when one did.
+	MatchedRule string `json:"matched_rule,omitempty"`
+	// ReceiptStub carries the gateway's receipt facts; the proxy keeps the
+	// policy hash so its own receipt names the policy that decided.
+	ReceiptStub struct {
+		PolicyHash string `json:"policy_hash"`
+	} `json:"receipt_stub"`
 }
 
 func nonce() string {
@@ -197,6 +205,58 @@ func (c *Client) ApprovalStatus(ctx context.Context, approvalID string) (string,
 		return "", err
 	}
 	return out.Status, nil
+}
+
+// ErrClaimUnsupported: the gateway has no claim route (an older one), so
+// approvals are not single-use there. Callers may go ahead on an approved
+// status, as they did before the route existed.
+var ErrClaimUnsupported = errors.New("the gateway has no approval claim route")
+
+// ClaimApproval marks an approved approval used, so the action it allows
+// runs once. It returns the approval's status and whether this call
+// claimed it: the caller goes ahead only when claimed is true. An approval
+// already used answers claimed=false with status approved.
+func (c *Client) ClaimApproval(ctx context.Context, approvalID string) (status string, claimed bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/approval/"+approvalID+"/claim", nil)
+	if err != nil {
+		return "", false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusConflict:
+		return "approved", false, nil
+	case resp.StatusCode == http.StatusNotFound:
+		return "", false, ErrClaimUnsupported
+	case resp.StatusCode >= 300:
+		return "", false, fmt.Errorf("gateway returned %d", resp.StatusCode)
+	}
+	var out struct {
+		Status  string `json:"status"`
+		Claimed bool   `json:"claimed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", false, err
+	}
+	return out.Status, out.Claimed, nil
+}
+
+// ApprovalResolvedBy returns who resolved an approval ("" while pending).
+func (c *Client) ApprovalResolvedBy(ctx context.Context, approvalID string) (string, error) {
+	var out struct {
+		ResolvedBy string `json:"resolved_by"`
+	}
+	if err := c.do(ctx, "GET", "/v1/approval/"+approvalID, nil, &out); err != nil {
+		return "", err
+	}
+	return out.ResolvedBy, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte, out any) error {

@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net"
@@ -8,8 +10,10 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"unicode"
 	"time"
+	"unicode"
+
+	"ovara.proxy/internal/creds"
 )
 
 // normalizeHost returns the canonical form of a host name for every policy,
@@ -64,12 +68,67 @@ func stripMethodOverride(h http.Header) {
 // a body or a very long query is a data-carrying request wearing a read's
 // clothes, so it is escalated even when a rule allows reads.
 const (
-	maxReadQueryBytes = 512
+	maxReadQueryBytes     = 512
+	defaultMaxReadRequest = 2048
+	// A standard header (User-Agent, Accept...) is free up to this size; past
+	// it, all of it counts, so it cannot become the place the data goes.
+	freeStandardHeaderBytes = 256
 )
 
-// readCarriesData reports why a read-class request should be escalated, or "".
-func readCarriesData(r *http.Request) string {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+// standardHeaders are the request headers every client sends. They are left
+// out of the approver's header list and, up to a size, out of the read budget.
+var standardHeaders = map[string]bool{
+	"Accept": true, "Accept-Encoding": true, "User-Agent": true, "Content-Length": true,
+	"Content-Type": true, "Connection": true, "Host": true,
+}
+
+// notForwarded are request headers the proxy never sends upstream, so they
+// carry nothing out.
+func notForwarded(name string) bool {
+	if strings.EqualFold(name, "Proxy-Authorization") {
+		return true
+	}
+	for _, h := range hopHeaders {
+		if strings.EqualFold(name, h) {
+			return true
+		}
+	}
+	for _, h := range methodOverrideHeaders {
+		if strings.EqualFold(name, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// readRequestBytes is what a read carries out besides its body: the path, the
+// query and the headers that will be forwarded.
+func readRequestBytes(r *http.Request) int {
+	n := len(r.URL.EscapedPath()) + len(r.URL.RawQuery)
+	for k, vv := range r.Header {
+		if notForwarded(k) {
+			continue
+		}
+		for _, v := range vv {
+			size := len(k) + len(v)
+			if standardHeaders[http.CanonicalHeaderKey(k)] && size <= freeStandardHeaderBytes {
+				continue
+			}
+			n += size
+		}
+	}
+	return n
+}
+
+// readCarriesData reports why a read-class request should be refused, or "".
+// A read's path, query and headers carry data just as well as a POST body,
+// so they share one budget; the query also keeps its own, smaller cap.
+//
+// The method is compared without regard to case: handleRequest upper-cases
+// it first, but a "get" that reached this check by another path must not
+// skip the budget that a "GET" is held to.
+func (s *Server) readCarriesData(r *http.Request) string {
+	if !strings.EqualFold(r.Method, http.MethodGet) && !strings.EqualFold(r.Method, http.MethodHead) {
 		return ""
 	}
 	if r.ContentLength > 0 || len(r.TransferEncoding) > 0 {
@@ -78,22 +137,28 @@ func readCarriesData(r *http.Request) string {
 	if len(r.URL.RawQuery) > maxReadQueryBytes {
 		return "read_with_large_query"
 	}
+	if readRequestBytes(r) > s.limits.maxReadRequest {
+		return "read_request_too_large"
+	}
 	return ""
 }
 
 // secretTargets expands one injected header into the strings that must be
 // scrubbed from responses: the whole value, the bare token after an auth
-// scheme ("Bearer abc" -> "abc"), and URL- and JSON-escaped spellings.
+// scheme ("Bearer abc" -> "abc"), their URL- and JSON-escaped spellings,
+// hex, and base64 (standard and URL alphabets, at each of the three
+// alignments the value can have inside a longer base64 stream). Matching
+// ignores ASCII case (secretSet), which also covers upper-case hex.
 // Non-secret protocol headers (versions, content types) are not scrubbed:
 // redacting "2023-06-01" everywhere helps nobody and corrupts responses.
 func secretTargets(name, value string) [][]byte {
-	if value == "" || isNonSecretHeader(name) {
+	if value == "" || creds.NonSecretHeader(name) {
 		return nil
 	}
 	seen := map[string]bool{}
 	var out [][]byte
 	add := func(s string) {
-		if len(s) >= 8 && !seen[s] {
+		if len(s) >= creds.MinSecretLen && !seen[s] {
 			seen[s] = true
 			out = append(out, []byte(s))
 		}
@@ -107,8 +172,42 @@ func secretTargets(name, value string) [][]byte {
 		if b, err := json.Marshal(s); err == nil && len(b) > 2 {
 			add(string(b[1 : len(b)-1]))
 		}
+		add(hex.EncodeToString([]byte(s)))
+		for _, v := range base64Spellings([]byte(s)) {
+			add(v)
+		}
 	}
 	return out
+}
+
+// base64Spellings returns the base64 text that encodes secret wherever it
+// sits in a longer encoded stream. Base64 works in 3-byte groups, so the
+// secret starts at one of three offsets in a group; for each, the
+// characters that also depend on neighbouring bytes are dropped from both
+// ends, leaving the run that is the same whatever surrounds the secret.
+// The whole padded encoding of the secret alone is included too.
+func base64Spellings(secret []byte) []string {
+	var out []string
+	for k := 0; k < 3; k++ {
+		src := append(make([]byte, k), secret...)
+		enc := base64.RawStdEncoding.EncodeToString(src)
+		lead := [3]int{0, 2, 3}[k] // characters that carry prefix bits
+		trail := 0
+		if len(src)%3 != 0 {
+			trail = 1 // the last character carries bits of what follows
+		}
+		if len(enc)-trail <= lead {
+			continue
+		}
+		core := enc[lead : len(enc)-trail]
+		out = append(out, core, toURLBase64(core))
+	}
+	full := base64.StdEncoding.EncodeToString(secret)
+	return append(out, full, toURLBase64(full))
+}
+
+func toURLBase64(s string) string {
+	return strings.NewReplacer("+", "-", "/", "_").Replace(s)
 }
 
 func keys(m map[string]bool) []string {
@@ -119,23 +218,14 @@ func keys(m map[string]bool) []string {
 	return out
 }
 
-func isNonSecretHeader(name string) bool {
-	n := strings.ToLower(name)
-	if strings.Contains(n, "version") {
-		return true
-	}
-	switch n {
-	case "accept", "content-type", "user-agent", "accept-language", "x-github-api-version":
-		return true
-	}
-	return false
-}
-
 // copyFlush streams src to w and flushes after every chunk, so event
 // streams (SSE, chunked LLM output) reach the agent as they arrive instead
 // of being held back until a buffer fills.
 func copyFlush(w http.ResponseWriter, src io.Reader) {
 	rc := http.NewResponseController(w)
+	// The headers go out now: a body checked a whole event at a time
+	// (mcpgate.go) may take a while to produce its first byte.
+	_ = rc.Flush()
 	buf := make([]byte, 16*1024)
 	for {
 		n, err := src.Read(buf)

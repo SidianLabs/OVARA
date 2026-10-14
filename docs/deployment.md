@@ -66,6 +66,26 @@ Create `etc/config.json`:
 }
 ```
 
+### An organisation's baseline (optional)
+
+`policy_baseline_file` names a second policy, in the same format, that
+`policy_file` may only narrow (`spec/policy.md` §6): its denies are absolute,
+its escalations can only be tightened to denies, its allows stand unless the
+project has a rule for the request, and every refusal it causes says
+`org baseline`. Sign it and pin the key, so that whoever can edit the
+deployment's files cannot loosen it:
+
+```bash
+ovara policy baseline keygen -out /secure/place     # baseline.key stays with the signer
+ovara policy baseline sign -key /secure/place/baseline.key -in etc/baseline.json
+```
+
+then in `config.json`: `"policy_baseline_file": "etc/baseline.json"` and
+`"policy_baseline_pubkey": "<the hex in baseline.pub>"`. The gateway refuses
+to start when the baseline is missing or its signature does not verify. It is
+read at start: sign again after every change and restart. `ovara doctor`
+reports its state.
+
 ### Trust-stack persistence (required for production)
 
 The four `*_file` settings above carry the P2.x trust stack across
@@ -87,6 +107,26 @@ For the P2.3 anchoring layer (tamper-evident checkpoints against an
 anchor oracle), also set `gateway_anchor_mode`, `gateway_anchor_url`,
 and `gateway_anchor_pin` — see `docs/OVARA_P2.3.3_ROLLBACK_ANCHORING_DESIGN.md`.
 When anchoring is not configured, `gateway_anchor_mode` defaults to `off`.
+
+### Running the anchor oracle (`ovara-anchor`)
+
+The oracle takes `--store`, `--listen` and, for https, `--key` and
+`--client-keys`. A reset (an operator recovering the anchor's authority)
+needs the oracle's operator token. Give it one of two ways:
+
+- `--operator-token-file FILE`: a file only its owner can read (`chmod
+  600`). The oracle refuses a file that group or other can read.
+- `OVARA_ANCHOR_OPERATOR_TOKEN`: the oracle reads it and then removes it
+  from its own environment.
+
+`--operator-token` on the command line is refused: any local user can read
+a command line. The oracle compares the token in constant time.
+`gwctl anchor-reset` reads the same environment variable; prefer it to
+`gwctl`'s `--operator-token` for the same reason.
+
+In degraded mode (`gateway_anchor_mode` `degraded`), a push that fails
+while the oracle is down is retried in the background until the oracle
+takes it, so a short outage does not leave the run unanchored.
 
 ## Directory Structure
 

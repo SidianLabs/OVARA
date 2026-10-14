@@ -17,6 +17,9 @@ func writeChain(t *testing.T) (dir, chainFile, pubFile string) {
 	chainFile = filepath.Join(dir, "receipts.jsonl")
 	pubFile = filepath.Join(dir, "pub.hex")
 	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), pubFile)
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,10 +106,10 @@ func TestWatchLoop_SkipsExpiredApprovals(t *testing.T) {
 		pendingApproval{ApprovalID: "new", ActionType: "http.request", Resource: "POST https://a/y", CreatedAt: time.Now()})
 	c.maxWait = time.Minute
 
-	var out bytes.Buffer
+	in, out := newTypist(t, "a")
 	stop := make(chan struct{})
 	time.AfterFunc(300*time.Millisecond, func() { close(stop) })
-	if err := watchLoop(c, strings.NewReader("a\n"), &out, 10*time.Millisecond, stop); err != nil {
+	if err := watchLoop(c, in, out, 10*time.Millisecond, stop); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "https://a/x") {
@@ -114,5 +117,30 @@ func TestWatchLoop_SkipsExpiredApprovals(t *testing.T) {
 	}
 	if f.resolved["new"] != "approve" {
 		t.Fatalf("fresh approval not handled: %v", f.resolved)
+	}
+}
+
+// A forwarded request has an attempt and an outcome receipt; the log shows
+// it once. An attempt with no outcome (the proxy stopped mid-request) says so.
+func TestPrintLog_AttemptAndOutcomeShowOnce(t *testing.T) {
+	dir := t.TempDir()
+	chainFile, pubFile := filepath.Join(dir, "r.jsonl"), filepath.Join(dir, "p.hex")
+	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), pubFile)
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := chain.Append(receipts.Entry{Method: "GET", URL: "https://pypi.org/simple/", Decision: "allow", Phase: "attempt", Outcome: "sent"}, true)
+	_, _ = chain.Append(receipts.Entry{Method: "GET", URL: "https://pypi.org/simple/", Decision: "allow", Status: 200, Phase: "outcome", AttemptID: a.ReceiptID}, false)
+	_, _ = chain.Append(receipts.Entry{Method: "POST", URL: "https://api.github.com/x", Decision: "allow", Phase: "attempt", Outcome: "sent"}, true)
+	var out bytes.Buffer
+	if err := printLog(&out, chainFile, pubFile, 0); err != nil {
+		t.Fatal(err)
+	}
+	s := out.String()
+	if strings.Count(s, "pypi.org") != 1 || !strings.Contains(s, "1 allowed, 1 no result") {
+		t.Fatalf("log:\n%s", s)
 	}
 }

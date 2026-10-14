@@ -20,6 +20,12 @@ type SealedFile struct {
 	Data json.RawMessage `json:"data"`
 }
 
+// FileVersion is the sealed-file format. It did not change when journal
+// envelopes moved to v2 (record.Version): the signed payload still says
+// "-V1". Files this branch's builds wrote with v 2 carry the same payload
+// and are read too; the version field itself is not signed.
+const FileVersion = 1
+
 type FileSec struct {
 	V           int    `json:"v"`
 	Store       string `json:"store"`
@@ -58,7 +64,7 @@ func SealFile(store string, s *Signer, payload, prev []byte, prevSeq uint64) ([]
 		prevHash = hex.EncodeToString(ph[:])
 	}
 	sec := FileSec{
-		V:           Version,
+		V:           FileVersion,
 		Store:       store,
 		DomainID:    s.Domain(),
 		FileSeq:     prevSeq + 1,
@@ -111,7 +117,7 @@ func OpenSealedFile(store, path, domainID string, resolve ResolveFunc, floor Flo
 	if err := json.Unmarshal(data, &sf); err != nil {
 		return nil, 0, "", fmt.Errorf("record %s: unparseable sealed file: %w", store, err)
 	}
-	if sf.Sec.V != Version {
+	if sf.Sec.V != FileVersion && sf.Sec.V != 2 {
 		return nil, 0, "", fmt.Errorf("record %s: unsupported _sec version %d", store, sf.Sec.V)
 	}
 	if sf.Sec.Store != store {

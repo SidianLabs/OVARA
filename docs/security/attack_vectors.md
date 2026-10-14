@@ -1,5 +1,9 @@
 # Attack Vectors
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 This document describes the primary attack vectors that Ovara is
 designed to defend against. Each vector is mapped to the specific
 defense mechanism in the platform.

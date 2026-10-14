@@ -159,7 +159,8 @@ def start_oracle(d, name="anchor"):
     if os.path.exists(sock):
         os.remove(sock)
     p = subprocess.Popen([f"{WORK}/ovara-anchor", "--store", store,
-                          "--listen", f"unix://{sock}", "--operator-token", OPTOK],
+                          "--listen", f"unix://{sock}"],
+                         env=dict(os.environ, OVARA_ANCHOR_OPERATOR_TOKEN=OPTOK),
                          stdout=open(f"{d}/{name}.log", "a"), stderr=subprocess.STDOUT)
     for _ in range(50):
         if p.poll() is not None:
@@ -680,8 +681,8 @@ def main():
         [f"{WORK}/ovara-anchor", "--store", f"{O}/o.jsonl",
          "--listen", "https://127.0.0.1:19777",
          "--key", f"{O}/oracle_key",
-         "--client-keys", f"{O}/client_keys",
-         "--operator-token", OPTOK],
+         "--client-keys", f"{O}/client_keys"],
+        env=dict(os.environ, OVARA_ANCHOR_OPERATOR_TOKEN=OPTOK),
         stdout=open(f"{O}/oracle.log", "w"), stderr=subprocess.STDOUT)
     PROCS.append(https_oracle)
     time.sleep(1.2)

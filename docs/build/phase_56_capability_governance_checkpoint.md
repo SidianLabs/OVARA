@@ -1,5 +1,9 @@
 # Phase 56 Capability Governance — Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: Tue May 26 2026
 **Branch**: `phase-56-capability-governance`
 **Parent**: `phase-55-durable-leases` (commits `4f3cf72`, `67d4e04`)

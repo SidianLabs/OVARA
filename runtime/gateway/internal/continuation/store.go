@@ -75,6 +75,12 @@ type Continuation struct {
 	// (approved, possibly dangerous) command cannot be re-run without a fresh
 	// approval.
 	LastExecutionSucceeded bool `json:"last_execution_succeeded,omitempty"`
+	// OutcomeUnknown marks a continuation that was executing when the
+	// gateway stopped: the action may or may not have taken effect (a push
+	// can complete before its result is recorded). It is never retried
+	// automatically or through the retry API; running it again takes a
+	// fresh approval.
+	OutcomeUnknown bool `json:"outcome_unknown,omitempty"`
 }
 
 // snapshot returns a shallow copy of the continuation. Store methods return a
@@ -245,7 +251,7 @@ func (c *Continuation) retryEligible() bool {
 	case StateResumed:
 		// already marked for retry and awaiting re-execution
 	case StateExecuted:
-		if c.LastExecutionSucceeded {
+		if c.LastExecutionSucceeded || c.OutcomeUnknown {
 			return false
 		}
 	default:
@@ -273,6 +279,14 @@ func (c *Continuation) MarkExecutionFailed() {
 	}
 	c.State = StateExecuted
 	c.LastExecutionSucceeded = false
+}
+
+// markOutcomeUnknown closes a claim whose result was never recorded: the
+// action may have run, so it is neither "succeeded" nor "failed, retry".
+func markOutcomeUnknown(c *Continuation) {
+	c.State = StateExecuted
+	c.LastExecutionSucceeded = false
+	c.OutcomeUnknown = true
 }
 
 // MarkRequeue returns a claimed (StateExecuting) continuation back to
@@ -342,6 +356,9 @@ func (c *Continuation) RetryInfo() RetryInfo {
 		if c.State == StateExecuted && c.LastExecutionSucceeded {
 			info.Status = "not_retryable"
 			info.Reason = "last execution succeeded; re-running requires a fresh approval"
+		} else if c.State == StateExecuted && c.OutcomeUnknown {
+			info.Status = "outcome_unknown"
+			info.Reason = "the gateway stopped while this was executing, so it may have taken effect; it is not retried automatically, and re-running requires a fresh approval"
 		} else if c.MaxRetries <= 0 {
 			info.Status = "disabled"
 			info.Reason = "max_retries is 0, retry disabled"
@@ -674,7 +691,7 @@ func (s *InMemoryStore) RecoverFromExecuting(id string) (*Continuation, bool) {
 	if c.State != StateExecuting {
 		return nil, false
 	}
-	c.State = StateExecuted
+	markOutcomeUnknown(c)
 	return c.snapshot(), true
 }
 

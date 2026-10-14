@@ -158,6 +158,10 @@ Create `etc/config.json`:
 
 All fields are optional. Defaults are used if not specified.
 
+`policy_baseline_file` (with `policy_baseline_pubkey` to pin its signing key)
+names an organisation's policy that `policy_file` may only narrow; see
+`spec/policy.md` §6 and `docs/deployment.md`.
+
 ## Decision Outcomes
 
 - `allow` — action is permitted and executed

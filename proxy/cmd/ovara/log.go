@@ -6,8 +6,6 @@ package main
 
 import (
 	"bufio"
-	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,17 +20,78 @@ import (
 )
 
 func cmdLog(args []string) error {
+	if len(args) > 0 && args[0] == "export" {
+		return cmdLogExport(args[1:])
+	}
 	fs := flag.NewFlagSet("log", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "deployment directory (where `ovara init` wrote proxy.json)")
 	n := fs.Int("n", 50, "show the last N requests (0 = all)")
+	verifyOnly := fs.Bool("verify-only", false, "only check the receipt chain (signatures, links, anchors, key history) and exit nonzero if it fails")
+	receiptsPath := fs.String("receipts", "", "receipt chain to read instead of the deployment's (with -pubkey; for an incident bundle or a copied log)")
+	pubPath := fs.String("pubkey", "", "public key file for -receipts (the key history next to it is used too)")
+	segPath := fs.String("segment", "", "with -receipts: segment.json saying where a cut-out chain segment starts (incident bundles carry one)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := config.Load(filepath.Join(*dir, "proxy.json"))
-	if err != nil {
-		return fmt.Errorf("cannot read proxy.json in %s: %w (run `ovara init` first, or pass -dir)", *dir, err)
+	var chainFile, pubFile string
+	if *receiptsPath != "" || *pubPath != "" {
+		if *receiptsPath == "" || *pubPath == "" {
+			return fmt.Errorf("-receipts and -pubkey go together")
+		}
+		chainFile, pubFile = *receiptsPath, *pubPath
+	} else {
+		cfg, err := config.Load(filepath.Join(*dir, "proxy.json"))
+		if err != nil {
+			return fmt.Errorf("cannot read proxy.json in %s: %w (run `ovara init` first, or pass -dir)", *dir, err)
+		}
+		chainFile, pubFile = inDir(*dir, cfg.ReceiptsFile), inDir(*dir, cfg.PubKeyFile)
 	}
-	return printLog(os.Stdout, inDir(*dir, cfg.ReceiptsFile), inDir(*dir, cfg.PubKeyFile), *n)
+	var seg *receipts.Segment
+	if *segPath != "" {
+		b, err := os.ReadFile(*segPath)
+		if err != nil {
+			return err
+		}
+		seg = &receipts.Segment{}
+		if err := json.Unmarshal(b, seg); err != nil {
+			return fmt.Errorf("%s: %w", *segPath, err)
+		}
+	}
+	if *verifyOnly {
+		return verifyOnlyLog(os.Stdout, chainFile, pubFile, seg)
+	}
+	return printLog(os.Stdout, chainFile, pubFile, *n)
+}
+
+// verifyOnlyLog checks a receipt chain and says what was proven.
+func verifyOnlyLog(w io.Writer, chainFile, pubFile string, seg *receipts.Segment) error {
+	ring, err := receipts.LoadKeyRing(pubFile)
+	if err != nil {
+		return fmt.Errorf("public key: %w", err)
+	}
+	anchorFile := receipts.AnchorPathFor(chainFile)
+	var res *receipts.VerifyResult
+	var anchored bool
+	if seg != nil {
+		res, anchored = receipts.VerifySegmentWithAnchors(chainFile, anchorFile, ring, *seg)
+	} else {
+		res, anchored = receipts.VerifyWithAnchorsKeys(chainFile, anchorFile, ring)
+	}
+	if !res.Valid {
+		fmt.Fprintf(w, "FAILED: receipt chain breaks at entry %d (%s)\n", res.FailAt, res.Reason)
+		return fmt.Errorf("receipt chain failed verification")
+	}
+	fmt.Fprintf(w, "OK: %d receipts are signed by keys valid at their time and linked without a gap", res.Total)
+	if res.V1 > 0 {
+		fmt.Fprintf(w, " (%d in the older v1 format)", res.V1)
+	}
+	fmt.Fprintln(w)
+	if anchored {
+		fmt.Fprintf(w, "OK: the chain matches all %d anchors in %s\n", res.Anchors, anchorFile)
+	} else {
+		fmt.Fprintln(w, "NOTE: no anchors checked, so a chain cut short at the end would not be noticed")
+	}
+	return nil
 }
 
 // inDir resolves a config path relative to the deployment directory.
@@ -43,8 +102,23 @@ func inDir(dir, p string) string {
 	return filepath.Join(dir, p)
 }
 
+// Receipt values the log reads.
+const (
+	phaseAttempt  = "attempt" // an attempt receipt (synced before sending)
+	decisionError = "error"   // a receipt decision, and the word shown for it
+	ocsfAllowed   = "Allowed" // OCSF action and disposition name
+)
+
 // outcome turns a receipt into the word a person would use.
 func outcome(r receipts.Receipt) string {
+	switch {
+	case r.Phase == phaseAttempt:
+		// An attempt whose outcome was never written: sent, and then the
+		// proxy stopped before the answer came back.
+		return "no result"
+	case r.Outcome == "not_sent":
+		return decisionError
+	}
 	switch r.Decision {
 	case "allow":
 		if r.ApprovalID != "" {
@@ -60,9 +134,12 @@ func outcome(r receipts.Receipt) string {
 		if r.Status == 504 {
 			return "timed out"
 		}
+		if r.Status == 503 {
+			return "told to retry"
+		}
 		return "not approved"
-	case "error":
-		return "error"
+	case decisionError:
+		return decisionError
 	}
 	return r.Decision
 }
@@ -78,13 +155,18 @@ type activityEntry struct {
 type activity struct {
 	Entries []activityEntry `json:"entries"` // the last n, oldest first
 	Total   int             `json:"total"`   // receipts in the chain
-	Counts  map[string]int  `json:"counts"`  // per outcome, over Entries
-	Checked bool            `json:"checked"` // integrity was verified
-	Valid   bool            `json:"valid"`   // ...and the chain is intact
-	Problem string          `json:"problem"` // why it is not, if not
+	// Requests counts requests: a forwarded request has two receipts.
+	Requests int            `json:"requests"`
+	Counts   map[string]int `json:"counts"`  // per outcome, over Entries
+	Checked  bool           `json:"checked"` // integrity was verified
+	Valid    bool           `json:"valid"`   // ...and the chain is intact
+	Problem  string         `json:"problem"` // why it is not, if not
+	// Anchored: the chain was also checked against the anchors written as
+	// it grew, so a log cut short or cut and continued fails too.
+	Anchored bool `json:"anchored"`
 }
 
-var outcomeOrder = []string{"allowed", "approved", "BLOCKED", "not approved", "timed out", "no token", "error"}
+var outcomeOrder = []string{"allowed", "approved", "BLOCKED", "not approved", "timed out", "no token", "no result", "error"}
 
 func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
 	act := &activity{Counts: map[string]int{}}
@@ -115,32 +197,52 @@ func loadActivity(receiptsFile, pubFile string, n int) (*activity, error) {
 		return nil, err
 	}
 	act.Total = len(all)
-	shown := all
-	if n > 0 && len(all) > n {
-		shown = all[len(all)-n:]
+	// A forwarded request has an attempt receipt and an outcome receipt;
+	// show it once, as its outcome.
+	closed := map[string]bool{}
+	for _, r := range all {
+		if r.Phase == "outcome" {
+			closed[r.AttemptID] = true
+		}
 	}
+	requests := make([]receipts.Receipt, 0, len(all))
+	for _, r := range all {
+		if r.Phase == phaseAttempt && closed[r.ReceiptID] {
+			continue
+		}
+		requests = append(requests, r)
+	}
+	shown := requests
+	if n > 0 && len(requests) > n {
+		shown = requests[len(requests)-n:]
+	}
+	act.Requests = len(requests)
 	for _, r := range shown {
 		o := outcome(r)
 		act.Counts[o]++
 		act.Entries = append(act.Entries, activityEntry{When: r.Timestamp, Outcome: o, What: describe(r.Method + " " + r.URL)})
 	}
 	if len(all) == 0 {
-		return act, nil
+		// An empty log is only "no activity" if nothing was ever anchored:
+		// a log emptied after the fact must not read as a fresh one.
+		if fi, err := os.Stat(receipts.AnchorPathFor(receiptsFile)); err != nil || fi.Size() == 0 {
+			return act, nil
+		}
 	}
 
-	pubHex, err := os.ReadFile(pubFile)
-	if err != nil {
+	if _, err := os.Stat(pubFile); err != nil {
 		act.Problem = "cannot read the public key " + pubFile
 		return act, nil
 	}
-	pub, err := hex.DecodeString(strings.TrimSpace(string(pubHex)))
-	if err != nil || len(pub) != ed25519.PublicKeySize {
-		act.Problem = pubFile + " is not a valid public key"
+	ring, err := receipts.LoadKeyRing(pubFile)
+	if err != nil {
+		act.Problem = err.Error()
 		return act, nil
 	}
-	res := receipts.VerifyFile(receiptsFile, ed25519.PublicKey(pub))
+	res, anchored := receipts.VerifyWithAnchorsKeys(receiptsFile, receipts.AnchorPathFor(receiptsFile), ring)
 	act.Checked = true
 	act.Valid = res.Valid
+	act.Anchored = anchored
 	if !res.Valid {
 		act.Problem = fmt.Sprintf("receipt chain breaks at entry %d (%s)", res.FailAt, res.Reason)
 	}
@@ -152,16 +254,16 @@ func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
 	if err != nil {
 		return err
 	}
-	if act.Total == 0 {
+	if act.Total == 0 && !act.Checked {
 		fmt.Fprintln(w, "no activity yet — nothing has gone through the proxy.")
 		return nil
 	}
-	if len(act.Entries) < act.Total {
-		fmt.Fprintf(w, "(showing the last %d of %d — use -n 0 for all)\n", len(act.Entries), act.Total)
+	if len(act.Entries) < act.Requests {
+		fmt.Fprintf(w, "(showing the last %d of %d — use -n 0 for all)\n", len(act.Entries), act.Requests)
 	}
 	fmt.Fprintf(w, "%-19s  %-12s  %s\n", "WHEN", "OUTCOME", "WHAT THE AGENT DID")
 	for _, e := range act.Entries {
-		fmt.Fprintf(w, "%-19s  %-12s  %s\n", e.When.Local().Format("2006-01-02 15:04:05"), e.Outcome, e.What)
+		fmt.Fprintf(w, "%-19s  %-12s  %s\n", e.When.Local().Format("2006-01-02 15:04:05"), termSafe(e.Outcome), termSafe(e.What))
 	}
 	var parts []string
 	for _, k := range outcomeOrder {
@@ -176,8 +278,10 @@ func printLog(w io.Writer, receiptsFile, pubFile string, n int) error {
 	case !act.Valid:
 		fmt.Fprintf(w, "integrity: ✗ TAMPERED — %s\n", act.Problem)
 		return fmt.Errorf("receipt chain failed verification")
+	case act.Anchored:
+		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken, and match their anchors — this log has not been edited or cut short\n", act.Total)
 	default:
-		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken — this log has not been edited\n", act.Total)
+		fmt.Fprintf(w, "integrity: ✓ all %d receipts are signed and unbroken (no anchors found, so a log cut short at the end would not be noticed)\n", act.Total)
 	}
 	return nil
 }

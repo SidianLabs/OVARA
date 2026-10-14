@@ -39,6 +39,9 @@ func newFixture(t *testing.T, gwDecision string, bindings []creds.Binding) *fixt
 	chainFile := filepath.Join(dir, "receipts.jsonl")
 	pubFile := filepath.Join(dir, "receipts.pub")
 	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "receipts.key"), pubFile)
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatalf("chain: %v", err)
 	}
@@ -107,7 +110,7 @@ func TestPlainHTTPAllowNoCredLeakAndReceipts(t *testing.T) {
 		t.Fatalf("credential leaked over plaintext http: upstream saw %q", sawHeader)
 	}
 	r := f.lastReceipt(t)
-	if r.Decision != "allow" || r.Status != 201 || r.Method != "GET" {
+	if r.Decision != gwAllow || r.Status != 201 || r.Method != "GET" {
 		t.Fatalf("bad receipt: %+v", r)
 	}
 	if strings.Contains(r.URL, "api_key") {
@@ -128,7 +131,7 @@ func TestConnectMITMInjectsCreds(t *testing.T) {
 	host := mustHost(t, upstream.URL)
 
 	f := newFixture(t, "allow", []creds.Binding{
-		{Host: host, Headers: map[string]string{"Authorization": "Bearer real"}},
+		{Host: target, Headers: map[string]string{"Authorization": "Bearer real"}},
 	})
 	// Trust the test upstream's cert so the proxied TLS succeeds.
 	pool := x509.NewCertPool()
@@ -183,7 +186,7 @@ func TestSSRFDeniesLoopback(t *testing.T) {
 		t.Fatalf("expected 403 for loopback destination, got %d", rec.Code)
 	}
 	r := f.lastReceipt(t)
-	if r.Decision != "deny" {
+	if r.Decision != gwDeny {
 		t.Fatalf("expected deny receipt, got %+v", r)
 	}
 }
@@ -210,7 +213,7 @@ func TestPlainHTTPDeny(t *testing.T) {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
 	r := f.lastReceipt(t)
-	if r.Decision != "deny" {
+	if r.Decision != gwDeny {
 		t.Fatalf("expected deny receipt, got %+v", r)
 	}
 }
@@ -220,6 +223,9 @@ func TestPlainHTTPFailClosed(t *testing.T) {
 	c, _ := ca.LoadOrCreate(filepath.Join(dir, "ca.pem"), filepath.Join(dir, "ca.key"))
 	chainFile := filepath.Join(dir, "r.jsonl")
 	chain, _ := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), filepath.Join(dir, "r.pub"))
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	// gateway pointing at a dead address
 	gw := gateway.New("http://127.0.0.1:1", "", "test")
 	s := New(c, gw, nil, chain, false)

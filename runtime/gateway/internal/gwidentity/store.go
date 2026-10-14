@@ -172,7 +172,7 @@ func NewInMemory() *Registry {
 // Open loads or creates the registry file. Corrupt non-tail records
 // fail — the registry cannot prove trust state it cannot read.
 func Open(path string) (*Registry, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, fmt.Errorf("gateway registry: mkdir: %w", err)
 	}
 	return open(path, true)

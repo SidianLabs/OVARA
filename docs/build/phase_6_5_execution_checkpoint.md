@@ -1,5 +1,9 @@
 # Phase 6.5 Execution Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Objective:** Consolidate and tighten the local runtime system — trust/receipt/log correlations, integration tests, operator inspection surface, containment semantics, and developer docs.
 
 **Created:** 2026-05-24

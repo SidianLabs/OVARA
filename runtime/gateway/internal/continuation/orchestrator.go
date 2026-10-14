@@ -435,7 +435,7 @@ func (o *Orchestrator) RecoverAllExecuting() int {
 			continue
 		}
 		recovered++
-		o.logf("RECOVER executing continuation_id=%s action_type=%s — marked executed for retry",
+		o.logf("RECOVER executing continuation_id=%s action_type=%s — outcome unknown (may have run); not retried automatically",
 			rec.ContinuationID, rec.ActionType)
 	}
 	return recovered
@@ -477,8 +477,9 @@ func (o *Orchestrator) OldestExecutingAt() time.Time {
 
 // sweepStuckExecuting recovers continuations orphaned in StateExecuting after
 // a gateway crash or restart. Any continuation left in executing was claimed
-// by a previous process that is no longer running, so we transition them to
-// StateExecuted so they become retryable. Uses the atomic RecoverFromExecuting
+// by a previous process that is no longer running; whether its action took
+// effect is unknown, so it is closed as executed with outcome unknown and is
+// not retried (re-running it takes a fresh approval). Uses the atomic RecoverFromExecuting
 // store method so each transition is independent and any items that have
 // already moved on (e.g. concurrent live executor finishing) are skipped.
 func (o *Orchestrator) sweepStuckExecuting() {
@@ -491,7 +492,7 @@ func (o *Orchestrator) sweepStuckExecuting() {
 		if !ok {
 			continue
 		}
-		o.logf("RECOVER stuck-executing continuation_id=%s action_type=%s — marked executed for retry",
+		o.logf("RECOVER stuck-executing continuation_id=%s action_type=%s — outcome unknown (may have run); not retried automatically",
 			rec.ContinuationID, rec.ActionType)
 	}
 }
@@ -534,7 +535,7 @@ func (o *Orchestrator) sweepStuckExecutingThreshold() {
 			continue
 		}
 		recovered++
-		o.logf("RECOVER stale-executing continuation_id=%s action_type=%s age=%s — marked executed for retry",
+		o.logf("RECOVER stale-executing continuation_id=%s action_type=%s age=%s — outcome unknown (may have run); not retried automatically",
 			rec.ContinuationID, rec.ActionType, age.Round(time.Second))
 	}
 	if recovered > 0 {

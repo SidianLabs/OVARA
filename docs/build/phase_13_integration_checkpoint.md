@@ -1,5 +1,9 @@
 # Phase 13 Integration Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: 2026-05-25
 **Branch**: `phase-13-control-plane-readiness` (integration target)
 **Merged branches**: `phase-13-control-plane-readiness` + `phase-13-5-docs-and-verification` (fast-forward)

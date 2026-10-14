@@ -1,3 +1,7 @@
+// Not wired into the gateway yet. Nothing outside the tests creates a
+// CloudService or a PolicySyncService: the cloud control plane they talked
+// to was removed (docs/decisions/cloud-control-plane.md).
+
 package enrollment
 
 import (

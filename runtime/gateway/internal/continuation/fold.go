@@ -161,7 +161,8 @@ func checkTransition(prev, next *Continuation) error {
 		// same-state write restates evidence; the executed outcome may
 		// never flip — that would undo the retry boundary.
 		if next.State == StateExecuted &&
-			prev.LastExecutionSucceeded != next.LastExecutionSucceeded {
+			(prev.LastExecutionSucceeded != next.LastExecutionSucceeded ||
+				prev.OutcomeUnknown != next.OutcomeUnknown) {
 			return fmt.Errorf("executed outcome flip")
 		}
 		// Terminal same-state rewrites restate evidence (a raced
@@ -172,8 +173,10 @@ func checkTransition(prev, next *Continuation) error {
 	}
 	if prev.IsTerminal() {
 		// Sole legal exit from terminal: retry of a FAILED execution.
+		// An execution whose outcome is unknown may have taken effect: it
+		// is not a failure and is not retried.
 		if prev.State == StateExecuted && next.State == StateResumed &&
-			!prev.LastExecutionSucceeded {
+			!prev.LastExecutionSucceeded && !prev.OutcomeUnknown {
 			return nil
 		}
 		return fmt.Errorf("terminal resurrection %s → %s", prev.State, next.State)

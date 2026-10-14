@@ -1,5 +1,9 @@
 # Phase 7.5: Policy Distribution Service Implementation Plan
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Implement real file-based policy loading with hot-reload capability, replacing the stub in LocalFileSource.

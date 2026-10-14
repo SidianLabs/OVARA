@@ -249,7 +249,7 @@ func (r *Registry) persist() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(r.path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(r.path), 0700); err != nil {
 		return err
 	}
 	if r.signer != nil {

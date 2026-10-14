@@ -3,6 +3,7 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	pathpkg "path"
 	"strings"
@@ -39,6 +40,8 @@ type Store struct {
 	defaultDecision string // "" = DefaultEscalate
 	rules           []Rule
 	filePath        string
+	// hash caches Hash(); every mutation clears it.
+	hash string
 }
 
 // How overlapping rules resolve.
@@ -51,6 +54,9 @@ const (
 	// action_type over "*", then an exact environment over "*"); among
 	// equally specific rules deny beats allow beats escalate. This lets a
 	// policy say "allow exactly this write, deny every other write".
+	// Two limits apply whatever the specificity: a matching deny always
+	// beats a matching escalate, and an allow overrides a deny only if it
+	// names the host at least as precisely (HostSpecificity).
 	PrecedenceMostSpecific = "most-specific"
 
 	DefaultEscalate = "escalate"
@@ -61,6 +67,35 @@ const (
 // characters. An empty pattern matches everything and scores 0.
 func Specificity(pattern string) int {
 	return len(pattern) - strings.Count(pattern, "*")
+}
+
+// HostSpecificity scores only the authority of a URL-shaped pattern (the
+// literal characters between "://" and the first '/'). Patterns that are
+// not URL-shaped score 0. Under most-specific precedence an allow may
+// override a deny only if it names the host at least as precisely: a long
+// path under a wildcard host is not more specific than a deny that names
+// the host, however many literal characters the path adds.
+func HostSpecificity(pattern string) int {
+	if !strings.Contains(pattern, "://") {
+		return 0
+	}
+	return Specificity(authoritySegment(pattern))
+}
+
+// PrefixSpecificity scores a pattern that is not URL-shaped (a command line,
+// a path, a package): the literal characters before its first '*'. It is
+// the non-URL counterpart of HostSpecificity: an allow overrides a deny on
+// such resources only if it names what it allows (the program, the
+// directory) at least as precisely as the deny names what it refuses, so
+// "shell:*codex*" cannot outrank "shell:sudo*". URL-shaped patterns score 0.
+func PrefixSpecificity(pattern string) int {
+	if strings.Contains(pattern, "://") {
+		return 0
+	}
+	if i := strings.IndexByte(pattern, '*'); i >= 0 {
+		return i
+	}
+	return len(pattern)
 }
 
 // shadowedRules lists pairs of rules that share action_type, environment
@@ -122,6 +157,7 @@ func (s *Store) ClearRules() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rules = nil
+	s.hash = ""
 }
 
 func (s *Store) Version() string {
@@ -145,6 +181,7 @@ func (s *Store) SetPrecedence(p string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.precedence = p
+	s.hash = ""
 }
 
 // DefaultDecision is what applies when no rule matches: escalate unless
@@ -162,6 +199,7 @@ func (s *Store) SetDefaultDecision(d string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.defaultDecision = d
+	s.hash = ""
 }
 
 // RulesFor returns every rule whose action_type and environment admit the
@@ -206,6 +244,7 @@ func (s *Store) Reload() error {
 	s.version = newStore.version
 	s.precedence = newStore.precedence
 	s.defaultDecision = newStore.defaultDecision
+	s.hash = ""
 	return nil
 }
 
@@ -237,6 +276,7 @@ func (s *Store) AddRule(r Rule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rules = append(s.rules, r)
+	s.hash = ""
 }
 
 func (s *Store) ListRules() []Rule {
@@ -268,6 +308,7 @@ func (s *Store) ReloadFromStore(other *Store) error {
 	s.version = other.Version()
 	s.precedence = other.precedence
 	s.defaultDecision = other.defaultDecision
+	s.hash = ""
 	return nil
 }
 
@@ -275,6 +316,7 @@ func (s *Store) SetVersion(v string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.version = v
+	s.hash = ""
 }
 
 func defaultRules() []Rule {
@@ -318,6 +360,69 @@ func MatchResource(pattern, resource string) bool {
 		return false // malformed/userinfo URL never matches — fail closed
 	}
 	return MatchCanonicalResource(pattern, canon)
+}
+
+// MatchResourceAnyPort is MatchResource for rules that refuse: when the
+// pattern is URL-shaped and its authority names no port, the resource's
+// port is ignored, so "*://pastebin.com/*" also matches
+// "https://pastebin.com:8443/x". A pattern that names a port keeps
+// matching only that port.
+//
+// The evaluator uses this for deny and escalate rules. Allow rules keep
+// exact port matching (an allow for https://github.com/* must not start to
+// cover https://github.com:8443/), which keeps the widening limited to the
+// effects that can only make a decision stricter.
+func MatchResourceAnyPort(pattern, resource string) bool {
+	if pattern == "" {
+		return true
+	}
+	if !isURLResource(resource) {
+		return globMatch(pattern, resource)
+	}
+	canon, ok := CanonicalResource(resource)
+	if !ok {
+		return false
+	}
+	if strings.Contains(pattern, "://") && !authorityHasPort(authoritySegment(pattern)) {
+		canon = stripCanonPort(canon)
+	}
+	return MatchCanonicalResource(pattern, canon)
+}
+
+// authorityHasPort reports whether a pattern authority names a port
+// (literal or wildcard), skipping an IPv6 literal's colons.
+func authorityHasPort(auth string) bool {
+	if i := strings.LastIndexByte(auth, ']'); i >= 0 {
+		auth = auth[i+1:]
+	}
+	return strings.Contains(auth, ":")
+}
+
+// stripCanonPort removes the ":port" from the authority of a canonical
+// resource ("GET https://h:8443/x refs/..." → "GET https://h/x refs/...").
+func stripCanonPort(canon string) string {
+	i := strings.Index(canon, "://")
+	if i < 0 {
+		return canon
+	}
+	start := i + 3
+	end := len(canon)
+	if j := strings.IndexByte(canon[start:], '/'); j >= 0 {
+		end = start + j
+	}
+	auth := canon[start:end]
+	hostEnd := len(auth)
+	if strings.HasPrefix(auth, "[") {
+		if k := strings.IndexByte(auth, ']'); k >= 0 {
+			hostEnd = k + 1
+		}
+	} else if k := strings.LastIndexByte(auth, ':'); k >= 0 {
+		hostEnd = k
+	}
+	if hostEnd == len(auth) {
+		return canon
+	}
+	return canon[:start] + auth[:hostEnd] + canon[end:]
 }
 
 // CanonicalResource normalizes "METHOD scheme://authority/path" into a
@@ -367,7 +472,24 @@ func CanonicalResource(resource string) (string, bool) {
 		}
 	}
 	scheme := strings.ToLower(u.Scheme)
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	// Every trailing dot, as the proxy's host normalization strips them. A
+	// host of only dots ("https://./") has no name left: an empty host
+	// would skip the host-literal check and leave the decision to the
+	// glob alone, so it is refused.
+	host := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return "", false
+	}
+	// A '%' in the decoded host (from "%25"; no DNS name has one) would be
+	// written back unescaped, and the canonical string would no longer
+	// parse as the URL it came from.
+	if strings.Contains(host, "%") {
+		return "", false
+	}
+	// A host with a colon is written back as an IPv6 literal; it must be one.
+	if strings.Contains(host, ":") && net.ParseIP(host) == nil {
+		return "", false
+	}
 	port := u.Port()
 	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
 		port = ""
@@ -435,6 +557,37 @@ func isMethodToken(s string) bool {
 		}
 	}
 	return true
+}
+
+// SplitRefList turns a git push that updates several refs
+// ("POST <url> refs/a,refs/b(delete)") into one resource per ref
+// ("POST <url> refs/a", "POST <url> refs/b(delete)"), so that each ref is
+// matched on its own and a '*' in a ref pattern can never reach across
+// the comma into another ref. Any other resource, including a push the
+// proxy flagged as unreadable ("git-receive-pack(truncated)"), comes back
+// unchanged as the only element.
+func SplitRefList(resource string) []string {
+	i := strings.LastIndexByte(resource, ' ')
+	if i <= 0 || !isURLResource(resource[:i]) {
+		return []string{resource}
+	}
+	head, tail := resource[:i], resource[i+1:]
+	if !strings.HasPrefix(tail, "refs/") || !strings.Contains(tail, ",") || !isRefList(tail) {
+		return []string{resource}
+	}
+	refs := strings.Split(tail, ",")
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, head+" "+ref)
+	}
+	return out
+}
+
+// IsRefDeletion reports whether a single-ref push resource deletes the ref
+// (the proxy's git gate marks it "(delete)").
+func IsRefDeletion(resource string) bool {
+	i := strings.LastIndexByte(resource, ' ')
+	return i > 0 && strings.HasPrefix(resource[i+1:], "refs/") && strings.HasSuffix(resource, "(delete)")
 }
 
 // isRefList reports whether s is a comma-separated git ref list as

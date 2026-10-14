@@ -36,7 +36,7 @@ func NewFileBackedStore(path string, bindings ...*record.Binding) (*FileBackedSt
 		binding = bindings[0]
 	}
 	if binding != nil {
-		j, err := record.Open("approval", path, binding.Signer.Domain(), binding.Signer, binding.Resolve, binding.Floor, store.foldEvent)
+		j, err := record.OpenBinding("approval", path, binding, store.foldEvent)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fold approval journal: %w", err)
 		}
@@ -74,7 +74,7 @@ func (s *FileBackedStore) persist(items []*ApprovalRequest) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal approvals: %w", err)
 	}
-	if err := persist.WriteFileAtomic(s.path, data, 0644); err != nil {
+	if err := persist.WriteFileAtomic(s.path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write approvals file: %w", err)
 	}
 	return nil
@@ -174,6 +174,12 @@ func (s *FileBackedStore) Update(req *ApprovalRequest) error {
 }
 
 func (s *FileBackedStore) Resolve(id string, decision Status, resolvedBy, reason string) (*ApprovalRequest, error) {
+	return s.ResolveIf(id, decision, resolvedBy, reason, nil)
+}
+
+// ResolveIf is Resolve with an extra check run under the same lock, after
+// the pending check and before anything changes (see ConditionalResolver).
+func (s *FileBackedStore) ResolveIf(id string, decision Status, resolvedBy, reason string, check func(*ApprovalRequest) error) (*ApprovalRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	req, ok := s.items[id]
@@ -182,6 +188,11 @@ func (s *FileBackedStore) Resolve(id string, decision Status, resolvedBy, reason
 	}
 	if !req.IsPending() {
 		return nil, fmt.Errorf("approval is not pending: %s", req.Status)
+	}
+	if check != nil {
+		if err := check(snapshotOf(req)); err != nil {
+			return nil, err
+		}
 	}
 	switch decision {
 	case StatusApproved:

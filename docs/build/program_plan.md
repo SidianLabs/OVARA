@@ -1,5 +1,9 @@
 # Ovara Program Plan
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 This document translates the company strategy into an execution program that can
 be driven by successive engineering agents.
 

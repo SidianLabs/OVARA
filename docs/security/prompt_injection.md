@@ -1,5 +1,9 @@
 # Prompt Injection Threats
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 Prompt injection is the primary attack vector against LLM-driven
 autonomous systems. An attacker crafts input that causes the model to
 generate outputs that exceed its intended scope.

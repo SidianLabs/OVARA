@@ -9,9 +9,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/creds"
 	"ovara.proxy/internal/gateway"
+	"ovara.proxy/internal/lockfiles"
 	"ovara.proxy/internal/proxy"
 	"ovara.proxy/internal/receipts"
 	"ovara.proxy/scripts"
@@ -34,6 +37,10 @@ import (
 
 // version is stamped by release builds: -ldflags "-X main.version=v0.10.0".
 var version = "dev"
+
+// boxInitCmd is the subcommand a box runs as its first program (tier 1) or
+// PID 1 (tier 2); people do not run it.
+const boxInitCmd = "box-init"
 
 func main() {
 	log.SetFlags(0)
@@ -50,7 +57,7 @@ func main() {
 		err = cmdInit(os.Args[2:])
 	case "box":
 		err = cmdBox(os.Args[2:])
-	case "box-init": // PID 1 of a tier 2 box; started by `ovara box -tier 2`, not by people
+	case boxInitCmd: // PID 1 of a tier 2 box; started by `ovara box -tier 2`, not by people
 		err = cmdBoxInit(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
@@ -60,6 +67,16 @@ func main() {
 		err = cmdDoctor(os.Args[2:])
 	case "log":
 		err = cmdLog(os.Args[2:])
+	case "incident":
+		err = cmdIncident(os.Args[2:])
+	case "keys":
+		err = cmdKeys(os.Args[2:])
+	case "attest":
+		err = cmdAttest(os.Args[2:])
+	case "status":
+		err = cmdStatus(os.Args[2:])
+	case "fleet":
+		err = cmdFleet(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "policy":
@@ -68,13 +85,23 @@ func main() {
 		err = cmdWatch(os.Args[2:])
 	case "approvals":
 		err = cmdApprovals(os.Args[2:])
+	case "mcp":
+		err = cmdMCP(os.Args[2:])
 	case "approve":
 		err = cmdResolve(true, os.Args[2:])
 	case "deny":
 		err = cmdResolve(false, os.Args[2:])
+	case "agent":
+		err = cmdAgent(os.Args[2:])
+	case "kill":
+		err = cmdKill(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
+	}
+	var exit *agentExit
+	if errors.As(err, &exit) {
+		os.Exit(exit.code)
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -87,18 +114,44 @@ func usage() {
   version               print the ovara version
   init [dir] [-force]   generate a working gateway+proxy deployment
   run [-dir .]          start the gateway and the executor proxy
+  run -- <agent cmd>    the same, around one agent: it runs with Ovara's
+                        environment (preset for opencode / claude / codex),
+                        and Ovara stops with it and sums up what it did
   box <dir> -- <agent>  run an agent in a box: a copy of the project, no keys,
                         no network except through Ovara; changes come back as a
                         reviewed branch (Linux, sudo)
+  box -manifest FILE    the same run from a manifest (box -print-manifest writes
+                        one); -events FILE streams what happens as JSON lines
   demo                  self-contained end-to-end demo (no network, no root)
   env [-dir .]          print the environment to run your agent through Ovara
   policy [-dir .]       explain the rules in plain English
   policy test "<METHOD URL>"  what would happen if the agent did this (dry run)
+  policy profile [NAME] show or switch the policy profile: strict | balanced | observe
+  policy suggest        the rules a strict policy would need for what the agent
+                        did, from the receipts (after an observe run)
+  policy baseline keygen|sign|verify
+                        sign an organisation's baseline policy that project
+                        policies may only narrow (policy_baseline_file in config.json)
   watch [-dir .]        answer approval requests live: approve / deny each one
   approvals [-dir .]    list agent requests waiting for approval
   log [-dir .] [-n 50]  what the agent did (allowed/approved/blocked), integrity-checked
-  approve <id>          let a waiting request through
+  log -verify-only      only check the receipt chain (also -receipts F -pubkey F for copies)
+  log export [-format jsonl|ocsf] [-since T]   verified receipts for a SIEM
+  incident bundle -out F.tar.gz [-since T]     receipts, anchors, keys and policy to check offline
+  keys rotate-receipt | revoke-receipt -key K | list-receipt   manage the receipt signing key
+  attest verify [-run ID] | list | show   the signed statement every run ends with
+                        (who ran, under which policy, which receipts, what came
+                        back); verify needs only the bundle and the public key
+  mcp wrap -dir D -name NAME -- <server cmd>  run a stdio MCP server through
+                        Ovara: tool definitions pinned, every tool call decided
+  approve <id>          let a waiting request through (-remember SCOPE also keeps it:
+                        this host's reads, this command, this tool; see -h)
   deny <id>             block a waiting request
+  agent add|list|remove|restore NAME   named agents, each with its own proxy token
+  kill [-agent NAME]    stop an agent now (every agent without -agent); ovara agent restore undoes it
+  status [-dir .] [-json]  the deployment at a glance: policy, the record, every
+                        agent's state, what it waits on, what it last did, its last run
+  fleet -dirs A,B | -root D   every deployment at a glance on one line each (-json)
   doctor [-dir .]       audit deployment posture (config, auth, custody, receipts)`)
 }
 
@@ -107,19 +160,51 @@ func usage() {
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	force := fs.Bool("force", false, "overwrite existing files (an existing var/receipt.key is always kept)")
+	agents := fs.String("agents", "", "comma-separated names of agents to give their own proxy tokens (more later with `ovara agent add`)")
+	profile := fs.String("profile", profileStrict, "policy profile: strict (reads only from the trusted hosts; the default), balanced (reads from any public host, bounded, capped and receipted) or observe (reads free; writes refused at once, never held); `ovara policy profile` switches later")
+	// The directory may come before the flags: `ovara init mydir -agents a,b`.
+	var dir string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		dir, args = args[0], args[1:]
+	}
 	fs.Parse(args)
-	dir := fs.Arg(0)
+	if dir == "" {
+		dir = fs.Arg(0)
+	}
 	if dir == "" {
 		dir = "."
 	}
-	token, err := deploy(dir, "8080", *force)
-	if err != nil {
+	var names []string
+	for _, n := range strings.Split(*agents, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			if err := config.ValidAgentName(n); err != nil {
+				return err
+			}
+			names = append(names, n)
+		}
+	}
+	if err := validProfile(*profile); err != nil {
 		return err
 	}
+	if _, err := deploy(dir, "8080", *force); err != nil {
+		return err
+	}
+	for _, n := range names {
+		if err := agentAdd(io.Discard, dir, n, config.AgentScope{}); err != nil {
+			return err
+		}
+	}
+	if *profile != profileStrict {
+		if _, err := applyProfile(dir, *profile); err != nil {
+			return err
+		}
+	}
 	fmt.Printf("initialized ovara deployment in %s\n\n", dir)
-	fmt.Printf("operator token (gateway-root — keep it scarce; also in config.json):\n  %s\n\n", token)
-	fmt.Println("What you got: a policy (policy.json) where reading is free, changes need")
-	fmt.Println("your approval, and known data-dump sites are blocked. Edit it any time.")
+	// The token itself is not printed: terminal scrollback and CI logs keep
+	// what is printed. The ovara commands that need it read it from there.
+	fmt.Printf("operator token (gateway-root — keep it scarce): stored in %s (operator_tokens), readable only by you\n\n", filepath.Join(dir, "config.json"))
+	fmt.Printf("What you got: a policy (policy.json), profile %s. Edit it any time; `ovara policy profile` switches profiles.\n", *profile)
+	fmt.Println("  " + profileSummary(*profile))
 	fmt.Println()
 	fmt.Println("next steps:")
 	fmt.Println("  1. give Ovara the real API keys (the agent never sees them):")
@@ -215,21 +300,29 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 	proxyCfg := &config.Config{
 		// Loopback only: an agent on this machine reaches it; the rest of
 		// the network cannot. Use --boundary (or edit this) to expose it.
-		ListenAddr:     "127.0.0.1:9443",
-		GatewayURL:     "http://localhost:" + gatewayPort,
-		GatewayToken:   agentToken,
-		AgentToken:     proxyToken,
-		Environment:    "dev",
-		CACertFile:     "var/ca.pem",
-		CAKeyFile:      "var/ca.key",
-		ReceiptKeyFile: "var/receipt.key",
-		ReceiptsFile:   "var/receipts.jsonl",
-		PubKeyFile:     "var/receipt_pubkey.hex",
+		ListenAddr:   "127.0.0.1:9443",
+		GatewayURL:   "http://localhost:" + gatewayPort,
+		GatewayToken: agentToken,
+		AgentToken:   proxyToken,
+		Environment:  "dev",
+		// Fail fast: a request a person has not answered within 10 seconds
+		// is answered "held for approval, retry" (503 with Retry-After);
+		// the approval stays open and the same request runs once approved.
+		// "timeout" with a longer window is the older behaviour (504).
+		EscalateTimeoutSec: 10,
+		EscalateOnTimeout:  "retry",
+		CACertFile:         "var/ca.pem",
+		CAKeyFile:          "var/ca.key",
+		ReceiptKeyFile:     "var/receipt.key",
+		ReceiptsFile:       "var/receipts.jsonl",
+		PubKeyFile:         "var/receipt_pubkey.hex",
 		Credentials: []creds.Binding{
 			{Host: "api.github.com", Headers: map[string]string{"Authorization": "Bearer ${GITHUB_TOKEN}"}},
 			{Host: "api.openai.com", Headers: map[string]string{"Authorization": "Bearer ${OPENAI_API_KEY}"}},
 			{Host: "api.anthropic.com", Headers: map[string]string{"x-api-key": "${ANTHROPIC_API_KEY}", "anthropic-version": "2023-06-01"}},
-			{Host: "*.slack.com", Headers: map[string]string{"Authorization": "Bearer ${SLACK_TOKEN}"}},
+			// The Slack Web API lives at slack.com/api/*; workspace hosts
+			// (<team>.slack.com) are web pages and get no token.
+			{Host: "slack.com", Headers: map[string]string{"Authorization": "Bearer ${SLACK_TOKEN}"}},
 		},
 	}
 
@@ -251,7 +344,9 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		{filepath.Join(dir, "var", "gateway.key"), []byte(hex.EncodeToString(gatewayPriv) + "\n"), 0o600},
 		{filepath.Join(dir, "var", "receipt_pubkey.hex"), []byte(hex.EncodeToString(receiptPub) + "\n"), 0o644},
 		{filepath.Join(dir, "config.json"), mustJSON(gwConfig), 0o600},
-		{filepath.Join(dir, "policy.json"), mustJSON(policy), 0o644},
+		// Owner-only: the agent's user must neither change the policy nor
+		// read which hosts and commands get through.
+		{filepath.Join(dir, "policy.json"), mustJSON(policy), 0o600},
 		{filepath.Join(dir, "proxy.json"), mustJSON(proxyCfg), 0o600},
 	}
 	// The receipt signing key anchors every receipt ever written; init is
@@ -295,7 +390,12 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 		}
 	}
 	for _, f := range files {
-		if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+		// 0711: other users cannot list the deployment or var/, but can
+		// reach a file by name if its own mode lets them. Everything secret
+		// in it (keys, tokens, receipts, journals, logs) is 0600; the agent,
+		// which runs as another user, needs the public CA certificate
+		// (var/ca.pem, 0644) to trust the proxy.
+		if err := os.MkdirAll(filepath.Dir(f.path), 0o711); err != nil {
 			return "", err
 		}
 		if err := os.WriteFile(f.path, f.data, f.perm); err != nil {
@@ -306,6 +406,38 @@ func deploy(dir, gatewayPort string, force bool) (string, error) {
 }
 
 // --- shared startup --------------------------------------------------------
+
+// scopeRepoNone as -scope-repo withholds the GitHub credentials entirely.
+const scopeRepoNone = "none"
+
+// scopeBindings applies -scope-repo: "none" drops the GitHub bindings,
+// "owner/repo" narrows them (and the tokens a GitHub App mints) to that
+// repository.
+func scopeBindings(bindings []creds.Binding, scope string) ([]creds.Binding, error) {
+	if scope == scopeRepoNone {
+		kept := make([]creds.Binding, 0, len(bindings))
+		for _, b := range bindings {
+			if h := strings.ToLower(b.Host); h != "api.github.com" && h != "github.com" {
+				kept = append(kept, b)
+			}
+		}
+		log.Printf("GitHub credentials are withheld for this run (-scope-repo %s)", scopeRepoNone)
+		return kept, nil
+	}
+	owner, repo, ok := strings.Cut(scope, "/")
+	if !ok || !creds.RepoName(owner) || !creds.RepoName(repo) {
+		return nil, fmt.Errorf("-scope-repo %q: want owner/repo or %q", scope, scopeRepoNone)
+	}
+	// A GitHub App binding that lists no repositories mints tokens for
+	// this repository only; every GitHub binding is also narrowed to its
+	// paths.
+	bindings = creds.ScopeBrokersToRepo(bindings, repo)
+	for _, h := range []string{"api.github.com", "github.com"} {
+		bindings = creds.ScopeToRepo(bindings, h, owner, repo)
+	}
+	log.Printf("GitHub credentials are limited to %s/%s for this run", owner, repo)
+	return bindings, nil
+}
 
 // wire builds the executor proxy exactly as ovara-proxy does.
 func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
@@ -321,21 +453,60 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	if anchorFile == "" {
 		anchorFile = "var/anchors.jsonl"
 	}
+	if err := receipts.CheckBeforeResume(cfg.ReceiptsFile, anchorFile, cfg.PubKeyFile); err != nil {
+		return nil, nil, err
+	}
 	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	bindings, skipped := creds.LoadReport(cfg.Credentials)
+	bindings, skipped, err := creds.LoadReport(cfg.Credentials)
+	if err != nil {
+		return nil, nil, fmt.Errorf("credentials: %w", err)
+	}
+	if cfg.ScopeRepo != "" {
+		var err error
+		if bindings, err = scopeBindings(bindings, cfg.ScopeRepo); err != nil {
+			return nil, nil, err
+		}
+	}
 	logSkippedBindings(skipped)
+	logBrokeredBindings(bindings)
 	// Tell `ovara env` which keys are really injected (names only).
 	if err := writeActiveKeys(".", cfg.Credentials, skipped); err != nil {
 		log.Printf("could not record active keys for `ovara env`: %v", err)
 	}
 	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
 	srv.SetEscalateWindow(time.Duration(cfg.EscalateTimeoutSec)*time.Second, time.Duration(cfg.EscalatePollSec)*time.Second)
+	srv.SetEscalateAnswer(cfg.EscalateOnTimeout == "retry")
 	if cfg.GitGate != nil {
 		srv.SetGitGate(*cfg.GitGate)
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
+	srv.SetModelGate(cfg.ModelGate == nil || *cfg.ModelGate, cfg.ModelHosts)
+	if err := srv.SetMCPGate(cfg.MCPGate == nil || *cfg.MCPGate, cfg.MCPPinsFile); err != nil {
+		return nil, nil, fmt.Errorf("mcp pins: %w", err)
+	}
+	srv.SetTCPGate(cfg.TCPGate == nil || *cfg.TCPGate)
+	srv.SetAPIGate(cfg.APIGate == nil || *cfg.APIGate)
+	srv.ApplyConfig(cfg)
+	// A corporate network: Ovara's own requests go through its proxy and
+	// trust its CA; the agent still talks to Ovara only.
+	if cfg.UpstreamProxy != "" || cfg.UpstreamCABundle != "" {
+		var bundle []byte
+		if cfg.UpstreamCABundle != "" {
+			b, err := os.ReadFile(inDir(".", cfg.UpstreamCABundle)) //nolint:gosec // the operator's own file, named in proxy.json
+			if err != nil {
+				return nil, nil, fmt.Errorf("upstream_ca_bundle: %w", err)
+			}
+			bundle = b
+		}
+		if err := srv.SetUpstream(cfg.UpstreamProxy, bundle); err != nil {
+			return nil, nil, err
+		}
+		if d := srv.UpstreamDescription(); d != "" {
+			log.Printf("upstream proxy %s: Ovara's own requests go through it; the agent still talks to Ovara only", d)
+		}
+	}
 	srv.SetClientAuth(cfg.AgentToken)
 	return srv, rootCA, nil
 }
@@ -346,6 +517,15 @@ func logSkippedBindings(skipped []creds.Skipped) {
 	for _, s := range skipped {
 		log.Printf("no key injected for %s: %s not set in Ovara's environment (requests there go out with whatever the agent sends)",
 			s.Host, strings.Join(s.Missing, ", "))
+	}
+}
+
+// logBrokeredBindings says which hosts get short-lived minted tokens.
+func logBrokeredBindings(bindings []creds.Binding) {
+	for _, b := range bindings {
+		if b.Brokered() {
+			log.Printf("credentials for %s: %s, minted when first needed", b.Host, b.Describe())
+		}
 	}
 }
 
@@ -374,24 +554,87 @@ func cmdRun(args []string) error {
 	boundary := fs.String("boundary", "", "set up an egress boundary before starting: netns or docker (requires root)")
 	boundaryName := fs.String("boundary-name", "", "netns name or docker network name (defaults: agent0 / ovara-egress)")
 	uiAddr := fs.String("ui", "127.0.0.1:9090", "address of the local approval page (loopback only; \"off\" to disable)")
+	noUI := fs.Bool("no-ui", false, "run without the approval page (same as -ui off); without it, a page address that cannot be used stops ovara run")
 	packageGate := fs.String("package-gate", "", "strict installs: a file of pinned packages (one ecosystem:name@version per line); a download of any other package asks policy (action_type package.install). `ovara box -profile strict` writes it from the project's lockfiles")
+	allowUnhardened := fs.Bool("allow-unhardened-boundary", false, "with --boundary: go on when the host side of the boundary cannot be firewalled (neither iptables nor nft on the host); the agent can then reach every service on the host's boundary address")
+	scopeRepo := fs.String("scope-repo", "", "limit the GitHub credentials to one repository (owner/repo) for this run: requests about any other repository go out without the key; \"none\" withholds them entirely. `ovara box` sets it for the project it boxes")
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
+	agentName := fs.String("agent", "", "with a command: run it as this named agent (ovara agent add NAME), with its own proxy token")
+	presetName := fs.String("preset", "auto", "with a command: the agent preset applied to the deployment: auto (by the program's name), none, or opencode | claude | codex")
+	noAttest := fs.Bool("no-attest", false, "do not write the run's attestation when Ovara stops (ovara box writes one for the whole run)")
 	fs.Parse(args)
+	started := time.Now()
+	command := fs.Args() // after "--": the agent to run through Ovara
 	server.RepairIdentityRegistry = *repairRegistry
 	if *packageGate != "" { // read after the chdir below: make it absolute now
 		if abs, err := filepath.Abs(*packageGate); err == nil {
 			*packageGate = abs
 		}
 	}
-	if err := os.Chdir(*dir); err != nil {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	// With a command and no -dir, a deployment in the current directory is
+	// used if there is one; otherwise the default one, created on first use.
+	if len(command) > 0 && !flagSet(fs, "dir") {
+		if _, err := os.Stat(filepath.Join(*dir, "proxy.json")); err != nil {
+			*dir = defaultRunDir()
+		}
+	}
+	absDir, err := filepath.Abs(*dir)
+	if err != nil {
+		return err
+	}
+	if len(command) > 0 {
+		if _, err := os.Stat(filepath.Join(absDir, "proxy.json")); err != nil {
+			if _, err := deploy(absDir, "8080", false); err != nil {
+				return fmt.Errorf("creating the deployment in %s: %w", absDir, err)
+			}
+			log.Printf("new deployment in %s (what `ovara init` makes); its policy.json is yours to edit", absDir)
+		}
+		p, ok, err := runPreset(command[0], *presetName)
+		if err != nil {
+			return err
+		}
+		if ok {
+			added, err := applyPreset(absDir, p)
+			if err != nil {
+				return fmt.Errorf("preset %s: %w", p.Name, err)
+			}
+			if len(added) > 0 {
+				log.Printf("preset %s: allowed %s (marked %q in policy.json)", p.Name, strings.Join(added, ", "), presetMarker(p))
+			}
+		}
+	}
+	if err := os.Chdir(absDir); err != nil {
 		return err
 	}
 	cfg, err := config.Load("proxy.json")
 	if err != nil {
 		return fmt.Errorf("proxy.json: %w (run `ovara init` first)", err)
 	}
+	// What an approval prompt remembered for one run (reads from a host, a
+	// command, a tool) goes with the run: drop what a run that did not stop
+	// cleanly left behind, and what this run adds when it stops.
+	if what, err := dropRunTrust("."); err == nil && len(what) > 0 {
+		log.Printf("no longer allowed without asking (remembered from an approval prompt in an earlier run): %s", describeRemembered(what))
+	}
+	defer func() {
+		if what, err := dropRunTrust("."); err == nil && len(what) > 0 {
+			log.Printf("no longer allowed without asking (remembered from an approval prompt in this run): %s", describeRemembered(what))
+		}
+	}()
+	// The approval page's address is taken before anything else starts: if
+	// it cannot be had, ovara run stops here instead of leaving the link a
+	// person opens pointing at whatever holds the port.
+	uiURL, err := openUI(*uiAddr, *noUI, cfg)
+	if err != nil {
+		return err
+	}
+	boundaryIP := ""
 	if *boundary != "" {
-		if err := setupBoundary(*boundary, *boundaryName, cfg); err != nil {
+		if boundaryIP, err = setupBoundary(*boundary, *boundaryName, cfg, *allowUnhardened); err != nil {
 			return fmt.Errorf("boundary setup: %w", err)
 		}
 	}
@@ -409,38 +652,58 @@ func cmdRun(args []string) error {
 		return err
 	}
 	log.Printf("gateway healthy at %s", cfg.GatewayURL)
+	cfg.ScopeRepo = *scopeRepo
 	srv, _, err := wire(cfg)
 	if err != nil {
 		return err
 	}
+	before := receiptLineCount(cfg.ReceiptsFile) // the chain's length before this run
+	// Named agents and stopped agents are re-read while the proxy runs:
+	// `ovara agent add|remove` and `ovara kill` take effect within a second.
+	stopWatch := srv.WatchAgentFiles("proxy.json", cfg.RevokedAgentsFile, 250*time.Millisecond)
+	defer stopWatch()
 	if *packageGate != "" {
 		b, err := os.ReadFile(*packageGate)
 		if err != nil {
 			return fmt.Errorf("-package-gate: %w", err)
 		}
-		pinned := strings.Fields(string(b))
-		srv.SetPackageGate(pinned)
-		log.Printf("strict installs: %d pinned package(s) go through; any other package download asks policy (package.install)", len(pinned))
+		pinned := lockfiles.ParsePins(string(b))
+		srv.SetPackageGatePins(pinned)
+		log.Printf("strict installs: %d pinned package(s) go through, checked against their lockfile digests where recorded; any other package download, or a registry download that names no package, asks policy (package.install)", len(pinned))
 	}
 	log.Printf("ovara executor proxy on %s (env=%s fail_open=%v)", cfg.ListenAddr, cfg.Environment, cfg.FailOpen)
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
 	log.Printf("receipt chain: %s (pubkey: %s)", cfg.ReceiptsFile, cfg.PubKeyFile)
-	if url, err := startUI(*uiAddr, cfg); err != nil {
-		log.Printf("approval page not started: %v", err)
-	} else if url != "" {
-		log.Printf("approve in your browser: %s", url)
+	if uiURL != "" {
+		log.Printf("approve in your browser: %s", uiURL)
 	}
 	log.Printf("risky requests pause until you answer them (browser page above, or `ovara watch`)")
-	listenAddr := cfg.ListenAddr
-	if *boundary != "" {
-		// The agent sits in a separate namespace/network and reaches the
-		// proxy over the boundary link, not over loopback.
-		if host, port, err := net.SplitHostPort(listenAddr); err == nil && isLoopbackHost(host) {
-			listenAddr = net.JoinHostPort("0.0.0.0", port)
-			log.Printf("--boundary %s: listening on %s so the isolated agent can reach the proxy", *boundary, listenAddr)
+	if cfg.Chat != nil && cfg.Chat.Slack != nil {
+		bridge, err := newSlackBridge(cfg, ".")
+		if err != nil {
+			return fmt.Errorf("chat approvals: %w", err)
 		}
+		stopChat := bridge.start()
+		defer stopChat()
+		log.Print(bridge.describe())
+	}
+	listenAddr := cfg.ListenAddr
+	addrs := proxyListenAddrs(listenAddr, boundaryIP)
+	if len(addrs) > 1 {
+		log.Printf("--boundary %s: listening on %s too, the host's side of the boundary, so the isolated agent can reach the proxy", *boundary, addrs[1])
 	} else if host, _, err := net.SplitHostPort(listenAddr); err == nil && !isLoopbackHost(host) {
 		log.Printf("WARNING: proxy listens on %s, reachable from the network. Anyone holding the proxy token can use it; set listen_addr to 127.0.0.1:PORT unless you meant this", listenAddr)
+	}
+	lns := make([]net.Listener, 0, len(addrs))
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			for _, l := range lns {
+				l.Close()
+			}
+			return fmt.Errorf("proxy: %w", err)
+		}
+		lns = append(lns, ln)
 	}
 	hs := proxy.NewHTTPServer(listenAddr, srv)
 	go func() {
@@ -452,10 +715,67 @@ func cmdRun(args []string) error {
 			hs.Close() // paused requests waiting on a human: drop them
 		}
 	}()
-	if err := hs.ListenAndServe(); err != http.ErrServerClosed {
+	// The run's attestation: once at the end, or as it goes
+	// (attest_every_minutes), each statement chained to the one before.
+	roll := newRolling(absDir, cfg, *agentName, started, before)
+	if cfg.AttestEveryMinutes > 0 && !*noAttest {
+		defer roll.every(time.Duration(cfg.AttestEveryMinutes) * time.Minute)()
+	}
+	served := make(chan error, len(lns))
+	for _, ln := range lns {
+		go func(ln net.Listener) {
+			if err := hs.Serve(ln); err != http.ErrServerClosed {
+				log.Printf("proxy on %s: %v", ln.Addr(), err)
+				served <- err
+				return
+			}
+			served <- nil
+		}(ln)
+	}
+	if len(command) == 0 {
+		// Serve until the gateway stops (a signal).
+		err := <-served
+		if !*noAttest {
+			roll.final(0, err == nil)
+		}
 		return err
 	}
-	return nil
+	err = runAgent(command, cwd, absDir, cfg, *agentName, gatewayDone)
+	if !*noAttest {
+		code := 0
+		var ae *agentExit
+		if errors.As(err, &ae) {
+			code = ae.code
+		}
+		roll.final(code, err == nil || ae != nil)
+	}
+	return err
+}
+
+// flagSet reports whether a flag was given on the command line.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// openUI starts the approval page unless it is turned off (-no-ui or -ui
+// off). An address that cannot be used is an error, not a warning: another
+// local user holding the port (the agent's, say) would otherwise serve the
+// page a person opens from an old link or a bookmark.
+func openUI(addr string, off bool, cfg *config.Config) (string, error) {
+	if off {
+		return "", nil
+	}
+	url, err := startUI(addr, cfg)
+	if err != nil {
+		return "", fmt.Errorf("approval page on %s: %w (if another program holds that port, stop it, choose another with -ui 127.0.0.1:PORT, or run without the page with -no-ui)", addr, err)
+	}
+	return url, nil
 }
 
 // startUI serves the local approval page and returns the link to open
@@ -490,29 +810,32 @@ func startUI(addr string, cfg *config.Config) (string, error) {
 }
 
 // setupBoundary runs the embedded egress-boundary script so the agent
-// environment has no path around the proxy. Requires root (or passwordless
-// sudo); the script is idempotent-ish and safe to re-run.
-func setupBoundary(mode, name string, cfg *config.Config) error {
+// environment has no path around the proxy, and returns the host's address
+// on the boundary (where the proxy must listen for the agent). Requires
+// root (or passwordless sudo); the script is idempotent-ish and safe to
+// re-run. It fails when the host side cannot be firewalled, unless
+// allowUnhardened.
+func setupBoundary(mode, name string, cfg *config.Config, allowUnhardened bool) (string, error) {
 	if mode != "netns" && mode != "docker" {
-		return fmt.Errorf("--boundary must be netns or docker, got %q", mode)
+		return "", fmt.Errorf("--boundary must be netns or docker, got %q", mode)
 	}
 	f, err := os.CreateTemp("", "ovara-boundary-*.sh")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.Remove(f.Name())
 	if _, err := f.WriteString(scripts.EgressBoundary); err != nil {
 		f.Close()
-		return err
+		return "", err
 	}
 	f.Close()
 	if err := os.Chmod(f.Name(), 0o755); err != nil {
-		return err
+		return "", err
 	}
 
 	_, proxyPort, err := net.SplitHostPort(cfg.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("proxy listen_addr %q: %w", cfg.ListenAddr, err)
+		return "", fmt.Errorf("proxy listen_addr %q: %w", cfg.ListenAddr, err)
 	}
 	args := []string{f.Name(), mode, "--proxy-port", proxyPort}
 	ns := name
@@ -532,6 +855,16 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 			args = append(args, "--net", name)
 		}
 	}
+	// the script's switches: DNS from the boundary is off unless the
+	// operator turns it on (OVARA_BOUNDARY_DNS=1, with a deny-by-default
+	// resolver); an unfirewalled host side is an error unless allowed
+	var scriptEnv []string
+	if v := os.Getenv("OVARA_BOUNDARY_DNS"); v != "" {
+		scriptEnv = append(scriptEnv, "OVARA_BOUNDARY_DNS="+v)
+	}
+	if allowUnhardened {
+		scriptEnv = append(scriptEnv, "OVARA_ALLOW_UNHARDENED=1")
+	}
 	var cmd *exec.Cmd
 	if os.Geteuid() == 0 {
 		cmd = exec.Command("bash", args...)
@@ -540,19 +873,26 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 		// command form (transiently in argv; the token only buys proxy
 		// transit, not a privilege). `sudo -E` is the alternative but is
 		// denied on strict sudoers policies.
-		sudoArgs := []string{"bash"}
+		sudoArgs := append(append([]string(nil), scriptEnv...), "bash")
 		if cfg.AgentToken != "" {
 			sudoArgs = append([]string{"OVARA_AGENT_TOKEN=" + cfg.AgentToken}, sudoArgs...)
 		}
 		cmd = exec.Command("sudo", append(sudoArgs, args...)...)
 	}
-	if os.Geteuid() == 0 && cfg.AgentToken != "" {
-		cmd.Env = append(os.Environ(), "OVARA_AGENT_TOKEN="+cfg.AgentToken)
+	if os.Geteuid() == 0 {
+		cmd.Env = append(os.Environ(), scriptEnv...)
+		if cfg.AgentToken != "" {
+			cmd.Env = append(cmd.Env, "OVARA_AGENT_TOKEN="+cfg.AgentToken)
+		}
 	}
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	log.Printf("setting up %s egress boundary (requires root)...", mode)
 	if err := cmd.Run(); err != nil {
-		return err
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == boundaryExitUnhardened {
+			return "", errors.New("the host side of the boundary could not be firewalled (no iptables or nft on the host): the agent could reach every service on the host's boundary address. Install iptables or nftables, or pass -allow-unhardened-boundary to go on without it")
+		}
+		return "", err
 	}
 	if mode == "netns" {
 		userinfo := ""
@@ -565,11 +905,36 @@ func setupBoundary(mode, name string, cfg *config.Config) error {
 		log.Printf("  sudo install -m 644 %s/var/ca.pem /usr/local/share/ovara-ca.pem   # the PUBLIC cert; the agent needs only this", mustGetwd())
 		log.Printf("  sudo ip netns exec %s sudo -u ovara-agent env HTTPS_PROXY=http://%s%s:%s SSL_CERT_FILE=/usr/local/share/ovara-ca.pem <agent>", ns, userinfo, boundaryProxyIP(subnetIdx), proxyPort)
 		log.Printf("and keep that user out of this directory:  chmod 700 %s", mustGetwd())
-	} else {
-		log.Printf("boundary network ready — launch the agent per the docker recipe above")
+		return boundaryProxyIP(subnetIdx), nil
 	}
-	return nil
+	log.Printf("boundary network ready — launch the agent per the docker recipe above")
+	return boundaryDockerIP, nil
 }
+
+// proxyListenAddrs is where the proxy listens: listen_addr, and with a
+// boundary (boundaryIP set) and a loopback listen_addr, also the host's
+// address on the boundary link, on the same port. The agent sits in a
+// separate namespace or network and cannot reach the host's loopback; the
+// boundary address is the only other place the proxy is offered, never
+// every interface.
+func proxyListenAddrs(listenAddr, boundaryIP string) []string {
+	addrs := []string{listenAddr}
+	if boundaryIP == "" {
+		return addrs
+	}
+	if host, port, err := net.SplitHostPort(listenAddr); err == nil && isLoopbackHost(host) {
+		addrs = append(addrs, net.JoinHostPort(boundaryIP, port))
+	}
+	return addrs
+}
+
+// boundaryExitUnhardened is setup-egress-boundary.sh's exit status when
+// it cannot firewall the host side.
+const boundaryExitUnhardened = 3
+
+// boundaryDockerIP is the host's address on the docker boundary network
+// (the bridge gateway of the script's 172.30.0.0/24).
+const boundaryDockerIP = "172.30.0.1"
 
 // boundarySubnetIdx maps a namespace name to a stable third octet (1..250)
 // for the 10.200.N.0/24 boundary subnet, so two boundaries never collide.

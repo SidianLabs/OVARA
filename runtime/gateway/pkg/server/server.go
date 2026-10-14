@@ -54,6 +54,17 @@ import (
 // idregistry.OpenRepair). Set only by an explicit operator flag.
 var RepairIdentityRegistry bool
 
+// PolicyFileHash is the policy_hash decisions under the policy in filePath
+// carry (versionHint is config.json's policy_version, used when the file
+// names no version). Used by tools that bundle a policy for offline review.
+func PolicyFileHash(filePath, versionHint string) (string, error) {
+	st, err := policy.LoadStoreFromFile(filePath, versionHint)
+	if err != nil {
+		return "", err
+	}
+	return st.Hash(), nil
+}
+
 func Run(configPath string) error {
 	if configPath == "" {
 		configPath = os.Getenv("OVARA_CONFIG")
@@ -141,10 +152,14 @@ func Run(configPath string) error {
 	}
 	var jsigner *record.Signer
 	var jresolve record.ResolveFunc
+	var jbound record.KeyBoundFunc
 	if durableSigning {
 		jsigner = record.NewSigner(gwTrust.priv, gwTrust.registry.DomainID(), gwTrust.record.GatewayID, gwTrust.record.KeyID)
 		resolver := receipt.RegistryResolver{Reg: gwTrust.registry}
 		jresolve = resolver.ResolvePublicKey
+		// Journal entries signed by a key after it was revoked or rotated
+		// out fail to open, like receipts do.
+		jbound = resolver.SigningBound
 		log.Printf("journal signing active: domain=%s key=%s — authority stores signed+chained+tip-ledgered", gwTrust.registry.DomainID(), gwTrust.record.KeyID)
 	} else {
 		log.Printf("journal signing inactive — authority stores unsigned (set gateway_registry_file+gateway_key_file, or journal_signing_required=true to enforce)")
@@ -161,7 +176,7 @@ func Run(configPath string) error {
 		if t, ok := boundTips[storeName]; ok {
 			floor = record.Floor{Known: true, Seq: t.Seq, Hash: t.Hash}
 		}
-		return &record.Binding{Signer: jsigner, Resolve: jresolve, Floor: floor}
+		return &record.Binding{Signer: jsigner, Resolve: jresolve, Floor: floor, Bound: jbound}
 	}
 	// sinkFor returns the committed-floor hook: every fsynced journal
 	// write ratchets the store's tip inside the anchored gwidentity
@@ -309,18 +324,14 @@ func Run(configPath string) error {
 
 	var receiptsStore receipts.Store
 	if cfg.ReceiptsFile != "" {
-		var maxAge time.Duration
-		if cfg.ReceiptsMaxAgeMinutes > 0 {
-			maxAge = time.Duration(cfg.ReceiptsMaxAgeMinutes) * time.Minute
-		}
-		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, maxAge, bind("receipts"))
+		store, err := receipts.NewFileBackedStore(cfg.ReceiptsFile, cfg.ReceiptsMaxSize, bind("receipts"))
 		if err != nil {
 			return failClosedStore("receipt", cfg.ReceiptsFile, err)
 		} else {
 			store.SetTipsSink(sinkFor("receipts"))
 			postOpenRatchet("receipts", store.JournalTip)
 			receiptsStore = store
-			log.Printf("receipts persisted to %s (max=%d, max_age=%dm)", cfg.ReceiptsFile, cfg.ReceiptsMaxSize, cfg.ReceiptsMaxAgeMinutes)
+			log.Printf("receipts persisted to %s (max=%d)", cfg.ReceiptsFile, cfg.ReceiptsMaxSize)
 		}
 	} else {
 		receiptsStore = receipts.NewInMemoryStore()
@@ -335,6 +346,21 @@ func Run(configPath string) error {
 	shieldStore.SetRiskWindow(10 * time.Minute)
 	shieldStore.SetAutoRestrictTTL(15 * time.Minute)
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
+	// The organisation's baseline, which the project policy may only
+	// narrow. Read at start; a baseline that is missing or does not verify
+	// stops the gateway rather than being skipped.
+	if cfg.PolicyBaselineFile != "" {
+		base, err := policy.LoadBaseline(cfg.PolicyBaselineFile, cfg.PolicyBaselinePubKey, cfg.PolicyVersion)
+		if err != nil {
+			return err
+		}
+		eval.SetBaseline(base)
+		signed := "unsigned"
+		if cfg.PolicyBaselinePubKey != "" {
+			signed = "signature verified"
+		}
+		log.Printf("policy baseline %s: %d rule(s), %s; the project policy may only narrow it", cfg.PolicyBaselineFile, len(base.ListRules()), signed)
+	}
 
 	// Durable replay protection (P2.1): a configured journal that cannot
 	// be opened fails startup — silently falling back to process-local
@@ -481,6 +507,20 @@ func Run(configPath string) error {
 
 	trustHandler := trust.NewHandler(shieldStore, trust.NewEvaluator(shieldStore))
 	approvalService := approval.NewService(approvalStore)
+	switch {
+	case cfg.ApprovalPendingTTLSec > 0:
+		approvalService.SetPendingTTL(time.Duration(cfg.ApprovalPendingTTLSec) * time.Second)
+	case cfg.ApprovalPendingTTLSec < 0:
+		approvalService.SetPendingTTL(0)
+		log.Printf("WARNING: approval_pending_ttl_secs < 0: pending approvals never expire")
+	}
+	switch {
+	case cfg.ApprovalMaxPendingPerAgent > 0:
+		approvalService.SetMaxPendingPerAgent(cfg.ApprovalMaxPendingPerAgent)
+	case cfg.ApprovalMaxPendingPerAgent < 0:
+		approvalService.SetMaxPendingPerAgent(0)
+		log.Printf("WARNING: approval_max_pending_per_agent < 0: no cap on pending approvals per agent")
+	}
 	approvalHandler := handlers.NewApprovalHandler(approvalService)
 	receiptHandler := handlers.NewReceiptHandler(receiptsStore)
 
@@ -502,7 +542,7 @@ func Run(configPath string) error {
 		log.Printf("WARNING: receipt_signing_key not configured; using a random per-process key. Set receipt_signing_key for cross-restart receipt verification.")
 	}
 	h.SetReceiptSigner(receipt.NewSigner([]byte(signingKey)))
-	log.Printf("receipt signer configured (sig_v1, hmac-sha256)")
+	log.Printf("receipt signer configured (hmac_v1, hmac-sha256)")
 	// P2.3.5 asymmetric receipt signatures: the gateway's registered
 	// Ed25519 key signs every receipt. gwTrust.record is the admitted,
 	// durably-registered (gateway_id, key_id) — key registration
@@ -792,10 +832,14 @@ func Run(configPath string) error {
 	}
 
 	shutdownDone := make(chan struct{})
+	stopRequested := registerStop()
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
+		select {
+		case <-sigChan:
+		case <-stopRequested:
+		}
 		log.Println("shutting down...")
 		if watcher != nil {
 			watcher.Close()
@@ -875,6 +919,32 @@ type gatewayTrust struct {
 // back or corrupted" into silent data loss plus a gateway that happily
 // serves with no approvals, continuations or receipts. Refusing to start
 // leaves the evidence in place for the operator.
+// stopCh is how the process that embeds the gateway stops it the way a
+// signal would (`ovara run` with an agent command, once the agent exits).
+// One Run at a time.
+var (
+	stopMu sync.Mutex
+	stopCh chan struct{}
+)
+
+func registerStop() chan struct{} {
+	stopMu.Lock()
+	defer stopMu.Unlock()
+	stopCh = make(chan struct{})
+	return stopCh
+}
+
+// Stop shuts the running gateway down as SIGTERM would: its stores are
+// closed and Run returns. It does nothing when no gateway is running.
+func Stop() {
+	stopMu.Lock()
+	defer stopMu.Unlock()
+	if stopCh != nil {
+		close(stopCh)
+		stopCh = nil
+	}
+}
+
 func failClosedStore(name, path string, err error) error {
 	return fmt.Errorf("%s store %s cannot be opened: %w (refusing to start with an empty in-memory store; inspect or move the file aside deliberately)", name, path, err)
 }
@@ -1069,10 +1139,11 @@ func reconcileAnchor(cfg *config.Config, reg *gwidentity.Registry, priv ed25519.
 	}
 
 	// Degraded semantics extend to the mutation path: a push failure
-	// leaves the same unanchored tail either way — degraded logs and
-	// continues (the tail surfaces at the next reconcile), strict
-	// returns the error to the caller. Unavailable-oracle tolerance is
-	// the point of degraded; the durable local record is never lost.
+	// leaves the same unanchored tail either way — degraded logs,
+	// continues, and keeps retrying in the background until the oracle
+	// takes this run's tip (anchor_retry.go); strict returns the error
+	// to the caller. Unavailable-oracle tolerance is the point of
+	// degraded; the durable local record is never lost.
 	var pusher anchor.Pusher = client
 	if !strict {
 		pusher = &warnPusher{inner: client}
@@ -1121,26 +1192,6 @@ func reconcileAnchor(cfg *config.Config, reg *gwidentity.Registry, priv ed25519.
 		return nil
 	}
 	return reg.SetAnchor(pusher, signer)
-}
-
-// warnPusher degrades oracle UNAVAILABILITY to warnings — the local
-// mutation is already durable (fsync before push), so an offline oracle
-// leaves the same unanchored tail either way. F-D1 remediation: only
-// availability errors are swallowed; integrity signals (equivocation,
-// bad key, malformed response) propagate and fail the mutation — a fork
-// is never masked as "oracle offline".
-type warnPusher struct{ inner anchor.Pusher }
-
-func (w *warnPusher) Commit(ctx context.Context, domain string, cp *anchor.Checkpoint) error {
-	if err := w.inner.Commit(ctx, domain, cp); err != nil {
-		if errors.Is(err, anchor.ErrUnavailable) {
-			log.Printf("anchor: checkpoint push failed (degraded — unanchored tail, reconcile at next boot): %v", err)
-			return nil
-		}
-		log.Printf("anchor: INTEGRITY failure on checkpoint push — refusing to mask it: %v", err)
-		return err
-	}
-	return nil
 }
 
 func init() {

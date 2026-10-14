@@ -28,8 +28,8 @@ func TestMatchGlob(t *testing.T) {
 		want bool
 	}{
 		{"api.example.com", true},
-		{"example.com", false},      // glob requires the leading label + dot
-		{"a.b.example.com", true},   // path.Match '*' spans dots (only '/' is separator)
+		{"example.com", false},    // glob requires the leading label + dot
+		{"a.b.example.com", true}, // path.Match '*' spans dots (only '/' is separator)
 		{"example.com.evil.org", false},
 		{"otherexample.com", false},
 	}
@@ -63,7 +63,7 @@ func TestMatchFirstBindingWins(t *testing.T) {
 }
 
 func TestLoadEnvExpansion(t *testing.T) {
-	t.Setenv("CREDS_TEST_TOKEN", "s3cr3t")
+	t.Setenv("CREDS_TEST_TOKEN", "s3cr3t-value")
 	b := Load([]Binding{
 		{Host: "x.com", Headers: map[string]string{
 			"Authorization": "Bearer ${CREDS_TEST_TOKEN}",
@@ -71,7 +71,7 @@ func TestLoadEnvExpansion(t *testing.T) {
 		}},
 	})
 	h := b[0].Headers
-	if h["Authorization"] != "Bearer s3cr3t" {
+	if h["Authorization"] != "Bearer s3cr3t-value" {
 		t.Fatalf("env expansion failed: %q", h["Authorization"])
 	}
 	// (A binding with an unset variable is dropped entirely: see
@@ -84,14 +84,14 @@ func TestLoadEnvExpansion(t *testing.T) {
 // A binding whose key is not set must not be injected: it would replace
 // the agent's own working header with "Bearer " or an empty key.
 func TestLoadReport_DropsBindingsWithUnsetKeys(t *testing.T) {
-	t.Setenv("OVARA_TEST_SET", "real")
+	t.Setenv("OVARA_TEST_SET", "real-key-value")
 	t.Setenv("OVARA_TEST_EMPTY", "")
-	got, skipped := LoadReport([]Binding{
+	got, skipped, _ := LoadReport([]Binding{
 		{Host: "a.example", Headers: map[string]string{"Authorization": "Bearer ${OVARA_TEST_SET}"}},
 		{Host: "b.example", Headers: map[string]string{"Authorization": "Bearer ${OVARA_TEST_EMPTY}"}},
 		{Host: "c.example", Headers: map[string]string{"x-api-key": "${OVARA_TEST_UNSET_XYZ}", "v": "1"}},
 	})
-	if len(got) != 1 || got[0].Host != "a.example" || got[0].Headers["Authorization"] != "Bearer real" {
+	if len(got) != 1 || got[0].Host != "a.example" || got[0].Headers["Authorization"] != "Bearer real-key-value" {
 		t.Fatalf("loaded = %+v", got)
 	}
 	if len(skipped) != 2 || skipped[0].Host != "b.example" || skipped[1].Missing[0] != "OVARA_TEST_UNSET_XYZ" {

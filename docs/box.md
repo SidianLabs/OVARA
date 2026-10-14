@@ -1,9 +1,60 @@
 # Ovara Box: a sandbox whose boundary is intent
 
-Status: **design, not built.** This document is the plan. Where it describes
-code that exists, it says so and names the file. Everything else is a
-proposal to build and test, in the order given in §12. Nothing in here is a
-promise to users until the acceptance tests in §12 pass in CI.
+Status: **milestones 1-5 are built** (tier 1, the command gate, tier 2, strict
+installs; see §14). Milestones 6-9 are not. This document started as the plan
+and still reads that way in places: where it describes code that exists it
+names the file, and the October 2026 corrections below take precedence over
+older text. What the box promises, mode by mode, with the tests behind each
+promise, is in [`GUARANTEES.md`](GUARANTEES.md).
+
+> **Corrections from the October 2026 audit and hardening (read these first).**
+> - **Tier 1 has a root file system of its own** (`-tier1-fs isolated`, the
+>   default; `proxy/cmd/ovara/box_tier1.go`). The agent starts through
+>   `ovara box-init -tier1`, which enters the network namespace, makes a
+>   new mount namespace and pivots into a fresh root: the host's system
+>   directories (`/usr`, `/bin`, `/lib*`, `/etc`) read-only with
+>   `/etc/shadow`, sudoers, SSH and private-key directories covered; a
+>   private `/dev`; `/proc` that hides other users' processes; empty
+>   `/tmp`, `/var/tmp` and `/run`; the workspace and a fresh home
+>   read-write; the public CA and `-mount` paths read-only. Nothing from
+>   `/home`, `/root`, `/srv`, `/opt`, `/mnt`, `/var` or `/nix`, and not
+>   the original project. The agent runs with no_new_privs and no
+>   supplementary groups, and the proxy token is never on a command line.
+>   `-tier1-fs host` keeps the old behaviour (the agent's user reads
+>   whatever it may read on the host) and is unsafe on a machine that
+>   holds secrets.
+> - **Command rules see a normalised command line** (`boxgate.PolicyLine`):
+>   the program's base name, git without its global options, `rm` flags
+>   merged (`rm -r -f`, `rm --recursive --force` and `rm -Rf` all read as
+>   `rm -rf`). The person still sees the command as run. Every child exec is
+>   checked on its own, and a deny always beats an escalate, so
+>   `sudo … # rm -rf` is refused. The default rules are still text rules:
+>   interpreter one-liners, renamed binaries and scripts that delete files
+>   themselves are not caught by them. Treat them as catching mistakes;
+>   the network and file boundaries do not depend on them.
+> - **Commit-back** reads the workspace once into a tree in a repository the
+>   launcher owns (the agent's `.git` is never used, so its hooks, filters
+>   and config never run on the host). Path policy, the diff and the commit
+>   all come from that tree, and the branch is exactly that tree on top of
+>   the starting point. Agent config and host-execution paths (`.claude/`,
+>   `.mcp.json`, `.github/`, `.husky/`, `.gitattributes`, ...) are kept out by
+>   default; `CLAUDE.md`, `AGENTS.md`, `package.json`, lockfiles, `Makefile`,
+>   `Dockerfile` and scripts are flagged; binary files stay out unless
+>   `-allow-binary`. A cut diff says what it leaves out and where the full
+>   diff is.
+> - **Secrets left out of the copy** by name and by content: files whose
+>   content looks like a private key, a cloud or GitHub/GitLab/Slack token,
+>   an npm auth line, a `.netrc` password and the like are removed and
+>   listed ("left out (looks like a secret: …)"). Secrets in git history
+>   stay in the clone's objects.
+> - **The GitHub key is scoped to the project's repository** (`-github-scope
+>   repo`, the default): requests about any other repository go out without
+>   it. `-github-scope all` turns this off.
+> - **No DNS inside the boundary** unless `OVARA_BOUNDARY_DNS=1`; the proxy
+>   listens on the boundary address and loopback only; the host side is
+>   always firewalled (iptables or nft), or setup stops.
+> - `OVARA_EXEC_GATE`/`ovara-exec` (§8) do not exist; the gate is ptrace in
+>   `proxy/internal/boxgate`. `/scratch` is a tmpfs, not persistent.
 
 Read `threat-model.md` first for what Ovara is today. Sections 1-7 describe the
 problem, promise, threat model, launcher and file boundary; 8-11 the command
@@ -118,19 +169,19 @@ box in the first release (see tiers, §4.4).
 |---|---|---|
 | Network | All traffic through the proxy; policy allow/escalate/deny; keys injected; responses scrubbed | **built, tested** (`proxy/`, `tests/scenarios`, `tests/agents`, `tests/redteam`) |
 | Files back to the real project | Workspace is a copy; "commit back" is a gated action with a diff preview | **built, tested** (`proxy/internal/workspace`, `tests/box`) |
-| Files anywhere else on the host | The box runs as another user; the host's files are reachable only where that user may read them (tier 1); not mounted at all in tier 2 | tier 1 built; **tier 2 built, tested** (`tests/box` with `TIER=2`: host paths, Docker socket and credential files absent, root read-only) (§6.4) |
+| Files anywhere else on the host | Tier 1: a root file system of its own with the host's system directories read-only and nothing from home directories, `/root`, `/srv`, `/opt` or `/var`; tier 2: not mounted at all | **built, tested**: tier 1 (`TestTier1IsolatedFileSystem`, `tests/box/box.sh`); tier 2 (`tests/box` with `TIER=2`: host paths, Docker socket and credential files absent, root read-only) (§6.4) |
 | Commands | Every exec in the agent's tree is stopped and checked by policy: allow / pause / kill | **built, tested** (`proxy/internal/boxgate`, ptrace; `tests/box`, agents `mode: box`) |
 | Package installs | Through the proxy, with registry pins, install-script policy, new-dependency approval | **built, tested** (`-profile strict`; `tests/box/strict.sh` with real npm and pip) (§9) |
 | Secrets | Never present in the box; injected by the proxy; scrubbed on return | **built, tested** |
 | Process control (kill Ovara, edit policy, forge receipts) | Agent runs as a different unprivileged user with no access to Ovara's directory | **built, tested** (`tests/redteam/separate-user`, 19 attacks) |
-| Non-HTTP protocols (SSH, raw TCP, DNS to the outside) | Dropped by the boundary (no route); tier 2 has no interface but loopback | **built, tested**: netns (27 checks), from inside a tier 2 box (28) and the docker recipe (29) (`tests/redteam/boundary`; docker mode run for the first time in milestone 4) |
+| Non-HTTP protocols (SSH, raw TCP, DNS to the outside) | Dropped by the boundary (no route; DNS off unless `OVARA_BOUNDARY_DNS=1`); tier 2 has no interface but loopback. Through the proxy (a CONNECT to another port) they are decided as `tcp.connect`, counted and receipted as opaque tunnels | **built, tested**: netns (27 checks), from inside a tier 2 box (28) and the docker recipe (29) (`tests/redteam/boundary`; docker mode run for the first time in milestone 4) |
 
 ### 4.4 Isolation tiers (what the box is made of)
 
 | Tier | Isolation | Stops | Does not stop | Platforms |
 |---|---|---|---|---|
 | **0 cooperative** | `ovara env` only | mistakes | a program that ignores the proxy settings | all |
-| **1 user+netns** | separate unprivileged user, network namespace with no route except Ovara, workspace copy | everything in §4.3 for a non-root agent | kernel exploits; a root agent | Linux (built) |
+| **1 user+netns+mount ns** | separate unprivileged user, network namespace with no route except Ovara, a root file system of its own (system directories read-only, workspace and fresh home read-write; `-tier1-fs host` turns this off), no_new_privs, the command gate | everything in §4.3 for a non-root agent | kernel exploits; a root agent; signals to host processes of the agent's own user (no PID namespace) | Linux (built) |
 | **2 container** | a container with no network interface but loopback (the proxy through a root-only socket), no capabilities for the agent, read-only root, no-new-privileges, Docker's default seccomp profile, nothing of the host mounted but the workspace (§6.4) | the same, plus the host filesystem by construction | kernel exploits | Linux (built, milestone 4); Docker Desktop later |
 | **3 microVM** | tier 2 inside Firecracker / Cloud Hypervisor, Ovara outside the VM | kernel exploits from inside | hardware side channels; Ovara bugs | Linux hosts with KVM; later |
 
@@ -172,7 +223,7 @@ hostile; it comes after an external review of tiers 1 and 2.
          │                                        │   │ no host mounts, no secrets         │
   ┌──────▼───────┐                                │   └───────────────────────────────────┘
   │ approval UI  │  browser page / `ovara watch`  │
-  │ (person)     │                                │   only route out: proxy IP:9443 (+ DNS to Ovara's resolver)
+  │ (person)     │                                │   only route out: proxy IP:9443 (no DNS unless OVARA_BOUNDARY_DNS=1)
   └──────────────┘                                │
 ```
 
@@ -211,22 +262,49 @@ ovara box [flags] <project-dir> -- <agent command...>
 flags (built)
   -dir DIR          Ovara deployment (default ~/.ovara/box; created on first use)
   -tier 1|2         isolation tier (default 1; 2 needs Docker and a box image)
+  -tier1-fs isolated|host
+                    tier 1: isolated (default) = a root file system of its own;
+                    host = the agent's user sees the host's files (unsafe where
+                    the host holds secrets)
+  -allow-visible-procs
+                    tier 1 isolated: start on a kernel before 5.8, whose box /proc
+                    cannot hide other users' processes (refused without it)
   -image NAME       tier 2: the box image (default ovara-box, from box/Dockerfile)
-  -mount SRC:DST    tier 2: extra READ-ONLY mount (refused: /, system paths, ~/.ssh,
-                    ~/.aws, ~/.gnupg, ~/.docker, ~/.kube, .netrc, .npmrc, …, the
-                    Ovara deployment, and any directory containing one of them)
+  -mount SRC:DST    extra READ-ONLY mount, tier 2 and isolated tier 1 (refused: /,
+                    system paths, ~/.ssh, ~/.aws, ~/.gnupg, ~/.docker, ~/.kube,
+                    .netrc, .npmrc, …, the Ovara deployment, and any directory
+                    containing one of them; in tier 1 also /dev, /proc, /sys, /run,
+                    /tmp and /var/tmp themselves). Needed in tier 1 for tools under
+                    /opt or a home directory, and for scripts kept under /tmp
   -pids N           tier 2: process limit (default 4096); -memory, -cpus likewise
   -user NAME        tier 1: the agent's user (default ovara-agent, created if missing)
+  -name NAME        tier 1: network namespace name (one box per name at a time)
   -env K=V          non-secret environment for the agent (refused if the name looks like a key)
   -exclude GLOB     extra path to leave out of the workspace (.ovaraignore is read too)
   -keep             keep the workspace after exit (default: kept when something is left, removed on success)
   -no-commit-back   keep the workspace, offer nothing back
+  -allow-binary     let binary files the agent added or changed come back (default:
+                    they stay in the workspace, since a diff cannot show them)
+  -github-scope repo|all
+                    repo (default): the GitHub key only goes with requests about the
+                    project's own repository (from its origin remote); all: every
+                    GitHub request gets it
   -no-command-gate  run without the exec gate (the network and file boundaries still hold)
   -ui ADDR|off      approval page (default 127.0.0.1:9090)
   -approve-timeout  how long the commit-back waits for a person (default 10m)
+  -agent NAME       run as this named agent (ovara agent add NAME): receipts and
+                    approvals name it, and ovara kill can stop it alone
+  -manifest FILE    read the run from a manifest (§6.5); a flag given here wins
+                    over it, a project directory or -- command replaces its
+  -print-manifest   write the run these flags describe as a manifest on stdout
+                    and stop (no root; works on any platform)
+  -events FILE      append the run's events to FILE, one JSON line each (§6.5)
 
   -profile dev|strict  dev (default): installs free; strict: a dependency the
                     project's lockfiles do not pin pauses once (§9)
+  -untrusted-lockfiles
+                    strict: the project's lockfiles are not trusted (a repository
+                    you are reviewing): nothing they pin is let through unasked
 
 planned
   -tier 3           microVM (§4.4)
@@ -243,10 +321,15 @@ planned
    git repos (so history and `.gitignore` are respected and the real
    `.git` is not writable from the box), `rsync` copy otherwise. Secrets
    are excluded by a built-in list (`.env*`, `*.pem`, `id_*`, `*.key`,
-   `.npmrc` with tokens, `.netrc`, `.aws/`, `.config/gh/`, …) plus the
-   user's `.ovaraignore`.
+   `.npmrc` with tokens, `.netrc`, `.aws/`, `.config/gh/`,
+   `.git-credentials`, kubeconfigs, …) plus the user's `.ovaraignore`, and
+   then every text file in the copy is scanned: one whose content looks
+   like a key or token is removed too, and listed.
 4. **Create the box**: tier 1 = unprivileged `ovara-agent` user + netns via
-   `proxy/scripts/setup-egress-boundary.sh netns` (exists); tier 2 = the
+   `proxy/scripts/setup-egress-boundary.sh netns`, entered through
+   `ovara box-init -tier1`, which builds the agent's own root file system
+   (§7.1) and receives the agent's environment over a pipe, so the proxy
+   token never appears on a command line; tier 2 = the
    same inside a container from a small image with the agent's runtime
    (node, python, git) and nothing else, `--cap-drop ALL`, read-only root,
    seccomp default, no host mounts except the workspace and a scratch
@@ -254,8 +337,9 @@ planned
    netns; tier 2 to hand the workspace to the box's uid and to keep Ovara's
    sockets in a directory only root can enter). Rootless tier 2 is later.
 5. **Enter the box with the agent environment**: what `ovara env` prints
-   today (`HTTPS_PROXY`, CA variables, `NODE_USE_ENV_PROXY`, placeholder
-   keys), plus `OVARA_EXEC_GATE` (§8) and `HOME=/home/agent`.
+   today (`HTTPS_PROXY`, CA variables, `NODE_USE_ENV_PROXY`, `NO_PROXY`
+   pinned to loopback, placeholder keys) and a fresh `HOME`. The command gate needs nothing in the
+   environment: it traces the agent from outside (§8).
 6. Run the agent command. The person uses the approval page or `ovara
    watch` in another terminal.
 7. On exit: write the box summary (what was approved, denied, timed out;
@@ -310,6 +394,49 @@ exploit leaves the box; tier 3 is the answer); it needs root on the host
 today; `-mount` exposes whatever the person mounts, read-only; and the
 person's Docker daemon is trusted.
 
+### 6.5 Driving the box from a tool: manifest and events
+
+The command line is for a person. A CI job, an orchestrator or a service
+drives the box through two documents instead (contract C5,
+`spec/runtime.md`):
+
+- the **manifest** is the run written down: tier, workspace, agent command
+  and name, profile, isolation, mounts, limits, credential scope,
+  commit-back settings. `ovara box -print-manifest [flags] <project> --
+  <command>` writes the one a command line describes (on any platform, no
+  root); `ovara box -manifest sandbox.json` runs it, flags given next to it
+  winning, a `-- command` next to it replacing the file's. It carries no
+  secret: a variable whose name says it is a key is refused, and real keys
+  stay in the deployment. Kept in the repository, it says what the agent
+  may do, not what it may use.
+- the **events stream** (`-events FILE`) is what happens, one JSON line
+  each, as it happens: `run.created` (with the manifest, defaults resolved),
+  `workspace.copied`, `proxy.started`, `agent.started`, one `command.*`
+  event per program the gate decided (allowed, refused, paused, approved,
+  not_approved, with the approval id), `agent.exited` (the code), one
+  `commit_back.*` event for how the changes ended (disabled, nothing, kept,
+  refused, waiting, not_approved, landed with the branch), and always
+  `run.finished` last, carrying the summary: outcome (clean, kept, failed),
+  the agent's exit code, request and command tallies, the commit-back's
+  end, and the error when the run failed.
+
+A tool that watches the stream can answer `command.paused` and
+`commit_back.waiting` through the approval API or `ovara approve <id>`,
+and read the receipts (`ovara log export`) for the full record.
+
+### 6.6 The attestation
+
+Every run ends with one signed statement about it, in the deployment at
+`var/attestations/<run>.intoto.json`: an in-toto statement in a DSSE
+envelope, signed with the receipt key (spec C4 §8). Its subjects are the
+run's own receipts and, when the changes landed, the branch and its commit;
+its predicate carries the manifest's digest, the policy hashes, the exact
+receipts (position, count, hash), every approval and who gave it, the host
+table and the summary. The `run.finished` summary names the file. `ovara
+attest verify` checks it against the chain, the key history and the anchors,
+recomputing every claim from the receipts; it needs nothing that is not in
+the incident bundle, so an auditor can verify a run without Ovara.
+
 ## 7. The file boundary
 
 ### 7.1 What the box sees
@@ -322,9 +449,26 @@ person's Docker daemon is trusted.
 | toolchains (`/usr/local/go`, node, python) | the image's | no |
 | everything else on the host | **absent** | — |
 
-This table is what tier 2 builds (milestone 4, §6.4). Tier 1 runs on the
-host's filesystem as a separate user, so there "absent" means "not readable
-by that user", not "not there".
+This table is what tier 2 builds (milestone 4, §6.4). Tier 1 (isolated,
+the default) builds the same shape in a mount namespace:
+
+| Path in a tier 1 box | What it is | Writable |
+|---|---|---|
+| the workspace, at its real path | the copy of the project | yes |
+| the run's home | fresh, per run | yes |
+| `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc` | the host's, bind-mounted; `/etc/shadow`, `/etc/gshadow`, sudoers, `/etc/ssh`, `/etc/ssl/private` covered | no |
+| `/dev` | null, zero, full, random, urandom, tty, a private pts, `/dev/shm` | — |
+| `/proc` | a fresh mount that hides other users' processes (Linux 5.8 or later; on an older kernel the box is refused unless `-allow-visible-procs`) | — |
+| `/tmp`, `/var/tmp` | empty, in memory | yes |
+| `/run` | empty | — |
+| the public CA, `-mount` paths | read-only | no |
+| `/home`, `/root`, `/srv`, `/opt`, `/mnt`, `/var`, `/nix`, the original project | **absent** | — |
+
+Tools that live under `/opt` or a home directory, and scripts kept under
+`/tmp` on the host, are not visible in a tier 1 box: add them with
+`-mount` (and `-env PATH=…`). `-tier1-fs host` runs on the host's file
+system as a separate user instead; there "absent" means only "not readable
+by that user".
 
 No `~/.ssh`, no `~/.aws`, no `~/.gitconfig` with credentials, no other
 repos, no browser profile. The `-mount` flag adds read-only paths and
@@ -427,15 +571,25 @@ battery under it (94–508 execs each) with no measurable slowdown.
 
 ### 8.2 Default command policy (box profile)
 
+As shipped (`proxy/cmd/ovara/policy_defaults.go`):
+
 | Decision | Commands |
 |---|---|
-| allow | read-only tools (`ls`, `cat`, `grep`, `rg`, `find`, `git status/diff/log/blame`), builds and tests (`go build/test`, `npm test`, `pytest`, `make`), package installs (`npm install`, `pip install`; the registry side is gated in §9) |
-| escalate | `rm -rf`, `chmod`/`chown`, `curl`/`wget` (the proxy still gates the request; the pause is for the person to see the intent), `git push` (also a commit-back) |
-| deny | running Ovara itself, privilege changes (`sudo`, `su`), anything touching the box's network or mount setup |
-| default | escalate (interactive); deny (`ci` profile) |
+| deny | `sudo`, `su`, `mount`/`umount`, `nft`, `iptables`, `ip netns`/`ip link`/`ip route`, running `ovara` |
+| escalate | recursive `rm` (`rm -rf`, `rm -fr`, `rm -r…`), `find … -delete`, `shred`, `truncate -s 0`, `git push`, `mkfs`, `dd if=`, and an agent started with its own permission checks off (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`, `--yolo`) |
+| allow | everything else, recorded |
+
+Rules match the normalised line from `boxgate.PolicyLine` (program base
+name, git's global options dropped, `rm` flags merged, whitespace
+collapsed). The first exec, when it is exactly the agent command given to
+`ovara box`, is exempt from escalate (deny still applies), so an agent
+launched with a bypass flag does not pause on its own start; the same
+command started later by the agent still pauses.
 
 Patterns use the same matcher as URL rules (`policy.MatchResource`,
-already fuzzed), so one policy language covers all three exits.
+already fuzzed), so one policy language covers all three exits. The
+"escalate everything not listed" default for a stricter profile is not
+built (§11.4).
 
 ## 9. Package installs
 
@@ -445,13 +599,32 @@ already fuzzed), so one policy language covers all three exits.
 - When the box starts, the launcher reads the project's lockfiles in the
   workspace: `package-lock.json`/`npm-shrinkwrap.json`, `yarn.lock` (classic
   and berry), `pnpm-lock.yaml`, `requirements*.txt` pins, `poetry.lock`,
-  `uv.lock`, `Pipfile.lock`, `go.sum`, `Cargo.lock`. Lockfiles inside
-  `node_modules`, `vendor` and the like are not the project's and are not
-  read. It hands the pinned packages to Ovara (`ovara run -package-gate`).
-- The proxy names every package **download** on the pinned registries:
+  `uv.lock`, `Pipfile.lock`, `go.sum`, `Cargo.lock`, `Gemfile.lock` and
+  `gradle.lockfile`. Lockfiles inside `node_modules`, `vendor` and the like
+  are not the project's and are not read. It hands the pinned packages,
+  with any digests the lockfiles record, to Ovara (`ovara run
+  -package-gate`).
+- The proxy names every package **download** on the registries it knows:
   `npm:left-pad@1.3.0`, `pypi:six@1.16.0`, `go:module@v1.2.3`,
-  `crate:serde@1.0.200`. Metadata reads (an npm packument, a PyPI index, a
-  Go `.info`) are not downloads of code and are not asked about.
+  `crate:serde@1.0.200` (static.crates.io and the crates.io download API),
+  `gem:rake@13.0.6` (rubygems.org), `maven:group:artifact@1.2.3`
+  (repo1.maven.org, repo.maven.apache.org). Metadata reads (an npm
+  packument, a PyPI index, a Go `.info`, a crates.io sparse index entry,
+  `maven-metadata.xml`, checksums) are not downloads of code and are not
+  asked about. A request to one of these registries that is neither a
+  recognised download nor metadata asks policy once as
+  `download:<host><path>`.
+- **Digests.** When a lockfile records a digest for a pinned package (npm,
+  yarn classic and pnpm `integrity`, requirements `--hash`, poetry and uv
+  hashes, `Pipfile.lock`, Cargo `checksum`), the proxy hashes the download
+  as it streams and holds back the last chunk until the end. If the digest
+  differs, the agent never gets the whole file: the connection is cut and
+  a second receipt (`deny 502`) names the URL. `go.sum` is not checked (it
+  records a tree hash, not the file's). Yarn berry checksums and poetry v1
+  `[metadata.files]` hashes are not read.
+- `-untrusted-lockfiles`: for a repository you are reviewing rather than
+  your own. The lockfiles are still read, so packages are named, but
+  nothing they pin is let through unasked and their digests are not used.
 - After the URL policy has allowed a download, a pinned package goes
   through. Any other asks the gateway: `action_type: "package.install"`,
   resource `npm:name@version`, which the default policy escalates. The
@@ -573,6 +746,10 @@ box adds `fs.commit_back`. Resources per type:
 
 ### 11.4 Profiles
 
+(These are the box's install profiles, `-profile dev|strict`. The policy
+profiles `strict|balanced|observe` of `ovara policy profile` are a different
+setting, applied to the deployment's `policy.json`; a box runs under either.)
+
 | Profile | Default | Reads | Writes | Commands | Installs | Approval timeout |
 |---|---|---|---|---|---|---|
 | `dev` | escalate | trusted list free, others pause | pause | read/build/test free, destructive pause | free | 60 s |
@@ -612,10 +789,11 @@ project extends.
 gateway (literal host only; no DNS before the decision) → allow: inject
 key, forward, scrub response, receipt before the response is released;
 escalate: approval created with the preview, person answers, then as
-allow or a 403/504; deny: 403 with reason, receipt.
+allow or a 403, or a 503 "held, retry" (the default) / 504 once the hold ends; deny: 403 with reason, receipt.
 
-**A command runs.** Agent's tool → `ovara-exec` → gateway check → run /
-hold / refuse → receipt.
+**A command runs.** The agent's tool starts a program → the launcher's
+ptrace gate stops it at exec → gateway check on the normalised line → run
+/ hold / kill → receipt.
 
 **Files go back.** Agent (or the person at exit) → file gate computes the
 diff → gateway check (`fs.commit_back`) with the diff as preview → person
@@ -627,8 +805,9 @@ HTTPS; the response is scrubbed of the value and its encoded forms.
 
 **The person answers.** Approval page (per-run page token) or `ovara watch`;
 the approval carries the gateway's own record of the request, never the
-agent's text; "approve and trust host" adds a reads-only rule for that one
-host.
+agent's text; "approve and remember" adds a rule for exactly one thing: reads
+from that host (for the run or the project), this command line for the run, or
+this MCP tool for the run; never a write, never a wildcard.
 
 **The record.** Every decision is a signed receipt in a hash chain; `ovara
 log` verifies; `gateway_anchor_url` pushes tips off-host so a host-side
@@ -662,16 +841,20 @@ Order matters: 0 before anything (today's release cannot restart); 1 before
    overlay mount. Overlay is fastest and still a copy-on-write boundary;
    it needs root or a user namespace. Default proposal: shared clone,
    overlay as a tier-2 option.
-2. **Approval fatigue**: should "approve" offer "and allow this command
-   pattern for the rest of the run"? Proposal: yes, run-scoped only, shown
-   in the exit summary; persistent rules only through "trust host" (reads)
-   and explicit policy edits.
+2. **Approval fatigue**: answered. "Approve" offers "and allow exactly this
+   command until ovara run stops" (run-scoped, the exact normalised line,
+   never a wildcard; the rule names who, when and the approval); persistent
+   rules only through "remember reads for the project" and explicit policy
+   edits.
 3. **Where the model API key lives for Aider/opencode-style agents that
    want it in a config file**: placeholder in the file, substituted at the
    proxy, same as env vars. Needs a test per agent.
-4. **Receipt retention and size** for long runs: compaction exists
-   (`record.compactSigned`); the box needs a retention knob and a size
-   warning in `ovara doctor`.
+4. **Receipt retention and size** for long runs: answered for now.
+   `ovara doctor` reports the chain's size and warns past 256 MiB;
+   `docs/operations.md` (Retention and export) says what to do: export on
+   a schedule, bundle, and rotate the deployment directory rather than cut
+   the live chain. A chain that can be archived from the front without
+   losing verifiability is still to come.
 5. **Multi-agent / sub-agent runs**: one box per top-level run; sub-agents
    share it and the receipts tag them by process. Decide whether sub-agents
    get their own agent tokens (traceability) or share one (simplicity).

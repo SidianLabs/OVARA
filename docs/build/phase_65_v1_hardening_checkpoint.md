@@ -1,5 +1,9 @@
 # Phase 65 V1 Hardening & Cleanup — Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Branch:** `phase-65-v1-hardening`
 **Base:** `phase-64-v1-polish`
 **Date:** 2026-06-09

@@ -6,10 +6,9 @@ package proxy
 
 import (
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,14 +17,19 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"ovara.proxy/internal/ca"
 	"ovara.proxy/internal/creds"
 	"ovara.proxy/internal/gateway"
+	"ovara.proxy/internal/mcp"
 	"ovara.proxy/internal/receipts"
+
+	"ovara.runtime.gateway/pkg/baseline"
 )
 
 type Server struct {
@@ -36,21 +40,75 @@ type Server struct {
 	failOpen        bool
 	transport       *http.Transport
 	dialer          *net.Dialer
-	publicEgress    bool // SSRF guard: only public destinations may be dialed
-	connectPort443  bool // CONNECT targets restricted to :443
+	publicEgress    bool         // SSRF guard: only public destinations may be dialed
+	upstreamHost    string       // host:port of upstream_proxy (upstream.go); dialled as given
+	connectPort443  bool         // CONNECT targets restricted to :443
+	tcpGate         bool         // a CONNECT to another port is decided as tcp.connect and relayed opaque (tcpgate.go)
+	apiGate         bool         // GraphQL, AWS and JSON-RPC operations in allowed bodies are decided (apigate.go)
+	dlp             *dlpScanner  // the content rule (dlp.go); nil when off
+	flows           *flowTracker // the flow rules (flows.go); nil when none
 	escalateTimeout time.Duration
 	escalatePoll    time.Duration
-	gitGate         bool
-	sensitiveHosts  []string
-	agentToken      string // if set, proxy clients must authenticate
-	unauthLimiter   *rateLimiter
-	escalateSem     chan struct{} // caps requests parked awaiting approval
-	pkgGate         *packageGate  // strict installs (packages.go); nil = off
+	// escalateRetry: an unanswered hold is answered with 503 and
+	// Retry-After (the approval stays open; the same request sent again
+	// runs once it is approved) instead of 504.
+	escalateRetry bool
+	// claimNote says once that the gateway has no claim route.
+	claimNote      sync.Once
+	gitGate        bool
+	sensitiveHosts []string
+	agentToken     string // if set, proxy clients must authenticate
+	unauthLimiter  *rateLimiter
+	escalateSem    chan struct{} // caps requests parked awaiting approval
+	pkgGate        *packageGate  // strict installs (packages.go); nil = off
+	modelGateOff   bool          // model-API body check (modelgate.go) disabled
+	modelHosts     []string      // hosts the model gate applies to; nil = defaults
+	modelGateNoAsk bool          // model-gate findings are refused, not asked
+	limits         limits        // body, push and read size bounds (limits.go)
+	budget         *egressBudget // per-host allowance for allowed traffic; nil = off
+	openReads      *openReads    // per-agent cap on hosts read under an open-read rule; nil = off
+
+	// per-agent state
+	ids         *agentRegistry // named agents and stopped agents (agents.go)
+	taint       *taintTracker  // untrusted read, then write (taint.go); nil = off
+	modelBudget *modelBudget   // per-agent model use (modelbudget.go); nil = off
+	mcp         *mcpState      // MCP-aware mode (mcpgate.go); nil = off
+	held        *heldCounter   // requests held for a person, per agent
 }
 
-// maxPendingEscalations bounds how many requests may be held waiting for a
-// human at once; beyond it new escalations are refused rather than queued.
-const maxPendingEscalations = 64
+// maxPendingEscalations bounds how many requests one agent may have held
+// waiting for a human at once; beyond it its new escalations are refused
+// rather than queued. maxHeldEscalations bounds them for all agents
+// together (goroutines and sockets).
+const (
+	maxPendingEscalations = 64
+	maxHeldEscalations    = 4 * maxPendingEscalations
+)
+
+// heldCounter counts the requests each agent has held for a person.
+type heldCounter struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// take reserves a slot for agent; false when it already has max.
+func (h *heldCounter) take(agent string, max int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.n[agent] >= max {
+		return false
+	}
+	h.n[agent]++
+	return true
+}
+
+func (h *heldCounter) release(agent string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.n[agent]--; h.n[agent] <= 0 {
+		delete(h.n, agent)
+	}
+}
 
 func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts.Chain, failOpen bool) *Server {
 	s := &Server{
@@ -63,8 +121,15 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 		connectPort443: true,
 		escalatePoll:   2 * time.Second,
 		unauthLimiter:  newRateLimiter(20, 1),
-		escalateSem:    make(chan struct{}, maxPendingEscalations),
-		dialer:        &net.Dialer{Timeout: 10 * time.Second},
+		escalateSem:    make(chan struct{}, maxHeldEscalations),
+		held:           &heldCounter{n: map[string]int{}},
+		limits:         defaultLimits(),
+		budget:         newEgressBudget(0, 0),
+		openReads:      newOpenReads(0),
+		ids:            newAgentRegistry(),
+		taint:          newTaintTracker(),
+		modelBudget:    newModelBudget(0, 0, 0),
+		dialer:         &net.Dialer{Timeout: 10 * time.Second},
 		transport: &http.Transport{
 			TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 			MaxIdleConns:          100,
@@ -77,12 +142,19 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 	// resolution, so a DNS rebind between check and dial cannot slip a
 	// private address through (the classic TOCTOU hole in check-then-dial).
 	s.transport.DialContext = s.dialChecked
+	_ = s.SetMCPGate(true, "") // in memory; `ovara run` names the pin file
 	return s
 }
 
 // SetEscalateWindow configures the hold-and-resume bounds for escalate
 // decisions: how long to hold the client request and how often to poll the
 // gateway approval status.
+// SetEscalateAnswer chooses what an unanswered hold is answered with:
+// retry true is 503 with Retry-After and the approval id (the approval
+// stays open and the same request sent again runs once it is approved);
+// false, the default, is 504.
+func (s *Server) SetEscalateAnswer(retry bool) { s.escalateRetry = retry }
+
 func (s *Server) SetEscalateWindow(timeout, poll time.Duration) {
 	if timeout > 0 {
 		s.escalateTimeout = timeout
@@ -114,27 +186,14 @@ func (s *Server) SetConnectPort443Only(on bool) { s.connectPort443 = on }
 // Proxy-Authorization (Basic password or Bearer — what tools send when the
 // proxy URL carries credentials). Without it the proxy is an open
 // credential dispenser for anyone who can reach the listener.
-func (s *Server) SetClientAuth(token string) { s.agentToken = token }
-
-// authorized checks the client credential when agentToken is set.
-// Compare in constant time: the token authenticates credential injection.
-func (s *Server) authorized(r *http.Request) bool {
-	if s.agentToken == "" {
-		return true
+// Once set, client authentication stays on for the life of the Server.
+func (s *Server) SetClientAuth(token string) {
+	s.ids.mu.Lock()
+	s.agentToken = token
+	if token != "" {
+		s.ids.authOn = true
 	}
-	tok := ""
-	if h := r.Header.Get("Proxy-Authorization"); h != "" {
-		if f, ok := strings.CutPrefix(h, "Bearer "); ok {
-			tok = f
-		} else if f, ok := strings.CutPrefix(h, "Basic "); ok {
-			if b, err := base64.StdEncoding.DecodeString(f); err == nil {
-				if _, p, ok := strings.Cut(string(b), ":"); ok {
-					tok = p
-				}
-			}
-		}
-	}
-	return subtle.ConstantTimeCompare([]byte(tok), []byte(s.agentToken)) == 1
+	s.ids.mu.Unlock()
 }
 
 func matchHostGlob(globs []string, host string) bool {
@@ -215,6 +274,10 @@ func (s *Server) checkDestination(ctx context.Context, host string) error {
 	if !s.publicEgress {
 		return nil
 	}
+	if s.upstreamHost != "" {
+		// the upstream proxy resolves the name; an IP literal is still ours to refuse
+		return s.checkLiteralDestination(host)
+	}
 	_, err := resolvePublic(ctx, host)
 	return err
 }
@@ -237,7 +300,8 @@ func (s *Server) checkLiteralDestination(host string) error {
 // within this single call still cannot inject a private address, because
 // we dial the exact IP we validated.
 func (s *Server) dialChecked(ctx context.Context, network, addr string) (net.Conn, error) {
-	if !s.publicEgress {
+	if !s.publicEgress || s.isUpstreamAddr(addr) {
+		// the upstream proxy is on the corporate network: dialled as given
 		return s.dialer.DialContext(ctx, network, addr)
 	}
 	host, port, err := net.SplitHostPort(addr)
@@ -273,6 +337,37 @@ func redactURL(u *url.URL) string {
 	return c.String()
 }
 
+// maxResourceBytes bounds the resource string sent to the gateway and
+// written to every receipt: a long path must not inflate the signed log.
+const maxResourceBytes = 2048
+
+// capResource cuts s to maxResourceBytes with a marker saying how much was
+// cut, and reports whether it did.
+func capResource(s string) (string, bool) {
+	if len(s) <= maxResourceBytes {
+		return s, false
+	}
+	n := maxResourceBytes
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + fmt.Sprintf("…(+%d bytes)", len(s)-n), true
+}
+
+// allowedGitRefusal returns why a git request policy allowed must still be
+// refused, or "". url is the resource policy decided on.
+func (s *Server) allowedGitRefusal(r *http.Request, hb *heldBody, url string) string {
+	if isUploadPackPost(r) {
+		return uploadPackRefusal(r, hb, s.limits.maxUploadPack)
+	}
+	// An allow decided without seeing every ref being pushed is not an
+	// answer about this push: ref-level rules could not have applied.
+	if s.gitGate && looksLikePush(r) && (strings.HasSuffix(url, pushUnparsed) || strings.HasSuffix(url, pushTruncated)) {
+		return "git_push_unparsed"
+	}
+	return ""
+}
+
 // hopHeaders are connection-scoped headers that must never be forwarded.
 // Token names carried in the Connection value are stripped too.
 var hopHeaders = []string{
@@ -294,7 +389,8 @@ func stripHopHeaders(h http.Header) {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Client authentication FIRST — before CONNECT/receipt/policy anything.
 	// An unauthenticated request must not even reach the policy engine.
-	if !s.authorized(r) {
+	id, ok := s.authenticate(r)
+	if !ok {
 		// Rate-limited: probes leave evidence, but anyone who can reach the
 		// port must not be able to grow the receipt log without bound.
 		if s.unauthLimiter == nil || s.unauthLimiter.allow() {
@@ -304,28 +400,47 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
 		return
 	}
+	if s.refuseStopped(w, r, id) {
+		return
+	}
+	r = withAgent(r, id)
+	r.Method = strings.ToUpper(r.Method)
 	if r.Method == http.MethodConnect {
 		s.handleConnect(w, r)
 		return
 	}
-	// Plain-HTTP proxy request (absolute URI). Execute directly.
+	// Plain proxy request (absolute URI). An https:// one is TLS to the
+	// upstream just like a CONNECT tunnel, so the same port rule holds.
+	if p := r.URL.Port(); s.connectPort443 && strings.EqualFold(r.URL.Scheme, "https") && p != "" && p != "443" {
+		s.recordDeniedBy(id, r.Method, r.URL.Scheme+"://"+r.URL.Host)
+		http.Error(w, "https requests are limited to port 443", http.StatusForbidden)
+		return
+	}
 	s.handleRequest(w, r)
 }
 
 // handleConnect hijacks the tunnel and MITMs the TLS inside it.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	id := agentOf(r.Context())
 	hostname, port, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		// CONNECT authority without a port is TLS by convention.
 		hostname, port = r.Host, "443"
 	}
 	hostname = normalizeHost(hostname)
+	// A CONNECT to another port is not HTTPS to inspect. With the TCP gate
+	// it is decided as a connection of its own and relayed opaque when
+	// allowed (tcpgate.go).
+	if port != "443" && s.tcpGate {
+		s.handleTunnel(w, r, hostname, port)
+		return
+	}
 	// CONNECT is for HTTPS tunneling only — an arbitrary port would turn
 	// this into a generic TCP relay (SSH, redis, ...) past the boundary.
 	// Tunnel-layer rejects are receipted too: a probing agent must leave
 	// evidence, not just an invisible 403.
 	if s.connectPort443 && port != "443" {
-		s.recordDenied("CONNECT", r.Host)
+		s.recordDeniedBy(id, "CONNECT", r.Host)
 		http.Error(w, "CONNECT limited to port 443", http.StatusForbidden)
 		return
 	}
@@ -336,7 +451,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// answers checked) at dial time, after the policy decision.
 	if err := s.checkLiteralDestination(hostname); err != nil {
 		log.Printf("connect: destination %s rejected: %v", hostname, err)
-		s.recordDenied("CONNECT", r.Host)
+		s.recordDeniedBy(id, "CONNECT", r.Host)
 		http.Error(w, "destination not allowed", http.StatusForbidden)
 		return
 	}
@@ -389,10 +504,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	srv := &http.Server{
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       90 * time.Second,
+		// Same header bound as the outer listener: inside the tunnel the
+		// default would allow 1 MiB of headers per request.
+		MaxHeaderBytes: 64 << 10,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			r.URL.Scheme = "https"
 			r.URL.Host = net.JoinHostPort(hostname, port)
-			s.handleRequest(w, r)
+			s.handleRequest(w, withAgent(r, id))
 		}),
 	}
 	go srv.Serve(listener)
@@ -402,7 +520,20 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // policy pipeline (CONNECT-layer rejects). Best-effort: a chain failure is
 // logged, not retried — same posture as the deferred receipt path.
 func (s *Server) recordDenied(method, target string) {
-	if _, err := s.chain.Record(method, target, "deny", http.StatusForbidden, ""); err != nil {
+	agent := ""
+	if !strings.HasSuffix(method, " UNAUTH") {
+		agent = agentLabel(s.agentToken)
+	}
+	s.recordDeniedAs(agent, method, target)
+}
+
+// recordDeniedBy is recordDenied for a request from a known agent.
+func (s *Server) recordDeniedBy(id agentIdentity, method, target string) {
+	s.recordDeniedAs(id.label, method, target)
+}
+
+func (s *Server) recordDeniedAs(agent, method, target string) {
+	if _, err := s.chain.Append(receipts.Entry{Method: method, URL: target, Decision: gwDeny, Status: http.StatusForbidden, Agent: agent}, false); err != nil {
 		log.Printf("CRITICAL: receipt record failed for denied %s %s: %v", method, target, err)
 	}
 }
@@ -431,9 +562,9 @@ func (c *eofConn) Close() error {
 }
 
 type oneShotListener struct {
-	conn net.Conn
-	done chan struct{}
-	once *sync.Once // shared with the wrapped eofConn
+	conn   net.Conn
+	done   chan struct{}
+	once   *sync.Once // shared with the wrapped eofConn
 	served bool
 }
 
@@ -453,133 +584,374 @@ func (l *oneShotListener) Addr() net.Addr { return l.conn.LocalAddr() }
 
 // handleRequest evaluates, executes, and receipts one request.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// One spelling of the method for every check below. The gateway matches
+	// methods case-insensitively; a guard that compared against "GET" while
+	// policy matched "get" would let the request through unguarded.
+	r.Method = strings.ToUpper(r.Method)
+	// A tunnel opened before its agent was stopped carries no more requests.
+	if s.refuseStopped(w, r, agentOf(r.Context())) {
+		return
+	}
+	// So does one whose agent has been removed (or given a new token).
+	if s.refuseRemoved(w, r, agentOf(r.Context())) {
+		return
+	}
 	// Query strings can carry secrets (tokens, SAS sigs) — the gateway and
 	// the receipt log get host+path only.
 	url := redactURL(r.URL)
+	// The whole body is read before anyone decides anything, and exactly
+	// those bytes are sent (body.go). A body too large to hold is refused,
+	// not forwarded unseen.
+	hb, holdErr := holdBody(r, s.bodyLimit(r))
+	defer hb.close()
+	// A body the model or MCP gate reads as JSON is replaced by the
+	// canonical form of what it read, before anything else sees it: what
+	// is asked about, receipted and sent is what is checked (canonical.go).
+	br := &bodyRead{}
+	if holdErr == nil {
+		br = s.readBody(r, hb)
+	}
 	// Git push gating: if this is a git-receive-pack request, append the
 	// target ref names to the resource string used for policy evaluation
-	// and receipts. The body is buffered (bounded) and restored so upstream
-	// still receives the full stream.
-	url += s.gitResourceSuffix(r)
+	// and receipts.
+	url += s.gitResourceSuffix(r, hb)
+	// One bound on the resource for policy and receipts alike. A cut string
+	// could move the part a deny rule matches out of sight, so a request
+	// whose resource needs cutting is refused, not decided on a prefix.
+	url, cut := capResource(url)
 	decision := "error"
 	status := 0
 	approvalID := ""
-	// The receipt is written exactly once: before the upstream response
-	// headers are sent (so the agent can never hold a response whose receipt
-	// is not yet on disk), or on return for every path that never reaches
-	// that point.
-	var recordOnce sync.Once
-	record := func() { recordOnce.Do(func() {
-		if _, err := s.chain.Record(r.Method, url, decision, status, approvalID); err != nil {
-			// A transit without a receipt is a boundary breach: scream to
-			// stderr in fail-closed mode, not just the log stream.
-			msg := fmt.Sprintf("receipt record failed for %s %s: %v", r.Method, url, err)
-			log.Printf("CRITICAL: %s", msg)
-			if !s.failOpen {
-				fmt.Fprintf(os.Stderr, "CRITICAL: %s\n", msg)
-			}
+	facts := &receiptFacts{hb: hb, agent: agentOf(r.Context())}
+	// noteApproval records the approval a question was answered by. The
+	// receipt's approval_id names the last one; earlier ones (a request can
+	// be asked about more than once: package, taint, budget) are kept in
+	// its reasons as approval:<id>.
+	noteApproval := func(id string) {
+		if id == "" {
+			return
 		}
-		}) }
+		approvalID = id
+		facts.noteApproval(id)
+	}
+	// A request that goes upstream is receipted twice: an attempt receipt,
+	// synced to disk before the first byte is sent (no receipt, no send),
+	// and the final receipt below, which then closes that attempt.
+	attemptID := ""
+	notSent := false
+	var respBytes int64
+	attempt := func() error {
+		if decision == gwAllow {
+			s.lookupApprover(r.Context(), facts, approvalID)
+		}
+		e := s.receiptEntry(facts, r.Method, url, decision, 0, approvalID)
+		e.Phase, e.Outcome = phaseAttempt, outcomeSent
+		rc, err := s.chain.Append(e, true)
+		if rc != nil {
+			attemptID = rc.ReceiptID
+		}
+		return err
+	}
+	// The final receipt is written exactly once: before the upstream
+	// response headers are sent (so the agent can never hold a response
+	// whose receipt is not yet on disk), or on return for every path that
+	// never reaches that point.
+	var recordOnce sync.Once
+	record := func() {
+		recordOnce.Do(func() {
+			if decision == gwAllow {
+				s.lookupApprover(r.Context(), facts, approvalID)
+			}
+			e := s.receiptEntry(facts, r.Method, url, decision, status, approvalID)
+			if attemptID != "" {
+				e.Phase, e.AttemptID, e.RespBytes = phaseOutcome, attemptID, respBytes
+				if notSent {
+					e.Outcome = "not_sent"
+				}
+			}
+			if _, err := s.chain.Append(e, false); err != nil {
+				// A transit without a receipt is a boundary breach: scream to
+				// stderr in fail-closed mode, not just the log stream.
+				msg := fmt.Sprintf("receipt record failed for %s %s: %v", r.Method, url, err)
+				log.Printf("CRITICAL: %s", msg)
+				if !s.failOpen {
+					fmt.Fprintf(os.Stderr, "CRITICAL: %s\n", msg)
+				}
+			}
+		})
+	}
 	defer record()
 
+	writeJSON := func(code int, v any) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(v)
+		status = code
+	}
+	switch {
+	case errors.Is(holdErr, errBodyTooLarge):
+		decision = gwDeny
+		facts.reasons = []string{"body_too_large_to_review"}
+		writeJSON(http.StatusRequestEntityTooLarge, map[string]any{
+			"error":   fmt.Sprintf("request body is larger than the %d bytes Ovara holds for review; it was not sent", s.bodyLimit(r)),
+			"reasons": []string{"body_too_large_to_review"},
+		})
+		return
+	case holdErr != nil:
+		decision = gwDeny
+		facts.reasons = []string{"body_unreadable"}
+		writeJSON(http.StatusBadRequest, map[string]any{"error": "could not read the request body", "reasons": []string{"body_unreadable"}})
+		return
+	case cut:
+		decision = gwDeny
+		facts.reasons = []string{"resource_too_long"}
+		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "reasons": []string{"resource_too_long"}})
+		return
+	}
+	// A scoped agent acts only on what its allow list names (agents.go):
+	// outside it, the request is refused before policy is asked.
+	if name, out := s.outOfScope(r.Context(), r.Method+" "+url); out {
+		decision = gwDeny
+		facts.reasons = []string{"agent_scope"}
+		writeJSON(http.StatusForbidden, scopeRefusal(name))
+		return
+	}
+
 	failedOpen := false
-	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, requestContext(r))
+	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, s.withForPreview(r.Context(), withAgentPreview(r.Context(), requestContext(r, hb))))
 	if err != nil {
 		log.Printf("gateway check failed for %s: %v", url, err)
 		if !s.failOpen {
-			decision = "deny"
+			decision = gwDeny
 			status = http.StatusBadGateway
+			facts.reasons = []string{"gateway_unreachable"}
 			http.Error(w, `{"error":"gateway unreachable, fail-closed"}`, http.StatusBadGateway)
 			return
 		}
-		d = &gateway.Decision{Decision: "allow"}
+		d = &gateway.Decision{Decision: gwAllow}
 		failedOpen = true
+		facts.reasons = []string{"gateway_unreachable_fail_open"}
 	}
+	facts.gw = d
 	// Pivot-risk hosts are never reachable on a policy "allow" alone. This is a
 	// DENY, not a pause: the gateway only opens an approval for a decision it
 	// recorded as escalate (it refuses with 409 for an allowed one, on purpose),
 	// so a proxy-forced "escalate" could never be approved and only ever looked
 	// like a pause. To permit such a host, change the policy.
-	if d.Decision == "allow" && matchHostGlob(s.sensitiveHosts, r.URL.Hostname()) {
-		d.Decision = "deny"
+	if d.Decision == gwAllow && matchHostGlob(s.sensitiveHosts, r.URL.Hostname()) {
+		d.Decision = gwDeny
 		d.ReasonCodes = append(d.ReasonCodes, "sensitive_host")
 	}
 	// A "read" that carries a body or a huge query string can move data out
 	// even though policy allowed the verb; the query is hidden from policy
 	// (it can hold secrets), so shape is the only signal we have.
-	if d.Decision == "allow" && !failedOpen {
-		if why := readCarriesData(r); why != "" {
-			d.Decision = "deny"
+	modelFinding := ""
+	if d.Decision == gwAllow && !failedOpen {
+		if why := s.readCarriesData(r); why != "" {
+			d.Decision = gwDeny
 			d.ReasonCodes = append(d.ReasonCodes, why)
+		} else if why := s.allowedGitRefusal(r, hb, url); why != "" {
+			d.Decision = gwDeny
+			d.ReasonCodes = append(d.ReasonCodes, why)
+		} else if why := br.modelWhy; why != "" {
+			if s.modelGateNoAsk || !modelAskable(why) {
+				d.Decision = gwDeny
+				d.ReasonCodes = append(d.ReasonCodes, why)
+			} else {
+				modelFinding = why // asked below, once the URL decision is settled
+			}
 		}
 	}
 	decision = d.Decision
 
-	writeJSON := func(code int, v any) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(code)
-		json.NewEncoder(w).Encode(v)
-		status = code
+	// second answers the proxy's own follow-up questions (askAction). It
+	// writes the refusal and returns false unless the request may go on.
+	second := func(outcome, id string, about map[string]any) bool {
+		if id != "" {
+			noteApproval(id)
+		}
+		switch outcome {
+		case pkgAllow, pkgApproved:
+			return true
+		case pkgTimeout:
+			decision = gwEscalate
+			code, body := s.heldAnswer(w, "", approvalID, "")
+			for k, v := range body {
+				about[k] = v
+			}
+			writeJSON(code, about)
+		case pkgAborted:
+			decision = gwEscalate
+		case pkgError:
+			decision = gwDeny
+			about["error"] = "gateway unreachable, fail-closed"
+			writeJSON(http.StatusBadGateway, about)
+		default:
+			decision = gwDeny
+			about["approval_id"] = approvalID
+			writeJSON(http.StatusForbidden, about)
+		}
+		return false
 	}
 
 	switch d.Decision {
-	case "allow":
+	case gwAllow:
 		// proceed to execution below
-	case "deny":
-		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes})
+	case gwDeny:
+		writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes}, d.MatchedRule))
 		return
-	case "escalate":
+	case gwEscalate:
 		outcome, id := s.awaitEscalation(r.Context(), d, r.Method, url)
-		approvalID = id
+		noteApproval(id)
 		switch outcome {
 		case "approved":
-			decision = "allow"
+			decision = gwAllow
 		case "timeout":
-			writeJSON(http.StatusGatewayTimeout, map[string]any{"error": "approval timeout", "decision_id": d.DecisionID, "approval_id": approvalID})
+			code, body := s.heldAnswer(w, d.DecisionID, approvalID, d.MatchedRule)
+			writeJSON(code, body)
 			return
 		case "aborted":
 			return
+		case "used":
+			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "this approval was already used by an identical request; send it again to be asked afresh", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": []string{"approval_used"}}, d.MatchedRule))
+			return
 		default:
-			writeJSON(http.StatusForbidden, map[string]any{"error": "action requires approval", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": d.ReasonCodes})
+			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "action requires approval", "decision_id": d.DecisionID, "approval_id": approvalID, "reasons": d.ReasonCodes}, d.MatchedRule))
 			return
 		}
 	default:
 		// Unknown/malformed decision strings must never reach execution:
 		// a truncated or confused gateway response is not an allow.
-		decision = "deny"
+		decision = gwDeny
 		writeJSON(http.StatusBadGateway, map[string]any{"error": "malformed gateway decision"})
 		return
+	}
+
+	// MCP traffic (mcpgate.go): every tool call is a question of its own,
+	// and a tool list coming back is checked against its pins below.
+	var mx *mcpExchange
+	if !failedOpen {
+		var ref *mcpRefusal
+		if mx, ref = s.mcpRequest(r.Context(), r, br.mcp); ref != nil {
+			decision, status = ref.write(w)
+			if ref.approvalID != "" {
+				noteApproval(ref.approvalID)
+			}
+			facts.reasons = ref.reasons
+			return
+		}
 	}
 
 	// Strict installs: downloading a package the project has not pinned is
 	// a second question, about the package (packages.go). Only a download
 	// the URL policy itself allowed is asked; one a person already approved
-	// as a URL needs no second answer.
-	if d.Decision == "allow" && !failedOpen {
+	// as a URL needs no second answer. Either way, a package whose lockfile
+	// records a digest must arrive with that digest.
+	var pkgDigests []string
+	if !failedOpen && r.Method == http.MethodGet {
+		if ref, ok := s.packageDownload(r.URL.Hostname(), r.URL.Path); ok {
+			pkgDigests = s.packageDigests(ref)
+		}
+	}
+	if d.Decision == gwAllow && !failedOpen {
 		if ref, ok := s.packageDownload(r.URL.Hostname(), r.URL.Path); ok {
 			outcome, id := s.checkPackage(r.Context(), ref, url)
-			if id != "" {
-				approvalID = id
-			}
-			switch outcome {
-			case pkgAllow:
-			case pkgTimeout:
-				decision = "escalate"
-				writeJSON(http.StatusGatewayTimeout, map[string]any{"error": "approval timeout", "package": ref, "approval_id": approvalID})
-				return
-			case pkgAborted:
-				decision = "escalate"
-				return
-			case pkgError:
-				decision = "deny"
-				writeJSON(http.StatusBadGateway, map[string]any{"error": "gateway unreachable, fail-closed", "package": ref})
-				return
-			default:
-				decision = "deny"
-				writeJSON(http.StatusForbidden, map[string]any{"error": "package not allowed", "package": ref, "approval_id": approvalID})
+			if !second(outcome, id, map[string]any{"error": "package not allowed", "package": ref}) {
 				return
 			}
 		}
+		// An API whose verb is in the body (apigate.go): the operation is
+		// named in the receipt, and a write is a question of its own.
+		if op := s.apiOperationOf(r, hb, br); op != nil {
+			if op.refuse != "" {
+				decision = gwDeny
+				facts.reasons = append(facts.reasons, op.refuse)
+				writeJSON(op.status, map[string]any{"error": apiRefusalText(op.refuse), "reasons": []string{op.refuse}})
+				return
+			}
+			facts.reasons = append(facts.reasons, operationNote+op.resource)
+			if !op.read {
+				preview := requestContext(r, hb)
+				if preview == nil {
+					preview = map[string]string{}
+				}
+				for k, v := range op.preview {
+					preview[k] = v
+				}
+				outcome, id := s.askAction(r.Context(), op.action, op.resource, preview, op.why)
+				if !second(outcome, id, map[string]any{"error": errActionDenied, "reasons": []string{op.action}, "operation": op.resource}) {
+					return
+				}
+			}
+		}
+		// A model request that makes the provider reach out on the agent's
+		// behalf is a person's call, with the request in front of them.
+		if modelFinding != "" {
+			host := normalizeHost(r.URL.Hostname())
+			preview := requestContext(r, hb)
+			if preview == nil {
+				preview = map[string]string{}
+			}
+			preview["model_feature"] = modelFinding
+			outcome, id := s.askAction(r.Context(), actionModelFeature, "model:"+host+" "+modelFinding, preview, "uses a provider-side feature")
+			if !second(outcome, id, map[string]any{"error": "action denied", "reasons": []string{modelFinding}}) {
+				return
+			}
+		}
+		// A secret-shaped value in what is being sent is a question of its
+		// own (dlp.go): the person sees what kinds were found, never the values.
+		if kinds, found := s.sensitiveContent(r, hb); found != "" {
+			facts.reasons = append(facts.reasons, "content:"+kinds)
+			preview := requestContext(r, hb)
+			if preview == nil {
+				preview = map[string]string{}
+			}
+			preview["content"] = found
+			preview["why"] = "a secret-shaped value is in what is being sent; a person decides whether it should leave"
+			outcome, id := s.askAction(r.Context(), actionContent, "content:"+kinds+" "+r.Method+" "+url, preview, "carries sensitive content")
+			if !second(outcome, id, map[string]any{"error": errActionDenied, "reasons": []string{"sensitive_content"}, "content": found}) {
+				return
+			}
+		}
+		// A write soon after the agent read untrusted content, a write that
+		// leaves a flow rule, and model use past the agent's budget, are
+		// questions too (taint.go, flows.go, modelbudget.go).
+		if !s.agentQuestions(r, hb, url, facts, second) {
+			return
+		}
+		// Allowed traffic is metered per host; past the allowance a person
+		// is asked (budget.go). Model calls resend their whole conversation
+		// every turn, so only their count is metered, not their size.
+		host := normalizeHost(r.URL.Hostname())
+		// A read let through by a rule that allows reads from any host (the
+		// balanced and observe profiles) counts toward the agent's cap on
+		// unlisted hosts (openreads.go).
+		if isOpenRead(d.MatchedRule, d.Decision, r.Method) {
+			outcome, id := s.checkOpenHosts(r.Context(), host)
+			if !second(outcome, id, map[string]any{"error": "open-read host cap reached", "reasons": []string{"open_hosts_exceeded"}, "host": host}) {
+				return
+			}
+		}
+		n := int64(readRequestBytes(r))
+		if hb != nil && !s.isModelHost(host) {
+			n += hb.size
+		}
+		outcome, id := s.checkBudget(r.Context(), host, n)
+		if !second(outcome, id, map[string]any{"error": "egress budget exceeded", "reasons": []string{"egress_budget_exceeded"}, "host": host}) {
+			return
+		}
+	}
+
+	// Reading content anyone can write marks the agent (taint.go); so
+	// does reading from a flow rule's sources (flows.go).
+	taintSrc := ""
+	var flowReads []string
+	if !failedOpen {
+		taintSrc = s.readTaintSource(r, d, modelFinding)
+		flowReads = s.flowsOfRead(r)
+	}
+	if taintSrc != "" {
+		facts.reasons = append(facts.reasons, "untrusted_read")
 	}
 
 	// SSRF guard: the policy decision says nothing about WHERE this goes —
@@ -587,7 +959,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	host := normalizeHost(r.URL.Hostname())
 	if err := s.checkDestination(r.Context(), host); err != nil {
 		log.Printf("destination %s rejected: %v", host, err)
-		decision = "deny"
+		decision = gwDeny
 		http.Error(w, "destination not allowed", http.StatusForbidden)
 		status = http.StatusForbidden
 		return
@@ -598,16 +970,57 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// nothing is injected: secrets must never transit in cleartext.
 	// Fail-open lets traffic through without a policy decision; it must
 	// never also hand that traffic the real credentials.
+	//
+	// Hop-by-hop headers go first — notably Upgrade/Connection, which would
+	// otherwise turn one approved GET into an uninspected byte stream — so
+	// that a Connection token cannot name, and remove, a header added here.
+	stripHopHeaders(r.Header)
 	var injected [][]byte
 	if r.URL.Scheme == "https" && !failedOpen {
-		if headers := creds.Match(s.bindings, host); headers != nil {
+		// A binding names the port it is for (443 unless it says otherwise)
+		// and may be limited to some paths and methods.
+		port := r.URL.Port()
+		if port == "" {
+			port = "443"
+		}
+		if b := creds.MatchBinding(s.bindings, creds.Request{Host: host, Port: port, Method: r.Method, Path: r.URL.Path}); b != nil {
+			// A brokered binding mints (or reuses) a short-lived token here.
+			// Ovara's own call to the issuer goes out on the verified-TLS
+			// transport, not through policy, and nothing of it reaches the
+			// agent. No token, no request: never an empty or expired one.
+			headers, minted, err := b.Credential(r.Context(), s.transport)
+			if err != nil {
+				log.Printf("credential for %s %s unavailable; not forwarding: %v", r.Method, url, err)
+				decision = "error"
+				facts.reasons = []string{"credential_unavailable"}
+				writeJSON(http.StatusBadGateway, map[string]any{
+					"error":   "Ovara could not obtain a short-lived credential for " + host + "; the request was not sent",
+					"reasons": []string{"credential_unavailable"},
+				})
+				return
+			}
+			// The agent's own credentials never ride along with ours.
+			stripCredentialHeaders(r.Header)
 			for k, v := range headers {
 				r.Header.Set(k, v)
 				injected = append(injected, secretTargets(k, v)...)
 			}
+			// A minted token is scrubbed like a static secret, also where
+			// it appears bare (it may be sent wrapped, as in Basic auth).
+			for _, tok := range minted {
+				injected = append(injected, secretTargets("token", tok)...)
+			}
 		}
 	}
 	stripMethodOverride(r.Header)
+	if len(pkgDigests) > 0 {
+		// The digest is of the whole file as published: no fragment, no
+		// encoding the client asked for (the transport still negotiates
+		// gzip and decodes it).
+		r.Header.Del("Range")
+		r.Header.Del("If-Range")
+		r.Header.Del("Accept-Encoding")
+	}
 	if len(injected) > 0 {
 		// The response is scrubbed for reflected credentials, which only
 		// works on the whole, plain body. An agent-chosen Accept-Encoding
@@ -629,10 +1042,25 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// checked destination in this single chokepoint covering both the
 	// plain-proxy and MITM paths.
 	r.Host = r.URL.Host
-	// Strip hop-by-hop headers — notably Upgrade/Connection, which would
-	// otherwise turn one approved GET into an uninspected byte stream.
-	stripHopHeaders(r.Header)
-	resp, err := s.transport.RoundTrip(r)
+	// No receipt on disk, no request upstream: a full disk must not turn
+	// into egress that leaves no trace.
+	if err := attempt(); err != nil {
+		msg := fmt.Sprintf("attempt receipt for %s %s could not be written: %v", r.Method, url, err)
+		log.Printf("CRITICAL: %s", msg)
+		if !s.failOpen {
+			fmt.Fprintf(os.Stderr, "CRITICAL: %s\n", msg)
+			decision = "error"
+			notSent = true
+			http.Error(w, "receipt could not be written; not forwarding", http.StatusBadGateway)
+			status = http.StatusBadGateway
+			return
+		}
+	}
+	// A response still arriving when its agent is stopped or removed is
+	// cut: the upstream request is cancelled, which ends the copy below.
+	upCtx, cancelUp := context.WithCancel(r.Context())
+	defer cancelUp()
+	resp, err := s.transport.RoundTrip(r.WithContext(upCtx))
 	if err != nil {
 		decision = "error"
 		log.Printf("upstream %s %s: %v", r.Method, url, err)
@@ -640,13 +1068,18 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	s.noteRead(r.Context(), taintSrc)
+	if resp.StatusCode < 400 {
+		s.noteFlowRead(r.Context(), flowReads, matchURL(r))
+	}
 	status = resp.StatusCode
+	respBytes = resp.ContentLength
 	stripHopHeaders(resp.Header)
 	if len(injected) > 0 {
-		if ce := resp.Header.Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
+		if ce := encodedValue(resp.Header.Values("Content-Encoding")); ce != "" {
 			// Upstream encoded the body although we did not ask for it:
 			// it cannot be scrubbed, so it is not delivered.
-			decision = "deny"
+			decision = gwDeny
 			log.Printf("upstream %s sent Content-Encoding %q on a credentialed response; refusing (cannot scrub)", url, ce)
 			http.Error(w, "upstream sent an encoded response that cannot be checked for leaked credentials", http.StatusBadGateway)
 			status = http.StatusBadGateway
@@ -657,36 +1090,153 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reflector-class exfil: a bound host that echoes request data
 	// (httpbin /headers, debug endpoints, request-bin services) would hand
-	// the injected credentials straight back to the agent. Scrub the exact
-	// injected values from response headers and body — the agent sees
-	// "[REDACTED]" where its own credential was reflected.
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			for _, secret := range injected {
-				v = strings.ReplaceAll(v, string(secret), "[REDACTED]")
+	// the injected credentials straight back to the agent. Scrub the
+	// injected values, in their common encodings, from response header
+	// names and values, body and trailers — the agent sees "[REDACTED]"
+	// where its own credential was reflected. Signed URL parameters the
+	// upstream minted from the credential (a Location to a presigned
+	// download) are redacted too; in the body, for text types only.
+	// A tool list the agent's MCP client would read is checked before it
+	// gets there (mcpgate.go).
+	if !failedOpen {
+		cut := func(v mcp.Verdict) {
+			log.Printf("mcp: %s %s: event refused after the response started (%s)", r.Method, url, strings.Join(v.Reasons, ","))
+			if _, err := s.chain.Record(r.Method, url, "deny", http.StatusBadGateway, v.ApprovalID); err != nil {
+				log.Printf("CRITICAL: receipt record failed for refused MCP event %s %s: %v", r.Method, url, err)
 			}
-			w.Header().Add(k, v)
+		}
+		if ref := s.mcpResponse(r.Context(), r, mx, resp, cut); ref != nil {
+			decision, status = ref.write(w)
+			if ref.approvalID != "" {
+				noteApproval(ref.approvalID)
+			}
+			facts.reasons = ref.reasons
+			return
 		}
 	}
+	// An executable or installer coming back on a read a rule allowed is a
+	// question of its own (downloads.go): the person sees the file before
+	// the agent does. A refusal drops the response; the request stays on
+	// record as sent.
+	if !failedOpen && d.Decision == gwAllow && r.Method == http.MethodGet && resp.StatusCode == http.StatusOK && len(pkgDigests) == 0 {
+		if _, isPkg := s.packageDownload(r.URL.Hostname(), r.URL.Path); !isPkg {
+			if name, kind, ok := executableDownload(r, resp); ok {
+				facts.reasons = append(facts.reasons, "download:"+name)
+				outcome, id := s.askAction(r.Context(), actionDownload, "download:"+hostForResource(r)+r.URL.EscapedPath(), downloadPreview(name, kind, resp.ContentLength), "delivers an executable")
+				if !second(outcome, id, map[string]any{"error": "download not allowed", "reasons": []string{"download_refused"}, "file": name}) {
+					if decision == gwDeny {
+						facts.reasons = append(facts.reasons, "download_refused")
+					}
+					return
+				}
+			}
+		}
+	}
+	var set *secretSet
+	if len(injected) > 0 {
+		set = newSecretSet(injected)
+	}
+	copyScrubbedHeader(w.Header(), resp.Header, "", set)
 	// Receipt first, then the response: status and decision are final here.
 	record()
 	w.WriteHeader(resp.StatusCode)
 	body := io.Reader(resp.Body)
-	if len(injected) > 0 {
-		body = newScrubReader(resp.Body, injected)
+	var verify *digestReader
+	if len(pkgDigests) > 0 && resp.StatusCode == http.StatusOK {
+		verify = newDigestReader(resp.Body, pkgDigests)
+		body = verify
 	}
+	if len(injected) > 0 {
+		body = newScrubReader(body, injected)
+		if textualType(resp.Header.Get("Content-Type")) {
+			body = newSignedParamReader(body)
+		}
+	}
+	usage := s.watchModelUsage(r, resp, &body)
+	stopWatch, wasCut := s.cutWhenAgentGone(r.Context(), cancelUp)
 	copyFlush(w, body)
+	stopWatch()
+	usage.finish()
+	if wasCut() {
+		// The client must not take a cut body for a whole one.
+		log.Printf("%s %s: response cut, its agent was stopped or removed", r.Method, url)
+		if _, err := s.chain.Append(receipts.Entry{
+			Method: r.Method, URL: url, Decision: gwDeny, Status: status,
+			Agent: facts.agent.label, Reasons: []string{"agent_stopped_mid_response"},
+		}, false); err != nil {
+			log.Printf("CRITICAL: receipt record failed for cut response %s %s: %v", r.Method, url, err)
+		}
+		panic(http.ErrAbortHandler)
+	}
+	if verify != nil && errors.Is(verify.err, errDigestMismatch) {
+		// The client has everything but the last bytes; abort the
+		// connection so it cannot take a cut body for a whole one.
+		log.Printf("CRITICAL: %s %s does not match the digest in the project's lockfile; the download was cut", r.Method, url)
+		if _, err := s.chain.Record(r.Method, url, gwDeny, http.StatusBadGateway, ""); err != nil {
+			log.Printf("CRITICAL: receipt record failed for cut download %s %s: %v", r.Method, url, err)
+		}
+		panic(http.ErrAbortHandler)
+	}
 	// resp.Trailer values populate after body read; forward them properly.
 	// Scrub here too — a reflector can echo injected credentials in
 	// trailers just as well as in headers or the body.
-	for k, vv := range resp.Trailer {
-		for _, v := range vv {
-			for _, secret := range injected {
-				v = strings.ReplaceAll(v, string(secret), "[REDACTED]")
+	copyScrubbedHeader(w.Header(), resp.Trailer, http.TrailerPrefix, set)
+}
+
+// encodedValue returns the first Content-Encoding value that is not identity,
+// or "". Every value counts: a header list of "identity" then "gzip" is a
+// gzip body.
+func encodedValue(vals []string) string {
+	for _, v := range vals {
+		for _, tok := range strings.Split(v, ",") {
+			if t := strings.TrimSpace(tok); t != "" && !strings.EqualFold(t, "identity") {
+				return t
 			}
-			w.Header()[http.TrailerPrefix+k] = append(w.Header()[http.TrailerPrefix+k], v)
 		}
 	}
+	return ""
+}
+
+// heldAnswer is the status and body for a request a person has not
+// answered within the hold: 504 "approval timeout", or with the retry
+// answer 503 "held for approval" with Retry-After set to the poll interval,
+// so the agent comes back and the same request runs once it is approved.
+func (s *Server) heldAnswer(w http.ResponseWriter, decisionID, approvalID, rule string) (int, map[string]any) {
+	if !s.escalateRetry {
+		return http.StatusGatewayTimeout, withRule(map[string]any{"error": "approval timeout", "decision_id": decisionID, "approval_id": approvalID}, rule)
+	}
+	after := int(s.escalatePoll / time.Second)
+	if after < 1 {
+		after = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(after))
+	return http.StatusServiceUnavailable, withRule(map[string]any{
+		"error":           "held for approval",
+		"decision_id":     decisionID,
+		"approval_id":     approvalID,
+		"retry_after_sec": after,
+		"hint":            "a person is deciding; send the same request again after retry_after_sec and it will run once approved",
+	}, rule)
+}
+
+// withRule adds the policy rule that decided, when one did, so a refusal
+// says what to change.
+// withRule names the rule that decided and, on a refusal, which layer it
+// belongs to and what can change it: an agent or a person reading the body
+// should know where to go next.
+func withRule(m map[string]any, rule string) map[string]any {
+	if rule == "" {
+		return m
+	}
+	m["rule"] = rule
+	if m["error"] == "action denied" { // a policy refusal, not a hold or an expired approval
+		if strings.HasPrefix(rule, baseline.Label) {
+			m["hint"] = "refused by the organisation's baseline policy: the project's policy.json cannot allow this; only whoever signs the baseline can"
+		} else {
+			m["hint"] = "refused by the project's policy: the rule named here, in its policy.json, decides this (ovara policy; ovara policy suggest after an observe run)"
+		}
+	}
+	return m
 }
 
 // awaitEscalation registers an approval request for an escalated decision and
@@ -717,6 +1267,16 @@ func (s *Server) holdForApproval(ctx context.Context, what string, create func()
 			return "denied", ""
 		}
 	}
+	// And per agent: one agent filling its share does not stop the
+	// others' questions.
+	if s.held != nil {
+		agent := agentKey(ctx)
+		if !s.held.take(agent, maxPendingEscalations) {
+			log.Printf("escalate: agent %q has %d approvals pending; refusing %s", agent, maxPendingEscalations, what)
+			return "denied", ""
+		}
+		defer s.held.release(agent)
+	}
 	approvalID, err := create()
 	if err != nil {
 		log.Printf("escalate: create approval for %s failed: %v", what, err)
@@ -731,8 +1291,17 @@ func (s *Server) holdForApproval(ctx context.Context, what string, create func()
 		case <-ctx.Done():
 			return "aborted", approvalID
 		case <-deadline.C:
+			// One last look: an answer given inside the final poll interval
+			// must not be lost, or the person approves a request that then
+			// reports a timeout and comes back as a retry.
+			if status, err := s.gw.ApprovalStatus(ctx, approvalID); err == nil && status != "pending" {
+				return s.claimed(ctx, approvalID, status), approvalID
+			}
 			return "timeout", approvalID
 		case <-ticker.C:
+			if s.agentStopped(ctx) {
+				return "denied", approvalID
+			}
 			status, err := s.gw.ApprovalStatus(ctx, approvalID)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -742,8 +1311,33 @@ func (s *Server) holdForApproval(ctx context.Context, what string, create func()
 				continue
 			}
 			if status != "pending" {
-				return status, approvalID
+				return s.claimed(ctx, approvalID, status), approvalID
 			}
 		}
 	}
+}
+
+// claimed turns an approved status into "approved" only once the approval
+// is claimed, so the action it allows runs once: an identical request that
+// finds it already used gets "used" and is asked again. Other statuses
+// pass through. A gateway without the claim route (an older one) is noted
+// once and the approval is taken as before.
+func (s *Server) claimed(ctx context.Context, approvalID, status string) string {
+	if status != "approved" {
+		return status
+	}
+	_, ok, err := s.gw.ClaimApproval(ctx, approvalID)
+	switch {
+	case errors.Is(err, gateway.ErrClaimUnsupported):
+		s.claimNote.Do(func() {
+			log.Printf("the gateway has no approval claim route: an approval is not single-use until it is upgraded")
+		})
+		return "approved"
+	case err != nil:
+		log.Printf("escalate: claim approval %s: %v", approvalID, err)
+		return "error"
+	case !ok:
+		return "used"
+	}
+	return "approved"
 }

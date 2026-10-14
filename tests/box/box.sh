@@ -94,6 +94,16 @@ if [ "${OVARA_BOX_TIER:-1}" = 2 ]; then
   # (npm packages' own test fixtures are not the image's secrets)
   r T2_IMAGE_SECRETS "$(find / -xdev \( -path /proc -o -path '*/node_modules' \) -prune -o -type f \( -name 'id_rsa*' -o -name 'id_ed25519*' -o -name 'id_ecdsa*' -o -name 'id_dsa*' -o -name .netrc -o -name .git-credentials -o -name .npmrc -o -name .pypirc -o -name .env -o -path '*/.aws/credentials' -o -path '*/.docker/config.json' -o -path '*/.config/gh/hosts.yml' \) -print 2>/dev/null | head -5 | tr '\n' ' ')"
 fi
+# tier 1: the box's own root file system
+if [ "${OVARA_BOX_TIER:-1}" = 1 ]; then
+  r T1_HOSTPROJ "$( [ -e /tmp/proj ] && echo present || echo absent)"
+  r T1_HOSTDIRS "$(ls -A /home /root /srv /opt 2>/dev/null | wc -l)"
+  r T1_ROOTFS "$(touch /usr/ovara-probe 2>/dev/null && echo writable || echo readonly)"
+  r T1_ETC "$( (echo x >> /etc/hosts) 2>/dev/null && echo writable || echo readonly)"
+  r T1_SHADOW "$( [ -s /etc/shadow ] && echo present || echo covered)"
+  r T1_NNP "$(awk '/^NoNewPrivs/{print $2}' /proc/self/status)"
+  r T1_PROCS "$(ps -eo user= | sort -u | tr '\n' ' ' | sed 's/ $//')"
+fi
 r DONE yes
 EOF
 chmod 755 /tmp/agent.sh
@@ -130,10 +140,11 @@ echo "=== the box (tier $TIER)"
 if [ "$TIER" = 2 ]; then
   BOXFLAGS=(-tier 2 -image "$BOX_IMAGE" -mount /tmp/agent.sh:/tmp/agent.sh)
 else
-  BOXFLAGS=(-user ovara-agent)
+  BOXFLAGS=(-user ovara-agent -mount /tmp/agent.sh:/tmp/agent.sh)
 fi
 # config.json is a readability probe: the agent must not be able to read it
-timeout 600 ovara box -dir $D -ui off -approve-timeout 150s "${BOXFLAGS[@]}" $P -- bash /tmp/agent.sh > /tmp/box.out 2>&1
+rm -f /tmp/events.jsonl
+timeout 600 ovara box -dir $D -ui off -approve-timeout 150s -events /tmp/events.jsonl "${BOXFLAGS[@]}" $P -- bash /tmp/agent.sh > /tmp/box.out 2>&1
 BOX_EXIT=$?
 wait $HUMAN
 echo "--- ovara box output (tail)"; grep -v '^AGENTRESULT ' /tmp/box.out | tail -20
@@ -164,6 +175,17 @@ check "a paste site is refused by policy" 403 "$(val S1)"
 check "ignoring the proxy gets nothing (boundary)" 000 "$(val B1)"
 check "no direct DNS (boundary)" 000 "$(val B2)"
 check "git push from the box is refused" refused "$(val PUSH)"
+
+if [ "$TIER" = 1 ]; then
+  echo "=== tier 1: the box's file system"
+  check "the host's project is not in the box (only its copy)" absent "$(val T1_HOSTPROJ)"
+  check "nothing of /home, /root, /srv or /opt" 0 "$(val T1_HOSTDIRS)"
+  check "the system directories are read-only" readonly "$(val T1_ROOTFS)"
+  check "/etc is read-only" readonly "$(val T1_ETC)"
+  check "/etc/shadow is covered" covered "$(val T1_SHADOW)"
+  check "no-new-privileges: set-uid programs give nothing" 1 "$(val T1_NNP)"
+  check "the agent sees its own processes only" ovara-agent "$(val T1_PROCS)"
+fi
 
 if [ "$TIER" = 2 ]; then
   echo "=== tier 2: the container"
@@ -196,6 +218,31 @@ case "$(val RMRF)" in "exit=137 victim=survived") ok "rm -rf paused for the pers
 check "ordinary commands run and report their own exit status" "exit=2" "$(val LS)"
 grep -q 'deny apr_.* shell:rm -rf /tmp/victim' /tmp/human.log && ok "the person saw the exact command (shell:rm -rf /tmp/victim)" || bad "rm -rf approval not seen" "$(cat /tmp/human.log)"
 grep -qE 'command\(s\) checked: [0-9]+ allowed' /tmp/box.out && ok "box reports the commands it checked: $(grep -oE '[0-9]+ command\(s\) checked.*' /tmp/box.out)" || bad "no command summary" ""
+
+echo "=== the events stream (-events)"
+python3 - "$TIER" <<'PY' > /tmp/events.summary
+import json, sys
+evs = [json.loads(l) for l in open('/tmp/events.jsonl')]
+first, last = evs[0], evs[-1]
+m = first.get('manifest') or {}
+s = last.get('summary') or {}
+print('first', first['event'], m.get('version'), m.get('tier'), (m.get('agent') or {}).get('command', [None])[0])
+print('last', last['event'], s.get('outcome'), s.get('commit_back'), s.get('exit_code'), 'branch' if str(s.get('branch', '')).startswith('ovara/box-') else 'nobranch')
+print('refused', 'yes' if any(e['event'] == 'command.refused' and e.get('command', '').startswith('sudo') for e in evs) else 'no')
+print('notapproved', sum(1 for e in evs if e['event'] == 'command.not_approved' and 'rm -rf /tmp/victim' in e.get('command', '')))
+print('order', ' '.join(e['event'] for e in evs if e['event'] in ('run.created', 'workspace.copied', 'proxy.started', 'agent.started', 'agent.exited', 'commit_back.waiting', 'commit_back.landed', 'run.finished')))
+print('fixed', len(set(e['run_id'] for e in evs)), 'v1' if all(e['v'] == 1 and e['time'].endswith('Z') for e in evs) else 'bad')
+print('attest', 'yes' if str(s.get('attestation', '')).startswith('var/attestations/') else 'no')
+PY
+ev() { grep "^$1 " /tmp/events.summary | cut -d' ' -f2-; }
+check "the stream starts with run.created carrying the manifest" "run.created 0.1 $TIER bash" "$(ev first)"
+check "and ends with run.finished: clean, the changes landed on an ovara/box-* branch, exit 0" "run.finished clean landed 0 branch" "$(ev last)"
+check "the refused sudo is in the stream (command.refused)" yes "$(ev refused)"
+check "the rm -rf the person refused is in the stream (command.not_approved)" 1 "$(ev notapproved)"
+check "the lifecycle events come in order" "run.created workspace.copied proxy.started agent.started agent.exited commit_back.waiting commit_back.landed run.finished" "$(ev order)"
+check "one run id; every line is v1 with a UTC time" "1 v1" "$(ev fixed)"
+check "the summary names the run's attestation" yes "$(ev attest)"
+ovara attest verify -dir $D >/tmp/attest.out 2>&1 && ok "the run's attestation verifies: $(grep -o 'changes on branch [^,]*' /tmp/attest.out)" || bad "attestation" "$(tail -3 /tmp/attest.out)"
 
 echo "=== commit-back"
 cd $P

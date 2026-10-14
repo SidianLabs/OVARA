@@ -1,5 +1,9 @@
 # Initial Wedge
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 Ovara should enter the market through a narrow, painful, high-frequency use
 case: autonomous coding and DevOps execution.
 

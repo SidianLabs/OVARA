@@ -11,9 +11,22 @@
   "pubkey_file": "var/receipt.pubkey",
   "fail_open": false,
   "credentials": [
+    {"host": "api.github.com", "github_app": {
+      "app_id": "${GH_APP_ID}",
+      "installation_id": "${GH_APP_INSTALLATION_ID}",
+      "private_key_file": "${GH_APP_KEY_FILE}",
+      "permissions": {"contents": "write", "pull_requests": "write", "metadata": "read"}
+    }},
     {"host": "api.github.com", "headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"}},
     {"host": "api.openai.com", "headers": {"Authorization": "Bearer ${OPENAI_API_KEY}"}},
     {"host": "api.anthropic.com", "headers": {"x-api-key": "${ANTHROPIC_API_KEY}", "anthropic-version": "2023-06-01"}},
-    {"host": "*.slack.com", "headers": {"Authorization": "Bearer ${SLACK_TOKEN}"}}
+    {"host": "slack.com", "headers": {"Authorization": "Bearer ${SLACK_TOKEN}"}},
+    {"host": "api.example.com", "oauth2": {
+      "token_url": "https://auth.example.com/oauth/token",
+      "client_id": "${EXAMPLE_CLIENT_ID}",
+      "client_secret": "${EXAMPLE_CLIENT_SECRET}",
+      "scope": "read write",
+      "grant": "client_credentials"
+    }}
   ]
 }

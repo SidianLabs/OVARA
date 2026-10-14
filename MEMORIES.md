@@ -1,6 +1,17 @@
 # Ovara — working memory (handoff)
 
-Last updated: 2026-10-09 (cloud session). Read this first, then `README.md`, `docs/threat-model.md`, `docs/use-cases.md`.
+Last updated: 2026-10-13 (cloud session). Read this first, then `docs/GUARANTEES.md`, `README.md`, `docs/threat-model.md`, `docs/box.md`, `docs/use-cases.md`.
+
+**2026-10-13: security hardening on branch `ccr-83c761fa-y5ms22`** (pushed; no PR yet; nothing merged to `main`). A full review of `51cf43f` found ways around several promises (model API as a write channel, approvals not covering the exact bytes, tier 1 without file-system isolation, log truncation not detected, deny rules outranked). All four phases are done; the detailed findings stay private (see §0.4). State at `1a4dab4`:
+- **Phase 0** (worst defaults, honest docs): `1cedd12`..`6e5cfa9`.
+- **Phase 1** (approvals cover exact bytes, egress shape and budget, rule precedence, commit-back review, command-line normalisation): up to `612a8db`.
+- **Phase 2** (scoped credentials, scrubbing, short-lived CA, receipt v2 and key history, no receipt no send, tier 1 own root, boundary hardening, secret content scan, strict digests, SDK v2 verifiers): up to `e926b61`.
+- **Phase 3** (prove it): `docs/GUARANTEES.md` is the single source of truth for promises (each with tests); 21 fuzz targets in `fuzz.yml`/`make fuzz` (the two lists are the same); golangci-lint v1.64 clean on everything changed since `51cf43f` (`--new-from-rev=51cf43f`); CI jobs `box-tier1-root` (go-tests.yml) and `box-boundary` (scenarios.yml); old plans bannered; `policy/compiler` removed.
+- **Phase 4** (new-era coverage): MCP-aware mode (`proxy/internal/mcp`, `mcpgate.go`, `ovara mcp wrap`), taint rule (`taint.go`), model budget, named agents + `ovara kill`/`ovara agent`, credential broker (GitHub App installation tokens, OAuth2 client-credentials/token-exchange; `creds/broker.go`), `ovara run -scope-repo` (`ovara box` passes the project's repo, or `none`).
+- A final adversarial review of the whole diff found MCP-gate bypasses (lenient JSON, odd content types), auth relaxing when the last named agent was removed, and smaller items; all fixed with regression tests (`fd3b8e5`, `1a4dab4`).
+- Every Go module passes `go vet` and `go test -race` at `1a4dab4`; Windows/darwin vet of `./cmd/ovara` passes; Python SDK 106 and TS SDK 61 tests passed at `e926b61` (receipt vectors in `sdk/testdata`, checked by `TestSDKVectors`). `TestTier1*` pass as root locally. One `cmd/ovara` test failed once under load and passed on re-runs (load-dependent).
+- **Not run in this session (must pass in CI before merging):** the container suites (tests/scenarios, tests/agents, tests/box tier 2, tests/redteam/*) because containers had no DNS/egress here; govulncheck (vuln.go.dev blocked by the session's network policy).
+- **Not buildable here / owner action needed:** macOS/Windows enforced mode via a VM (box milestone 6), the real-key soak (milestone 7), an external review (milestone 8), hardware-backed keys (KMS/TPM). Remaining known limits are listed under "Not guaranteed" in `docs/GUARANTEES.md`.
 
 Branch: `test/real-agents`, pushed to GitHub on 2026-10-09 (owner said "try again" and the push went through); PR being opened. PR #39 open; on `3acf1c4` 45 of 46 checks green incl. all tier 2 jobs; `security-scan` fixed after that: trivy-action pinned by commit (`ed142fd`, v0.36.0; tags now carry a `v` and 0.28.0 is gone), Trivy v0.75.0, and the one HIGH it found (`@modelcontextprotocol/sdk` 1.30.0 in integrations/mcp, CVE-2026-104850) upgraded to 1.32.1. CI pulls Docker Hub images through mirror.gcr.io (`.github/scripts/docker-hub-mirror.sh`) after a 429 storm.
 `hardening/path-to-10` is finished: merged into `main` as PR #27 (`97cafe1`). Do not reuse it.
@@ -34,7 +45,10 @@ Git identity for commits: `BHAWESHBHASKAR <bhaskarbhawesh09@gmail.com>`. Never m
 - "No not and ever mention claude on the commits or branch name"; "Also devin and command code": done for this branch and the files; `main`'s history is the owner's rewrite (0.2 step 1).
 - VMs/credits: links in §8. A cloud coding session can run Docker incl. `--privileged` (§5).
 
-### 0.4 Blockers waiting on the owner
+### 0.4 Where the 2026-10 review lives
+The review notes and the phase plan are deliberately **not in the repository** (they describe weaknesses in detail). They were kept in the session scratchpad; the owner decides where they go (a private advisory or tracker). Only the sanitised outcome is public: `docs/GUARANTEES.md` and the CHANGELOG.
+
+### 0.5 Blockers waiting on the owner
 - The `main` history rewrite: owner runs it (the classifier blocks filter-branch and force-push here).
 - Startup credits, fork permission, any `git rm` of tracked dirs: give the owner the exact command.
 
@@ -53,7 +67,8 @@ Layout:
 - `proxy/internal/{ca,creds,config,gateway,receipts}`.
 - `runtime/gateway/` — `internal/{policy,evaluator,approval,continuation,execution,record,receipt,receipts,trust,gwidentity,idregistry,anchor,handlers,...}`, `pkg/server/server.go`.
 - `tests/scenarios/`, `tests/redteam/{boundary,separate-user}/`, `tests/boundary/`, `tests/agents/` (§3.9–3.10), `tests/e2e/` (old, not in CI).
-- Experimental, unconnected: `integrations/`, `policy/compiler`, `security/sandbox`, `tools/`.
+- Experimental, unconnected: `integrations/`, `security/sandbox`, `tools/`. `policy/compiler` was removed on 2026-10-13 (it produced rules the gateway refuses). `runtime/gateway/internal/trust/{drift,degradation,chain_detection}.go` and `internal/enrollment/cloud_client.go` have no callers; each file says so; keep them for Phase 4.
+- `docs/GUARANTEES.md`: every promise, its mode and its tests. Change it in the same commit as any behaviour it describes; README claims may not go further than it.
 
 ---
 
@@ -157,6 +172,13 @@ Layout:
 - Classifier: `git rm` of tracked dirs gets blocked; hand those commands to the owner.
 - **Cloud session specifics**: start `dockerd` yourself with `--registry-mirror=https://mirror.gcr.io`. Containers' direct TLS is intercepted by the session's egress proxy, so a local-only image that trusts `/root/.ccr/ca-bundle.crt` is needed. Build it in the scratchpad: copy the Dockerfile, add `COPY ccr.crt /usr/local/share/ca-certificates/` + `update-ca-certificates` + `NODE_EXTRA_CA_CERTS`, tag `ovara-agents-ccr`, then run the same `docker run … bash -c "tr -d '\r' < /repo/tests/agents/X.sh …"` command. **Never commit that CA.** The kernel has no IPv6. The host Go is 1.24, but `GOTOOLCHAIN` fetches 1.25.6 automatically. Python SDK tests need `pip install '.[dev]'` in a venv; delete the `sdk/python/build/` it leaves behind.
 - Test expectations that encoded bugs get updated deliberately, and the commit says so.
+- **Tier 1 boxes have their own root (since 2026-10-13).** Anything the agent needs from `/tmp`, `/opt` or a home directory must come in with `-mount SRC:DST` (read-only), plus `-env PATH=…` for tools. `tests/box/box.sh`, `strict.sh` and `tests/agents/battery.sh` (MODE=box) already do this; a new script must too. `-tier1-fs host` is the old behaviour, for debugging only.
+- **`tests/box/run.sh boundary`** runs `tests/box/boundary.sh` (the boundary script on its own: iptables, nft fallback, no-tool exit 3, DNS opt-in) in a disposable privileged container. On a host it only runs with `OVARA_TEST_ON_HOST=1`.
+- `TestTier1IsolatedFileSystem` and `TestTier1HostFileSystem` skip unless root; GitHub's `go-tests` job is not root, so the CI coverage of tier 1 isolation is `tests/box/box.sh` (job `box`).
+- The CA rotates on the first start after upgrading to the 2026-10 code (30-day life). Tests or images that copied an old `ovara-ca.pem` must re-read it.
+- Proxy bindings without a port match 443 only: a test upstream on a random port needs `host:port` in its binding.
+- Boundary DNS is off by default; scripts that need it set `OVARA_BOUNDARY_DNS=1`.
+- Public repo: write docs as behaviour and guarantees, never as step-by-step recipes for weaknesses that existed before a fix.
 
 ---
 

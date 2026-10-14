@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,6 +79,42 @@ func (h *ApprovalHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/approval/pending", h.handleListPending)
 	mux.HandleFunc("GET /v1/approvals", h.handleListApprovals)
 	mux.HandleFunc("POST /v1/approval/{id}/resume", h.handleResume)
+	mux.HandleFunc("POST /v1/approval/{id}/claim", h.handleClaim)
+}
+
+// handleClaim marks an approved approval used, so the action it allows
+// runs once; the caller goes ahead only when the answer says claimed. A
+// pending, denied or expired approval is reported as it is. An approval
+// already claimed answers 409: an identical request is a new question.
+func (h *ApprovalHandler) handleClaim(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		api.JSONBadRequest(w, "approval id is required")
+		return
+	}
+	a, err := h.service.GetApproval(id)
+	if err != nil {
+		api.JSONNotFound(w, err.Error())
+		return
+	}
+	// OWNERSHIP: as handleGet, a foreign id reads as absent.
+	if caller := auth.PrincipalID(r); caller != "" &&
+		auth.Principal(r) != string(auth.RoleOperator) &&
+		a.AgentID != caller {
+		api.JSONNotFound(w, "approval not found: "+id)
+		return
+	}
+	got, claimed, err := h.service.Claim(id)
+	switch {
+	case errors.Is(err, approval.ErrApprovalUsed):
+		api.JSONError(w, http.StatusConflict, "approval already used: an identical request has to be asked again")
+		return
+	case err != nil:
+		api.JSONInternalError(w, "failed to claim approval: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"approval_id": got.ApprovalID, "status": got.Status, "claimed": claimed})
 }
 
 func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +193,9 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		case approval.StatusDenied:
 			api.JSONConflict(w, "decision already resolved (denied) — re-submit the action for a new decision")
 			return
+		case approval.StatusExpired:
+			api.JSONConflict(w, "the approval for this decision expired — re-submit the action for a new decision")
+			return
 		}
 	}
 
@@ -213,9 +253,23 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	created, err := h.service.CreateApproval(&bound)
+	// Flood control: the same request while one is waiting gets that
+	// approval back (no second card, no second continuation); past the
+	// per-agent cap the escalation is refused and the action stays
+	// blocked.
+	created, reused, err := h.service.Open(&bound)
+	if errors.Is(err, approval.ErrTooManyPending) {
+		h.emitSecurityEvent("approval_flood", bound.DecisionID, bound.AgentID, err.Error())
+		api.JSONError(w, http.StatusTooManyRequests, err.Error()+" — resolve or wait for the pending ones; this action stays blocked")
+		return
+	}
 	if err != nil {
 		api.JSONInternalError(w, "failed to create approval: "+err.Error())
+		return
+	}
+	if reused {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(created)
 		return
 	}
 
@@ -236,6 +290,11 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		cnt.WithMetadata("escalation_reason", "policy_escalate")
 	}
 
+	// Read what the event needs before the store owns the record: an
+	// approval can resolve (and change the continuation under the store's
+	// lock) as soon as it is stored.
+	cntID, cntState, cntExpires := cnt.ContinuationID, cnt.State, cnt.ExpiresAt
+
 	if h.continuationStore != nil {
 		if err := h.continuationStore.Create(cnt); err != nil {
 			api.JSONInternalError(w, "approval created but its continuation could not be persisted: "+err.Error())
@@ -250,12 +309,12 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			WithApprovalID(created.ApprovalID).
 			WithAgentID(bound.AgentID).
 			WithPayload(map[string]any{
-				"continuation_id": cnt.ContinuationID,
+				"continuation_id": cntID,
 				"action_type":     string(bound.ActionType),
 				"resource":        bound.Resource,
 				"trust_score":     bound.TrustScore,
-				"state":           string(cnt.State),
-				"expires_at":      cnt.ExpiresAt,
+				"state":           string(cntState),
+				"expires_at":      cntExpires,
 			})
 		h.eventStore.Append(evt)
 	}
@@ -281,10 +340,13 @@ func (h *ApprovalHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeResolveError maps approval resolution errors to honest status codes:
-// missing approval → 404, already-resolved → 409, anything else → 500.
+// missing approval → 404, already-resolved or expired → 409, anything
+// else → 500.
 func writeResolveError(w http.ResponseWriter, op string, err error) {
 	msg := err.Error()
 	switch {
+	case errors.Is(err, approval.ErrApprovalExpired):
+		api.JSONConflict(w, "too late to "+op+": "+msg+"; the request was not let through")
 	case strings.Contains(msg, "not found"):
 		api.JSONNotFound(w, msg)
 	case strings.Contains(msg, "not pending"):

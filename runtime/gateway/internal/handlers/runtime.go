@@ -152,6 +152,9 @@ type decisionEntry struct {
 	Request    *models.ActionRequest
 	Response   *models.DecisionResponse
 	Timestamp  time.Time
+	// Outcome is what the caller reported after acting on the decision
+	// (POST /v1/runtime/outcome); nil until it does. One report per decision.
+	Outcome *ActionOutcome
 }
 
 func newDecisionCache() *decisionCache {
@@ -218,6 +221,20 @@ func (c *decisionCache) GetWithRequest(id string) (*models.ActionRequest, *model
 	return e.Request, e.Response, true
 }
 
+// SetOutcome records the caller's report for a live decision. It returns
+// the decision's request and response, and false when the decision is
+// unknown or expired, or already has an outcome (the first report stands).
+func (c *decisionCache) SetOutcome(id string, out *ActionOutcome) (*models.ActionRequest, *models.DecisionResponse, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.decisions[id]
+	if !ok || e.Request == nil || time.Since(e.Timestamp) > c.ttl || e.Outcome != nil {
+		return nil, nil, false
+	}
+	e.Outcome = out
+	return e.Request, e.Response, true
+}
+
 func (c *decisionCache) StartCleanup(interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -263,6 +280,7 @@ func (h *Handler) LookupDecision(id string) (*models.ActionRequest, *models.Deci
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runtime/check", h.handleCheck)
 	mux.HandleFunc("POST /v1/runtime/batch-check", h.handleBatchCheck)
+	mux.HandleFunc("POST /v1/runtime/outcome", h.handleOutcome)
 	mux.HandleFunc("GET /v1/runtime/decision/{id}", h.handleGetDecision)
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
 	mux.HandleFunc("GET /v1/runtime/status", h.handleGetStatus)
@@ -402,6 +420,7 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 		Resource:      resp.ReceiptStub.Resource,
 		Decision:      string(resp.Decision),
 		PolicyVersion: resp.ReceiptStub.PolicyVersion,
+		PolicyHash:    resp.ReceiptStub.PolicyHash,
 		TrustScore:    resp.ReceiptStub.TrustContextScore,
 		TrustLevel:    resp.TrustLevel,
 		TrustEpoch:    resp.ReceiptStub.TrustEpoch,
@@ -422,7 +441,8 @@ func (h *Handler) buildReceipt(resp *models.DecisionResponse, req *models.Action
 		receipt.RiskCount = resp.TrustContext.RiskCount
 		receipt.AnomalySignals = resp.TrustContext.AnomalySignals
 	}
-	receipt.Signature = "sig_v1_local:" + resp.ReceiptStub.ReceiptID
+	// Without an HMAC key the field stays empty: an unsigned receipt says
+	// so, it never carries a stand-in that looks like a signature.
 	if h.receiptSigner != nil {
 		receipt.Signature = h.receiptSigner.Sign(receipt)
 	}
@@ -1549,12 +1569,19 @@ func (h *Handler) recordDecision(req *models.ActionRequest, resp *models.Decisio
 
 	if h.receiptsStore != nil && resp.ReceiptStub != nil {
 		receipt := h.buildReceipt(resp, req)
-		// The receipt is post-decision evidence, not an authorization
-		// prerequisite: a failed write must not change the decision,
-		// but it must never be reported as a durable receipt.
+		// No receipt, no action: a decision whose receipt could not be
+		// written is answered as a deny, whatever policy said. Otherwise a
+		// full disk would turn into allowed actions that leave no record.
 		persistErr := h.receiptsStore.Put(receipt)
 		if persistErr != nil {
 			log.Printf("SECURITY: receipt persistence failed for decision %s: %v", resp.DecisionID, persistErr)
+			if resp.Decision != models.DecisionDeny {
+				log.Printf("SECURITY: decision %s was %s; answering deny because its receipt is not on disk", resp.DecisionID, resp.Decision)
+				resp.Decision = models.DecisionDeny
+				resp.RequiresApproval = false
+				resp.ReasonCodes = append(resp.ReasonCodes, models.ReasonReceiptUnavailable)
+				resp.EvaluationSummary = "denied: the decision's receipt could not be written"
+			}
 		}
 
 		if h.eventStore != nil {

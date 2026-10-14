@@ -123,6 +123,59 @@ Events are stored in `var/data/events.jsonl`:
 cat var/data/events.jsonl | jq -r '.event_type' | sort | uniq -c | sort -rn
 ```
 
+## Retention and export
+
+The receipt chain is append-only and verified whole: `ovara log`, `ovara
+log export`, the incident bundle and every run's attestation read it from
+the first line. It grows with every request (a few hundred bytes each),
+and a deployment that runs for months should plan for that rather than let
+one file carry a year. `ovara doctor` says how big it is and warns past
+256 MiB.
+
+What keeps the record whole and checkable:
+
+- **Export on a schedule.** `ovara log export -since <last export time>
+  -out receipts-<date>.jsonl` (JSONL: the signed lines, unchanged) or
+  `-format ocsf` for a SIEM. Exported lines verify on their own with the
+  public key and, for a cut, a `segment.json` naming where it starts (what
+  the incident bundle writes). A cron line that keeps the last day:
+
+  ```
+  15 0 * * *  ovara log export -dir /srv/ovara -since "$(date -u -d yesterday +%Y-%m-%dT00:00:00Z)" -out /srv/ovara-archive/receipts-$(date -u +%F).jsonl
+  ```
+
+- **Bundle before you rotate.** `ovara incident bundle -dir D -out
+  case.tar.gz` packs the chain, anchors, key history, policy and the
+  attestations; it verifies offline, and it is what you hand to an auditor.
+- **Rotate the deployment, not the file.** To start afresh, stop Ovara,
+  bundle, and begin a new deployment directory (`ovara init`) for new
+  runs; keep the old one read-only. Do not cut the live chain by hand: the
+  resume check refuses a chain whose start does not match its anchors, and
+  that is the point of it.
+- **Attestations** are one small file per run under `var/attestations`;
+  they travel with the bundle and can be archived with the exports.
+
+Receipt keys: rotate them on a schedule of your own (`ovara keys
+rotate-receipt`); the history keeps older receipts verifiable.
+
+## Many deployments
+
+One deployment per agent host, pod or job is the normal shape. `ovara
+fleet -dirs A,B` (or `-root /srv/ovara`, every subdirectory with a
+`proxy.json`) prints every deployment on one line: profile, whether the
+gateway runs, agents and how many are stopped, approvals waiting on a
+person, whether the record verifies and when it was last written; `-json`
+for a dashboard. A deployment that cannot be read is a line with the
+error, never a missing line. `ovara status -dir D` is the detail for one.
+
+An agent that never stops is attested as it goes: `attest_every_minutes`
+in `proxy.json` makes `ovara run` write a signed statement every so many
+minutes covering the receipts since the previous one, each naming the
+previous statement's digest, and a last one when it stops
+(`var/attestations/<run>.<NNN>.intoto.json`). `ovara attest verify -dir D`
+verifies the whole sequence as one; `ovara log export` bundles every
+statement with the chain. `deploy/kubernetes/` has a sidecar recipe.
+
 ## Performance Baseline
 
 On Apple M4:

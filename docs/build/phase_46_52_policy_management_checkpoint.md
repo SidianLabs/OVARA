@@ -1,5 +1,9 @@
 # Phase 46-52 Policy Management — Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: Tue May 26 2026
 **Branch**: `phase-46-52-policy-management`
 **Parent**: `phase-31-38-verification` (commit `151531d`)

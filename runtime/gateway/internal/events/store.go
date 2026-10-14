@@ -28,6 +28,7 @@ const (
 	EventTypeExecutionSucceeded         = "execution.succeeded"
 	EventTypeExecutionFailed            = "execution.failed"
 	EventTypeExecutionTimedOut          = "execution.timed_out"
+	EventTypeActionOutcome              = "action.outcome"
 	EventTypeAdminReconcile             = "admin.reconcile"
 	EventTypeAdminCompact               = "admin.compact"
 	EventTypeAdminSweep                 = "admin.sweep"

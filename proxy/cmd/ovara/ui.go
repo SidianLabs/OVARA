@@ -64,6 +64,15 @@ func (u *uiServer) handler() http.Handler {
 			// TrustHost is set when the request is a read from a named https
 			// host, i.e. when "approve and trust this host for reads" applies.
 			TrustHost string `json:"trust_host,omitempty"`
+			// Remember is what the request can be remembered as (remember.go):
+			// one button each, in the person's words.
+			Remember []rememberScope `json:"remember,omitempty"`
+			// Destination is the registrable domain the request goes to,
+			// shown large on its own; DestinationNote says what host that
+			// is and whether it is trusted by default.
+			Destination     string `json:"destination,omitempty"`
+			DestinationNote string `json:"destination_note,omitempty"`
+			DestTrusted     bool   `json:"destination_trusted,omitempty"`
 		}
 		out := []item{}
 		for _, a := range list {
@@ -71,7 +80,13 @@ func (u *uiServer) handler() http.Handler {
 				continue
 			}
 			th, _ := trustableHost(a.Resource)
-			out = append(out, item{a.ApprovalID, describe(a.Resource), a.Resource, a.AgentID, a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), contextLines(a), th})
+			it := item{ID: a.ApprovalID, What: describe(a.Resource), Raw: a.Resource, Agent: approvalAgentLabel(a),
+				CreatedAt: a.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), Details: contextLines(a), TrustHost: th, Remember: rememberOptions(a)}
+			if d, ok := destinationOf(a.Resource); ok {
+				it.Destination, it.DestTrusted = d.Domain, d.Trusted
+				it.DestinationNote = strings.TrimPrefix(d.line(), "→ to "+d.Domain+" ")
+			}
+			out = append(out, it)
 		}
 		writeJSONResp(w, out)
 	}))
@@ -82,23 +97,32 @@ func (u *uiServer) handler() http.Handler {
 				reason = "denied from the ovara approval page"
 			}
 			id := r.PathValue("id")
-			// "Approve and trust this host for reads": look the request up
-			// first so the host comes from the gateway's record, never from
-			// anything the browser sends.
-			trustHost := ""
-			if approve && r.URL.Query().Get("trust") == "1" {
+			// "Approve and remember": the request is looked up first, so what
+			// is remembered comes from the gateway's record, never from
+			// anything the browser sends, and a scope the request does not
+			// offer fails before anything is approved.
+			scope := r.URL.Query().Get("remember")
+			if approve && scope == "" && r.URL.Query().Get("trust") == "1" {
+				scope = scopeReadsRun
+			}
+			var remembered *pendingApproval
+			if approve && scope != "" {
 				list, err := u.admin.pending()
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusBadGateway)
 					return
 				}
-				for _, a := range list {
-					if a.ApprovalID == id {
-						trustHost, _ = trustableHost(a.Resource)
+				for i := range list {
+					if list[i].ApprovalID == id {
+						remembered = &list[i]
 					}
 				}
-				if trustHost == "" {
-					http.Error(w, "trusting a host only applies to reads (GET/HEAD) from a named https host", http.StatusBadRequest)
+				if remembered == nil {
+					http.Error(w, "approval "+id+" is not pending", http.StatusBadRequest)
+					return
+				}
+				if !offersScope(*remembered, scope) {
+					http.Error(w, "this request cannot be remembered as "+scope+"; it offers "+rememberKeys(*remembered), http.StatusBadRequest)
 					return
 				}
 			}
@@ -106,9 +130,9 @@ func (u *uiServer) handler() http.Handler {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
-			if trustHost != "" {
-				if _, err := trustReadHost(u.admin.dir, trustHost); err != nil {
-					http.Error(w, "approved, but could not trust the host: "+err.Error(), http.StatusInternalServerError)
+			if remembered != nil {
+				if _, err := remember(u.admin.dir, *remembered, scope, whoAmI()+" (browser)"); err != nil {
+					http.Error(w, "approved, but could not remember it: "+err.Error(), http.StatusInternalServerError)
 					return
 				}
 			}

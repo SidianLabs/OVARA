@@ -52,13 +52,24 @@ func main() {
 	if anchorFile == "" {
 		anchorFile = "var/anchors.jsonl"
 	}
+	if err := receipts.CheckBeforeResume(cfg.ReceiptsFile, anchorFile, cfg.PubKeyFile); err != nil {
+		log.Fatal(err)
+	}
 	anchorEvery, _ := strconv.Atoi(os.Getenv("OVARA_ANCHOR_EVERY"))
 	chain.SetAnchoring(anchorFile, os.Getenv("OVARA_ANCHOR_URL"), anchorEvery)
 	log.Printf("anchoring chain head to %s (every=%d url=%q)", anchorFile, max(anchorEvery, 1), os.Getenv("OVARA_ANCHOR_URL"))
 	gw := gateway.New(cfg.GatewayURL, cfg.GatewayToken, cfg.Environment)
-	bindings, skipped := creds.LoadReport(cfg.Credentials)
+	bindings, skipped, err := creds.LoadReport(cfg.Credentials)
+	if err != nil {
+		log.Fatalf("credentials: %v", err)
+	}
 	for _, s := range skipped {
 		log.Printf("credential binding for %s skipped: %v not set", s.Host, s.Missing)
+	}
+	for _, b := range bindings {
+		if b.Brokered() {
+			log.Printf("credentials for %s: %s, minted when first needed", b.Host, b.Describe())
+		}
 	}
 
 	srv := proxy.New(rootCA, gw, bindings, chain, cfg.FailOpen)
@@ -67,7 +78,15 @@ func main() {
 		srv.SetGitGate(*cfg.GitGate)
 	}
 	srv.SetSensitiveHosts(cfg.SensitiveHosts)
+	srv.SetModelGate(cfg.ModelGate == nil || *cfg.ModelGate, cfg.ModelHosts)
+	if err := srv.SetMCPGate(cfg.MCPGate == nil || *cfg.MCPGate, cfg.MCPPinsFile); err != nil {
+		log.Fatalf("mcp pins: %v", err)
+	}
+	srv.SetTCPGate(cfg.TCPGate == nil || *cfg.TCPGate)
+	srv.SetAPIGate(cfg.APIGate == nil || *cfg.APIGate)
+	srv.ApplyConfig(cfg)
 	srv.SetClientAuth(cfg.AgentToken)
+	defer srv.WatchAgentFiles(*configPath, cfg.RevokedAgentsFile, 250*time.Millisecond)()
 	log.Printf("ovara executor proxy on %s (gateway=%s env=%s bindings=%d fail_open=%v client_auth=%v)",
 		cfg.ListenAddr, cfg.GatewayURL, cfg.Environment, len(bindings), cfg.FailOpen, cfg.AgentToken != "")
 	log.Printf("CA cert: %s — install into agent trust store", cfg.CACertFile)
@@ -78,6 +97,7 @@ func main() {
 }
 
 func runVerify(path, pubHex string) {
+	pubFile := ""
 	keyBytes, err := hex.DecodeString(strings.TrimSpace(pubHex))
 	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
 		// Sibling pubkey conventions: <chain>.pub, or the init layout
@@ -86,6 +106,7 @@ func runVerify(path, pubHex string) {
 			if data, err2 := os.ReadFile(f); err2 == nil {
 				keyBytes, _ = hex.DecodeString(strings.TrimSpace(string(data)))
 				if len(keyBytes) == ed25519.PublicKeySize {
+					pubFile = f
 					break
 				}
 			}
@@ -94,7 +115,15 @@ func runVerify(path, pubHex string) {
 	if len(keyBytes) != ed25519.PublicKeySize {
 		log.Fatalf("verify: provide -pubkey or a pubkey file beside %s", path)
 	}
-	res := receipts.VerifyFile(path, ed25519.PublicKey(keyBytes))
+	// A public key file found beside the chain brings its key history
+	// (rotated-out and revoked keys) with it.
+	ring := receipts.SingleKey(ed25519.PublicKey(keyBytes))
+	if pubFile != "" {
+		if r, err := receipts.LoadKeyRing(pubFile); err == nil {
+			ring = r
+		}
+	}
+	res := receipts.VerifyFileKeys(path, ring)
 	// If anchors exist (OVARA_ANCHOR_FILE, or the default sink beside the
 	// chain file), verify each anchor's head against the recomputed chain
 	// head at that sequence.
@@ -103,7 +132,7 @@ func runVerify(path, pubHex string) {
 		anchorPath = filepath.Join(filepath.Dir(path), "anchors.jsonl")
 	}
 	if _, err := os.Stat(anchorPath); err == nil {
-		res = receipts.VerifyAnchorFile(anchorPath, path, ed25519.PublicKey(keyBytes))
+		res = receipts.VerifyAnchorFileKeys(anchorPath, path, ring)
 	}
 	out, _ := json.MarshalIndent(res, "", "  ")
 	fmt.Println(string(out))

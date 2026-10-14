@@ -89,7 +89,10 @@ so the scripted battery needs a different driver), Cursor, and agents that are
 not installed from npm. If an agent ignores `HTTPS_PROXY` you
 will see it as missing entries in `ovara log`.
 
-## 2. An agent in a container or VM you control  — *tested (netns, `ovara box`); docker mode scripted*
+## 2. An agent in a container or VM you control  — *tested (netns, docker, `ovara box` tiers 1 and 2)*
+
+*In Kubernetes, run Ovara as a sidecar: `deploy/kubernetes/` (a documented
+recipe with manifests, not yet run in CI).*
 
 This is the setup to use when you do not fully trust the agent: an untrusted
 tool, a model you are evaluating, a long unattended run.
@@ -103,10 +106,11 @@ sudo ovara box ./myrepo -- claude        # one command: copy, box, agent, review
 ```
 
 `ovara box` does the whole setup: it copies the project into a workspace
-(history kept, `.env`/keys/certificates left out), starts Ovara with the
-namespace boundary, runs the agent inside as an unprivileged user with a
-fresh home and no keys, and when the agent exits brings its changes back as
-a commit on a new `ovara/box-<run>` branch of your repository, after you have
+(history kept; `.env`, keys, certificates and files whose content looks like
+a key left out), starts Ovara with the namespace boundary, runs the agent
+inside as an unprivileged user with a fresh home, a root file system of its
+own and no keys, and when the agent exits brings its changes back as a
+commit on a new `ovara/box-<run>` branch of your repository, after you have
 read the diff. Paths the policy keeps out (`.github/workflows/*` by default)
 never come back. Your working tree is not touched. Or do it by hand:
 
@@ -142,9 +146,14 @@ namespace changes are refused before they run, and `rm -rf`, `git push`,
 `mkfs` and `dd` pause for you. The real agents ran their whole battery under
 the gate (94 to 508 commands each) with nothing wrongly refused.
 
-Not yet in `ovara box`: the container tier (the agent runs on your host's
-filesystem as another user; what that user may read, it can read),
-macOS/Windows, and a `strict` profile that pauses on unknown commands.
+Also built: the container tier (`-tier 2`: no network interface but
+loopback, no capabilities, a read-only root, nothing of your machine inside
+but the project's copy) and strict installs (`-profile strict`: a new
+dependency pauses once, by name and version, and pinned downloads are checked
+against the lockfile's digests). Tier 1 now has a root file system of its
+own too; `-tier1-fs host` is the old, unsafe behaviour. Not yet in `ovara
+box`: macOS/Windows, and a profile that pauses on every command not on a
+list. What each tier holds is in [`GUARANTEES.md`](GUARANTEES.md).
 
 Still yours to ensure: the agent is not root inside the boundary (root can
 remove the firewall rules), and nothing else gives it a way out (a second
@@ -164,18 +173,20 @@ agent can open outbound connections that bypass a configured proxy.
 
 ## 4. A bot or agent in CI  — *tested*
 
-Nobody is there to click Approve. An unanswered approval times out (HTTP 504)
-rather than passing, which is safe but means a default policy will fail the job
-the first time the agent does something that needs approval. So write the
-policy you actually want and leave nothing to a human:
+Nobody is there to click Approve. An unanswered approval never passes: after
+the hold the agent is told to retry later (HTTP 503 with `Retry-After`; the
+`escalate_on_timeout` setting in `proxy.json`), which is safe but means a
+default policy will fail the job the first time the agent does something that
+needs approval. So write the policy you actually want and leave nothing to a
+human:
 
 - allow exactly the hosts the job reads from (the defaults cover the package
   registries and code hosts; add `GET https://your.artifacts.host/*` …),
 - allow the specific write you expect
   (`POST https://api.github.com/repos/acme/app/pulls`),
 - deny the places you never want reached (`*://pastebin.com/*`, …),
-- set a short `escalate_timeout_sec` in `proxy.json` (for example 10), because
-  every other write waits that long and then fails with 504.
+- keep `escalate_timeout_sec` in `proxy.json` short (new deployments hold for
+  10 seconds), because every other write waits that long and then gets 503.
 
 "Allow this one write, deny every other write" is the natural CI policy:
 `POST https://api.github.com/repos/acme/app/pulls` allow next to `POST *`
@@ -185,18 +196,29 @@ policy file without that field any deny wins, so the catch-all would also
 block the allowed write; add the field, or keep the catch-all as an
 escalation with a short timeout.
 
-Run Ovara in the same job as a background step (`ovara run -dir d -ui off &`,
+In GitHub Actions, `uses: SidianLabs/OVARA@main` does all of this in one step
+(README, "In GitHub Actions"). By hand:
+run Ovara in the same job as a background step (`ovara run -dir d -ui off &`,
 wait for the proxy port, `eval "$(ovara env -dir d)"`). It stops on SIGTERM
 when the job ends. This is cooperative mode: it limits what an agent does by
 mistake, not what a compromised job can do.
 
 Verified by `tests/scenarios/run.sh ci-bot` against the real binary: allowed
-reads pass; an unapproved write and a read from an unlisted host time out with
-504 after the configured timeout and leave nothing pending; the one allowed
+reads pass; an unapproved write and a read from an unlisted host are held for
+the configured timeout and then told to retry (503), and their approvals stay
+open for a person (approving one makes the job's retry run); under the
+`balanced` profile the unlisted read goes through and the write still waits,
+under `observe` the write is refused at once and `ovara policy suggest`
+proposes rules from the receipts; the one allowed
 write passes while a different write to the same host still stops; a dump site
 is refused at once; a catch-all deny refuses instantly but also blocks the
 allowed write; every decision is in the receipts, the chain verifies, and
 `ovara run` exits on SIGTERM with the record intact.
+
+If someone can be reached, approvals from Slack (README, *Approvals from
+Slack*; `slack-channel` on the action) post each paused request to a channel
+and take the answer from its thread, from the listed people only; with a
+hold long enough the job waits for them.
 
 ## 5. Your own agent or agentic harness  — *mechanism tested*
 
@@ -206,15 +228,40 @@ loop), there are two layers, and they cover different things:
 - **Network calls** — anything your tools do over HTTP(S) can be routed through
   the proxy with the environment `ovara env` prints. No code changes. This
   covers API calls, package installs, `git` over HTTPS, web fetches.
-- **Actions that are not network calls** — deleting local files, running a
-  shell command. The proxy cannot see these. If you want them gated, call the
-  gateway's decision API from your harness before executing
-  (`POST /v1/runtime/check` with `action_type` `shell`, `exec`, …) and obey the
-  answer. The TypeScript and Python clients in `sdk/` wrap this; they are not
-  published to npm or PyPI yet.
+- **Actions that are not network calls** — the functions your tools run
+  in-process: sending an email through a library, deleting local files,
+  running a query, a shell command. The proxy cannot see these. Wrap each
+  tool with the SDK's **tool guard** and it is decided by the gateway before
+  it runs, held for a person like any other action (who sees the tool, the
+  arguments' hash and a preview with secrets masked), refused when policy
+  says so, and reported when it is done:
 
-The second layer is integration work you do yourself; Ovara will decide and
-record, but only if your harness asks and honours the answer.
+  ```python
+  from ovara_sdk import ToolGuard
+  guard = ToolGuard("http://127.0.0.1:8080", api_key=AGENT_TOKEN, agent="support-bot")
+
+  @guard.tool("send_email")
+  def send_email(to: str, subject: str, body: str) -> str: ...
+
+  tool = StructuredTool.from_function(guard.wrap(delete_file, "delete_file"))  # LangChain
+  ```
+
+  ```ts
+  const guard = createToolGuard({ baseUrl, apiKey: AGENT_TOKEN, agent: "support-bot" });
+  const sendEmail = guard.wrap("send_email", async (to: string, body: string) => { ... });
+  ```
+
+  A denied call raises `ToolDenied` and the function never runs; a held call
+  waits for the answer (`wait_seconds`, 0 to fail fast and retry later with
+  the approval id). Rules name the tool: `{"action_type": "tool.call",
+  "resource": "tool:send_email", "escalate": true}`. The raw decision API
+  (`POST /v1/runtime/check`, `/v1/runtime/outcome`) is there for a harness
+  that wants to do this itself. The SDKs are not published to npm or PyPI
+  yet: install them from `sdk/`.
+
+The second layer is code inside your agent: Ovara decides and records, but
+only the calls that go through the guard. `tests/agents/harness.py` is a
+complete example, run in CI against a real gateway.
 
 ## 6. Evaluating or red-teaming an untrusted agent  — *tested (boundary)*
 
@@ -235,15 +282,59 @@ the key is absent from the agent's environment, the upstream receives it, and a
 reflected copy in a response is replaced with `[REDACTED]`. Keys are only
 injected over HTTPS.
 
+## 8. A browser or computer-use agent  — *mechanism tested*
+
+A browser agent acts through pages: its writes are form posts and fetches,
+its reads are navigations. Everything goes over HTTP(S), so it is a client
+like any other, once the browser is pointed at Ovara and trusts its CA:
+
+```sh
+eval "$(ovara env -dir mydir)"            # HTTPS_PROXY and the CA path
+chromium --proxy-server="$HTTPS_PROXY" --proxy-bypass-list="<-loopback>" ...
+```
+
+Chromium reads the system (NSS) store on Linux (`certutil -d sql:$HOME/.pki/nssdb -A -t C -n ovara -i "$SSL_CERT_FILE"`);
+Playwright takes `proxy: { server }` and, under `ovara run`, `NODE_EXTRA_CA_CERTS`
+is already set for Node. What changes for the person:
+
+- **A form post** pauses like any write and is shown field by field, with the
+  page it was submitted from (the Referer, without its query); a password or
+  credential-shaped field is masked, an uploaded file is named with its type
+  and size. The body hash still binds the approval to exactly those bytes.
+- **An executable or installer** coming back on an allowed read (`.exe`,
+  `.dmg`, `.sh`, `.msi`, ... by name or media type) is held and asked about
+  before the browser gets it (`download.file` on `download:<host><path>`).
+  Archives and documents are not asked about.
+- **Logins stay out of the agent.** A site's session cookie, or an API
+  token a site takes in a header, is a credential binding
+  (`{"host": "app.example.com", "headers": {"Cookie": "session=${APP_SESSION}"}}`):
+  the agent's own cookie is dropped on that host and the real one attached
+  upstream of it, and it is scrubbed from what comes back.
+- **A GraphQL mutation** behind a page's API, or a JSON-RPC method, is
+  decided by the operation (§5 of the README: APIs whose verb is in the
+  body), not only by its URL.
+
+What it does not do yet: show the page's title or a screenshot (only its
+URL), fill a password into a form from a binding, or decide a write a site
+makes through a GET or a WebSocket. A browser that does not go through the
+proxy (its own proxy settings, QUIC) is not seen; the box boundary stops
+it from going elsewhere.
+
 ## What Ovara is not for
 
-- **Non-HTTP traffic.** SSH, database protocols and raw TCP are invisible to the
-  proxy. In enforced mode they are blocked (no route); in cooperative mode they
-  are simply not seen. HTTP/2-only services, gRPC and WebSockets are not
-  supported through the interception.
+- **Reading non-HTTP traffic.** SSH, database protocols and raw TCP that go
+  through the proxy (a CONNECT to a port other than 443) are decided as
+  `tcp.connect` on `tcp:<host>:<port>`, held or refused like any action,
+  and an open tunnel is counted and receipted, but nothing inside it is
+  read and no credential is injected into it. Around the proxy such traffic
+  is invisible: in enforced mode it is blocked (no route), in cooperative
+  mode simply not seen. HTTP/2-only services and WebSockets are not
+  supported through the interception; gRPC only as such a tunnel.
 - **Stopping prompt injection.** It limits the damage an injected agent can do
   (it cannot push without you, cannot send to unknown hosts, never held your
-  keys). It does not stop the agent being talked into trying.
+  keys, and for a while after it reads an issue, a PR comment or another
+  untrusted source, even writes the policy allows wait for you). It does not
+  stop the agent being talked into trying.
 - **What an allowed host can do.** Reads from a trusted host are free, so an
   agent with an account on that host (a gist, an issue comment) can still move
   data through it. The policy limits *where*, not *what*.

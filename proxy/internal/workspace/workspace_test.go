@@ -152,9 +152,13 @@ func TestCommitBack_BranchOnlyExcludedPathsRevertedSecretsKept(t *testing.T) {
 			t.Fatalf("changes = %v, want %s=%s", got, k, v)
 		}
 	}
-	prev, err := ws.Preview(100000)
-	if err != nil || !strings.Contains(prev, "changed by the agent") || !strings.Contains(prev, "5 files changed") {
-		t.Fatalf("preview: %v\n%s", err, prev)
+	snap, err := ws.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, err := ws.Review(snap, 100000)
+	if err != nil || !strings.Contains(rev.Patch, "changed by the agent") || !strings.Contains(rev.Stat, "5 files changed") || rev.Truncated() {
+		t.Fatalf("review: %v\n%+v", err, rev)
 	}
 
 	commit, err := ws.CommitBack("ovara/box-test", []string{".github/workflows/ci.yml"})
@@ -213,5 +217,146 @@ func TestIsExcluded(t *testing.T) {
 		if isExcluded(p, secretPatterns) {
 			t.Errorf("%s excluded", p)
 		}
+	}
+}
+
+func newWorkspace(t *testing.T) (string, *Workspace) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	p := project(t)
+	ws, err := Create(p, filepath.Join(t.TempDir(), "work"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p, ws
+}
+
+// What a person approved is what lands: edits the agent (or anything still
+// running as the agent) makes after the review do not reach the branch.
+func TestCommitTree_LandsTheReviewedTreeOnly(t *testing.T) {
+	p, ws := newWorkspace(t)
+	write(t, filepath.Join(ws.Dir, "README.md"), "reviewed\n")
+	snap, err := ws.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// after the review: a changed file and a new one
+	write(t, filepath.Join(ws.Dir, "README.md"), "swapped after the review\n")
+	write(t, filepath.Join(ws.Dir, ".github/workflows/late.yml"), "on: push\n")
+	commit, err := ws.CommitTree("ovara/box-t", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, p, "show", "ovara/box-t:README.md"); got != "reviewed\n" {
+		t.Fatalf("README on the branch = %q, want the reviewed version", got)
+	}
+	if _, err := gitOut(p, "cat-file", "-e", "ovara/box-t:.github/workflows/late.yml"); err == nil {
+		t.Fatal("a file added after the review is on the branch")
+	}
+	if tree := strings.TrimSpace(git(t, p, "rev-parse", commit+"^{tree}")); tree != snap.Tree {
+		t.Fatalf("branch tree %s, reviewed %s", tree, snap.Tree)
+	}
+}
+
+// The workspace's .git belongs to the agent. Its config can name programs
+// git runs (fsmonitor, hooks); building the commit-back must not run them.
+func TestSnapshot_IgnoresTheAgentsGitConfig(t *testing.T) {
+	_, ws := newWorkspace(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	git(t, ws.Dir, "config", "core.fsmonitor", "touch "+marker+"; false")
+	hook := filepath.Join(ws.Dir, ".git", "hooks", "pre-commit")
+	write(t, hook, "#!/bin/sh\ntouch "+marker+"\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(ws.Dir, "new.txt"), "x\n")
+	if _, err := ws.CommitBack("ovara/box-cfg", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a program named in the agent's .git ran during commit-back")
+	}
+}
+
+func TestReview_SaysWhatACutDiffLeavesOut(t *testing.T) {
+	_, ws := newWorkspace(t)
+	write(t, filepath.Join(ws.Dir, "a.txt"), strings.Repeat("first file line\n", 50))
+	write(t, filepath.Join(ws.Dir, "b.txt"), strings.Repeat("second file line\n", 50))
+	write(t, filepath.Join(ws.Dir, "c.txt"), "the one line nobody reads\n")
+	snap, err := ws.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := ws.Review(snap, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Truncated() || r.ShownBytes != 500 || r.TotalBytes <= 500 {
+		t.Fatalf("not reported as cut: %+v", r)
+	}
+	if r.Cut != "a.txt" || strings.Join(r.Hidden, ",") != "b.txt,c.txt" {
+		t.Fatalf("cut %q hidden %v, want a.txt / b.txt,c.txt", r.Cut, r.Hidden)
+	}
+	if !strings.Contains(r.Full, "the one line nobody reads") {
+		t.Fatal("the full patch is incomplete")
+	}
+}
+
+func TestSnapshot_MarksBinaryFiles(t *testing.T) {
+	_, ws := newWorkspace(t)
+	write(t, filepath.Join(ws.Dir, "tool.bin"), "MZ\x00\x01\x02payload")
+	write(t, filepath.Join(ws.Dir, "notes2.txt"), "text\n")
+	snap, err := ws.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, c := range snap.Changes {
+		got[c.Path] = c.Binary
+	}
+	if !got["tool.bin"] || got["notes2.txt"] {
+		t.Fatalf("binary flags = %v", got)
+	}
+	// keeping it out leaves the rest
+	snap, err = ws.Without(snap, []string{"tool.bin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Changes) != 1 || snap.Changes[0].Path != "notes2.txt" {
+		t.Fatalf("after Without: %+v", snap.Changes)
+	}
+}
+
+// A rename kept out by policy keeps both ends: the old file is not lost.
+func TestWithout_RenameKeepsBothEnds(t *testing.T) {
+	p, ws := newWorkspace(t)
+	if err := os.Rename(filepath.Join(ws.Dir, "README.md"), filepath.Join(ws.Dir, "MOVED.md")); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := ws.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, 2*len(snap.Changes))
+	for _, c := range snap.Changes {
+		paths = append(paths, c.Path)
+		if c.OldPath != "" {
+			paths = append(paths, c.OldPath)
+		}
+	}
+	if snap, err = ws.Without(snap, paths); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(ws.Dir, "other.txt"), "x\n") // not in the snapshot: not on the branch
+	if len(snap.Changes) != 0 {
+		t.Fatalf("changes left: %+v", snap.Changes)
+	}
+	if c, err := ws.CommitTree("ovara/box-r", snap); err != nil || c != "" {
+		t.Fatalf("nothing to bring back, got %q %v", c, err)
+	}
+	if _, err := gitOut(p, "rev-parse", "--verify", "--quiet", "refs/heads/ovara/box-r"); err == nil {
+		t.Fatal("an empty commit-back made a branch")
 	}
 }

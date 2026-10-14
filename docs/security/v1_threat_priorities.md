@@ -1,5 +1,9 @@
 # V1 Threat Priorities
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 This document ranks the threat vectors that the Ovara V1 release
 focuses on defending against. It is the basis for the V1 threat model
 and the V1 security test plan.

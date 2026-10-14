@@ -1,5 +1,9 @@
 # Phase 15: API Consistency and Error Model Checkpoint
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 **Date**: 2026-05-25
 **Branch**: `phase-15-api-consistency` (from `phase-14-5-observability-verification`)
 **Objective**: Audit and clean up API surface, add consistent error model, align response shapes

@@ -49,18 +49,25 @@ func TestDestroyedKey_ReceiptIssuedAfterDestroyRejected(t *testing.T) {
 	}
 }
 
-// Rotation is routine, not compromise: a superseded key's receipts are not
-// subject to the revocation-time rule.
-func TestSupersededKey_NotTreatedAsRevoked(t *testing.T) {
+// Rotation is routine, not compromise: a superseded key keeps verifying
+// what it signed while in use. It vouches for nothing issued after its
+// rotation grace ended, though: before, a key retired by rotation (perhaps
+// because it was suspected leaked) could mint receipts dated any time later.
+func TestSupersededKey_VerifiesOnlyWhatItSignedInUse(t *testing.T) {
 	reg, priv, gw, kid := testRegistry(t)
+	before := sampleReceipt() // issued in 2023, while the key was in use
 	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
 	if _, err := reg.Rotate(gw, pub2, 0); err != nil {
 		t.Fatal(err)
 	}
-	r := sampleReceipt()
-	r.IssuedAt = time.Now().UTC()
-	NewEdSigner(priv, gw, kid).SignReceipt(r)
-	if ok, err := VerifySignature(resolver(reg), r); !ok || err != nil {
-		t.Fatalf("superseded-key receipt must still verify: ok=%v err=%v", ok, err)
+	NewEdSigner(priv, gw, kid).SignReceipt(before)
+	if ok, err := VerifySignature(resolver(reg), before); !ok || err != nil {
+		t.Fatalf("superseded-key receipt from before rotation must still verify: ok=%v err=%v", ok, err)
+	}
+	after := sampleReceipt()
+	after.IssuedAt = time.Now().UTC().Add(time.Minute)
+	NewEdSigner(priv, gw, kid).SignReceipt(after)
+	if ok, err := VerifySignature(resolver(reg), after); ok || !errors.Is(err, ErrSignedAfterRevocation) {
+		t.Fatalf("receipt dated after rotation must be rejected: ok=%v err=%v", ok, err)
 	}
 }

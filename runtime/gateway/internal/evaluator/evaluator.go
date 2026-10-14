@@ -28,6 +28,7 @@ type RevocationChecker interface {
 
 type Evaluator struct {
 	policyStore          *policy.Store
+	baseline             *policy.Store // an organisation's policy the project's may only narrow (baseline.go); nil = none
 	validator            *identity.Validator
 	shieldStore          *trust.ShieldStore
 	revocationChecker    RevocationChecker
@@ -120,6 +121,18 @@ func (e *Evaluator) SetReplayStore(s replay.Store) {
 
 func (e *Evaluator) PolicyVersion() string {
 	return e.policyStore.Version()
+}
+
+// PolicyHash is the content hash of the live policy (policy.Store.Hash);
+// with a baseline, the hash of both hashes, so a receipt names the whole
+// policy that decided.
+func (e *Evaluator) PolicyHash() string {
+	h := e.policyStore.Hash()
+	if e.baseline == nil {
+		return h
+	}
+	sum := sha256.Sum256([]byte(h + "+" + e.baseline.Hash()))
+	return hex.EncodeToString(sum[:])
 }
 
 type EvalResult struct {
@@ -272,6 +285,7 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 	var requiresApproval bool
 	trustScore := 0.5
 	policyVersion := e.policyStore.Version()
+	policyHash := e.policyStore.Hash()
 
 	trustResult := trust.NewEvaluator(e.shieldStore).Evaluate(req)
 
@@ -411,8 +425,10 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 		}
 	}
 
+	matchedRule := ""
 	if decision == "" {
-		outcome := e.evaluateWithStore(e.policyStore, actionRules, envRules, req)
+		outcome := e.layeredWith(e.policyStore, actionRules, envRules, req)
+		matchedRule = outcome.Rule
 		if outcome.Denied {
 			reasons = append(reasons, outcome.Reason)
 			decision = models.DecisionDeny
@@ -479,6 +495,7 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 	}
 
 	receiptStub := e.buildReceiptStub(req, decision, policyVersion, trustScore)
+	receiptStub.PolicyHash = policyHash
 
 	if span != nil {
 		observe.AddSpanAttribute(span, "policy_version", policyVersion)
@@ -512,6 +529,7 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 		ReceiptStub:       receiptStub,
 		TrustContext:      trustCtx,
 		EvaluationSummary: summary,
+		MatchedRule:       matchedRule,
 	}, nil
 }
 
@@ -586,11 +604,39 @@ func ruleLabel(r policy.Rule) string {
 	return r.ActionType + " / " + r.Environment
 }
 
+// ruleMatches reports whether a rule's resource pattern matches resource.
+// Deny and escalate rules written as host rules match the host on any port
+// (see policy.MatchResourceAnyPort); allow rules match the port exactly, so
+// widening never makes anything more permissive. (Escalate can be widened
+// safely because it never beats a deny, and against an allow it can only
+// ask where the allow would not have.)
+//
+// An allow that names refs (" refs/...") covers a branch or tag deletion
+// only if it says so with "(delete)": "refs/heads/feature/*" allows
+// pushing feature branches, not deleting them. A deny or escalate rule
+// that names refs works the other way: it covers the ref with or without
+// the marker, so "deny ... refs/heads/main" also refuses deleting main.
+func ruleMatches(r policy.Rule, resource string) bool {
+	if r.Deny || r.Escalate {
+		if policy.MatchResourceAnyPort(r.Resource, resource) {
+			return true
+		}
+		return strings.Contains(r.Resource, " refs/") && !strings.Contains(r.Resource, "(delete)") &&
+			policy.IsRefDeletion(resource) &&
+			policy.MatchResourceAnyPort(r.Resource, strings.TrimSuffix(resource, "(delete)"))
+	}
+	if r.Allow && strings.Contains(r.Resource, " refs/") && !strings.Contains(r.Resource, "(delete)") &&
+		policy.IsRefDeletion(resource) {
+		return false
+	}
+	return policy.MatchResource(r.Resource, resource)
+}
+
 func (e *Evaluator) evaluateRules(actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
 	// A rule only applies when its resource pattern matches the request
 	// resource; empty patterns match everything (pre-resource rules keep
 	// their semantics).
-	res := func(r policy.Rule) bool { return policy.MatchResource(r.Resource, req.Resource) }
+	res := func(r policy.Rule) bool { return ruleMatches(r, req.Resource) }
 
 	for _, r := range actionRules {
 		if res(r) && r.Deny && (r.Environment == "*" || r.Environment == string(req.Environment)) {
@@ -679,7 +725,42 @@ func (e *Evaluator) evaluateRulesWithStore(store *policy.Store, req *models.Acti
 }
 
 // evaluateWithStore picks the resolution the policy file asked for.
+//
+// A git push that updates several refs is evaluated once per ref (see
+// policy.SplitRefList) and the push gets the strictest of the answers
+// (deny > escalate > allow): an allow for one ref never carries another
+// ref along with it.
 func (e *Evaluator) evaluateWithStore(store *policy.Store, actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
+	parts := policy.SplitRefList(req.Resource)
+	if len(parts) == 1 {
+		return e.evaluateOneResource(store, actionRules, envRules, req)
+	}
+	var worst RuleOutcome
+	for i, p := range parts {
+		sub := *req
+		sub.Resource = p
+		o := e.evaluateOneResource(store, actionRules, envRules, &sub)
+		if i == 0 || strictness(o) > strictness(worst) {
+			worst = o
+		}
+	}
+	return worst
+}
+
+// strictness orders outcomes for combining per-ref decisions.
+func strictness(o RuleOutcome) int {
+	switch {
+	case o.Denied:
+		return 3
+	case o.Escalate:
+		return 2
+	case o.LeaseRequired:
+		return 1 // an allow that still needs a lease
+	}
+	return 0
+}
+
+func (e *Evaluator) evaluateOneResource(store *policy.Store, actionRules, envRules []policy.Rule, req *models.ActionRequest) RuleOutcome {
 	if store.Precedence() == policy.PrecedenceMostSpecific {
 		return e.evaluateMostSpecific(store, req)
 	}
@@ -691,53 +772,94 @@ func (e *Evaluator) evaluateWithStore(store *policy.Store, actionRules, envRules
 // Specificity is (literal characters in the pattern, exact action_type,
 // exact environment); ties go deny > allow > escalate. No match → the
 // store's default (escalate, or deny when the file says so).
+//
+// Two limits keep specificity from being gamed with text the agent
+// controls (a command line, a URL path or a ref name can always be made
+// longer so that it also matches a longer pattern):
+//   - a matching deny always beats a matching escalate: escalate may make
+//     an allow stricter, never a deny softer;
+//   - an allow beats a less specific deny only if its pattern names the
+//     host at least as precisely as every matching deny (HostSpecificity),
+//     so "allow this one write, deny the rest" works while a broad allow
+//     with a long path cannot override a deny on a named host; and, for
+//     resources that are not URLs (commands, paths), only if its literal
+//     prefix is at least as long as every matching deny's
+//     (PrefixSpecificity), so a broad allow cannot override a deny on a
+//     named program.
 func (e *Evaluator) evaluateMostSpecific(store *policy.Store, req *models.ActionRequest) RuleOutcome {
 	type scored struct {
 		rule policy.Rule
-		key  [4]int
+		key  [3]int
 	}
-	rank := func(r policy.Rule) int {
-		switch {
-		case r.Deny:
-			return 3
-		case r.Allow:
-			return 2
-		case r.Escalate:
-			return 1
-		}
-		return 0
-	}
-	var best *scored
+	var denies, allows, escalates []scored
+	maxDenyHost, maxDenyPrefix := 0, 0
 	for _, r := range store.RulesFor(string(req.ActionType), string(req.Environment)) {
-		if !policy.MatchResource(r.Resource, req.Resource) {
+		if !ruleMatches(r, req.Resource) {
 			continue
 		}
-		k := [4]int{policy.Specificity(r.Resource), b2i(r.ActionType != "*"), b2i(r.Environment != "*"), rank(r)}
-		if k[3] == 0 {
-			continue // a rule with no effect decides nothing
+		s := scored{r, [3]int{policy.Specificity(r.Resource), b2i(r.ActionType != "*"), b2i(r.Environment != "*")}}
+		switch {
+		case r.Deny:
+			denies = append(denies, s)
+			if h := policy.HostSpecificity(r.Resource); h > maxDenyHost {
+				maxDenyHost = h
+			}
+			if p := policy.PrefixSpecificity(r.Resource); p > maxDenyPrefix {
+				maxDenyPrefix = p
+			}
+		case r.Allow:
+			allows = append(allows, s)
+		case r.Escalate:
+			escalates = append(escalates, s)
 		}
-		if best == nil || greater(k, best.key) {
-			best = &scored{r, k}
-		}
+		// a rule with no effect decides nothing
 	}
-	if best == nil {
-		if store.DefaultDecision() == policy.DefaultDeny {
-			return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: "default: deny"}
+	best := func(list []scored, eligible func(scored) bool) *scored {
+		var b *scored
+		for i := range list {
+			if eligible != nil && !eligible(list[i]) {
+				continue
+			}
+			if b == nil || greater(list[i].key, b.key) {
+				b = &list[i]
+			}
 		}
-		return RuleOutcome{Escalate: true, Reason: models.ReasonEscalate}
+		return b
 	}
-	r := best.rule
-	switch {
-	case r.Deny:
+	bestDeny := best(denies, nil)
+	bestAllow := best(allows, func(s scored) bool {
+		if len(denies) == 0 {
+			return true
+		}
+		if policy.HostSpecificity(s.rule.Resource) < maxDenyHost {
+			return false
+		}
+		// A URL-shaped allow is judged by its host alone (above).
+		return strings.Contains(s.rule.Resource, "://") || policy.PrefixSpecificity(s.rule.Resource) >= maxDenyPrefix
+	})
+	bestEscalate := best(escalates, nil)
+
+	// A deny decides unless an eligible allow is strictly more specific
+	// (ties go to deny).
+	if bestDeny != nil && (bestAllow == nil || !greater(bestAllow.key, bestDeny.key)) {
+		r := bestDeny.rule
 		if req.Environment == models.EnvironmentProduction {
 			return RuleOutcome{Denied: true, Reason: models.ReasonProductionDenied, Rule: ruleLabel(r)}
 		}
 		return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: ruleLabel(r)}
-	case r.Allow:
-		return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
-	default:
-		return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(r)}
 	}
+	// Between allow and escalate the more specific decides; on a tie, allow.
+	if bestEscalate != nil && (bestAllow == nil || greater(bestEscalate.key, bestAllow.key)) {
+		return RuleOutcome{Escalate: true, Reason: models.ReasonPolicyEscalate, Rule: ruleLabel(bestEscalate.rule)}
+	}
+	if bestAllow != nil {
+		r := bestAllow.rule
+		return RuleOutcome{Allowed: true, Reason: models.ReasonPolicyAllow, LeaseRequired: r.RequireLease, Rule: ruleLabel(r)}
+	}
+	if store.DefaultDecision() == policy.DefaultDeny {
+		return RuleOutcome{Denied: true, Reason: models.ReasonPolicyDeny, Rule: "default: deny"}
+	}
+	return RuleOutcome{Escalate: true, Reason: models.ReasonEscalate}
 }
 
 func b2i(b bool) int {
@@ -747,7 +869,7 @@ func b2i(b bool) int {
 	return 0
 }
 
-func greater(a, b [4]int) bool {
+func greater(a, b [3]int) bool {
 	for i := range a {
 		if a[i] != b[i] {
 			return a[i] > b[i]
@@ -766,7 +888,7 @@ func (e *Evaluator) Simulate(req *models.ActionRequest, candidateStore *policy.S
 		}, nil
 	}
 
-	outcome := e.evaluateRulesWithStore(candidateStore, req)
+	outcome := e.layeredRules(candidateStore, req)
 	trustResult := trust.NewEvaluator(e.shieldStore).Evaluate(req)
 
 	var decision models.Decision

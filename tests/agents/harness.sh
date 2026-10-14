@@ -15,6 +15,7 @@ p = json.load(open('/tmp/d/policy.json'))
 # "everything else is allowed" rule so unlisted commands pause, and add a deny
 p['rules'] = [r for r in p['rules'] if r.get('resource') != 'shell:*']
 p['rules'].insert(0, {"action_type": "shell", "environment": "*", "resource": "shell:rm -rf*", "deny": True, "description": "no recursive deletes"})
+p['rules'].insert(0, {"action_type": "tool.call", "environment": "*", "resource": "tool:delete_everything", "deny": True, "description": "no tool deletes everything"})
 json.dump(p, open('/tmp/d/policy.json', 'w'), indent=2)
 PY
 python3 /tmp/deny.py; sleep 3
@@ -24,13 +25,14 @@ AGENT_TOKEN=$(python3 -c "import json;print(json.load(open('/tmp/d/proxy.json'))
 python3 -m venv /tmp/v >/dev/null 2>&1
 cp -r /repo/sdk/python /tmp/sdkpy && /tmp/v/bin/pip install -q /tmp/sdkpy >/tmp/pip.log 2>&1 || { echo "sdk install failed"; tail -3 /tmp/pip.log; exit 1; }
 
-# the "human": answers the harness's approvals (approve the first, deny the second)
-( n=0; while [ $n -lt 2 ]; do
+# the "human": answers the harness's approvals in turn (approve, deny, approve, deny:
+# two shell commands, then two guarded tool calls)
+( n=0; while [ $n -lt 4 ]; do
     sleep 1
     ID=$(ovara approvals -dir /tmp/d 2>/dev/null | grep -oE 'apr_[0-9a-f-]+' | head -1)
     [ -z "$ID" ] && continue
     sleep 2
-    if [ $n -eq 0 ]; then ovara approve "$ID" -dir /tmp/d >/dev/null 2>&1; else ovara deny "$ID" -dir /tmp/d >/dev/null 2>&1; fi
+    if [ $((n % 2)) -eq 0 ]; then ovara approve "$ID" -dir /tmp/d >/dev/null 2>&1; else ovara deny "$ID" -dir /tmp/d >/dev/null 2>&1; fi
     n=$((n+1))
   done ) &
 HUMAN=$!

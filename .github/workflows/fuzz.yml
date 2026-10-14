@@ -18,10 +18,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Keep in step with FUZZ_TARGETS in the Makefile. Every target's
+        # seed corpus (and testdata/fuzz/) also runs in the Go Tests workflow.
         include:
           - { module: proxy,           pkg: ./internal/proxy,           target: FuzzParseRefUpdates }
+          - { module: proxy,           pkg: ./internal/proxy,           target: FuzzParseRefUpdatesRoundTrip }
+          - { module: proxy,           pkg: ./internal/proxy,           target: FuzzValidUploadPackRequest }
           - { module: proxy,           pkg: ./internal/proxy,           target: FuzzNormalizeHost }
+          - { module: proxy,           pkg: ./internal/proxy,           target: FuzzReadCarriesData }
+          - { module: proxy,           pkg: ./internal/proxy,           target: FuzzModelValueRefusal }
+          - { module: proxy,           pkg: ./internal/proxy,           target: FuzzRedactPreviewCount }
+          - { module: proxy,           pkg: ./internal/canonjson,       target: FuzzCanonical }
+          - { module: proxy,           pkg: ./internal/mcp,             target: FuzzSnifferSplitInvariance }
+          - { module: proxy,           pkg: ./internal/mcp,             target: FuzzToolCallNameIsAlwaysGated }
+          - { module: proxy,           pkg: ./cmd/ovara,                target: FuzzTermSafe }
+          - { module: proxy,           pkg: ./cmd/ovara,                target: FuzzParseGitHubRemote }
+          - { module: proxy,           pkg: ./internal/boxgate,         target: FuzzPolicyLine }
+          - { module: proxy,           pkg: ./internal/creds,           target: FuzzScopeToRepo }
+          - { module: proxy,           pkg: ./internal/receipts,        target: FuzzReceiptLine }
           - { module: runtime/gateway, pkg: ./internal/policy,          target: FuzzMatchCanonicalResource }
+          - { module: runtime/gateway, pkg: ./internal/policy,          target: FuzzCanonicalResource }
+          - { module: runtime/gateway, pkg: ./internal/policy,          target: FuzzMatchResource }
+          - { module: runtime/gateway, pkg: ./internal/policy,          target: FuzzSplitRefList }
+          - { module: runtime/gateway, pkg: ./internal/evaluator,       target: FuzzPrecedence }
           - { module: runtime/gateway, pkg: ./internal/record,          target: FuzzOpenNeverPanics }
     steps:
       - uses: actions/checkout@v4

@@ -33,8 +33,10 @@ func TestRoleAgent_AllowedEndpoints(t *testing.T) {
 	for _, ep := range []struct{ method, path string }{
 		{"POST", "/v1/runtime/check"},
 		{"POST", "/v1/runtime/batch-check"},
+		{"POST", "/v1/runtime/outcome"},
 		{"POST", "/v1/approval/create"},
 		{"GET", "/v1/approval/appr_123"},
+		{"POST", "/v1/approval/appr_123/claim"},
 	} {
 		if rec := req(h, ep.method, ep.path, "agent-token"); rec.Code != 200 {
 			t.Errorf("agent %s %s: got %d, want 200", ep.method, ep.path, rec.Code)

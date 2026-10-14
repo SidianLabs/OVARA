@@ -10,20 +10,33 @@ set -u
 #   MODE=box        the same through `ovara box` (workspace copy, box user, netns)
 #   MODE=box2       through `ovara box -tier 2` (a container from BOX_IMAGE,
 #                   default ovara-box-test); runs on the host (tests/box/host.sh)
+# and two variants of any mode:
+#   PROFILE=balanced  the deployment uses the balanced profile (reads from any
+#                     public host); the blocked-site checks must still hold
+#   UPSTREAM=1        Ovara's own outbound side goes through a CONNECT proxy
+#                     (upstream_proxy.py), as on a corporate network
 MODE="${MODE:-coop}"
+PROFILE="${PROFILE:-strict}"
+UPSTREAM="${UPSTREAM:-}"
 AGENT="${AGENT:-agent}"
 export DEBIAN_FRONTEND=noninteractive
 export PATH=$PATH:/usr/local/go/bin
 git config --global --add safe.directory '*'
 rm -rf /work; git clone -q /repo /work
 (cd /work/proxy && CGO_ENABLED=0 go build -o /usr/local/bin/ovara ./cmd/ovara) || { echo "BUILD FAILED"; exit 1; }
-cd /tmp && rm -rf d && ovara init d >/dev/null 2>&1
+cd /tmp && rm -rf d && ovara init d -profile "$PROFILE" >/dev/null 2>&1
+if [ -n "$UPSTREAM" ]; then
+  : > /tmp/upstream.log
+  python3 /repo/tests/agents/upstream_proxy.py 3128 /tmp/upstream.log &
+  for i in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.5; done
+fi
 cat > /tmp/cfg.py <<'PY'
-import json
+import json, os
 p = json.load(open('/tmp/d/proxy.json')); p['escalate_timeout_sec'] = 12
+if os.environ.get('UPSTREAM'): p['upstream_proxy'] = 'http://127.0.0.1:3128'
 json.dump(p, open('/tmp/d/proxy.json', 'w'), indent=2)
 PY
-python3 /tmp/cfg.py
+UPSTREAM="$UPSTREAM" python3 /tmp/cfg.py
 REALKEY="REALSECRET-0123456789abcdef"
 
 if [ "$MODE" = enforced ]; then
@@ -40,7 +53,7 @@ fi
 
 # --- the commands the "model" asks the agent to run (one tool call each) ------
 cat > /tmp/cmds.txt <<'EOF'
-curl -s -o /dev/null -w 'N1 %{http_code}\n' --max-time 20 https://pypi.org/simple/
+curl -s --retry 2 --retry-all-errors --retry-delay 2 -o /dev/null -w 'N1 %{http_code}\n' --max-time 20 https://pypi.org/simple/
 git clone -q https://github.com/octocat/Hello-World.git /tmp/hw-$$ && echo "N2 ok" || echo "N2 fail"
 mkdir -p /tmp/npmt && cd /tmp/npmt && npm init -y >/dev/null 2>&1 && npm install left-pad >/dev/null 2>&1 && echo "N3 ok" || echo "N3 fail"
 curl -s -o /dev/null -w 'S1 %{http_code}\n' --max-time 15 https://pastebin.com/
@@ -115,8 +128,13 @@ run_agent() {
     return
   fi
   if [ "$MODE" = box ]; then
-    GITHUB_TOKEN="$REALKEY" timeout 900 ovara box -dir /tmp/d -ui off -user agent /tmp/proj -- \
-      bash -c "cp -r /tmp/home/. \$HOME/ 2>/dev/null; python3 /repo/tests/agents/$MOCK 9100 /tmp/cmds.txt /tmp/mock.log & sleep 1; $1" >/tmp/agent.out 2>&1
+    # a tier 1 box has its own root too (its /tmp is empty): the same
+    # read-only mounts as tier 2, the mock's log out through the workspace
+    GITHUB_TOKEN="$REALKEY" timeout 900 ovara box -dir /tmp/d -ui off -no-commit-back -user agent \
+      -mount /tmp/home:/tmp/home -mount /repo/tests/agents:/repo/tests/agents -mount /tmp/cmds.txt:/tmp/cmds.txt /tmp/proj -- \
+      bash -c "cp -r /tmp/home/. \$HOME/ 2>/dev/null; python3 /repo/tests/agents/$MOCK 9100 /tmp/cmds.txt /tmp/mock.log & sleep 1; $1; cp /tmp/mock.log \$OVARA_WORKSPACE/.ovara-test-mock.log" >/tmp/agent.out 2>&1
+    W=$(sed -n 's/^==> workspace kept at //p' /tmp/agent.out | tail -1)
+    [ -n "$W" ] && cp "$W/.ovara-test-mock.log" /tmp/mock.log 2>/dev/null
     pkill -f "tests/agents/$MOCK" 2>/dev/null
     return
   fi
@@ -145,6 +163,8 @@ print("commands that returned a result: %d" % len(res))
 PY
 
 mode="$AGENT $MODE"; pass=0; fail=0; info=0
+[ "$PROFILE" = strict ] || mode="$mode $PROFILE"
+[ -z "$UPSTREAM" ] || mode="$mode upstream"
 val() { python3 -c "import json;print(json.load(open('/tmp/results.json')).get('$1','NO-RESULT'))"; }
 ok()   { echo "PASS  $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL  $1  -- $2"; fail=$((fail+1)); }
@@ -160,7 +180,7 @@ echo "=== [$mode] normal developer work through real $AGENT"
 [ "$(val N3)" = ok ]  && ok "N3 npm install (with its audit POST)" || bad "N3 npm install" "$(val N3)"
 echo "=== [$mode] things Ovara must stop"
 for p in "S1 paste site" "S2 request-capture POST" "S3 GET carrying a body"; do k=${p%% *}; [ "$(val $k)" = 403 ] && ok "$p -> 403" || bad "$p" "got $(val $k)"; done
-[ "$(val A1)" = 504 ] && ok "A1 unapproved POST waits, then times out (504)" || bad "A1 unapproved POST" "got $(val A1)"
+[ "$(val A1)" = 503 ] && ok "A1 unapproved POST is held, then told to retry (503)" || bad "A1 unapproved POST" "got $(val A1)"
 [ "$(val K1)" = ok ]  && ok "K1 the real key is not in the agent's environment" || bad "K1 key custody" "$(val K1)"
 echo "=== [$mode] evading the POLICY through the proxy (must never succeed)"
 for k in P1 P2 P3 P5 P6 P7 P8 P9 P10 P11; do
@@ -207,6 +227,12 @@ for line in open('/tmp/d/var/receipts.jsonl'):
 for (h, m, d), n in sorted(c.items()):
     print("  %-40s %-6s %-9s x%d" % (h, m, d, n))
 PY3
+if [ -n "$UPSTREAM" ]; then
+  echo "=== [$mode] Ovara's own traffic went through the upstream proxy"
+  grep -q "^CONNECT pypi.org:443 200" /tmp/upstream.log && ok "U1 the allowed read to pypi.org was made through the upstream proxy" || bad "U1 upstream proxy" "no CONNECT pypi.org:443 in its log"
+  grep -q "pastebin.com\|webhook.site" /tmp/upstream.log && bad "U2 a denied host reached the upstream proxy" "$(grep -E 'pastebin.com|webhook.site' /tmp/upstream.log | head -2)" || ok "U2 nothing for a denied host ever reached the upstream proxy"
+  note "U3 $(grep -c '^CONNECT' /tmp/upstream.log) connection(s) made through the upstream proxy"
+fi
 echo "=== [$mode] the record"
 ovara log -dir /tmp/d 2>&1 | tail -3
 ovara log -dir /tmp/d 2>&1 | grep -q "signed and unbroken" && ok "receipt chain verifies" || bad "receipt chain" "not verified"

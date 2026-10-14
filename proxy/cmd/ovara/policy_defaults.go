@@ -1,6 +1,9 @@
 package main
 
-import "net"
+import (
+	"net"
+	"strings"
+)
 
 // defaultPolicyRules is what `ovara init` writes to policy.json. The idea,
 // in one line: reading is free, writing needs a human, and a few known
@@ -33,6 +36,21 @@ func defaultPolicyRules() []map[string]any {
 			rule("HEAD https://"+h+"/*", "allow", "Reading from "+h+" is allowed"),
 		)
 	}
+	// --- credentialed reads that are not free ---
+	// Reads of api.github.com carry the user's token, so "reading is free"
+	// would let the agent read whatever the token can. These reads return
+	// secret material or account data rather than code, and pause; being
+	// longer than the host-wide allow, they win under most-specific
+	// precedence. Paths are matched as written (GitHub's are lower case).
+	for _, p := range sensitiveGitHubReads {
+		rules = append(rules, rule("GET https://api.github.com"+p, "escalate", "Reading this from GitHub uses your token to fetch secrets or account data: needs approval"))
+	}
+	// The Slack Web API is RPC: slack.com/api/<method> acts the same sent
+	// as GET or POST (chat.postMessage by GET posts a message), so a GET
+	// there is a call, not a read.
+	rules = append(rules,
+		rule("GET https://slack.com/api/*", "escalate", "Slack API call (it can change things even when sent as GET): needs approval"))
+	// --- end credentialed reads that are not free ---
 	// git clone/fetch/pull speak smart-HTTP with a POST to git-upload-pack;
 	// it only reads. The host is part of the rule: a bare "*git-upload-pack"
 	// would match a POST to ANY server whose path ends that way.
@@ -40,9 +58,16 @@ func defaultPolicyRules() []map[string]any {
 		rules = append(rules, rule("POST https://"+h+"/*git-upload-pack", "allow", "git clone/fetch/pull from "+h+" is reading"))
 	}
 	rules = append(rules,
-		// The agent must be able to talk to its own model provider.
-		rule("POST https://api.anthropic.com/*", "allow", "The agent may call the Anthropic API"),
-		rule("POST https://api.openai.com/*", "allow", "The agent may call the OpenAI API"),
+		// The agent must be able to talk to its own model provider, and only
+		// that: the inference endpoints. Files, batches, fine-tunes, vector
+		// stores and admin calls on the same hosts are writes and pause like
+		// any other. The proxy also checks these bodies (modelgate.go) and
+		// refuses features that make the provider fetch a URL for the agent.
+		rule("POST https://api.anthropic.com/v1/messages", "allow", "The agent may call its model (Anthropic Messages API)"),
+		rule("POST https://api.anthropic.com/v1/messages/count_tokens", "allow", "The agent may count tokens (Anthropic)"),
+		rule("POST https://api.openai.com/v1/responses", "allow", "The agent may call its model (OpenAI Responses API)"),
+		rule("POST https://api.openai.com/v1/chat/completions", "allow", "The agent may call its model (OpenAI Chat Completions)"),
+		rule("POST https://api.openai.com/v1/embeddings", "allow", "The agent may compute embeddings (OpenAI)"),
 		// `npm install` runs `npm audit` automatically: a POST that sends the
 		// package names and versions being installed to the registry. It reads
 		// advisories, it writes nothing, and without this rule every agent
@@ -61,6 +86,35 @@ func defaultPolicyRules() []map[string]any {
 		// for a person who sees the diff (fs.commit_back).
 		fsRule("fs.commit_back.path", "path:.github/workflows/*", "deny", "The agent may not change CI workflows without a person editing the policy"),
 		fsRule("fs.commit_back.path", "path:.git/*", "deny", "The agent may not change git hooks or config"),
+	)
+	// Files that make something run on the person's machine or in CI when
+	// they merge, open or build the project: agent hooks and settings, MCP
+	// servers, editor tasks, git hooks and filters, CI and dev containers.
+	// A reviewer reading "the agent's code changes" does not expect them, so
+	// they stay in the workspace unless the policy is edited. Each is
+	// matched at the top and in any subdirectory.
+	for _, p := range []string{
+		".claude/*", ".mcp.json", ".cursor/*", ".vscode/tasks.json", ".vscode/settings.json",
+		".husky/*", ".pre-commit-config.yaml", ".gitattributes", ".gitmodules",
+		".github/*", ".devcontainer/*", ".devcontainer.json",
+	} {
+		desc := "Kept out: " + p + " can make something run on the host or in CI"
+		rules = append(rules,
+			fsRule("fs.commit_back.path", "path:"+p, "deny", desc),
+			fsRule("fs.commit_back.path", "path:*/"+p, "deny", desc))
+	}
+	// Files that come back but are named to the person first ("⚠ sensitive
+	// file changed"): instructions other agents follow, install and build
+	// scripts, and lockfiles. Escalate on a path means exactly that in
+	// `ovara box`; matching a little too much here costs only a warning.
+	for _, p := range []string{
+		"CLAUDE.md", "AGENTS.md", ".cursorrules", "package.json",
+		"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "*.lock", "go.sum",
+		"Makefile", "makefile", "Dockerfile", "Dockerfile.*", "*.dockerfile", "*.sh",
+	} {
+		rules = append(rules, fsRule("fs.commit_back.path", "path:*"+strings.TrimPrefix(p, "*"), "escalate", "Comes back, but flagged for the person: "+p+" changes what agents, installs or builds do"))
+	}
+	rules = append(rules,
 		fsRule("fs.commit_back.path", "path:*", "allow", "Other paths may come back for review"),
 		fsRule("fs.commit_back", "commit:*", "escalate", "Changes come back to the real repository only after a person reads the diff"),
 		// `ovara box` command gate: every program the agent starts is checked
@@ -79,11 +133,26 @@ func defaultPolicyRules() []map[string]any {
 		fsRule("shell", "shell:ip link*", "deny", "The box's network is not the agent's to change"),
 		fsRule("shell", "shell:ip route*", "deny", "The box's network is not the agent's to change"),
 		fsRule("shell", "shell:ovara*", "deny", "The agent may not operate Ovara"),
+		// The command line these match is normalised first (boxgate.PolicyLine):
+		// the program's base name, rm's flags merged ("rm -r -f", "rm
+		// --recursive --force" and "rm -Rf" all read "rm -rf"), git's global
+		// options dropped ("git -c k=v push" reads "git push"). Every program
+		// is checked on its own, so the rm or git that `sh -c "..."` starts
+		// is matched as itself whatever the shell line looked like.
 		fsRule("shell", "shell:*rm -rf*", "escalate", "Recursive deletes pause for a person"),
 		fsRule("shell", "shell:*rm -fr*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:rm -r*", "escalate", "Recursive deletes pause for a person"),
+		fsRule("shell", "shell:*find * -delete*", "escalate", "Deleting with find pauses for a person"),
+		fsRule("shell", "shell:*shred *", "escalate", "Destructive: pauses for a person"),
+		fsRule("shell", "shell:*truncate -s 0*", "escalate", "Destructive: pauses for a person"),
 		fsRule("shell", "shell:*git push*", "escalate", "Publishing pauses for a person (and changes come back through commit-back anyway)"),
 		fsRule("shell", "shell:*mkfs*", "escalate", "Destructive: pauses for a person"),
 		fsRule("shell", "shell:*dd if=*", "escalate", "Destructive: pauses for a person"),
+		// An agent starting another agent with its permission checks off.
+		// (The command `ovara box` itself was given to start is not paused.)
+		fsRule("shell", "shell:*--dangerously-skip-permissions*", "escalate", "An agent with its permission checks turned off pauses for a person"),
+		fsRule("shell", "shell:*--dangerously-bypass-approvals-and-sandbox*", "escalate", "An agent with its approvals and sandbox turned off pauses for a person"),
+		fsRule("shell", "shell:*--yolo*", "escalate", "An agent with its approvals turned off pauses for a person"),
 		fsRule("shell", "shell:*", "allow", "Everything else the agent runs in the box is allowed and recorded"),
 		// `ovara box -profile strict`: downloading a package the project's
 		// lockfiles did not pin when the box started (action_type
@@ -91,6 +160,49 @@ func defaultPolicyRules() []map[string]any {
 		// approved one is allowed for the rest of the run. Allow trusted
 		// packages here, e.g. "npm:@types/*".
 		fsRule("package.install", "*", "escalate", "A new dependency pauses once with its name and version (strict profile)"),
+		// --- proxy follow-up questions (proxy/internal/proxy) ---
+		// The proxy asks these about requests the URL rules above allowed.
+		// A model request that makes the provider fetch a URL or connect to
+		// a server for the agent (MCP connector, web fetch/search, an image
+		// by URL) pauses with the request in view; resource
+		// "model:<host> <finding>".
+		fsRule("model.server_feature", "*", "escalate", "A model request that makes the provider reach out for the agent pauses for a person"),
+		// Allowed traffic past a host's per-minute budget pauses once;
+		// approving doubles that host's allowance for the run. Resource
+		// "budget:<host>"; allow a host here to never be asked about it.
+		fsRule("egress.budget", "*", "escalate", "Unusually heavy traffic to one host pauses for a person"),
+		// Under a profile that lets reads through to any host (balanced,
+		// observe: `ovara policy profile`), the distinct unlisted hosts an
+		// agent reads are counted; past open_reads.max_hosts (proxy.json)
+		// each further host pauses once. Resource "host:<host>".
+		fsRule("egress.open_hosts", "*", "escalate", "A read from yet another unlisted host, past the per-run cap, pauses for a person (balanced and observe profiles)"),
+		// --- end proxy follow-up questions ---
+		// --- per-agent questions (proxy/internal/proxy taint.go, modelbudget.go) ---
+		// For a while (taint_window_minutes, default 30) after the agent
+		// read content anyone can write (an issue, a PR comment, a host a
+		// person approved), every write the rules above would allow pauses
+		// with the source in view; resource "taint:<METHOD> <url>". Writes
+		// already paused or blocked are unchanged.
+		fsRule("taint.write", "*", "escalate", "A write soon after the agent read untrusted content pauses for a person"),
+		// Model use past the agent's budget for the run (model_budget in
+		// proxy.json) pauses once; approving doubles it. Resource
+		// "model-budget:<host>".
+		fsRule("model.budget", "*", "escalate", "Model use past the agent's budget for this run pauses for a person"),
+		// --- end per-agent questions ---
+		// --- MCP (proxy/internal/mcp; the proxy and `ovara mcp wrap`) ---
+		// A server's tool definitions are what the model reads: the first
+		// time a server lists its tools, and whenever a definition changes
+		// or a new tool appears, a person sees them (resource
+		// "mcp:<host><path> tools <n> new [<m> changed]", or
+		// "mcp:stdio:<name> ..." for a wrapped stdio server). Until then
+		// the agent does not see them and cannot call them.
+		fsRule("mcp.tools", "*", "escalate", "New or changed MCP tool definitions pause for a person"),
+		// Every call of an approved tool pauses; resource
+		// "mcp:<host><path>/<tool>". Allow the tools you trust by name,
+		// e.g. "mcp:mcp.example.com/mcp/search", or a whole server with
+		// "mcp:mcp.example.com/mcp/*".
+		fsRule("mcp.tool_call", "*", "escalate", "MCP tool calls pause for a person unless the tool is allowed by name"),
+		// --- end MCP ---
 		// Anything that changes something out in the world needs a human.
 		// This covers git push, opening/merging PRs, deleting branches,
 		// triggering deploys and posting messages.
@@ -113,6 +225,34 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// sensitiveGitHubReads are api.github.com paths whose GETs escalate even
+// though the host is a trusted read host: secret scanning alerts, Actions,
+// Dependabot, Codespaces and environment secrets and variables, the
+// account's keys and e-mail addresses, org membership, gists, OAuth
+// authorizations and app installation tokens. "*" spans path segments, so
+// the repository- and organization-scoped entries also cover GitHub's
+// numeric-id spelling (/repositories/ID/..., /organizations/ID/...).
+var sensitiveGitHubReads = []string{
+	"/*/secret-scanning/*",
+	"/*/actions/secrets*",
+	"/*/actions/variables*",
+	"/*/environments/*/secrets*",
+	"/*/environments/*/variables*",
+	"/*/dependabot/secrets*",
+	"/*/codespaces/secrets*",
+	"/user/codespaces/secrets*",
+	"/user/keys*",
+	"/user/gpg_keys*",
+	"/user/ssh_signing_keys*",
+	"/user/emails*",
+	"/user/public_emails*",
+	"/orgs/*/members*",
+	"/organizations/*/members*",
+	"/gists*",
+	"/authorizations*",
+	"/installation/*",
 }
 
 // trustedGitHosts may be cloned/fetched from without approval.

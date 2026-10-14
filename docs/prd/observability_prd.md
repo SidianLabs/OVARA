@@ -1,5 +1,9 @@
 # Observability PRD
 
+> **Historical snapshot — not the current plan.** Kept for history; it may
+> describe code that has since changed or been removed. For what Ovara does
+> and promises today, see [docs/GUARANTEES.md](../GUARANTEES.md) and [docs/box.md](../box.md).
+
 > **Status: planned — not yet implemented.** The OTLP/NATS/ClickHouse
 > pipeline described here is not wired into the runtime gateway today
 > (`internal/observe/` is never instantiated in `server.go`). See

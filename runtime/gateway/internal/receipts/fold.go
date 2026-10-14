@@ -28,7 +28,7 @@ func (s *FileBackedStore) foldEvent(env *record.Envelope) error {
 		if _, exists := s.receipts[r.ReceiptID]; exists {
 			return fmt.Errorf("duplicate receipt record for %s", r.ReceiptID)
 		}
-		s.receipts[r.ReceiptID] = &r
+		s.add(&r)
 		return nil
 	case record.TypeCompact:
 		var cc struct {

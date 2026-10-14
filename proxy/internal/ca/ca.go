@@ -15,10 +15,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -33,11 +35,30 @@ type CA struct {
 	cache map[string]*tls.Certificate
 }
 
+// Lifetimes. The CA can mint a certificate for any host, so a copy of its
+// key is worth little for long: it is short-lived and replaced on start-up
+// when it nears its end. Leaves live a day and are re-minted as needed.
+var (
+	caValidity    = 30 * 24 * time.Hour
+	caRenewBefore = 3 * 24 * time.Hour
+	leafValidity  = 24 * time.Hour
+	clockSkew     = time.Hour // NotBefore is back-dated by this much
+)
+
 // LoadOrCreate loads a persisted CA or generates a new ECDSA P-256 root.
+// A persisted CA that has expired, expires within caRenewBefore, or lacks
+// the constraints new CAs get (path length 0, cert and CRL signing only) is
+// replaced by a new one: the agent trusts the certificate file, which now
+// holds the new CA.
 func LoadOrCreate(certFile, keyFile string) (*CA, error) {
 	cert, key, err := load(certFile, keyFile)
 	if err == nil {
-		return &CA{cert: cert, key: key, certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), cache: map[string]*tls.Certificate{}}, nil
+		reason := rotationReason(cert, time.Now())
+		if reason == "" {
+			return &CA{cert: cert, key: key, certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}), cache: map[string]*tls.Certificate{}}, nil
+		}
+		log.Printf("interception CA %s %s: generating a new one; agents that read %s pick it up when they restart, a copy installed anywhere else must be replaced", certFile, reason, certFile)
+		return create(certFile, keyFile)
 	}
 	// Only a CA that does not exist yet may be created. A CA that exists
 	// but cannot be loaded (unreadable, corrupt, key/cert mismatch) is an
@@ -49,25 +70,50 @@ func LoadOrCreate(certFile, keyFile string) (*CA, error) {
 	if _, kerr := os.Stat(keyFile); kerr == nil {
 		return nil, fmt.Errorf("CA certificate %s is missing but key %s exists; refusing to overwrite the key", certFile, keyFile)
 	}
-	key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	return create(certFile, keyFile)
+}
+
+// rotationReason says why a loaded CA must be replaced, or "".
+func rotationReason(cert *x509.Certificate, now time.Time) string {
+	switch {
+	case !now.Before(cert.NotAfter):
+		return "has expired"
+	case now.Add(caRenewBefore).After(cert.NotAfter):
+		return "expires within " + caRenewBefore.String()
+	case !cert.BasicConstraintsValid || !cert.IsCA || cert.MaxPathLen != 0 || !cert.MaxPathLenZero:
+		return "may sign intermediate CAs"
+	case cert.KeyUsage != x509.KeyUsageCertSign|x509.KeyUsageCRLSign:
+		return "has key usages beyond certificate signing"
+	case cert.NotAfter.Sub(cert.NotBefore) > caValidity+clockSkew:
+		return "is valid for longer than " + caValidity.String()
+	}
+	return ""
+}
+
+func create(certFile, keyFile string) (*CA, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "Ovara Proxy CA", Organization: []string{"Sidian Labs"}},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		NotBefore:             now.Add(-clockSkew),
+		NotAfter:              now.Add(caValidity),
 		IsCA:                  true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
+		// Leaves only: a stolen key cannot mint a sub-CA.
+		MaxPathLen:     0,
+		MaxPathLenZero: true,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
 		return nil, err
 	}
-	cert, err = x509.ParseCertificate(der)
+	cert, err := x509.ParseCertificate(der)
 	if err != nil {
 		return nil, err
 	}
@@ -124,11 +170,36 @@ func (c *CA) persist(certFile, keyFile string) error {
 	}
 	certOut := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.cert.Raw})
 	c.certPEM = certOut
-	if err := os.WriteFile(certFile, certOut, 0o644); err != nil {
+	keyOut := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+	// Key first: a failure between the two leaves a pair that does not
+	// match, which load reports, never a new certificate for an old key.
+	if err := writeFileAtomic(keyFile, keyOut, 0o600); err != nil {
 		return err
 	}
-	keyOut := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
-	return os.WriteFile(keyFile, keyOut, 0o600)
+	return writeFileAtomic(certFile, certOut, 0o644)
+}
+
+// writeFileAtomic replaces path with data at exactly perm (os.WriteFile
+// keeps the mode of an existing file, which may be looser).
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if err := tmp.Chmod(perm); err != nil && runtime.GOOS != goosWindows {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 // CertPEM returns the CA certificate PEM for distribution to trust stores.
@@ -138,6 +209,9 @@ func (c *CA) CertPEM() []byte { return c.certPEM }
 // — minting is cheap and an unbounded map is a memory-growth vector.
 const maxCertCache = 1000
 
+// goosWindows is the one platform where a file's mode cannot be set.
+const goosWindows = "windows"
+
 // CertFor returns a cached or freshly minted leaf certificate for host.
 func (c *CA) CertFor(host string) (*tls.Certificate, error) {
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -146,17 +220,24 @@ func (c *CA) CertFor(host string) (*tls.Certificate, error) {
 	host = strings.ToLower(host)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if cert, ok := c.cache[host]; ok {
+	now := time.Now()
+	// A cached leaf is reused while it has at least an hour left.
+	if cert, ok := c.cache[host]; ok && cert.Leaf != nil && now.Add(time.Hour).Before(cert.Leaf.NotAfter) {
 		return cert, nil
 	}
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	notAfter := now.Add(leafValidity - clockSkew) // whole span is leafValidity
+	if notAfter.After(c.cert.NotAfter) {
+		notAfter = c.cert.NotAfter
+	}
 	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: host},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: host},
+		NotBefore:             now.Add(-clockSkew),
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true, // and not a CA
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		tmpl.IPAddresses = []net.IP{ip}
@@ -171,9 +252,14 @@ func (c *CA) CertFor(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
 	cert := &tls.Certificate{
 		Certificate: [][]byte{der},
 		PrivateKey:  leafKey,
+		Leaf:        leaf,
 	}
 	if len(c.cache) >= maxCertCache {
 		for k := range c.cache {

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ovara.dev/spec/0.1/decision-request.schema.json",
+  "title": "Decision request: POST /v1/runtime/check (contract C3, spec 0.1)",
+  "description": "What a client sends to have one action decided. It is runtime/gateway/internal/models.ActionRequest. The caller's identity for authorization is the credential on the request, never a field in this body.",
+  "type": "object",
+  "required": ["action_type", "resource", "environment"],
+  "properties": {
+    "action_type": { "type": "string", "description": "See spec/resource-model.md." },
+    "resource": { "type": "string", "description": "The resource in its canonical form, see spec/resource-model.md." },
+    "environment": { "type": "string", "description": "The environment the action runs in (\"dev\", \"production\", ...)." },
+    "agent_identity": {
+      "type": "object",
+      "description": "The agent on whose behalf the action is taken (SDK callers). Must agree with the credential's subject.",
+      "properties": {
+        "issuer": { "type": "string" },
+        "subject_id": { "type": "string" },
+        "owner": { "type": "string" },
+        "lifecycle": { "type": "string" },
+        "verify_key": { "type": "string" }
+      },
+      "required": ["issuer", "subject_id"]
+    },
+    "capability_lease": { "type": "object", "description": "A signed capability lease (docs/api/delegated_capabilities.md)." },
+    "delegation_chain": { "type": "object", "description": "A signed delegation chain (docs/api/delegated_capabilities.md)." },
+    "metadata": {
+      "description": "Display context for a person who is asked about the request (the proxy sends proxy_context: query, body size and type, body_sha256, a redacted preview). It grants nothing and decides nothing."
+    },
+    "nonce": { "type": "string", "description": "Unique per request; a nonce seen again within the window is refused (replay protection)." },
+    "issued_at": { "type": "string", "format": "date-time", "description": "When the caller made the request; a stale one is refused." },
+    "min_epoch": { "type": "integer", "minimum": 0, "description": "The caller's minimum acceptable revocation epoch; a gateway whose view is older denies. 0 is unset." }
+  }
+}

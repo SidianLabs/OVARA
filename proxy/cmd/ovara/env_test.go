@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -56,7 +57,7 @@ func TestAgentEnv_FromInitDeployment(t *testing.T) {
 	// `ovara run` injects only GitHub (the only key set in its env):
 	// the agent gets a GitHub placeholder and nothing for Anthropic, so a
 	// Claude Code subscription login keeps working.
-	_, skipped := creds.LoadReport(cfg.Credentials)
+	_, skipped, _ := creds.LoadReport(cfg.Credentials)
 	if err := writeActiveKeys(dir, cfg.Credentials, skipped); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +86,134 @@ func TestAgentEnv_FromInitDeployment(t *testing.T) {
 	}
 }
 
+// setNoProxy sets NO_PROXY and no_proxy for one test. On Windows they are
+// one variable (names are case-insensitive there), so setting the second
+// would replace the first: only the upper-case name is set.
+func setNoProxy(t *testing.T, upper, lower string) {
+	t.Helper()
+	t.Setenv("NO_PROXY", upper)
+	if runtime.GOOS != "windows" {
+		t.Setenv("no_proxy", lower)
+	}
+}
+
+// A shell often carries a NO_PROXY list (corporate setups, CI images, and
+// the sandbox this was found in). The hosts on it are contacted directly, so
+// an agent that inherits it goes around Ovara for them: no decision and no
+// receipt, although the environment says every request goes through Ovara.
+// `ovara env` replaces it with loopback only, as `ovara box` does, and says
+// what it replaced.
+func TestAgentEnv_PinsNoProxyToLoopback(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := deploy(dir, "8080", false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "proxy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, inherited := range map[string]string{
+		"hosts":         "localhost,127.0.0.1,api.anthropic.com,registry.npmjs.org,.corp.example,10.0.0.0/8",
+		"upper only":    "api.anthropic.com",
+		"loopback only": "localhost,127.0.0.1,::1",
+		"nothing":       "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			lower := inherited
+			if name == "upper only" {
+				lower = ""
+			}
+			setNoProxy(t, inherited, lower)
+			vars, notes, err := agentEnv(dir, cfg, "127.0.0.1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]string{}
+			for _, v := range vars {
+				got[v.name] = v.value
+			}
+			for _, n := range []string{"NO_PROXY", "no_proxy"} {
+				if got[n] != "127.0.0.1,localhost" {
+					t.Errorf("%s = %q, want loopback only", n, got[n])
+				}
+			}
+			var note string
+			for _, n := range notes {
+				if strings.Contains(n, "NO_PROXY") {
+					note = n
+				}
+			}
+			switch {
+			case strings.Contains(inherited, "anthropic"):
+				if !strings.Contains(note, "api.anthropic.com") || strings.Contains(note, "\n") {
+					t.Errorf("the note should name the hosts it replaced on one line, got %q", note)
+				}
+			default:
+				if note != "" {
+					t.Errorf("nothing was replaced, yet a note says %q", note)
+				}
+			}
+			// every shell prints the pinned value
+			for _, sh := range []string{"bash", "powershell", "cmd"} {
+				var b bytes.Buffer
+				if err := writeEnv(&b, sh, vars, notes); err != nil {
+					t.Fatal(err)
+				}
+				// the lines that set it, not the note that names what it replaced
+				var set []string
+				for _, line := range strings.Split(b.String(), "\n") {
+					if strings.Contains(strings.ToUpper(line), "NO_PROXY") && !strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "rem") {
+						set = append(set, line)
+					}
+				}
+				if len(set) != 2 {
+					t.Fatalf("%s: %d lines set NO_PROXY, want 2 (upper and lower case):\n%s", sh, len(set), b.String())
+				}
+				for _, l := range set {
+					if !strings.Contains(l, "127.0.0.1,localhost") || strings.Contains(l, "npmjs") || strings.Contains(l, "anthropic") {
+						t.Errorf("%s: %q is not loopback only", sh, l)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The environment is written into a stream that is eval'd, and the note quotes
+// the list it replaced: a value with a line break or shell syntax in it must
+// not turn into a command.
+func TestAgentEnv_NoProxyNoteCannotInjectCommands(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := deploy(dir, "8080", false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "proxy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setNoProxy(t, "good.example,\ntouch /tmp/pwned\n,$(id),`id`,a b,;rm -rf ~", "")
+	vars, notes, err := agentEnv(dir, cfg, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	if err := writeEnv(&b, "bash", vars, notes); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(b.String(), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "export ") {
+			continue
+		}
+		t.Errorf("a line that is neither a comment nor an export: %q", line)
+	}
+	if strings.Contains(b.String(), "$(id)") || strings.Contains(b.String(), "`id`") || strings.Contains(b.String(), "pwned") {
+		t.Errorf("hostile list entries reached the output:\n%s", b.String())
+	}
+	if !strings.Contains(b.String(), "good.example") {
+		t.Errorf("the ordinary host should still be named:\n%s", b.String())
+	}
+}
+
 func TestWriteEnv_Shells(t *testing.T) {
 	vars := []envVar{{"A", "it's", "c"}}
 	cases := map[string]string{
@@ -103,5 +232,32 @@ func TestWriteEnv_Shells(t *testing.T) {
 	}
 	if err := writeEnv(&bytes.Buffer{}, "fish", vars, nil); err == nil {
 		t.Error("unknown shell must error")
+	}
+}
+
+// -shell github prints one NAME=value per line, for $GITHUB_ENV: no quoting,
+// comments on their own lines, and secret-looking variables emptied since an
+// environment file cannot unset them.
+func TestAgentEnv_GitHubFormat(t *testing.T) {
+	vars := []envVar{{"HTTPS_PROXY", "http://agent:tok@127.0.0.1:9443", "every request goes through Ovara"}, {"SSL_CERT_FILE", "/d/var/ca.pem", ""}}
+	var b bytes.Buffer
+	if err := writeEnv(&b, "github", vars, []string{"a note"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUnsets(&b, "github", []string{"AWS_SECRET_ACCESS_KEY"}); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(b.String()), "\n") {
+		if !strings.HasPrefix(l, "#") {
+			lines = append(lines, l)
+		}
+	}
+	want := []string{"HTTPS_PROXY=http://agent:tok@127.0.0.1:9443", "SSL_CERT_FILE=/d/var/ca.pem", "AWS_SECRET_ACCESS_KEY="}
+	if strings.Join(lines, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q\nwant %q\n%s", lines, want, b.String())
+	}
+	if !strings.Contains(b.String(), "# NOTE: a note") || !strings.Contains(b.String(), "# every request goes through Ovara") {
+		t.Fatalf("comments:\n%s", b.String())
 	}
 }

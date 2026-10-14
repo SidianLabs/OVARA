@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +26,11 @@ type scriptedGateway struct {
 	checks   atomic.Int32
 	creates  atomic.Int32
 	down     atomic.Bool
+	// claim: what POST /v1/approval/apr_1/claim answers
+	claims       atomic.Int32 // successful claims
+	used         atomic.Bool  // the approval was claimed already
+	claimMissing atomic.Bool  // an older gateway: the route does not exist
+	rule         atomic.Value // matched_rule in the decision, when set
 }
 
 func newScripted(t *testing.T, decision string) (*Server, *scriptedGateway, string) {
@@ -43,7 +48,28 @@ func newScripted(t *testing.T, decision string) (*Server, *scriptedGateway, stri
 			w.WriteHeader(404)
 		case r.URL.Path == "/v1/runtime/check":
 			sg.checks.Add(1)
-			json.NewEncoder(w).Encode(map[string]any{"decision": sg.decision.Load().(string), "decision_id": "d1"})
+			d := map[string]any{"decision": sg.decision.Load().(string), "decision_id": "d1"}
+			if rule, _ := sg.rule.Load().(string); rule != "" {
+				d["matched_rule"] = rule
+			}
+			_ = json.NewEncoder(w).Encode(d)
+		case r.URL.Path == "/v1/approval/apr_1/claim":
+			if sg.claimMissing.Load() {
+				w.WriteHeader(404)
+				return
+			}
+			st := sg.status.Load().(string)
+			if st != "approved" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": st, "claimed": false})
+				return
+			}
+			if !sg.used.CompareAndSwap(false, true) {
+				w.WriteHeader(409)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "approval already used"})
+				return
+			}
+			sg.claims.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "approved", "claimed": true})
 		case r.URL.Path == "/v1/approval/create":
 			sg.creates.Add(1)
 			json.NewEncoder(w).Encode(map[string]string{"approval_id": "apr_1"})
@@ -62,6 +88,9 @@ func newScripted(t *testing.T, decision string) (*Server, *scriptedGateway, stri
 	}
 	chainFile := filepath.Join(dir, "receipts.jsonl")
 	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), filepath.Join(dir, "r.pub"))
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +211,7 @@ func TestFailOpenNeverInjectsCredentials(t *testing.T) {
 		fmt.Fprint(w, "ok")
 	}))
 	defer up.Close()
-	srv.bindings = []creds.Binding{{Host: mustHost(t, up.URL), Headers: map[string]string{"Authorization": "Bearer REAL-SECRET-VALUE"}}}
+	srv.bindings = []creds.Binding{{Host: mustHostPort(t, up.URL), Headers: map[string]string{"Authorization": "Bearer REAL-SECRET-VALUE"}}}
 	srv.transport.TLSClientConfig.InsecureSkipVerify = true
 
 	rec := httptest.NewRecorder()
@@ -214,8 +243,10 @@ func TestEveryOutcomeIsReceipted(t *testing.T) {
 	do(srv, "POST", up.URL+"/a")
 	sg.decision.Store("allow")
 	do(srv, "GET", up.URL+"/b")
-	if n := countLines(t, chainFile); n != 2 {
-		t.Fatalf("2 requests, %d receipts", n)
+	// The denied request has one receipt; the forwarded one has an attempt
+	// receipt (written before it was sent) and its outcome.
+	if n := countLines(t, chainFile); n != 3 {
+		t.Fatalf("2 requests, %d receipts, want 3", n)
 	}
 }
 
@@ -247,8 +278,116 @@ func TestReceiptIsWrittenBeforeTheResponseReachesTheAgent(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	// Headers are in hand, the body is still open. The receipt must be there.
-	if n := countLines(t, chainFile); n != 1 {
-		t.Fatalf("response headers reached the agent with %d receipts on disk, want 1", n)
+	// Headers are in hand, the body is still open. Both receipts (the
+	// attempt and its outcome) must be there.
+	if n := countLines(t, chainFile); n != 2 {
+		t.Fatalf("response headers reached the agent with %d receipts on disk, want 2", n)
+	}
+}
+
+// An approved request is claimed before it runs, so the approval is used
+// once: the gateway sees exactly one claim for the one upstream call.
+func TestApprovedRequestIsClaimedBeforeItRuns(t *testing.T) {
+	srv, sg, _ := newScripted(t, "escalate")
+	up, hits := upstreamCounting(t)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		sg.status.Store("approved")
+	}()
+	if rec := do(srv, "POST", up.URL+"/deploy"); rec.Code != 200 || hits.Load() != 1 {
+		t.Fatalf("approved request: code=%d hits=%d", rec.Code, hits.Load())
+	}
+	if sg.claims.Load() != 1 || !sg.used.Load() {
+		t.Fatalf("claims=%d used=%v, want one claim", sg.claims.Load(), sg.used.Load())
+	}
+}
+
+// An approval already used by an identical request is not ridden again:
+// the request is refused, nothing reaches upstream, and the answer says so.
+func TestAnApprovalAlreadyUsedIsNotReplayed(t *testing.T) {
+	srv, sg, _ := newScripted(t, "escalate")
+	up, hits := upstreamCounting(t)
+	sg.status.Store("approved")
+	sg.used.Store(true)
+	rec := do(srv, "POST", up.URL+"/deploy")
+	if rec.Code != http.StatusForbidden || hits.Load() != 0 || !strings.Contains(rec.Body.String(), "already used") {
+		t.Fatalf("used approval: code=%d hits=%d body=%s", rec.Code, hits.Load(), rec.Body)
+	}
+}
+
+// With the retry answer configured, an unanswered hold ends in 503 with
+// Retry-After and the approval id, not 504; the approval stays open, so the
+// same request sent again after the person approved runs, once.
+func TestRetryAnswerCarriesRetryAfterAndTheApprovalStaysOpen(t *testing.T) {
+	srv, sg, _ := newScripted(t, "escalate")
+	srv.SetEscalateWindow(120*time.Millisecond, 10*time.Millisecond)
+	srv.SetEscalateAnswer(true)
+	sg.rule.Store("deploys need a person")
+	up, hits := upstreamCounting(t)
+	rec := do(srv, "POST", up.URL+"/deploy")
+	if rec.Code != http.StatusServiceUnavailable || hits.Load() != 0 {
+		t.Fatalf("held and unanswered: code=%d hits=%d", rec.Code, hits.Load())
+	}
+	if ra := rec.Header().Get("Retry-After"); ra == "" || ra == "0" {
+		t.Fatalf("Retry-After %q", ra)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "held for approval" || body["approval_id"] != "apr_1" || body["decision_id"] != "d1" || body["rule"] != "deploys need a person" {
+		t.Fatalf("answer %v", body)
+	}
+	// The person approves after the agent was told to come back.
+	sg.status.Store("approved")
+	if rec := do(srv, "POST", up.URL+"/deploy"); rec.Code != 200 || hits.Load() != 1 || sg.claims.Load() != 1 {
+		t.Fatalf("retry after approval: code=%d hits=%d claims=%d", rec.Code, hits.Load(), sg.claims.Load())
+	}
+}
+
+// Without the retry answer (the default) the hold still ends in 504.
+func TestTimeoutAnswerIsTheDefault(t *testing.T) {
+	srv, _, _ := newScripted(t, "escalate")
+	srv.SetEscalateWindow(120*time.Millisecond, 10*time.Millisecond)
+	up, hits := upstreamCounting(t)
+	rec := do(srv, "POST", up.URL+"/deploy")
+	if rec.Code != http.StatusGatewayTimeout || hits.Load() != 0 || rec.Header().Get("Retry-After") != "" {
+		t.Fatalf("default: code=%d hits=%d retry-after=%q", rec.Code, hits.Load(), rec.Header().Get("Retry-After"))
+	}
+}
+
+// A gateway without the claim route (an older one) does not stop an
+// approved request: it runs, and the proxy says once that approvals are
+// not single-use there.
+func TestAnOlderGatewayWithoutClaimStillRuns(t *testing.T) {
+	srv, sg, _ := newScripted(t, "escalate")
+	sg.claimMissing.Store(true)
+	sg.status.Store("approved")
+	up, hits := upstreamCounting(t)
+	if rec := do(srv, "POST", up.URL+"/deploy"); rec.Code != 200 || hits.Load() != 1 {
+		t.Fatalf("older gateway: code=%d hits=%d", rec.Code, hits.Load())
+	}
+}
+
+// Every refusal names the rule that decided, so the agent (and the person
+// reading its output) can see what to change.
+func TestRefusalsNameTheRule(t *testing.T) {
+	srv, sg, _ := newScripted(t, "deny")
+	sg.rule.Store("no paste sites")
+	up, _ := upstreamCounting(t)
+	rec := do(srv, "POST", up.URL+"/leak")
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusForbidden || body["rule"] != "no paste sites" {
+		t.Fatalf("deny: code=%d body=%v", rec.Code, body)
+	}
+	srv2, sg2, _ := newScripted(t, "escalate")
+	sg2.rule.Store("deploys need a person")
+	sg2.status.Store("denied")
+	rec = do(srv2, "POST", up.URL+"/deploy")
+	body = nil
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if rec.Code != http.StatusForbidden || body["rule"] != "deploys need a person" {
+		t.Fatalf("denied approval: code=%d body=%v", rec.Code, body)
 	}
 }

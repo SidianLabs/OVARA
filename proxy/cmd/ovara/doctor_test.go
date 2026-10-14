@@ -36,8 +36,8 @@ func TestDoctor_FreshInit(t *testing.T) {
 		t.Errorf("a fresh init is file-backed; durable-state should PASS, got %s", checks["durable state"])
 	}
 	// No off-host anchor exists on a fresh local init, and doctor says so.
-	if checks["anchor"] != "WARN" {
-		t.Errorf("expected an anchor WARN on a fresh init, got %s", checks["anchor"])
+	if checks["off-host anchor"] != "WARN" {
+		t.Errorf("expected an anchor WARN on a fresh init, got %s", checks["off-host anchor"])
 	}
 }
 
@@ -102,14 +102,14 @@ func TestDoctor_LiteralSecret(t *testing.T) {
 
 func TestLooksLikeSecret(t *testing.T) {
 	for v, want := range map[string]bool{
-		"Bearer ${GITHUB_TOKEN}":          false,
-		"${ANTHROPIC_API_KEY}":            false,
-		"2023-06-01":                     false,
-		"Bearer sk-proj-abc123":          true,
-		"ghp_abcdefghijklmnop":           true,
-		"xoxb-123-456-abc":               true,
-		"AKIAIOSFODNN7EXAMPLE":           true,
-		"Bearer averylongliteralvalue1":  true,
+		"Bearer ${GITHUB_TOKEN}":        false,
+		"${ANTHROPIC_API_KEY}":          false,
+		"2023-06-01":                    false,
+		"Bearer sk-proj-abc123":         true,
+		"ghp_abcdefghijklmnop":          true,
+		"xoxb-123-456-abc":              true,
+		"AKIAIOSFODNN7EXAMPLE":          true,
+		"Bearer averylongliteralvalue1": true,
 	} {
 		if got := looksLikeSecret(v); got != want {
 			t.Errorf("looksLikeSecret(%q) = %v, want %v", v, got, want)

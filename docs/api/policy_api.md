@@ -142,6 +142,12 @@ Policies are loaded from `policy_file` in the gateway config
 hot-reloads the policy via a file watcher. There is no API endpoint
 to upload a policy directly; use the file system.
 
+An organisation's baseline (`policy_baseline_file`) is layered under the
+project policy and read once, at start; a change to it (signed again when
+`policy_baseline_pubkey` is set) takes effect on restart. Simulating a
+candidate policy runs it under the same baseline, so a simulation shows what
+the gateway would decide.
+
 For multi-gateway deployments, share the policy file via a shared
 filesystem (NFS) or config management tool (Ansible, Chef, etc.).
 For cloud deployments, the policy is distributed from the control

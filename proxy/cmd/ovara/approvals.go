@@ -20,7 +20,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -45,15 +47,25 @@ func (c *adminClient) stale(a pendingApproval) bool {
 }
 
 // proxyWait reads the proxy's escalation window from proxy.json (the
-// proxy's own default is 60s).
+// proxy's own default is 60s): after it, approving changes nothing for the
+// agent, so older approvals are hidden. Under the retry answer
+// (escalate_on_timeout "retry", what `ovara init` writes) the agent sends
+// the request again and an approval given later still runs it, so nothing
+// is hidden: the window is reported as zero.
 func proxyWait(dir string) time.Duration {
 	sec := 60
 	if raw, err := os.ReadFile(filepath.Join(dir, "proxy.json")); err == nil {
 		var p struct {
-			Sec int `json:"escalate_timeout_sec"`
+			Sec    int    `json:"escalate_timeout_sec"`
+			Answer string `json:"escalate_on_timeout"`
 		}
-		if json.Unmarshal(raw, &p) == nil && p.Sec > 0 {
-			sec = p.Sec
+		if json.Unmarshal(raw, &p) == nil {
+			if p.Answer == "retry" {
+				return 0
+			}
+			if p.Sec > 0 {
+				sec = p.Sec
+			}
 		}
 	}
 	return time.Duration(sec) * time.Second
@@ -75,11 +87,44 @@ type pendingApproval struct {
 // contextLines renders a.Context as short labelled lines, in a stable order.
 func contextLines(a pendingApproval) []string {
 	order := []struct{ key, label string }{
+		{"warning", "⚠ WARNING"},
+		{"body_note", "⚠ not shown"},
+		// the TCP gate: what the port suggests the connection is for
+		{"protocol", "protocol"},
 		{"query", "query string"},
 		{"content_type", "body type"},
 		{"body_bytes", "body size"},
+		{"body_sha256", "body sha256"},
 		{"body_preview", "body starts"},
+		{"headers", "headers"},
 		{"method_override", "method override"},
+		// a browser agent's form: the fields, the files, the page it was on
+		{"from_page", "from page"},
+		{"form", "form fields"},
+		{"uploads", "uploads"},
+		// `ovara box` command gate: the command exactly as it was run (the
+		// policy matched a normalised form, shown as the raw request)
+		{"command", "command as run"},
+		{"program", "program"},
+		{"directory", "directory"},
+		// MCP: the server, and for a tool call the tool and its arguments
+		{"mcp_server", "MCP server"},
+		{"tool", "tool"},
+		// SDK tool guard: the framework asking, and the hash that binds the
+		// approval to these exact arguments
+		{"framework", "framework"},
+		{"tool_sha256", "tool definition sha256"},
+		{"arguments_bytes", "arguments size"},
+		{"arguments_sha256", "arguments sha256"},
+		{"arguments", "arguments"},
+		// the body-aware API gates: the operation a body names
+		{"graphql_operation", "GraphQL operation"},
+		{"aws_action", "AWS action"},
+		{"jsonrpc_method", "JSON-RPC method"},
+		{"operation_kind", "kind"},
+		{"operation", "operation"},
+		{"variables", "variables"},
+		{"params", "params"},
 	}
 	var out []string
 	for _, o := range order {
@@ -91,18 +136,54 @@ func contextLines(a pendingApproval) []string {
 	if v := a.Context["download"]; v != "" {
 		out = append(out, "download: "+v)
 	}
+	// proxy follow-up questions: untrusted input before a write, model use
+	if v := a.Context["taint"]; v != "" {
+		out = append(out, "⚠ untrusted input: "+v)
+	}
+	if v := a.Context["content"]; v != "" {
+		out = append(out, "⚠ sensitive content: "+v)
+	}
+	if v := a.Context["flow"]; v != "" {
+		out = append(out, "⚠ flow: "+v)
+	}
+	if v := a.Context["for"]; v != "" {
+		out = append(out, "on behalf of: "+v)
+	}
+	if v := a.Context["model_use"]; v != "" {
+		out = append(out, "model use: "+v)
+	}
 	if v := a.Context["why"]; v != "" {
 		out = append(out, "asked because: "+v)
 	}
-	// `ovara box` commit-back: what comes back, what policy kept out, the diff
+	// MCP tool definitions being approved: one per line, then the warnings
+	if l := contextList(a.Context["mcp_tools"]); len(l) > 0 {
+		out = append(out, "tool definitions:")
+		for _, t := range l {
+			out = append(out, "  "+t)
+		}
+	}
+	// `ovara box` commit-back: sensitive files and an incomplete diff first,
+	// then what comes back, what stays out, the tree, the diff
+	for _, l := range contextList(a.Context["sensitive"]) {
+		out = append(out, "⚠ sensitive file changed: "+l)
+	}
+	if l := contextList(a.Context["diff_not_shown"]); len(l) > 0 {
+		out = append(out, "⚠ diff not shown: "+l[0])
+		for _, more := range l[1:] {
+			out = append(out, "    "+more)
+		}
+	}
 	if v := a.Context["files"]; v != "" {
 		out = append(out, "files: "+v)
 	}
-	if v := a.Context["kept_out"]; v != "" {
-		out = append(out, "kept out by policy: "+v)
+	for _, l := range contextList(a.Context["kept_out"]) {
+		out = append(out, "kept out: "+l)
 	}
 	if v := a.Context["branch"]; v != "" {
 		out = append(out, "lands on branch: "+v)
+	}
+	if v := a.Context["tree"]; v != "" {
+		out = append(out, "reviewed tree: "+v+" (exactly this lands; anything else is refused)")
 	}
 	if v := a.Context["diff"]; v != "" {
 		lines := strings.Split(strings.TrimRight(v, "\n"), "\n")
@@ -113,6 +194,18 @@ func contextLines(a pendingApproval) []string {
 		out = append(out, "diff:")
 		for _, l := range lines {
 			out = append(out, "  "+l)
+		}
+	}
+	return out
+}
+
+// contextList splits a one-item-per-line context value. (The gateway caps
+// each value's length, so the last item may end in "…".)
+func contextList(v string) []string {
+	var out []string
+	for _, l := range strings.Split(strings.ReplaceAll(v, "\r\n", "\n"), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
 		}
 	}
 	return out
@@ -181,16 +274,34 @@ func (c *adminClient) pending() ([]pendingApproval, error) {
 	var resp struct {
 		Approvals []pendingApproval `json:"approvals"`
 	}
-	if err := c.do("GET", "/v1/approval/pending", nil, &resp); err != nil {
+	if err := c.do(http.MethodGet, "/v1/approval/pending", nil, &resp); err != nil {
 		return nil, err
+	}
+	// Oldest first, always: a list that reorders between polls invites
+	// answering the wrong request.
+	sort.SliceStable(resp.Approvals, func(i, j int) bool {
+		a, b := resp.Approvals[i], resp.Approvals[j]
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Before(b.CreatedAt)
+		}
+		return a.ApprovalID < b.ApprovalID
+	})
+	for i := range resp.Approvals {
+		resp.Approvals[i] = sanitizeApproval(resp.Approvals[i])
 	}
 	return resp.Approvals, nil
 }
 
+// The two verbs of the approvals API.
+const (
+	verdictApprove = "approve"
+	verdictDeny    = "deny"
+)
+
 func (c *adminClient) resolve(id string, approve bool, who, reason string) error {
-	verb := "deny"
+	verb := verdictDeny
 	if approve {
-		verb = "approve"
+		verb = verdictApprove
 	}
 	body := map[string]string{"resolved_by": who}
 	if reason != "" {
@@ -202,8 +313,76 @@ func (c *adminClient) resolve(id string, approve bool, who, reason string) error
 // describe turns a policy resource string into one plain-English line.
 // Resources look like "POST https://github.com/org/repo.git/git-receive-pack refs/heads/main".
 func describe(resource string) string {
+	// proxy follow-up questions
+	if rest, ok := strings.CutPrefix(resource, "taint:"); ok {
+		return describe(rest) + " (soon after reading untrusted content)"
+	}
+	if rest, ok := strings.CutPrefix(resource, "model-budget:"); ok {
+		return "keep using the model at " + rest + " past its budget for this run"
+	}
 	if rest, ok := strings.CutPrefix(resource, "commit:"); ok {
 		return "bring the agent's changes back to " + rest + " as a new branch"
+	}
+	// the body-aware API gates: the operation a body names
+	if rest, ok := strings.CutPrefix(resource, "graphql:"); ok {
+		if at, op, found := strings.Cut(rest, "/"); found {
+			if i := strings.LastIndex(op, "/"); i >= 0 { // the path may have slashes
+				at, op = at+"/"+op[:i], op[i+1:]
+			}
+			kind, name, _ := strings.Cut(op, ":")
+			if n, err := url.PathUnescape(name); err == nil {
+				name = n
+			}
+			return "run GraphQL " + kind + " " + name + " at " + at
+		}
+		return "run GraphQL operation " + rest
+	}
+	if rest, ok := strings.CutPrefix(resource, "aws:"); ok {
+		if service, action, found := strings.Cut(rest, ":"); found {
+			return "call AWS " + service + " " + action
+		}
+		return "call AWS " + rest
+	}
+	if rest, ok := strings.CutPrefix(resource, "jsonrpc:"); ok {
+		if i := strings.LastIndex(rest, "/"); i >= 0 {
+			method, _ := url.PathUnescape(rest[i+1:])
+			if method == "" {
+				method = rest[i+1:]
+			}
+			return "call JSON-RPC method " + method + " at " + rest[:i]
+		}
+		return "call JSON-RPC method " + rest
+	}
+	// the content rule: "content:<kinds> <METHOD> <url>"
+	if rest, ok := strings.CutPrefix(resource, "content:"); ok {
+		if kinds, req, found := strings.Cut(rest, " "); found {
+			return describe(req) + " (carrying " + strings.ReplaceAll(kinds, ",", ", ") + ")"
+		}
+		return "send sensitive content: " + rest
+	}
+	// a flow rule: "flow:<name> <METHOD> <url>"
+	if rest, ok := strings.CutPrefix(resource, "flow:"); ok {
+		if name, req, found := strings.Cut(rest, " "); found {
+			return describe(req) + " (leaving flow " + name + ")"
+		}
+		return "write outside a flow: " + rest
+	}
+	// an executable download (download.file) or a registry download that
+	// names no package (package.install): "download:<host><path>"
+	if rest, ok := strings.CutPrefix(resource, "download:"); ok {
+		return "download " + rest
+	}
+	// the TCP gate: a connection that is not HTTPS, "tcp:<host>:<port>"
+	if rest, ok := strings.CutPrefix(resource, "tcp:"); ok {
+		return "open a connection to " + rest + " (not HTTPS: an opaque tunnel)"
+	}
+	// an agent framework's tool guard (SDK): "tool:<name>", the name escaped
+	// like an MCP tool's
+	if rest, ok := strings.CutPrefix(resource, "tool:"); ok {
+		if name, err := url.PathUnescape(rest); err == nil {
+			rest = name
+		}
+		return "call tool " + rest
 	}
 	// strict installs: "npm:left-pad@1.3.0"
 	for _, eco := range []string{"npm", "pypi", "go", "crate"} {
@@ -245,8 +424,15 @@ func describe(resource string) string {
 		}
 		return fmt.Sprintf("%s on %s", what, repo)
 	}
+	// --- API calls sent as GET ---
+	// The Slack Web API acts the same whatever the verb: a GET to
+	// slack.com/api/chat.postMessage posts. Do not call it a read.
+	if call, ok := slackAPICall(target); ok && (method == http.MethodGet || method == http.MethodHead) {
+		return "call the Slack API: " + call + " (this can change things in Slack, even as a GET)"
+	}
+	// --- end API calls sent as GET ---
 	switch method {
-	case "GET", "HEAD":
+	case http.MethodGet, http.MethodHead:
 		return "read " + target
 	case "POST":
 		return "send data to " + target
@@ -256,6 +442,26 @@ func describe(resource string) string {
 		return "DELETE " + target
 	}
 	return method + " " + target
+}
+
+// slackAPICall returns the Web API method of a slack.com/api URL (or one
+// on a workspace host, <team>.slack.com/api, which serves the same API).
+func slackAPICall(target string) (string, bool) {
+	rest, ok := strings.CutPrefix(target, "https://")
+	if !ok {
+		return "", false
+	}
+	host, path, _ := strings.Cut(rest, "/")
+	host = strings.ToLower(host)
+	if host != "slack.com" && !strings.HasSuffix(host, ".slack.com") {
+		return "", false
+	}
+	call, ok := strings.CutPrefix(path, "api/")
+	if !ok || call == "" {
+		return "", false
+	}
+	call, _, _ = strings.Cut(call, "?")
+	return call, true
 }
 
 // gitRepo extracts "host/org/repo" from a smart-HTTP git URL ending in
@@ -313,12 +519,15 @@ func printApproval(w io.Writer, a pendingApproval) {
 	}
 	fmt.Fprintln(w, "┌─ approval needed ─────────────────────────────────────")
 	fmt.Fprintf(w, "│ agent wants to: %s\n", describe(a.Resource))
+	if d, ok := destinationOf(a.Resource); ok {
+		fmt.Fprintf(w, "│ destination:    %s\n", d.line())
+	}
 	fmt.Fprintf(w, "│ raw request:    %s\n", a.Resource)
 	for _, l := range contextLines(a) {
 		fmt.Fprintf(w, "│ %s\n", l)
 	}
-	if a.AgentID != "" {
-		fmt.Fprintf(w, "│ agent:          %s\n", a.AgentID)
+	if who := approvalAgentLabel(a); who != "" {
+		fmt.Fprintf(w, "│ agent:          %s\n", who)
 	}
 	fmt.Fprintf(w, "│ waiting:        %s   id: %s\n", age, a.ApprovalID)
 	fmt.Fprintln(w, "└───────────────────────────────────────────────────────")
@@ -367,7 +576,8 @@ func cmdResolve(approve bool, args []string) error {
 	}
 	fs, dir := dirFlag(name)
 	reason := fs.String("reason", "", "optional reason, recorded in the audit trail")
-	trust := fs.Bool("trust-host", false, "with approve: also allow future reads (GET/HEAD) from this host without asking")
+	trust := fs.Bool("trust-host", false, "with approve: also allow reads (GET/HEAD) from this host without asking until ovara run stops (a read can still carry data out in its path and headers)")
+	rememberAs := fs.String("remember", "", "with approve: also remember the decision as a rule: reads-run (reads from this host until ovara run stops; what -trust-host does), reads-project (reads from this host, kept after the run), command-run (exactly this command line, this run), tool-run (this MCP tool, this run); a write is never remembered")
 	// Accept the id before or after the flags: `ovara approve <id> -dir x`.
 	var id string
 	var rest []string
@@ -388,35 +598,38 @@ func cmdResolve(approve bool, args []string) error {
 	if err != nil {
 		return err
 	}
-	var host string
-	if approve && *trust {
+	scope := *rememberAs
+	if approve && *trust && scope == "" {
+		scope = scopeReadsRun
+	}
+	var remembered *pendingApproval
+	if approve && scope != "" {
 		// Look the request up BEFORE approving, so a request that cannot be
-		// trusted for reads (a POST, say) fails before anything is approved.
+		// remembered that way (a write, say) fails before anything is approved.
 		list, err := c.pending()
 		if err != nil {
 			return err
 		}
-		for _, a := range list {
-			if a.ApprovalID == id {
-				h, ok := trustableHost(a.Resource)
-				if !ok {
-					return fmt.Errorf("-trust-host only applies to reads (GET/HEAD) from a named https host; this request is %q", a.Resource)
-				}
-				host = h
+		for i := range list {
+			if list[i].ApprovalID == id {
+				remembered = &list[i]
 			}
 		}
-		if host == "" {
+		if remembered == nil {
 			return fmt.Errorf("approval %s is not pending", id)
+		}
+		if !offersScope(*remembered, scope) {
+			return fmt.Errorf("-remember %s does not apply to this request (%s); it offers %s", scope, remembered.Resource, rememberKeys(*remembered))
 		}
 	}
 	if err := c.resolve(id, approve, whoAmI(), *reason); err != nil {
 		return err
 	}
-	if host != "" {
-		if added, err := trustReadHost(c.dir, host); err != nil {
-			fmt.Printf("approved, but could not trust %s: %v\n", host, err)
+	if remembered != nil {
+		if added, err := remember(c.dir, *remembered, scope, whoAmI()); err != nil {
+			fmt.Printf("approved, but could not remember it: %v\n", err)
 		} else if added {
-			fmt.Printf("trusted %s for reads: GET/HEAD there will no longer ask (edit policy.json to undo).\n", host)
+			fmt.Println(rememberedNote(*remembered, scope))
 		}
 	}
 	if approve {
@@ -443,7 +656,7 @@ func cmdWatch(args []string) error {
 // watchLoop polls for pending approvals and asks on in/out for each. A
 // closed stop channel ends the loop (tests); so does closed input.
 func watchLoop(c *adminClient, in io.Reader, out io.Writer, every time.Duration, stop <-chan struct{}) error {
-	rd := bufio.NewReader(in)
+	rd := newAnswerReader(in)
 	fmt.Fprintln(out, "watching for agent requests that need your approval… (Ctrl+C to quit)")
 	seen := map[string]bool{}
 	for {
@@ -473,17 +686,91 @@ func watchLoop(c *adminClient, in io.Reader, out io.Writer, every time.Duration,
 	}
 }
 
+// typeAheadGrace is how soon after a prompt an answer still counts as
+// typed before it: nobody reads an approval in less.
+var typeAheadGrace = 250 * time.Millisecond
+
+// answerReader reads answer lines from the person and notes when each one
+// arrived, so an answer is only taken if it was typed after the question
+// was on screen. Without this, keys typed ahead (a double "a⏎", a paste)
+// answer the next approvals before they are shown.
+type answerReader struct {
+	mu     sync.Mutex
+	more   chan struct{} // a line (or the end) arrived
+	lines  []timedLine
+	closed error
+}
+
+type timedLine struct {
+	text string
+	at   time.Time
+}
+
+func newAnswerReader(in io.Reader) *answerReader {
+	r := &answerReader{more: make(chan struct{}, 1)}
+	go func() {
+		br := bufio.NewReader(in)
+		for {
+			s, err := br.ReadString('\n')
+			r.mu.Lock()
+			if s != "" {
+				r.lines = append(r.lines, timedLine{s, time.Now()})
+			}
+			if err != nil {
+				r.closed = err
+			}
+			r.mu.Unlock()
+			select {
+			case r.more <- struct{}{}:
+			default:
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return r
+}
+
+// answerAfter returns the first line that arrived after shown (plus the
+// grace), and how many earlier lines it dropped. err is set when the input
+// has ended with no such line.
+func (r *answerReader) answerAfter(shown time.Time) (line string, dropped int, err error) {
+	for {
+		r.mu.Lock()
+		for len(r.lines) > 0 {
+			l := r.lines[0]
+			r.lines = r.lines[1:]
+			if l.at.Before(shown.Add(typeAheadGrace)) {
+				dropped++
+				continue
+			}
+			r.mu.Unlock()
+			return l.text, dropped, nil
+		}
+		closed := r.closed
+		r.mu.Unlock()
+		if closed != nil {
+			return "", dropped, closed
+		}
+		<-r.more
+	}
+}
+
 // askAndResolve prompts until it gets a usable answer. Returns false when
 // the input stream is closed.
-func askAndResolve(c *adminClient, a pendingApproval, rd *bufio.Reader, out io.Writer) bool {
+func askAndResolve(c *adminClient, a pendingApproval, rd *answerReader, out io.Writer) bool {
 	for {
-		host, canTrust := trustableHost(a.Resource)
-		if canTrust {
-			fmt.Fprintf(out, "  [a]pprove  [t]rust %s for reads  [d]eny  [s]kip > ", host)
-		} else {
-			fmt.Fprint(out, "  [a]pprove  [d]eny  [s]kip > ")
+		options := rememberOptions(a)
+		prompt := "  [a]pprove"
+		for i, o := range options {
+			prompt += fmt.Sprintf("  [%d] %s", i+1, strings.TrimPrefix(o.Label, "Approve, and "))
 		}
-		line, err := rd.ReadString('\n')
+		fmt.Fprint(out, prompt+"  [d]eny  [s]kip > ")
+		line, dropped, err := rd.answerAfter(time.Now())
+		if dropped > 0 {
+			fmt.Fprintf(out, "\n  (ignored %d line(s) typed before this request was shown)\n  > ", dropped)
+		}
 		ans := strings.ToLower(strings.TrimSpace(line))
 		if err != nil && ans == "" {
 			return false
@@ -495,16 +782,22 @@ func askAndResolve(c *adminClient, a pendingApproval, rd *bufio.Reader, out io.W
 			} else {
 				fmt.Fprintln(out, "  ✓ approved")
 			}
-		case "t", "trust":
-			if !canTrust {
+		case "t", "trust", "1", "2", "3":
+			// "t" is the first option, as it always was for reads
+			n := 1
+			if ans != "t" && ans != "trust" {
+				n = int(ans[0] - '0')
+			}
+			if n < 1 || n > len(options) {
 				continue
 			}
+			scope := options[n-1].Key
 			if e := c.resolve(a.ApprovalID, true, whoAmI(), ""); e != nil {
 				fmt.Fprintln(out, "  could not approve:", e)
-			} else if _, e := trustReadHost(c.dir, host); e != nil {
-				fmt.Fprintln(out, "  ✓ approved, but could not trust the host:", e)
+			} else if _, e := remember(c.dir, a, scope, whoAmI()); e != nil {
+				fmt.Fprintln(out, "  ✓ approved, but could not remember it:", e)
 			} else {
-				fmt.Fprintf(out, "  ✓ approved, and %s is trusted for reads from now on\n", host)
+				fmt.Fprintln(out, "  ✓ approved; "+rememberedNote(a, scope))
 			}
 		case "d", "deny", "n", "no":
 			if e := c.resolve(a.ApprovalID, false, whoAmI(), "denied from ovara watch"); e != nil {
@@ -519,4 +812,14 @@ func askAndResolve(c *adminClient, a pendingApproval, rd *bufio.Reader, out io.W
 		}
 		return true
 	}
+}
+
+// approvalAgentLabel names the agent an approval is for: the name the
+// proxy gave (a named agent, or "default" for agent_token), else the
+// gateway's identity for the proxy.
+func approvalAgentLabel(a pendingApproval) string {
+	if n := approvalAgent(a); n != "" {
+		return n
+	}
+	return a.AgentID
 }

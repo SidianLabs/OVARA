@@ -1,9 +1,11 @@
 from .client import OvaraClient
+from .guard import GuardedCall, GuardError, ToolDenied, ToolGuard, ToolHeld, tool_resource
 from .verify import (
     compute_identity_digest,
     compute_receipt_digest,
     has_action,
     is_lease_expired,
+    receipt_key_id,
     scope_covers,
     verify_agent_identity,
     verify_capability_lease,
@@ -23,6 +25,12 @@ from .types import (
 
 __all__ = [
     "OvaraClient",
+    "ToolGuard",
+    "GuardedCall",
+    "GuardError",
+    "ToolDenied",
+    "ToolHeld",
+    "tool_resource",
     "ActionRequest",
     "AgentIdentity",
     "CapabilityLease",
@@ -36,6 +44,7 @@ __all__ = [
     "compute_receipt_digest",
     "has_action",
     "is_lease_expired",
+    "receipt_key_id",
     "scope_covers",
     "verify_agent_identity",
     "verify_capability_lease",

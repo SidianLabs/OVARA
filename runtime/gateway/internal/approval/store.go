@@ -23,6 +23,13 @@ type Store interface {
 	ListByDecision(decisionID string) []*ApprovalRequest
 }
 
+// ConditionalResolver is implemented by stores that can run an extra check
+// under the same lock as Resolve, so a condition that depends on the
+// stored record (such as its age) cannot change between check and write.
+type ConditionalResolver interface {
+	ResolveIf(id string, decision Status, resolvedBy, reason string, check func(*ApprovalRequest) error) (*ApprovalRequest, error)
+}
+
 // snapshot returns a copy of the approval so callers never share the live
 // stored object (which the store may mutate under its lock).
 func snapshotOf(a *ApprovalRequest) *ApprovalRequest {
@@ -75,6 +82,10 @@ func (s *InMemoryStore) Update(req *ApprovalRequest) error {
 }
 
 func (s *InMemoryStore) Resolve(id string, decision Status, resolvedBy, reason string) (*ApprovalRequest, error) {
+	return s.ResolveIf(id, decision, resolvedBy, reason, nil)
+}
+
+func (s *InMemoryStore) ResolveIf(id string, decision Status, resolvedBy, reason string, check func(*ApprovalRequest) error) (*ApprovalRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	req, ok := s.items[id]
@@ -83,6 +94,11 @@ func (s *InMemoryStore) Resolve(id string, decision Status, resolvedBy, reason s
 	}
 	if !req.IsPending() {
 		return nil, fmt.Errorf("approval is not pending: %s", req.Status)
+	}
+	if check != nil {
+		if err := check(snapshotOf(req)); err != nil {
+			return nil, err
+		}
 	}
 	switch decision {
 	case StatusApproved:
