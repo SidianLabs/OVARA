@@ -22,6 +22,8 @@ Used by the reference implementation's own components:
 | `aws.action` | the proxy's API gate, for an AWS JSON or Query API call in an allowed POST | `aws:<service>:<Action>` |
 | `jsonrpc.call` | the proxy's API gate, for a JSON-RPC call in an allowed POST (MCP excepted) | `jsonrpc:<host><path>/<method>` |
 | `download.file` | the proxy, when an allowed read comes back as an executable or installer | `download:<host><path>` |
+| `content.sensitive` | the proxy's content rule, for an allowed request carrying a secret-shaped value | `content:<kinds> <METHOD> <url>` |
+| `flow.write` | the proxy's flow rules, for a write that leaves a flow | `flow:<name> <METHOD> <url>` |
 | `package.install` | the proxy, per package download | `npm:<name>@<version>`, `pypi:<name>@<version>`, `download:<host><path>` |
 | `model.server_feature` | the proxy's model gate | `model:<host> <finding>` |
 | `model.budget` | the proxy, past the per-run model budget | `model-budget:<host>` |
@@ -132,6 +134,8 @@ normalised line is for rules written by people.
 | `model:<host> <finding>` | `<finding>` is one of `model_request_mcp_connector`, `model_request_remote_url`, `model_request_server_tool`, `model_request_not_json`. |
 | `model-budget:<host>`, `budget:<host>` | the host whose budget was passed. |
 | `taint:<METHOD> <url>` | the write that followed an untrusted read, as a URL resource. |
+| `content:<kinds> <METHOD> <url>` | `<kinds>` are the detectors that matched, sorted and comma-joined (`api_token`, `card_number`, `cloud_key`, `jwt`, `private_key`, or an operator's own pattern name); then the request as a URL resource. The values are never in the resource or the context, only the kinds and their counts. |
+| `flow:<name> <METHOD> <url>` | the flow rule's name, then the write as a URL resource. |
 
 These are matched as plain globs (§2.4 does not apply). Under most-specific
 precedence an allow on them beats a deny only by literal prefix

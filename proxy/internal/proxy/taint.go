@@ -284,6 +284,13 @@ func (s *Server) agentQuestions(r *http.Request, hb *heldBody, url string, facts
 	if !second(outcome, id, map[string]any{"error": "action denied", "reasons": []string{"tainted_write"}}) {
 		return false
 	}
+	outcome, id, reason = s.checkFlows(r, hb, url)
+	if reason != "" {
+		facts.reasons = append(facts.reasons, reason)
+	}
+	if !second(outcome, id, map[string]any{"error": "action denied", "reasons": []string{"flow_write"}}) {
+		return false
+	}
 	outcome, id = s.checkModelBudget(r.Context(), r, host)
 	return second(outcome, id, map[string]any{"error": "model budget exceeded", "reasons": []string{"model_budget_exceeded"}, "host": host})
 }

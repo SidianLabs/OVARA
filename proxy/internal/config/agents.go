@@ -402,3 +402,96 @@ func WriteAgentScopes(path string, scopes map[string]AgentScope) error {
 	}
 	return WriteFileAtomic(path, append(out, '\n'), 0o600)
 }
+
+// Flow is an information-flow rule, the confidentiality side of the taint
+// rule: for WindowMinutes after the agent read from one of Sources (URL
+// globs), every write that policy would let through on its own to a
+// destination that matches none of Destinations (URL globs) is asked
+// about (Effect "escalate", the default) or refused ("deny"). "What was
+// read from X may only go to Y."
+type Flow struct {
+	Name          string   `json:"name"`
+	Sources       []string `json:"sources"`
+	Destinations  []string `json:"destinations,omitempty"`
+	WindowMinutes int      `json:"window_minutes,omitempty"`
+	Effect        string   `json:"effect,omitempty"`
+}
+
+// ValidateFlows checks the flow rules: a name, at least one source, an
+// effect that is escalate or deny.
+func ValidateFlows(flows []Flow) error {
+	seen := map[string]bool{}
+	for i, f := range flows {
+		if f.Name == "" || len(f.Name) > 40 {
+			return fmt.Errorf("flows[%d]: a name of 1 to 40 characters is needed", i)
+		}
+		if seen[f.Name] {
+			return fmt.Errorf("flows: two rules are named %q", f.Name)
+		}
+		seen[f.Name] = true
+		if len(f.Sources) == 0 {
+			return fmt.Errorf("flows[%d] (%s): at least one source URL pattern is needed", i, f.Name)
+		}
+		for _, p := range append(append([]string{}, f.Sources...), f.Destinations...) {
+			if strings.TrimSpace(p) == "" {
+				return fmt.Errorf("flows[%d] (%s): an empty pattern", i, f.Name)
+			}
+		}
+		switch f.Effect {
+		case "", "escalate", "deny":
+		default:
+			return fmt.Errorf("flows[%d] (%s): effect %q: use \"escalate\" or \"deny\"", i, f.Name, f.Effect)
+		}
+		if f.WindowMinutes < 0 {
+			return fmt.Errorf("flows[%d] (%s): window_minutes must not be negative", i, f.Name)
+		}
+	}
+	return nil
+}
+
+// DLP is the content rule on what leaves: a request a rule allowed whose
+// body or query carries a secret-shaped value (a private key, a cloud or
+// API key, a JWT, a card number, or one of Patterns) is asked about.
+type DLP struct {
+	Off      bool         `json:"off,omitempty"`
+	Patterns []DLPPattern `json:"patterns,omitempty"`
+	// Exempt are URL globs never scanned.
+	Exempt []string `json:"exempt,omitempty"`
+	// IncludeModelCalls scans the agent's model requests too. Off by
+	// default: a coding agent sends the code it works on to its model, and
+	// code holds key-shaped strings; turn it on where a key reaching the
+	// provider is the thing to stop.
+	IncludeModelCalls bool `json:"include_model_calls,omitempty"`
+}
+
+// DLPPattern is an operator's own detector: a name and a regular
+// expression (RE2 syntax).
+type DLPPattern struct {
+	Name  string `json:"name"`
+	Regex string `json:"regex"`
+}
+
+var dlpNameRe = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
+
+// Validate checks the custom patterns: a short lower-case name, a regular
+// expression that compiles, at most 64 of them.
+func (d *DLP) Validate() error {
+	if d == nil {
+		return nil
+	}
+	if len(d.Patterns) > 64 {
+		return fmt.Errorf("dlp.patterns: at most 64 patterns")
+	}
+	for i, p := range d.Patterns {
+		if !dlpNameRe.MatchString(p.Name) {
+			return fmt.Errorf("dlp.patterns[%d]: the name must be 1 to 40 characters of a-z, 0-9 and _", i)
+		}
+		if p.Regex == "" || len(p.Regex) > 512 {
+			return fmt.Errorf("dlp.patterns[%d] (%s): a regular expression of 1 to 512 characters is needed", i, p.Name)
+		}
+		if _, err := regexp.Compile(p.Regex); err != nil {
+			return fmt.Errorf("dlp.patterns[%d] (%s): %v", i, p.Name, err)
+		}
+	}
+	return nil
+}

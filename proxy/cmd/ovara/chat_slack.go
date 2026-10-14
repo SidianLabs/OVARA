@@ -42,6 +42,7 @@ type slackBridge struct {
 	token   string
 	channel string
 	allowed map[string]bool
+	routes  []slackRoute // approvals of some kinds go elsewhere, decided by others
 	every   time.Duration
 	logf    func(format string, args ...any)
 
@@ -52,9 +53,68 @@ type slackBridge struct {
 }
 
 type slackThread struct {
-	ts     string // the message's ts, which names the thread
-	seen   string // the newest reply already read
-	warned bool   // someone not allowed was told once
+	ts      string          // the message's ts, which names the thread
+	channel string          // where it was posted (the route's, or the default)
+	allowed map[string]bool // who may decide in it
+	route   string          // the route's name, "" for the default channel
+	seen    string          // the newest reply already read
+	warned  bool            // someone not allowed was told once
+}
+
+// slackRoute sends approvals of some kinds to a channel of their own,
+// decided by the people listed there: the first route whose action types
+// (any, when empty) and resource patterns (any, when empty) match takes
+// the approval.
+type slackRoute struct {
+	name        string
+	actionTypes []string
+	resources   []string
+	channel     string
+	allowed     map[string]bool
+}
+
+// routeFor picks where an approval goes and who may decide it.
+func (b *slackBridge) routeFor(a pendingApproval) (channel string, allowed map[string]bool, route string) {
+	for _, rt := range b.routes {
+		if len(rt.actionTypes) > 0 && !containsFold(rt.actionTypes, a.ActionType) {
+			continue
+		}
+		if len(rt.resources) > 0 && !matchesAnyGlob(rt.resources, a.Resource) {
+			continue
+		}
+		return rt.channel, rt.allowed, rt.name
+	}
+	return b.channel, b.allowed, ""
+}
+
+func containsFold(list []string, s string) bool {
+	for _, v := range list {
+		if strings.EqualFold(v, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAnyGlob(patterns []string, s string) bool {
+	for _, p := range patterns {
+		if config.GlobMatch(p, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func slackRoutes(rts []config.SlackRoute) []slackRoute {
+	out := make([]slackRoute, 0, len(rts))
+	for _, rt := range rts {
+		allowed := make(map[string]bool, len(rt.AllowedUsers))
+		for _, u := range rt.AllowedUsers {
+			allowed[u] = true
+		}
+		out = append(out, slackRoute{name: rt.Name, actionTypes: rt.ActionTypes, resources: rt.Resources, channel: rt.Channel, allowed: allowed})
+	}
+	return out
 }
 
 func newSlackBridge(cfg *config.Config, dir string) (*slackBridge, error) {
@@ -73,7 +133,7 @@ func newSlackBridge(cfg *config.Config, dir string) (*slackBridge, error) {
 	}
 	return &slackBridge{
 		admin: admin, hc: &http.Client{Timeout: 20 * time.Second, Transport: chatTransport(cfg)},
-		api: slackAPI, token: token, channel: s.Channel, allowed: allowed,
+		api: slackAPI, token: token, channel: s.Channel, allowed: allowed, routes: slackRoutes(s.Routes),
 		every: time.Duration(s.PollSec) * time.Second, logf: log.Printf,
 		threads: map[string]*slackThread{}, done: map[string]bool{},
 	}, nil
@@ -128,9 +188,14 @@ func chatTransport(cfg *config.Config) http.RoundTripper {
 func (b *slackBridge) describe() string {
 	s := "approvals also go to Slack channel " + b.channel
 	if len(b.allowed) == 0 {
-		return s + "; nobody is listed in chat.slack.allowed_users, so the channel is told but cannot decide"
+		s += "; nobody is listed in chat.slack.allowed_users, so the channel is told but cannot decide"
+	} else {
+		s += fmt.Sprintf("; %d listed person(s) can answer in the thread", len(b.allowed))
 	}
-	return s + fmt.Sprintf("; %d listed person(s) can answer in the thread", len(b.allowed))
+	if len(b.routes) > 0 {
+		s += fmt.Sprintf("; %d route(s) send some kinds of approval to other channels", len(b.routes))
+	}
+	return s
 }
 
 // start polls until stop is called.
@@ -159,7 +224,7 @@ func (b *slackBridge) closeAll(note string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for id, th := range b.threads {
-		b.reply(th.ts, note)
+		b.reply(th, note)
 		delete(b.threads, id)
 		b.done[id] = true
 	}
@@ -182,7 +247,7 @@ func (b *slackBridge) tick() {
 	defer b.mu.Unlock()
 	for id, th := range b.threads {
 		if !open[id] {
-			b.reply(th.ts, "This request ended without an answer here: approved or denied elsewhere, expired, or the agent stopped.")
+			b.reply(th, "This request ended without an answer here: approved or denied elsewhere, expired, or the agent stopped.")
 			delete(b.threads, id)
 			b.done[id] = true
 		}
@@ -191,12 +256,13 @@ func (b *slackBridge) tick() {
 		if b.done[a.ApprovalID] || b.threads[a.ApprovalID] != nil || b.admin.stale(a) {
 			continue
 		}
-		ts, err := b.post(approvalText(a), "")
+		channel, allowed, route := b.routeFor(a)
+		ts, err := b.postTo(channel, approvalText(a), "")
 		if err != nil {
 			b.report("posting to Slack: " + err.Error())
 			return
 		}
-		b.threads[a.ApprovalID] = &slackThread{ts: ts}
+		b.threads[a.ApprovalID] = &slackThread{ts: ts, channel: channel, allowed: allowed, route: route}
 	}
 	for id, th := range b.threads {
 		if err := b.answers(id, th); err != nil {
@@ -210,7 +276,7 @@ func (b *slackBridge) tick() {
 // answers reads a thread's new replies and acts on the first decision from
 // an allowed person.
 func (b *slackBridge) answers(id string, th *slackThread) error {
-	msgs, err := b.replies(th.ts, th.seen)
+	msgs, err := b.replies(th, th.seen)
 	if err != nil {
 		return err
 	}
@@ -223,15 +289,19 @@ func (b *slackBridge) answers(id string, th *slackThread) error {
 		if !ok {
 			continue
 		}
-		if !b.allowed[m.User] {
+		if !th.allowed[m.User] {
 			if !th.warned {
 				th.warned = true
-				b.reply(th.ts, fmt.Sprintf("<@%s> only the people listed in chat.slack.allowed_users can decide this; nothing happened.", m.User))
+				who := "the people listed in chat.slack.allowed_users"
+				if th.route != "" {
+					who = "the people listed for route " + slackEscape(th.route)
+				}
+				b.reply(th, fmt.Sprintf("<@%s> only %s can decide this; nothing happened.", m.User, who))
 			}
 			continue
 		}
 		if err := b.admin.resolve(id, approve, "slack:"+m.User, reason); err != nil {
-			b.reply(th.ts, "Could not record that: "+slackEscape(err.Error()))
+			b.reply(th, "Could not record that: "+slackEscape(err.Error()))
 			continue
 		}
 		verdict := "✓ approved"
@@ -241,7 +311,7 @@ func (b *slackBridge) answers(id string, th *slackThread) error {
 		if reason != "" {
 			reason = ": " + slackEscape(reason)
 		}
-		b.reply(th.ts, fmt.Sprintf("%s by <@%s>%s", verdict, m.User, reason))
+		b.reply(th, fmt.Sprintf("%s by <@%s>%s", verdict, m.User, reason))
 		delete(b.threads, id)
 		b.done[id] = true
 		return nil
@@ -291,8 +361,8 @@ type slackMsg struct {
 	Text  string `json:"text"`
 }
 
-func (b *slackBridge) post(text, threadTS string) (string, error) {
-	body := map[string]any{"channel": b.channel, "text": text, "unfurl_links": false, "unfurl_media": false}
+func (b *slackBridge) postTo(channel, text, threadTS string) (string, error) {
+	body := map[string]any{"channel": channel, "text": text, "unfurl_links": false, "unfurl_media": false}
 	if threadTS != "" {
 		body["thread_ts"] = threadTS
 	}
@@ -310,14 +380,14 @@ func (b *slackBridge) post(text, threadTS string) (string, error) {
 	return out.TS, nil
 }
 
-func (b *slackBridge) reply(threadTS, text string) {
-	if _, err := b.post(text, threadTS); err != nil {
+func (b *slackBridge) reply(th *slackThread, text string) {
+	if _, err := b.postTo(th.channel, text, th.ts); err != nil {
 		b.report("replying in Slack: " + err.Error())
 	}
 }
 
-func (b *slackBridge) replies(threadTS, after string) ([]slackMsg, error) {
-	q := url.Values{"channel": {b.channel}, "ts": {threadTS}, "limit": {"100"}}
+func (b *slackBridge) replies(th *slackThread, after string) ([]slackMsg, error) {
+	q := url.Values{"channel": {th.channel}, "ts": {th.ts}, "limit": {"100"}}
 	if after != "" {
 		q.Set("oldest", after)
 		q.Set("inclusive", "false")

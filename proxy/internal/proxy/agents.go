@@ -451,6 +451,12 @@ func (s *Server) WatchAgentFiles(proxyJSON, revokedFile string, interval time.Du
 func (s *Server) applyAgentConfig(c *config.Config) {
 	s.SetAgents(c.Agents)
 	s.SetAgentScopes(c.AgentScopes)
+	s.SetFlows(c.Flows)
+	if d := c.DLP; d != nil {
+		s.SetDLP(!d.Off, d.Patterns, d.Exempt, d.IncludeModelCalls)
+	} else {
+		s.SetDLP(true, nil, nil, false)
+	}
 	if t := c.Taint; t != nil {
 		s.SetTaint(t.On == nil || *t.On, time.Duration(t.WindowMinutes)*time.Minute, t.UntrustedReads, t.ExemptWrites)
 	}

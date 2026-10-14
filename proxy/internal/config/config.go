@@ -120,6 +120,13 @@ type Config struct {
 	// Taint turns on the rule that asks before writes made soon after the
 	// agent read untrusted content. Default on.
 	Taint *Taint `json:"taint,omitempty"`
+	// Flows are information-flow rules: what was read from these sources
+	// may only go to these destinations for a while (asked, or refused).
+	Flows []Flow `json:"flows,omitempty"`
+	// DLP asks before a request a rule allowed carries a secret-shaped
+	// value out (a private key, a cloud or API key, a JWT, a card number,
+	// an operator's own pattern). Default on.
+	DLP *DLP `json:"dlp,omitempty"`
 	// ModelBudget caps model API use per agent per run. Past it a person is
 	// asked (action type model.budget); an approval doubles the allowance.
 	ModelBudget *ModelBudget `json:"model_budget,omitempty"`
@@ -206,6 +213,12 @@ func Load(path string) (*Config, error) {
 	if err := ValidateAgentScopes(c.AgentScopes, c.Agents, c.AgentToken); err != nil {
 		return nil, err
 	}
+	if err := ValidateFlows(c.Flows); err != nil {
+		return nil, err
+	}
+	if err := c.DLP.Validate(); err != nil {
+		return nil, err
+	}
 	if c.MCPPinsFile == "" {
 		c.MCPPinsFile = "var/mcp_pins.json"
 	}
@@ -265,11 +278,26 @@ type Chat struct {
 // thread from one of AllowedUsers decides it. Nobody else's reply counts,
 // and with no AllowedUsers the channel is told but cannot decide.
 type SlackChat struct {
-	Channel      string   `json:"channel"`              // the channel's ID (C… or G…, from its details), where the bot was invited
-	TokenFile    string   `json:"token_file,omitempty"` // a bot token (xoxb-…) on one line, owner-only; default var/slack.token
-	TokenEnv     string   `json:"token_env,omitempty"`  // or the variable that holds it, read by ovara run (the agent never gets it)
-	AllowedUsers []string `json:"allowed_users"`        // Slack user IDs (U…, from the profile) whose thread replies decide
-	PollSec      int      `json:"poll_sec,omitempty"`   // how often the threads are read; default 4
+	// Routes send some approvals to another channel, decided by other
+	// people: the first route whose action types (any, when empty) and
+	// resource patterns (any, when empty) match an approval takes it.
+	Routes       []SlackRoute `json:"routes,omitempty"`
+	Channel      string       `json:"channel"`              // the channel's ID (C… or G…, from its details), where the bot was invited
+	TokenFile    string       `json:"token_file,omitempty"` // a bot token (xoxb-…) on one line, owner-only; default var/slack.token
+	TokenEnv     string       `json:"token_env,omitempty"`  // or the variable that holds it, read by ovara run (the agent never gets it)
+	AllowedUsers []string     `json:"allowed_users"`        // Slack user IDs (U…, from the profile) whose thread replies decide
+	PollSec      int          `json:"poll_sec,omitempty"`   // how often the threads are read; default 4
+}
+
+// SlackRoute is where an approval of a kind goes: a channel and the
+// people who may decide there (nobody listed: that channel is told but
+// cannot decide).
+type SlackRoute struct {
+	Name         string   `json:"name"`
+	ActionTypes  []string `json:"action_types,omitempty"`
+	Resources    []string `json:"resources,omitempty"`
+	Channel      string   `json:"channel"`
+	AllowedUsers []string `json:"allowed_users,omitempty"`
 }
 
 var (
@@ -291,6 +319,19 @@ func (c *Chat) validate() error {
 	for _, u := range s.AllowedUsers {
 		if !slackUserIDRe.MatchString(u) {
 			return fmt.Errorf("chat.slack.allowed_users: %q is not a Slack user ID (U…, in the person's profile)", u)
+		}
+	}
+	for i, rt := range s.Routes {
+		if rt.Name == "" {
+			return fmt.Errorf("chat.slack.routes[%d]: a name is needed", i)
+		}
+		if !slackChannelIDRe.MatchString(rt.Channel) {
+			return fmt.Errorf("chat.slack.routes[%d] (%s): channel %q is not a channel ID", i, rt.Name, rt.Channel)
+		}
+		for _, u := range rt.AllowedUsers {
+			if !slackUserIDRe.MatchString(u) {
+				return fmt.Errorf("chat.slack.routes[%d] (%s): %q is not a Slack user ID", i, rt.Name, u)
+			}
 		}
 	}
 	if s.TokenFile == "" && s.TokenEnv == "" {

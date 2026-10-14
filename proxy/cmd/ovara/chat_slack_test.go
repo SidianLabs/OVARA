@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"ovara.proxy/internal/config"
 )
 
 // fakeSlack is the two Web API methods the bridge uses.
@@ -293,5 +295,62 @@ func TestSlackDecision(t *testing.T) {
 		if approve != c.approve || reason != c.reason || ok != c.ok {
 			t.Errorf("%q: %v %q %v", c.in, approve, reason, ok)
 		}
+	}
+}
+
+// A route sends approvals of some kinds to another channel, where only the
+// people listed for the route decide; everything else stays in the default
+// channel with the default people.
+func TestSlackBridge_RoutesByActionTypeAndResource(t *testing.T) {
+	tunnel := pendingApproval{ApprovalID: "apr_tcp", ActionType: "tcp.connect", Resource: "tcp:db.internal:5432", CreatedAt: time.Now()}
+	prod := pendingApproval{ApprovalID: "apr_prod", ActionType: actionHTTPRequest, Resource: "POST https://prod.example.com/deploy", CreatedAt: time.Now()}
+	gw, fs, b, _ := newSlackTest(t, []string{"U1"}, approvalAt("apr_http", "POST https://api.example.com/x"), tunnel, prod)
+	b.routes = slackRoutes([]config.SlackRoute{
+		{Name: "security", ActionTypes: []string{"tcp.connect", "download.file"}, Channel: "C0SEC", AllowedUsers: []string{"U9"}},
+		{Name: "production", Resources: []string{"* https://prod.example.com/*"}, Channel: "C0PROD"},
+	})
+	b.tick()
+	where := map[string]string{}
+	for _, p := range fs.posts {
+		if p.ThreadTS == "" {
+			where[p.Text[:20]] = p.Channel
+		}
+	}
+	chanOf := func(id string) string {
+		th := b.threads[id]
+		if th == nil {
+			return "(none)"
+		}
+		return th.channel
+	}
+	if chanOf("apr_http") != "C0TEST" || chanOf("apr_tcp") != "C0SEC" || chanOf("apr_prod") != "C0PROD" {
+		t.Fatalf("channels: http=%s tcp=%s prod=%s (posts %v)", chanOf("apr_http"), chanOf("apr_tcp"), chanOf("apr_prod"), where)
+	}
+	// U1 may decide in the default channel but not on the security route.
+	fs.say(t, "apr_tcp", "U1", "approve")
+	b.tick()
+	if gw.by["apr_tcp"] != "" {
+		t.Fatalf("a default-channel person decided a routed approval")
+	}
+	if replies := fs.inThread("apr_tcp"); len(replies) == 0 || !strings.Contains(replies[len(replies)-1], "route security") {
+		t.Fatalf("U1 was not told which people decide: %v", replies)
+	}
+	fs.say(t, "apr_tcp", "U9", "approve: known database")
+	b.tick()
+	if !strings.HasPrefix(gw.by["apr_tcp"], "slack:U9") {
+		t.Fatalf("the route's person did not decide: %v", gw.by)
+	}
+	// The production route lists nobody: told, cannot decide.
+	fs.say(t, "apr_prod", "U1", "approve")
+	fs.say(t, "apr_prod", "U9", "approve")
+	b.tick()
+	if gw.by["apr_prod"] != "" {
+		t.Fatalf("a route with no people decided: %v", gw.by)
+	}
+	// The default channel still works for the rest.
+	fs.say(t, "apr_http", "U1", "deny: not now")
+	b.tick()
+	if !strings.HasPrefix(gw.by["apr_http"], "slack:U1") {
+		t.Fatalf("default channel: %v", gw.by)
 	}
 }

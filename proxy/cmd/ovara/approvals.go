@@ -140,6 +140,15 @@ func contextLines(a pendingApproval) []string {
 	if v := a.Context["taint"]; v != "" {
 		out = append(out, "⚠ untrusted input: "+v)
 	}
+	if v := a.Context["content"]; v != "" {
+		out = append(out, "⚠ sensitive content: "+v)
+	}
+	if v := a.Context["flow"]; v != "" {
+		out = append(out, "⚠ flow: "+v)
+	}
+	if v := a.Context["for"]; v != "" {
+		out = append(out, "on behalf of: "+v)
+	}
 	if v := a.Context["model_use"]; v != "" {
 		out = append(out, "model use: "+v)
 	}
@@ -343,6 +352,20 @@ func describe(resource string) string {
 			return "call JSON-RPC method " + method + " at " + rest[:i]
 		}
 		return "call JSON-RPC method " + rest
+	}
+	// the content rule: "content:<kinds> <METHOD> <url>"
+	if rest, ok := strings.CutPrefix(resource, "content:"); ok {
+		if kinds, req, found := strings.Cut(rest, " "); found {
+			return describe(req) + " (carrying " + strings.ReplaceAll(kinds, ",", ", ") + ")"
+		}
+		return "send sensitive content: " + rest
+	}
+	// a flow rule: "flow:<name> <METHOD> <url>"
+	if rest, ok := strings.CutPrefix(resource, "flow:"); ok {
+		if name, req, found := strings.Cut(rest, " "); found {
+			return describe(req) + " (leaving flow " + name + ")"
+		}
+		return "write outside a flow: " + rest
 	}
 	// an executable download (download.file) or a registry download that
 	// names no package (package.install): "download:<host><path>"

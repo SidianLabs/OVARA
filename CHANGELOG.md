@@ -436,6 +436,21 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   shown with every approval (`for: …`), written into every receipt of its
   requests (`for:<who>`), never used to decide. `ovara agent list` shows
   the scopes. `docs/GUARANTEES.md` 7.5.
+- **Content rules, flow rules and approval routes.** Before a request a
+  rule allowed goes out, its query and body are scanned for private keys,
+  cloud and API keys, JWTs, card numbers and the operator's own patterns
+  (`dlp` in `proxy.json`; on by default, `dlp.exempt` for URLs never
+  scanned, model requests only with `dlp.include_model_calls`); a match
+  pauses for a person (`content.sensitive` on
+  `content:<kinds> <METHOD> <url>`) who sees the kinds and counts, never
+  the values; the observe profile refuses it. Flow rules (`flows`) say
+  what was read from these sources may only go to these destinations: for
+  the rule's window after such a read, a write elsewhere is asked about
+  (`flow.write` on `flow:<name> <METHOD> <url>`, the source and its age
+  shown) or refused (`"effect": "deny"`). `chat.slack.routes` send
+  approvals of a kind (by action type or resource pattern) to a channel of
+  their own, decided only by the people listed for the route.
+  `docs/GUARANTEES.md` 1.14, 2.3, 7.6.
 - Spec 0.1, later: the decision API gains `POST /v1/runtime/outcome` (the
   caller reports how an allowed action went; §2.1) and the resource model
   the `tool.call` action type with `tool:<name>` resources (an agent

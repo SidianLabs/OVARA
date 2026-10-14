@@ -77,6 +77,7 @@ func profileRules(name string) []map[string]any {
 			rule("tool.call", "tool:*", "deny", "Refused, not held: an agent framework's in-process tool calls act on the world (observe profile)"),
 			rule("tcp.connect", "tcp:*", "deny", "Refused, not held: a connection that is not HTTPS is opaque and acts on the world (observe profile; ovara policy suggest lists the destinations)"),
 			rule("download.file", "download:*", "deny", "Refused, not held: an executable or installer download (observe profile)"),
+			rule("content.sensitive", "content:*", "deny", "Refused, not held: a request carrying a secret-shaped value (observe profile)"),
 		)
 		return rules
 	}

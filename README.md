@@ -355,6 +355,27 @@ policy has allowed the request; an IP literal that is not public is still
 refused by Ovara. `ovara doctor` checks both settings, and warns when this
 shell has a proxy in its environment that `proxy.json` does not know about.
 
+### Secrets, flows and who decides
+
+Three rules that look at content, not only at the URL:
+
+- **A secret-shaped value does not leave on a rule alone.** Before an
+  allowed request goes out, its query and body are scanned for private
+  keys, cloud and API keys, JWTs, card numbers and your own patterns
+  (`dlp.patterns` in `proxy.json`); a match pauses for a person, who sees
+  the kinds and counts and never the values (`content.sensitive`). Model
+  requests are not scanned unless `dlp.include_model_calls` is set.
+- **What was read from here may only go there.** A flow rule
+  (`flows: [{"name": "crm", "sources": ["https://crm.example.com/*"],
+  "destinations": ["https://crm.example.com/*", "https://tickets.example.com/*"]}]`)
+  makes every write elsewhere a question for 30 minutes after a read from
+  the source, with the source and its age shown (`flow.write`); `"effect":
+  "deny"` refuses instead.
+- **The right people decide.** `chat.slack.routes` send approvals of a kind
+  (by action type, such as `tcp.connect` or `download.file`, or by resource
+  pattern, such as `* https://prod.example.com/*`) to their own channel,
+  decided only by the people listed for that route.
+
 ### Approvals from Slack
 
 When nobody is at the terminal (a CI job, a box running overnight), paused

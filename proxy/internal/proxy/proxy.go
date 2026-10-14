@@ -40,11 +40,13 @@ type Server struct {
 	failOpen        bool
 	transport       *http.Transport
 	dialer          *net.Dialer
-	publicEgress    bool   // SSRF guard: only public destinations may be dialed
-	upstreamHost    string // host:port of upstream_proxy (upstream.go); dialled as given
-	connectPort443  bool   // CONNECT targets restricted to :443
-	tcpGate         bool   // a CONNECT to another port is decided as tcp.connect and relayed opaque (tcpgate.go)
-	apiGate         bool   // GraphQL, AWS and JSON-RPC operations in allowed bodies are decided (apigate.go)
+	publicEgress    bool         // SSRF guard: only public destinations may be dialed
+	upstreamHost    string       // host:port of upstream_proxy (upstream.go); dialled as given
+	connectPort443  bool         // CONNECT targets restricted to :443
+	tcpGate         bool         // a CONNECT to another port is decided as tcp.connect and relayed opaque (tcpgate.go)
+	apiGate         bool         // GraphQL, AWS and JSON-RPC operations in allowed bodies are decided (apigate.go)
+	dlp             *dlpScanner  // the content rule (dlp.go); nil when off
+	flows           *flowTracker // the flow rules (flows.go); nil when none
 	escalateTimeout time.Duration
 	escalatePoll    time.Duration
 	// escalateRetry: an unanswered hold is answered with 503 and
@@ -896,9 +898,24 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		// A write soon after the agent read untrusted content, and model use
-		// past the agent's budget, are questions too (taint.go,
-		// modelbudget.go).
+		// A secret-shaped value in what is being sent is a question of its
+		// own (dlp.go): the person sees what kinds were found, never the values.
+		if kinds, found := s.sensitiveContent(r, hb); found != "" {
+			facts.reasons = append(facts.reasons, "content:"+kinds)
+			preview := requestContext(r, hb)
+			if preview == nil {
+				preview = map[string]string{}
+			}
+			preview["content"] = found
+			preview["why"] = "a secret-shaped value is in what is being sent; a person decides whether it should leave"
+			outcome, id := s.askAction(r.Context(), actionContent, "content:"+kinds+" "+r.Method+" "+url, preview, "carries sensitive content")
+			if !second(outcome, id, map[string]any{"error": errActionDenied, "reasons": []string{"sensitive_content"}, "content": found}) {
+				return
+			}
+		}
+		// A write soon after the agent read untrusted content, a write that
+		// leaves a flow rule, and model use past the agent's budget, are
+		// questions too (taint.go, flows.go, modelbudget.go).
 		if !s.agentQuestions(r, hb, url, facts, second) {
 			return
 		}
@@ -925,10 +942,13 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Reading content anyone can write marks the agent (taint.go).
+	// Reading content anyone can write marks the agent (taint.go); so
+	// does reading from a flow rule's sources (flows.go).
 	taintSrc := ""
+	var flowReads []string
 	if !failedOpen {
 		taintSrc = s.readTaintSource(r, d, modelFinding)
+		flowReads = s.flowsOfRead(r)
 	}
 	if taintSrc != "" {
 		facts.reasons = append(facts.reasons, "untrusted_read")
@@ -1049,6 +1069,9 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	s.noteRead(r.Context(), taintSrc)
+	if resp.StatusCode < 400 {
+		s.noteFlowRead(r.Context(), flowReads, matchURL(r))
+	}
 	status = resp.StatusCode
 	respBytes = resp.ContentLength
 	stripHopHeaders(resp.Header)
