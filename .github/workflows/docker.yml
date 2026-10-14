@@ -25,7 +25,7 @@ jobs:
   box-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0

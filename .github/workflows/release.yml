@@ -64,7 +64,7 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -107,7 +107,7 @@ jobs:
       matrix:
         agent: [claude, codex, opencode, aider]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
