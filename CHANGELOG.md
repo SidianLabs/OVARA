@@ -302,6 +302,15 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   Its post step stops Ovara and writes the verified receipts to the job
   summary, with `ovara policy suggest` under the observe profile. The
   `Action` workflow runs it against this repository.
+- **An organisation's baseline policy.** `policy_baseline_file` in the
+  gateway's `config.json` names a policy the project's `policy.json` may
+  only narrow: its denies are absolute, its escalations can only be
+  tightened to denies, its allows stand unless the project has a rule, and
+  every refusal it causes names it (`org baseline: ...`). `policy_hash`
+  covers both layers. Signed with `ovara policy baseline keygen|sign` and
+  pinned by `policy_baseline_pubkey`, a baseline that does not verify stops
+  the gateway instead of being skipped; `ovara doctor` checks it and warns
+  when it is unsigned. Spec: `spec/policy.md` §6.
 
 **`ovara run -- <agent>`: one command**
 

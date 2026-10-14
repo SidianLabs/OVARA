@@ -23,7 +23,14 @@ type Config struct {
 	// endpoints (file_path, candidate_file, ?file=) to this directory.
 	// When empty, the directory containing PolicyFile is used; when neither
 	// is set, file-based policy inputs are rejected.
-	PolicyDir             string `json:"policy_dir"`
+	PolicyDir string `json:"policy_dir"`
+	// PolicyBaselineFile is an organisation's policy that the project's
+	// (PolicyFile) may only narrow: its deny is absolute, its escalate can
+	// only become a deny, its allow stands unless the project has a rule.
+	// PolicyBaselinePubKey, hex Ed25519, makes the baseline load only when
+	// <file>.sig (hex) verifies over the file's bytes.
+	PolicyBaselineFile    string `json:"policy_baseline_file,omitempty"`
+	PolicyBaselinePubKey  string `json:"policy_baseline_pubkey,omitempty"`
 	LogLevel              string `json:"log_level"`
 	FailClosed            bool   `json:"fail_closed"`
 	DecisionLogFile       string `json:"decision_log_file"`

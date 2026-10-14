@@ -115,11 +115,31 @@ Every matching `deny` is checked first, then every matching `allow`, then
 every matching `escalate`, whatever their patterns. Policies written before
 `most-specific` existed use it; new policies must not.
 
-## 6. Not in 0.1
+## 6. Layers: an organisation's baseline
 
-Named profiles (`strict`, `balanced`, `observe`) and policy layering (an
-organisation's policy that a project's may only narrow) are planned and
-will be additive: a document without them means what it means today.
+A deployment may name a second document in this same format, the
+organisation's **baseline** (`policy_baseline_file` in the gateway's
+`config.json`). The project's policy may only narrow it. For a request the
+baseline is evaluated first, under its own `precedence` and `default`, then
+the project's policy, and:
+
+- a baseline **deny** decides, whatever the project says;
+- a baseline **escalate** can become a project **deny**, never an allow;
+- a baseline **allow** stands unless the project has a rule for the
+  request, which then decides (restate, escalate or deny);
+- where no baseline rule matched and the baseline has no `default: deny`,
+  the project decides alone.
+
+A decision the baseline made names its rule as `org baseline: <rule>`, so
+every refusal says which layer refused. With a baseline, `policy_hash` is
+the SHA-256 (hex) of `<project hash>+<baseline hash>`, so a receipt names
+the whole policy that decided. When `policy_baseline_pubkey` (hex Ed25519)
+is set, the baseline loads only if `<file>.sig` holds a valid signature over
+its bytes (`ovara policy baseline keygen|sign|verify`); a baseline that does
+not verify stops the gateway rather than being skipped. The baseline is
+read at start.
+
+## 7. Not in 0.1
 
 Policy **profiles** (`ovara policy profile strict|balanced|observe`) are not
 a document feature: they are rule sets the reference implementation marks
@@ -129,7 +149,11 @@ The proxy's per-agent cap on hosts read under an `[open read]` rule is one
 of its follow-up questions (action type `egress.open_hosts`), outside this
 contract.
 
-## 7. Tests that fix this contract
+## 8. Tests that fix this contract
+
+`runtime/gateway/internal/evaluator`: `TestBaseline_ProjectOnlyNarrows`;
+`runtime/gateway/internal/policy`: `TestLoadBaseline_SignatureAndTampering`;
+`runtime/gateway/pkg/server`: `TestRunRefusesAnUnsignedBaselineWhenAKeyIsPinned`.
 
 `runtime/gateway/internal/policy`: `spec_schema_test.go`,
 `TestParseStoreRefusesRulesThatCanNeverMatch`,

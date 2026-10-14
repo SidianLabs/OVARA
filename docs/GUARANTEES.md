@@ -172,6 +172,12 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ---
 
+### 4.4 A project policy cannot widen the organisation's baseline
+- **Holds in:** all modes.
+- **Conditions:** `policy_baseline_file` is set in the gateway's `config.json`; `policy_baseline_pubkey` is set and the file is signed, so that nobody who can edit the deployment's files can loosen the baseline.
+- **What it covers:** the baseline is evaluated before the project's policy. Its deny decides whatever the project says; its escalate can only become a project deny; its allow stands unless the project has a rule; a `default: deny` baseline denies everything it does not list. Decisions the baseline made name it (`org baseline: <rule>`), `policy_hash` covers both layers, and a baseline that is missing or does not verify under the pinned key stops the gateway.
+- **Tests:** `runtime/gateway/internal/evaluator`: `TestBaseline_ProjectOnlyNarrows`; `runtime/gateway/internal/policy`: `TestLoadBaseline_SignatureAndTampering`; `runtime/gateway/pkg/server`: `TestRunRefusesAnUnsignedBaselineWhenAKeyIsPinned`; `runtime/gateway/pkg/baseline`: `TestSignAndVerify`; `proxy/cmd/ovara`: `TestPolicyBaseline_KeygenSignVerify`, `TestDoctor_Baseline`.
+
 ## 5. Audit log
 
 ### 5.1 Nothing goes upstream without a receipt on disk

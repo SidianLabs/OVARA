@@ -26,9 +26,16 @@ import (
 
 type check struct {
 	name   string
-	status string // "PASS", "WARN", "FAIL"
+	status string // checkPass, checkWarn or checkFail
 	detail string
 }
+
+// The three outcomes a check can have.
+const (
+	checkPass = "PASS"
+	checkWarn = "WARN"
+	checkFail = "FAIL"
+)
 
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -123,6 +130,9 @@ func auditDeployment(dir string) []check {
 				out = append(out, check{"policy file", "PASS", fmt.Sprintf("%s: %d rules (%s)", pf, len(p.Rules), p.Version)})
 			}
 		}
+	}
+	if bf := str("policy_baseline_file"); bf != "" {
+		out = append(out, auditBaseline(dir, bf, str("policy_baseline_pubkey"))...)
 	}
 
 	// --- auth posture ------------------------------------------------------

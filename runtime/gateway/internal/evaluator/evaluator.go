@@ -28,6 +28,7 @@ type RevocationChecker interface {
 
 type Evaluator struct {
 	policyStore          *policy.Store
+	baseline             *policy.Store // an organisation's policy the project's may only narrow (baseline.go); nil = none
 	validator            *identity.Validator
 	shieldStore          *trust.ShieldStore
 	revocationChecker    RevocationChecker
@@ -122,9 +123,16 @@ func (e *Evaluator) PolicyVersion() string {
 	return e.policyStore.Version()
 }
 
-// PolicyHash is the content hash of the live policy (policy.Store.Hash).
+// PolicyHash is the content hash of the live policy (policy.Store.Hash);
+// with a baseline, the hash of both hashes, so a receipt names the whole
+// policy that decided.
 func (e *Evaluator) PolicyHash() string {
-	return e.policyStore.Hash()
+	h := e.policyStore.Hash()
+	if e.baseline == nil {
+		return h
+	}
+	sum := sha256.Sum256([]byte(h + "+" + e.baseline.Hash()))
+	return hex.EncodeToString(sum[:])
 }
 
 type EvalResult struct {
@@ -419,7 +427,7 @@ func (e *Evaluator) evaluate(ctx context.Context, req *models.ActionRequest) (*m
 
 	matchedRule := ""
 	if decision == "" {
-		outcome := e.evaluateWithStore(e.policyStore, actionRules, envRules, req)
+		outcome := e.layeredWith(e.policyStore, actionRules, envRules, req)
 		matchedRule = outcome.Rule
 		if outcome.Denied {
 			reasons = append(reasons, outcome.Reason)
@@ -880,7 +888,7 @@ func (e *Evaluator) Simulate(req *models.ActionRequest, candidateStore *policy.S
 		}, nil
 	}
 
-	outcome := e.evaluateRulesWithStore(candidateStore, req)
+	outcome := e.layeredRules(candidateStore, req)
 	trustResult := trust.NewEvaluator(e.shieldStore).Evaluate(req)
 
 	var decision models.Decision

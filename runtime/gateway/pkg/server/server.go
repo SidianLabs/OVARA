@@ -346,6 +346,21 @@ func Run(configPath string) error {
 	shieldStore.SetRiskWindow(10 * time.Minute)
 	shieldStore.SetAutoRestrictTTL(15 * time.Minute)
 	eval := evaluator.NewWithShield(policyStore, shieldStore)
+	// The organisation's baseline, which the project policy may only
+	// narrow. Read at start; a baseline that is missing or does not verify
+	// stops the gateway rather than being skipped.
+	if cfg.PolicyBaselineFile != "" {
+		base, err := policy.LoadBaseline(cfg.PolicyBaselineFile, cfg.PolicyBaselinePubKey, cfg.PolicyVersion)
+		if err != nil {
+			return err
+		}
+		eval.SetBaseline(base)
+		signed := "unsigned"
+		if cfg.PolicyBaselinePubKey != "" {
+			signed = "signature verified"
+		}
+		log.Printf("policy baseline %s: %d rule(s), %s; the project policy may only narrow it", cfg.PolicyBaselineFile, len(base.ListRules()), signed)
+	}
 
 	// Durable replay protection (P2.1): a configured journal that cannot
 	// be opened fails startup — silently falling back to process-local

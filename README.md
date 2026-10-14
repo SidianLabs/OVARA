@@ -284,6 +284,15 @@ strict policy would need. `ovara policy profile` shows the current one;
 `ovara init -profile balanced` starts with one. (`ovara box -profile
 dev|strict` is a different setting: how the box treats package installs.)
 
+An organisation can put a floor under every project: a **baseline** policy
+(`policy_baseline_file` in `config.json`) that a project's `policy.json` may
+only narrow. Its denies are absolute, its escalations can only be tightened
+to denies, its allows stand unless the project has a rule, and every refusal
+it causes says `org baseline`. Sign it (`ovara policy baseline keygen`, then
+`sign`) and pin the key (`policy_baseline_pubkey`): a baseline that does not
+verify stops the gateway instead of being skipped, so whoever can edit the
+project's files cannot loosen the organisation's.
+
 `allow` lets it through, `escalate` pauses it for you, `deny` blocks it. If more
 than one rule matches, **the most specific one decides** (more literal
 characters in its pattern; among equals deny beats allow beats escalate), so

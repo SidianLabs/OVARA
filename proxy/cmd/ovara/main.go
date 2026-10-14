@@ -123,6 +123,9 @@ func usage() {
   policy profile [NAME] show or switch the policy profile: strict | balanced | observe
   policy suggest        the rules a strict policy would need for what the agent
                         did, from the receipts (after an observe run)
+  policy baseline keygen|sign|verify
+                        sign an organisation's baseline policy that project
+                        policies may only narrow (policy_baseline_file in config.json)
   watch [-dir .]        answer approval requests live: approve / deny each one
   approvals [-dir .]    list agent requests waiting for approval
   log [-dir .] [-n 50]  what the agent did (allowed/approved/blocked), integrity-checked

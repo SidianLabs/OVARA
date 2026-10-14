@@ -83,6 +83,33 @@ PY
 sleep 3
 check "C4 without the precedence field a catch-all deny wins (older files unchanged)" 403 "$(code -X POST -d x https://httpbin.org/anything/ci/expected)"
 
+echo "=== E. an organisation's baseline the job's policy may only narrow"
+setpolicy '{"action_type":"http.request","environment":"*","resource":"POST https://httpbin.org/anything/ci/expected","allow":true,"description":"the one write"}'
+cat > /tmp/d/baseline.json <<'JSON'
+{"version":"org","precedence":"most-specific","rules":[
+ {"action_type":"http.request","environment":"*","resource":"POST https://httpbin.org/anything/ci/expected","deny":true,"description":"the organisation forbids this endpoint"}]}
+JSON
+ovara policy baseline keygen -out /tmp/k >/dev/null && ovara policy baseline sign -key /tmp/k/baseline.key -in /tmp/d/baseline.json >/dev/null \
+  && ok "E1 the baseline is signed (ovara policy baseline keygen, sign)" || bad "E1 baseline signing" "keygen or sign failed"
+python3 - <<'PY'
+import json
+c = json.load(open('/tmp/d/config.json'))
+c['policy_baseline_file'] = 'baseline.json'; c['policy_baseline_pubkey'] = open('/tmp/k/baseline.pub').read().strip()
+json.dump(c, open('/tmp/d/config.json', 'w'), indent=2)
+PY
+stop()  { kill -TERM $OVARA; for i in $(seq 1 20); do kill -0 $OVARA 2>/dev/null || break; sleep 0.5; done; }
+start() { ovara run -dir d -ui off >>/tmp/run.log 2>&1 & OVARA=$!; for i in $(seq 1 60); do (echo > /dev/tcp/127.0.0.1/9443) 2>/dev/null && break; sleep 0.5; done; }
+stop; start   # the baseline is read at start
+check "E2 the write the job's policy allows is refused by the organisation (403)" 403 "$(code -X POST -d x https://httpbin.org/anything/ci/expected)"
+curl -s --max-time 40 -X POST -d x https://httpbin.org/anything/ci/expected 2>/dev/null | grep -q "org baseline" && ok "E3 the refusal names the org baseline" || bad "E3 refusal text" "does not say org baseline"
+check "E4 what the baseline does not mention still follows the job's policy" 200 "$(code https://pypi.org/simple/)"
+ovara doctor -dir /tmp/d 2>&1 | grep -q "policy baseline.*verifies" && ok "E5 ovara doctor: the baseline's signature verifies" || bad "E5 doctor" "no verified-baseline line"
+# a baseline loosened by someone without the key does not load
+stop; sed -i 's/"deny":true/"allow":true/' /tmp/d/baseline.json
+timeout 30 ovara run -dir d -ui off >/tmp/run2.log 2>&1; rc=$?
+[ $rc -ne 0 ] && grep -q "does not verify" /tmp/run2.log && ok "E6 a loosened, unsigned baseline stops the gateway instead of being skipped" || bad "E6 tampered baseline" "exit $rc: $(tail -1 /tmp/run2.log)"
+sed -i 's/"allow":true/"deny":true/' /tmp/d/baseline.json; start
+
 echo "=== D. the record and the end of the job"
 ovara log -dir /tmp/d 2>&1 | grep -q "signed and unbroken" && ok "D1 the receipt chain verifies" || bad "D1 receipt chain" "not verified"
 python3 - <<'PY' && ok "D2 every timed-out and refused request is in the receipts" || bad "D2 receipts" "missing entries"

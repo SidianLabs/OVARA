@@ -66,6 +66,26 @@ Create `etc/config.json`:
 }
 ```
 
+### An organisation's baseline (optional)
+
+`policy_baseline_file` names a second policy, in the same format, that
+`policy_file` may only narrow (`spec/policy.md` §6): its denies are absolute,
+its escalations can only be tightened to denies, its allows stand unless the
+project has a rule for the request, and every refusal it causes says
+`org baseline`. Sign it and pin the key, so that whoever can edit the
+deployment's files cannot loosen it:
+
+```bash
+ovara policy baseline keygen -out /secure/place     # baseline.key stays with the signer
+ovara policy baseline sign -key /secure/place/baseline.key -in etc/baseline.json
+```
+
+then in `config.json`: `"policy_baseline_file": "etc/baseline.json"` and
+`"policy_baseline_pubkey": "<the hex in baseline.pub>"`. The gateway refuses
+to start when the baseline is missing or its signature does not verify. It is
+read at start: sign again after every change and restart. `ovara doctor`
+reports its state.
+
 ### Trust-stack persistence (required for production)
 
 The four `*_file` settings above carry the P2.x trust stack across
