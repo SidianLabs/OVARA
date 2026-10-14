@@ -590,7 +590,7 @@ func runTier1(a *boxAgent) (int, error) {
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin",
 		"HOME=" + a.home, "USER=" + a.user, "LOGNAME=" + a.user,
 		"TERM=" + envOr("TERM", "xterm"), "LANG=" + envOr("LANG", "C.UTF-8"),
-		"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost",
+		"NO_PROXY=" + loopbackNoProxy, "no_proxy=" + loopbackNoProxy,
 		"OVARA_BOX=1", "OVARA_BOX_TIER=1", "OVARA_WORKSPACE=" + a.ws.Dir,
 	}
 	env = mergeEnv(append(env, vars...), a.envs)
@@ -702,7 +702,7 @@ func runTier2(a *boxAgent) (int, error) {
 	env := []string{
 		"HOME=" + boxInHome, "USER=" + boxDefaultUser, "LOGNAME=" + boxDefaultUser,
 		"TERM=" + envOr("TERM", "xterm"), "LANG=" + envOr("LANG", "C.UTF-8"),
-		"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost",
+		"NO_PROXY=" + loopbackNoProxy, "no_proxy=" + loopbackNoProxy,
 		"OVARA_BOX=1", "OVARA_BOX_TIER=2", "OVARA_WORKSPACE=" + boxInWork,
 	}
 	env = mergeEnv(append(env, vars...), a.envs)

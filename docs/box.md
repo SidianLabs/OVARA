@@ -330,8 +330,8 @@ planned
    netns; tier 2 to hand the workspace to the box's uid and to keep Ovara's
    sockets in a directory only root can enter). Rootless tier 2 is later.
 5. **Enter the box with the agent environment**: what `ovara env` prints
-   today (`HTTPS_PROXY`, CA variables, `NODE_USE_ENV_PROXY`, placeholder
-   keys) and a fresh `HOME`. The command gate needs nothing in the
+   today (`HTTPS_PROXY`, CA variables, `NODE_USE_ENV_PROXY`, `NO_PROXY`
+   pinned to loopback, placeholder keys) and a fresh `HOME`. The command gate needs nothing in the
    environment: it traces the agent from outside (§8).
 6. Run the agent command. The person uses the approval page or `ovara
    watch` in another terminal.

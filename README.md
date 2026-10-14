@@ -120,7 +120,9 @@ claude                                           # or any agent: it now runs thr
 
 `ovara env` sets the proxy address (including the agent's proxy token) and
 points every common certificate setting (Node, Python, curl, git, OpenSSL) at
-Ovara's certificate, so Ovara can see inside HTTPS. It also sets placeholder
+Ovara's certificate, so Ovara can see inside HTTPS. It pins `NO_PROXY` to
+loopback, so a list inherited from your shell cannot take hosts out of Ovara
+(it says which hosts it replaced). It also sets placeholder
 values for `GITHUB_TOKEN`, `ANTHROPIC_API_KEY` and the rest, so tools that won't
 start without a key still start. Ovara swaps in the real key on the way out.
 It also unsets other secret-looking variables it finds in that shell (tokens,
@@ -363,8 +365,9 @@ this page that goes further than it is a mistake.
 - **Cooperative mode (what you get with `ovara env`).** Ovara controls every
   request that goes through it. A program that ignores the proxy setting can still
   reach the internet directly. This happens by accident too: Node's built-in
-  `fetch()` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is set, which
-  `ovara env` does for you. So this mode stops a well-meaning agent from making
+  `fetch()` ignores `HTTPS_PROXY` unless `NODE_USE_ENV_PROXY=1` is set, and any
+  host on a `NO_PROXY` list from your shell is contacted directly; `ovara env`
+  deals with both for you. So this mode stops a well-meaning agent from making
   mistakes, but it does not stop a determined, hostile one. Check `ovara log` to
   confirm your agent's traffic is actually showing up.
 - **Enforced mode (`ovara run --boundary netns` or `--boundary docker`, Linux, needs root).**

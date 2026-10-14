@@ -439,6 +439,15 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
 
 ### Fixed (found by running the real binary the way a person uses it)
 
+- **`ovara env` let a `NO_PROXY` list from the shell take hosts out of Ovara.**
+  Found running a real agent (opencode) through Ovara in a sandbox whose shell
+  exports `no_proxy` with `api.anthropic.com` on it: the agent's calls to that
+  host went straight out, with no decision and no receipt, while the
+  environment said every request goes through Ovara. `ovara env` now sets
+  `NO_PROXY` and `no_proxy` to loopback only (as `ovara box` already did) and
+  says in a comment which hosts it replaced. Hosts that must be reachable go
+  in `policy.json`. The note quotes only entries that look like host names:
+  the output is `eval`'d.
 - **A policy resource was taken for a URL whenever it contained `://`.** A
   command line such as `shell:curl http://…` was parsed as an egress URL,
   failed, matched no rule and fell to the default. A resource is a URL only
