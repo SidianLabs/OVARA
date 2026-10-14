@@ -10,7 +10,7 @@ jobs:
   build-gateway:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
         run: bash .github/scripts/docker-hub-mirror.sh
       - name: Build Gateway Image
@@ -22,7 +22,7 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run Trivy vulnerability scanner
         # Pinned by commit: this action's tags have been rewritten upstream
         # before (the old 0.28.0 tag no longer exists at all).
