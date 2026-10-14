@@ -514,6 +514,27 @@ the server without the wrapper is not stopped by it. A stdio server that is
 not wrapped is invisible to Ovara, and WebSocket transports are not
 supported.
 
+### APIs whose verb is in the body
+
+A URL rule cannot tell a GraphQL query from a mutation, an AWS
+`DescribeInstances` from a `TerminateInstances`, or a JSON-RPC getter from a
+`sendTransaction`: they all go to the same POST. Once a rule allows the
+POST, Ovara reads the body for the operation and decides it on its own:
+reads pass and are named in the receipt; writes pause with the operation,
+its variables (secrets masked) and the body hash in front of the person,
+unless a rule names them:
+
+```json
+{ "action_type": "graphql.operation", "environment": "*", "resource": "graphql:api.github.com/graphql/mutation:AddComment", "allow": true }
+{ "action_type": "aws.action", "environment": "*", "resource": "aws:dynamodb:PutItem", "allow": true }
+{ "action_type": "jsonrpc.call", "environment": "*", "resource": "jsonrpc:node.example.com/rpc/eth_send*", "escalate": true }
+```
+
+`ovara policy suggest` proposes these from a run's held operations. The
+read heuristics go by name (`Describe`, `List`, `Get`, a GraphQL `query`);
+reads of secrets, parameters and tokens are not reads. `api_gate: false`
+in `proxy.json` turns the gate off.
+
 ### Any agent, any framework
 
 The proxy sees what leaves over the network. What a framework's tools do

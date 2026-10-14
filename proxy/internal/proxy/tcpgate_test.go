@@ -293,22 +293,24 @@ func TestTCPGate_OverBudgetIsCut(t *testing.T) {
 	// Drain what comes back so the echo never blocks, and push more than
 	// one budget chunk through.
 	go func() { _, _ = io.Copy(io.Discard, br) }()
+	// Offer far more than the budget. Kernel buffers may take the writes
+	// before the cut lands, so what is checked is what the proxy relayed
+	// and why it stopped, not how much the client could write.
 	chunk := bytes.Repeat([]byte("x"), 64<<10)
-	var sent int64
 	_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	for sent < 2<<20 {
+	for sent := int64(0); sent < 4<<20; {
 		n, err := c.Write(chunk)
 		sent += int64(n)
 		if err != nil {
 			break
 		}
 	}
-	if sent >= 2<<20 {
-		t.Fatalf("the tunnel took %d bytes without being cut", sent)
-	}
 	_, outcome := tunnelReceipts(t, chainFile, echo)
 	if !containsString(outcome.Reasons, "egress_budget") {
 		t.Fatalf("outcome reasons %v, want egress_budget", outcome.Reasons)
+	}
+	if outcome.ReqBytes > 1<<20 {
+		t.Fatalf("the proxy relayed %d bytes past a 1 KiB budget", outcome.ReqBytes)
 	}
 	if len(ag.of(actionEgressBudget)) == 0 {
 		t.Fatalf("the budget question was never asked")

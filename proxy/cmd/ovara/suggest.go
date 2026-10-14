@@ -99,8 +99,13 @@ func suggestRules(receiptsFile, pubFile, agent string, since time.Duration, now 
 		considered++
 		res, write, ok := suggestFor(r)
 		if !ok {
-			skipped++
-			continue
+			// An operation a body-aware gate held (the URL was allowed, the
+			// operation was not): the rule names the operation.
+			if res, ok = heldOperation(r); !ok {
+				skipped++
+				continue
+			}
+			write = true
 		}
 		s := seen[res]
 		if s == nil {
@@ -124,10 +129,14 @@ func suggestRules(receiptsFile, pubFile, agent string, since time.Duration, now 
 		s := seen[k]
 		if s.write {
 			writes++
-			if strings.HasPrefix(s.resource, "tcp:") {
+			if at := actionTypeOfResource(s.resource); at != "" {
+				what := "an operation"
+				if at == "tcp.connect" {
+					what = "a connection (not HTTPS, opaque)"
+				}
 				rules = append(rules, map[string]any{
-					"action_type": "tcp.connect", "environment": "*", "resource": s.resource, "allow": true,
-					"description": fmt.Sprintf("%s %s] a connection (not HTTPS, opaque) the agent attempted %d time(s), first %s; accept only if this destination is intended", suggestedMarker, day, s.count, s.first.Format(time.RFC3339)),
+					"action_type": at, "environment": "*", "resource": s.resource, "allow": true,
+					"description": fmt.Sprintf("%s %s] %s the agent attempted %d time(s), first %s; accept only if exactly this is intended", suggestedMarker, day, what, s.count, s.first.Format(time.RFC3339)),
 				})
 				continue
 			}
@@ -188,6 +197,31 @@ func suggestFor(r receipts.Receipt) (resource string, write, ok bool) {
 		return r.Method + " https://" + host + path, true, true // held under strict
 	}
 	return "", false, false
+}
+
+// heldOperation is the operation a body-aware gate asked about and nobody
+// answered (receipt reason "operation:<resource>" on a held request).
+func heldOperation(r receipts.Receipt) (string, bool) {
+	if r.Decision != "escalate" {
+		return "", false
+	}
+	for _, reason := range r.Reasons {
+		if res, ok := strings.CutPrefix(reason, "operation:"); ok && actionTypeOfResource(res) != "" {
+			return res, true
+		}
+	}
+	return "", false
+}
+
+// actionTypeOfResource is the action type a resource of the TCP gate or a
+// body-aware gate is decided under; "" for a URL resource.
+func actionTypeOfResource(resource string) string {
+	for prefix, at := range map[string]string{"tcp:": "tcp.connect", "graphql:": "graphql.operation", "aws:": "aws.action", "jsonrpc:": "jsonrpc.call"} {
+		if strings.HasPrefix(resource, prefix) {
+			return at
+		}
+	}
+	return ""
 }
 
 // scanReceipts reads the receipt lines of a chain file (anchors and other

@@ -108,6 +108,9 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
 - A CONNECT to a port other than 443 is held for a person (or decided by a
   `tcp.connect` rule) instead of being refused at once; `tcp_gate: false`
   in `proxy.json` keeps the refusal.
+- A GraphQL mutation, an AWS write action or a JSON-RPC write method in a
+  POST a rule allows is held for a person unless a rule names it;
+  `api_gate: false` turns that off.
 - The model API is limited to the inference endpoints. Other endpoints on
   the model hosts (files, batches, …) pause for approval, and a model
   request that asks the provider to fetch a URL or reach a server (MCP
@@ -387,6 +390,25 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   injected into it. `ovara policy suggest` proposes the `tcp.connect` rules
   a run needed. `tcp_gate: false` in `proxy.json` restores the flat
   refusal. Spec: `spec/resource-model.md`; `docs/GUARANTEES.md` 1.11.
+- **APIs whose verb is in the body are decided by that verb.** Once a URL
+  rule allows a POST, the proxy reads its body for a GraphQL operation
+  (`graphql.operation`, `graphql:<host><path>/<kind>:<name>`;
+  `operationName` picks among several), an AWS JSON or Query API action
+  (`aws.action`, `aws:<service>:<Action>`, from `X-Amz-Target` or
+  `Action=`) or a JSON-RPC method (`jsonrpc.call`,
+  `jsonrpc:<host><path>/<method>`; MCP stays the MCP gate's). The
+  operation is named in the receipt; a read (a query, an AWS `Describe`,
+  `List`, `Get` and the like but never a read of a secret or token, a
+  method whose name says it reads) passes; everything else is a question
+  of its own, with the operation, its kind, the variables or params
+  (credential-shaped values masked) and the body hash shown, unless a rule
+  decides it. A gzip body is read; an unreadable encoding where an
+  operation could be inside is refused rather than sent unchecked; a
+  JSON-RPC batch is refused. `ovara approvals` and Slack say "run GraphQL
+  mutation CreateIssue at ...", "call AWS ec2 TerminateInstances", "call
+  JSON-RPC method ..."; `ovara policy suggest` proposes rules for held
+  operations. `api_gate: false` in `proxy.json` turns it off.
+  `docs/GUARANTEES.md` 1.12.
 - Spec 0.1, later: the decision API gains `POST /v1/runtime/outcome` (the
   caller reports how an allowed action went; §2.1) and the resource model
   the `tool.call` action type with `tool:<name>` resources (an agent

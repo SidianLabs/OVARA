@@ -18,6 +18,9 @@ Used by the reference implementation's own components:
 | `mcp.tool_call` | the MCP gate, per tool call | `mcp:<server>/<tool>` |
 | `tool.call` | an agent framework's tool guard (SDK), per in-process tool call | `tool:<name>` |
 | `tcp.connect` | the proxy's TCP gate, for a CONNECT to a port other than 443 | `tcp:<host>:<port>` |
+| `graphql.operation` | the proxy's API gate, for a GraphQL operation in an allowed POST | `graphql:<host><path>/<query|mutation|subscription>:<name>` |
+| `aws.action` | the proxy's API gate, for an AWS JSON or Query API call in an allowed POST | `aws:<service>:<Action>` |
+| `jsonrpc.call` | the proxy's API gate, for a JSON-RPC call in an allowed POST (MCP excepted) | `jsonrpc:<host><path>/<method>` |
 | `package.install` | the proxy, per package download | `npm:<name>@<version>`, `pypi:<name>@<version>`, `download:<host><path>` |
 | `model.server_feature` | the proxy's model gate | `model:<host> <finding>` |
 | `model.budget` | the proxy, past the per-run model budget | `model-budget:<host>` |
@@ -119,6 +122,9 @@ normalised line is for rules written by people.
 | `mcp:<server> tools <n> new[ <m> changed]` | `<server>` is `<host><path>` for an HTTP MCP server (`mcp.example.com/mcp`) or `stdio:<name>` for a wrapped one. |
 | `mcp:<server>/<tool>` | `<tool>` is the tool name with characters outside the safe set percent-escaped (`we ird` → `we%20ird`), so a name cannot forge a path. |
 | `tcp:<host>:<port>` | a connection that is not HTTPS: the host as in a URL resource (lower-case, no trailing dot, an IPv6 literal in brackets), the port always written. What flows inside is not seen; the receipts carry the bytes each way. |
+| `graphql:<host><path>/<kind>:<name>` | the host and path as in a URL resource; `<kind>` is the operation type; `<name>` is the operation's name, else its first top-level field (an alias names the field), else `anonymous`; escaped like a tool name. With several operations in one document, `operationName` picks the one decided. A query is a read and passes without a question; a mutation or subscription is asked about unless a rule decides it. |
+| `aws:<service>:<Action>` | `<service>` is the first label of the AWS host (`ec2`, `dynamodb`, `sts`), lower-case; `<Action>` is what `X-Amz-Target` (after its last `.`) or the form field `Action` names, as written. An action whose name says it reads (`Describe`, `List`, `Get`, `Head`, `Lookup`, `Search`, `Query`, `Scan`, `BatchGet`, `Select`, `Check`, `Validate`, `Estimate`, `View`, `Verify`, `Preview`, `Simulate`, `Discover`, `Resolve`, `Is`, `Count`) passes, except reads of secrets, parameters, passwords and tokens (`GetSecretValue`, `GetParameter(s)`, `GetSessionToken`, ...). |
+| `jsonrpc:<host><path>/<method>` | the method name escaped like a tool name. A method whose name (after its `eth_`, `net_`, `Service.` namespace) says it reads (`get`, `list`, `read`, `describe`, `query`, `fetch`, `search`, `find`, `count`, `exists`, `has`, `is`, `status`, `ping`, `health`, `version`, `info`, `call`, `estimate`, ...) passes; a batch is refused; an MCP method is the MCP gate's. |
 | `tool:<name>` | the tool a framework is about to call in-process, its name escaped as an MCP tool's is (letters, digits, `_`, `-` and `.` kept; every other byte `%XX`). The arguments are not in the resource: the request's `metadata.proxy_context` carries their size, SHA-256 and a redacted preview, which bind the approval to the exact call. |
 | `npm:<name>@<version>`, `pypi:<name>@<version>` | the package a registry download names; scoped npm names keep their `@scope/`. |
 | `download:<host><path>` | a registry download that names no package. |
@@ -140,4 +146,5 @@ precedence an allow on them beats a deny only by literal prefix
 `proxy/internal/mcp`: `TestToolCallPreviewBindsArguments` (tool names);
 `sdk/python/tests/test_guard.py`, `sdk/typescript/src/__tests__/guard.test.ts`
 (`tool:<name>` escaping, argument hashing); `proxy/internal/proxy`:
-`TestTCPGate_*` (`tcp:<host>:<port>`).
+`TestTCPGate_*` (`tcp:<host>:<port>`), `TestAPIGate_*` (the GraphQL, AWS and
+JSON-RPC forms, `TestAPIGate_GraphQLReader` for the document reader).

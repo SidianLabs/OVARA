@@ -131,6 +131,12 @@ type Config struct {
 	// opaque, its bytes counted against the host's egress budget and
 	// receipted. Default ON; off, such a CONNECT is refused as before.
 	TCPGate *bool `json:"tcp_gate"`
+	// APIGate reads the bodies of allowed POSTs for APIs whose verb is in
+	// the body (GraphQL operations, AWS actions named by X-Amz-Target or
+	// Action=, JSON-RPC methods) and asks about a write as an action of its
+	// own (graphql.operation, aws.action, jsonrpc.call); reads pass and are
+	// named in the receipt. Default ON.
+	APIGate *bool `json:"api_gate"`
 
 	Credentials []creds.Binding `json:"credentials"`
 

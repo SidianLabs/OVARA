@@ -44,6 +44,7 @@ type Server struct {
 	upstreamHost    string // host:port of upstream_proxy (upstream.go); dialled as given
 	connectPort443  bool   // CONNECT targets restricted to :443
 	tcpGate         bool   // a CONNECT to another port is decided as tcp.connect and relayed opaque (tcpgate.go)
+	apiGate         bool   // GraphQL, AWS and JSON-RPC operations in allowed bodies are decided (apigate.go)
 	escalateTimeout time.Duration
 	escalatePoll    time.Duration
 	// escalateRetry: an unanswered hold is answered with 503 and
@@ -847,6 +848,30 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			outcome, id := s.checkPackage(r.Context(), ref, url)
 			if !second(outcome, id, map[string]any{"error": "package not allowed", "package": ref}) {
 				return
+			}
+		}
+		// An API whose verb is in the body (apigate.go): the operation is
+		// named in the receipt, and a write is a question of its own.
+		if op := s.apiOperationOf(r, hb, br); op != nil {
+			if op.refuse != "" {
+				decision = gwDeny
+				facts.reasons = append(facts.reasons, op.refuse)
+				writeJSON(op.status, map[string]any{"error": apiRefusalText(op.refuse), "reasons": []string{op.refuse}})
+				return
+			}
+			facts.reasons = append(facts.reasons, operationNote+op.resource)
+			if !op.read {
+				preview := requestContext(r, hb)
+				if preview == nil {
+					preview = map[string]string{}
+				}
+				for k, v := range op.preview {
+					preview[k] = v
+				}
+				outcome, id := s.askAction(r.Context(), op.action, op.resource, preview, op.why)
+				if !second(outcome, id, map[string]any{"error": errActionDenied, "reasons": []string{op.action}, "operation": op.resource}) {
+					return
+				}
 			}
 		}
 		// A model request that makes the provider reach out on the agent's

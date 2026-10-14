@@ -113,6 +113,14 @@ func contextLines(a pendingApproval) []string {
 		{"arguments_bytes", "arguments size"},
 		{"arguments_sha256", "arguments sha256"},
 		{"arguments", "arguments"},
+		// the body-aware API gates: the operation a body names
+		{"graphql_operation", "GraphQL operation"},
+		{"aws_action", "AWS action"},
+		{"jsonrpc_method", "JSON-RPC method"},
+		{"operation_kind", "kind"},
+		{"operation", "operation"},
+		{"variables", "variables"},
+		{"params", "params"},
 	}
 	var out []string
 	for _, o := range order {
@@ -301,6 +309,36 @@ func describe(resource string) string {
 	}
 	if rest, ok := strings.CutPrefix(resource, "commit:"); ok {
 		return "bring the agent's changes back to " + rest + " as a new branch"
+	}
+	// the body-aware API gates: the operation a body names
+	if rest, ok := strings.CutPrefix(resource, "graphql:"); ok {
+		if at, op, found := strings.Cut(rest, "/"); found {
+			if i := strings.LastIndex(op, "/"); i >= 0 { // the path may have slashes
+				at, op = at+"/"+op[:i], op[i+1:]
+			}
+			kind, name, _ := strings.Cut(op, ":")
+			if n, err := url.PathUnescape(name); err == nil {
+				name = n
+			}
+			return "run GraphQL " + kind + " " + name + " at " + at
+		}
+		return "run GraphQL operation " + rest
+	}
+	if rest, ok := strings.CutPrefix(resource, "aws:"); ok {
+		if service, action, found := strings.Cut(rest, ":"); found {
+			return "call AWS " + service + " " + action
+		}
+		return "call AWS " + rest
+	}
+	if rest, ok := strings.CutPrefix(resource, "jsonrpc:"); ok {
+		if i := strings.LastIndex(rest, "/"); i >= 0 {
+			method, _ := url.PathUnescape(rest[i+1:])
+			if method == "" {
+				method = rest[i+1:]
+			}
+			return "call JSON-RPC method " + method + " at " + rest[:i]
+		}
+		return "call JSON-RPC method " + rest
 	}
 	// the TCP gate: a connection that is not HTTPS, "tcp:<host>:<port>"
 	if rest, ok := strings.CutPrefix(resource, "tcp:"); ok {

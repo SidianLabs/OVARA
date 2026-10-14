@@ -158,11 +158,11 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request, hostname, 
 			decision = gwEscalate
 			return
 		default:
-			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "action denied", "decision_id": d.DecisionID, "approval_id": id, "reasons": []string{outcome}}, d.MatchedRule))
+			writeJSON(http.StatusForbidden, withRule(map[string]any{"error": errActionDenied, "decision_id": d.DecisionID, "approval_id": id, "reasons": []string{outcome}}, d.MatchedRule))
 			return
 		}
 	default:
-		writeJSON(http.StatusForbidden, withRule(map[string]any{"error": "action denied", "decision_id": d.DecisionID, "reasons": d.ReasonCodes}, d.MatchedRule))
+		writeJSON(http.StatusForbidden, withRule(map[string]any{"error": errActionDenied, "decision_id": d.DecisionID, "reasons": d.ReasonCodes}, d.MatchedRule))
 		return
 	}
 	decision = gwAllow

@@ -121,6 +121,10 @@ func TestPolicySuggest_Tunnels(t *testing.T) {
 		{Method: "CONNECT", URL: "tcp://db.internal:5432", Decision: "escalate", Status: 503, Agent: "a"},
 		{Method: "CONNECT", URL: "tcp://smtp.example.com:587", Decision: "deny", Status: 403, Rule: "[profile observe] no tunnels", Agent: "a"},
 		{Method: "CONNECT", URL: "tcp://bad.example:22", Decision: "deny", Status: 403, Rule: "no ssh", Agent: "a"},
+		// operations the body-aware gates held: the URL was allowed by a rule, the operation was not answered
+		{Method: "POST", URL: "https://api.github.com/graphql", Decision: "escalate", Status: 503, Rule: "github api", Reasons: []string{"operation:graphql:api.github.com/graphql/mutation:CreateIssue"}, Agent: "a"},
+		{Method: "POST", URL: "https://node.example.com/rpc", Decision: "escalate", Status: 503, Rule: "node", Reasons: []string{"operation:jsonrpc:node.example.com/rpc/eth_sendTransaction"}, Agent: "a"},
+		{Method: "POST", URL: "https://node.example.com/rpc", Decision: "allow", Status: 200, Rule: "node", Reasons: []string{"operation:jsonrpc:node.example.com/rpc/eth_getBalance"}, Agent: "a"},
 	} {
 		if _, err := chain.Append(e, false); err != nil {
 			t.Fatal(err)
@@ -142,12 +146,13 @@ func TestPolicySuggest_Tunnels(t *testing.T) {
 	for _, r := range rules {
 		got[r["resource"].(string)] = r
 	}
-	if len(got) != 2 {
-		t.Fatalf("want rules for the held and the observe-refused tunnels only, got %v", got)
+	if len(got) != 4 {
+		t.Fatalf("want rules for the held and the observe-refused tunnels and the two held operations only, got %v", got)
 	}
-	for _, res := range []string{"tcp:db.internal:5432", "tcp:smtp.example.com:587"} {
+	for res, at := range map[string]string{"tcp:db.internal:5432": "tcp.connect", "tcp:smtp.example.com:587": "tcp.connect",
+		"graphql:api.github.com/graphql/mutation:CreateIssue": "graphql.operation", "jsonrpc:node.example.com/rpc/eth_sendTransaction": "jsonrpc.call"} {
 		r := got[res]
-		if r == nil || r["action_type"] != "tcp.connect" || r["allow"] != true || r["environment"] != "*" {
+		if r == nil || r["action_type"] != at || r["allow"] != true || r["environment"] != "*" {
 			t.Errorf("%s: %v", res, r)
 		}
 	}
