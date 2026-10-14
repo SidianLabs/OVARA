@@ -124,6 +124,13 @@ type Config struct {
 	// kept (default var/mcp_pins.json).
 	MCPGate     *bool  `json:"mcp_gate"`
 	MCPPinsFile string `json:"mcp_pins_file"`
+	// TCPGate decides a CONNECT to a port other than 443 (a database, a
+	// mail server, SSH, gRPC: anything that is not HTTPS Ovara can inspect)
+	// as an action of its own (tcp.connect, resource tcp:<host>:<port>)
+	// instead of refusing it: allowed or approved, the tunnel is opened
+	// opaque, its bytes counted against the host's egress budget and
+	// receipted. Default ON; off, such a CONNECT is refused as before.
+	TCPGate *bool `json:"tcp_gate"`
 
 	Credentials []creds.Binding `json:"credentials"`
 

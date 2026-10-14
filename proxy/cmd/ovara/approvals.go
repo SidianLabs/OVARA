@@ -89,6 +89,8 @@ func contextLines(a pendingApproval) []string {
 	order := []struct{ key, label string }{
 		{"warning", "⚠ WARNING"},
 		{"body_note", "⚠ not shown"},
+		// the TCP gate: what the port suggests the connection is for
+		{"protocol", "protocol"},
 		{"query", "query string"},
 		{"content_type", "body type"},
 		{"body_bytes", "body size"},
@@ -299,6 +301,10 @@ func describe(resource string) string {
 	}
 	if rest, ok := strings.CutPrefix(resource, "commit:"); ok {
 		return "bring the agent's changes back to " + rest + " as a new branch"
+	}
+	// the TCP gate: a connection that is not HTTPS, "tcp:<host>:<port>"
+	if rest, ok := strings.CutPrefix(resource, "tcp:"); ok {
+		return "open a connection to " + rest + " (not HTTPS: an opaque tunnel)"
 	}
 	// an agent framework's tool guard (SDK): "tool:<name>", the name escaped
 	// like an MCP tool's

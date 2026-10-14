@@ -43,6 +43,7 @@ type Server struct {
 	publicEgress    bool   // SSRF guard: only public destinations may be dialed
 	upstreamHost    string // host:port of upstream_proxy (upstream.go); dialled as given
 	connectPort443  bool   // CONNECT targets restricted to :443
+	tcpGate         bool   // a CONNECT to another port is decided as tcp.connect and relayed opaque (tcpgate.go)
 	escalateTimeout time.Duration
 	escalatePoll    time.Duration
 	// escalateRetry: an unanswered hold is answered with 503 and
@@ -424,6 +425,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		hostname, port = r.Host, "443"
 	}
 	hostname = normalizeHost(hostname)
+	// A CONNECT to another port is not HTTPS to inspect. With the TCP gate
+	// it is decided as a connection of its own and relayed opaque when
+	// allowed (tcpgate.go).
+	if port != "443" && s.tcpGate {
+		s.handleTunnel(w, r, hostname, port)
+		return
+	}
 	// CONNECT is for HTTPS tunneling only — an arbitrary port would turn
 	// this into a generic TCP relay (SSH, redis, ...) past the boundary.
 	// Tunnel-layer rejects are receipted too: a probing agent must leave
@@ -634,7 +642,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			s.lookupApprover(r.Context(), facts, approvalID)
 		}
 		e := s.receiptEntry(facts, r.Method, url, decision, 0, approvalID)
-		e.Phase, e.Outcome = "attempt", "sent"
+		e.Phase, e.Outcome = phaseAttempt, outcomeSent
 		rc, err := s.chain.Append(e, true)
 		if rc != nil {
 			attemptID = rc.ReceiptID
@@ -653,7 +661,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			}
 			e := s.receiptEntry(facts, r.Method, url, decision, status, approvalID)
 			if attemptID != "" {
-				e.Phase, e.AttemptID, e.RespBytes = "outcome", attemptID, respBytes
+				e.Phase, e.AttemptID, e.RespBytes = phaseOutcome, attemptID, respBytes
 				if notSent {
 					e.Outcome = "not_sent"
 				}

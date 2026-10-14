@@ -105,6 +105,9 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
 
 **Breaking changes** (things you may notice after upgrading):
 
+- A CONNECT to a port other than 443 is held for a person (or decided by a
+  `tcp.connect` rule) instead of being refused at once; `tcp_gate: false`
+  in `proxy.json` keeps the refusal.
 - The model API is limited to the inference endpoints. Other endpoints on
   the model hosts (files, batches, …) pause for approval, and a model
   request that asks the provider to fetch a URL or reach a server (MCP
@@ -369,6 +372,21 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   `docs/GUARANTEES.md` 2.5. The agents harness in CI exercises it against
   a real gateway. Gateway-decided calls are in the gateway's receipts and
   events, not yet in the proxy's receipt chain or the run attestation.
+- **A TCP gate for connections that are not HTTPS.** A CONNECT to a port
+  other than 443 (a database, a mail server, SSH, a broker, gRPC) used to
+  be refused outright. It is now decided as `tcp.connect` on
+  `tcp:<host>:<port>` before anything is dialled or resolved: an unlisted
+  destination pauses for a person (who sees what the port suggests the
+  connection is for and that the tunnel is opaque), a rule allows or
+  refuses it, the observe profile refuses it. An allowed tunnel is
+  receipted twice (`CONNECT tcp://host:port`: the attempt before the first
+  byte, the outcome with the bytes each way), its bytes are charged to the
+  host's egress budget every 256 KiB and a refused charge cuts it, a
+  stopped agent's tunnel is cut, and it goes through `upstream_proxy` when
+  one is set. Nothing inside the tunnel is read and no credential is
+  injected into it. `ovara policy suggest` proposes the `tcp.connect` rules
+  a run needed. `tcp_gate: false` in `proxy.json` restores the flat
+  refusal. Spec: `spec/resource-model.md`; `docs/GUARANTEES.md` 1.11.
 - Spec 0.1, later: the decision API gains `POST /v1/runtime/outcome` (the
   caller reports how an allowed action went; §2.1) and the resource model
   the `tool.call` action type with `tool:<name>` resources (an agent

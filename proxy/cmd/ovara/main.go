@@ -483,6 +483,7 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 	if err := srv.SetMCPGate(cfg.MCPGate == nil || *cfg.MCPGate, cfg.MCPPinsFile); err != nil {
 		return nil, nil, fmt.Errorf("mcp pins: %w", err)
 	}
+	srv.SetTCPGate(cfg.TCPGate == nil || *cfg.TCPGate)
 	srv.ApplyConfig(cfg)
 	// A corporate network: Ovara's own requests go through its proxy and
 	// trust its CA; the agent still talks to Ovara only.

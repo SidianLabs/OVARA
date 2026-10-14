@@ -17,6 +17,7 @@ Used by the reference implementation's own components:
 | `mcp.tools` | the MCP gate, for a tool list | `mcp:<server> tools <n> new[ <m> changed]` |
 | `mcp.tool_call` | the MCP gate, per tool call | `mcp:<server>/<tool>` |
 | `tool.call` | an agent framework's tool guard (SDK), per in-process tool call | `tool:<name>` |
+| `tcp.connect` | the proxy's TCP gate, for a CONNECT to a port other than 443 | `tcp:<host>:<port>` |
 | `package.install` | the proxy, per package download | `npm:<name>@<version>`, `pypi:<name>@<version>`, `download:<host><path>` |
 | `model.server_feature` | the proxy's model gate | `model:<host> <finding>` |
 | `model.budget` | the proxy, past the per-run model budget | `model-budget:<host>` |
@@ -117,6 +118,7 @@ normalised line is for rules written by people.
 | `commit:<project> (<n> files, tree <12 hex>)` | the project's directory name, the number of files coming back, the first 12 hex digits of the reviewed tree's hash. |
 | `mcp:<server> tools <n> new[ <m> changed]` | `<server>` is `<host><path>` for an HTTP MCP server (`mcp.example.com/mcp`) or `stdio:<name>` for a wrapped one. |
 | `mcp:<server>/<tool>` | `<tool>` is the tool name with characters outside the safe set percent-escaped (`we ird` → `we%20ird`), so a name cannot forge a path. |
+| `tcp:<host>:<port>` | a connection that is not HTTPS: the host as in a URL resource (lower-case, no trailing dot, an IPv6 literal in brackets), the port always written. What flows inside is not seen; the receipts carry the bytes each way. |
 | `tool:<name>` | the tool a framework is about to call in-process, its name escaped as an MCP tool's is (letters, digits, `_`, `-` and `.` kept; every other byte `%XX`). The arguments are not in the resource: the request's `metadata.proxy_context` carries their size, SHA-256 and a redacted preview, which bind the approval to the exact call. |
 | `npm:<name>@<version>`, `pypi:<name>@<version>` | the package a registry download names; scoped npm names keep their `@scope/`. |
 | `download:<host><path>` | a registry download that names no package. |
@@ -137,4 +139,5 @@ precedence an allow on them beats a deny only by literal prefix
 `proxy/internal/boxgate`: `TestPolicyLine`, `FuzzPolicyLine`;
 `proxy/internal/mcp`: `TestToolCallPreviewBindsArguments` (tool names);
 `sdk/python/tests/test_guard.py`, `sdk/typescript/src/__tests__/guard.test.ts`
-(`tool:<name>` escaping, argument hashing).
+(`tool:<name>` escaping, argument hashing); `proxy/internal/proxy`:
+`TestTCPGate_*` (`tcp:<host>:<port>`).

@@ -87,6 +87,11 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 - **What it covers:** a read allowed by a rule that allows reads from any host (`[open read]` in its description) counts its host toward the agent's cap; past the cap each further host pauses for a person once (action type `egress.open_hosts`), and an approval admits that host for the rest of the run. Hosts a rule names are not counted. The strict policy's guards keep deciding under the profiles: a credentialed read of secrets still pauses, a dump site is still refused, and under `observe` the model API stays reachable while every other write is refused at once, never held. `ovara policy suggest` reads only a chain that verifies.
 - **Tests:** `proxy/internal/proxy`: `TestOpenReadsAskPastTheHostCap`, `TestOpenReadsCountOnlyCatchAllReads`; `runtime/gateway/internal/evaluator`: `TestMostSpecific_OpenReadProfilesKeepTheGuards`; `proxy/cmd/ovara`: `TestProfiles_SwitchReplacesOnlyTheProfileRules`, `TestInit_Profile`, `TestPolicySuggest_FromReceipts`.
 
+### 1.11 A connection that is not HTTPS is opened only on a decision, counted and receipted
+- **Holds in:** all modes, with `tcp_gate` on (the default).
+- **What it covers:** a CONNECT to a port other than 443 (a database, a mail server, SSH, gRPC, anything that is not HTTPS Ovara can open and read) is decided as `tcp.connect` on `tcp:<host>:<port>` before anything is dialled and before the name is resolved; a person asked sees what the port suggests the connection is for and that the tunnel is opaque. Only an allow or an approval opens it; a deny, a refusal and a hold that is not answered are answered like any other request (403, or 503 with `Retry-After` under fail-fast) and receipted. An open tunnel is receipted twice, the attempt before the first byte and the outcome with the bytes each way when it closes; its bytes are charged to the host's egress budget every 256 KiB, and a charge a person refuses cuts it; a stopped agent's tunnel is cut within the agent watch interval; a private IP literal is refused without asking. What flows inside the tunnel is not inspected, credentials are not injected into it, and a TLS service on another port is such a tunnel, not an inspected HTTPS request. With `tcp_gate` off, such a CONNECT is refused as before.
+- **Tests:** `proxy/internal/proxy`: `TestTCPGate_AllowedTunnelRelaysAndReceiptsBytes`, `TestTCPGate_DeniedTunnelNeverDials`, `TestTCPGate_HeldTunnelOpensOnlyAfterApproval`, `TestTCPGate_PersonsDenialNeverDials`, `TestTCPGate_OverBudgetIsCut`, `TestTCPGate_StoppedAgentIsCut`, `TestTCPGate_ThroughUpstreamProxy`, `TestTCPGate_OffKeepsTheRefusal`, `TestTCPGate_PrivateLiteralRefusedWithoutAsking`, `TestConnectNon443Denied`; `proxy/cmd/ovara`: `TestDescribe`, `TestPolicySuggest_Tunnels`, `TestProfiles_SwitchReplacesOnlyTheProfileRules`; `tests/redteam/boundary/run.sh` ("CONNECT :22").
+
 ---
 
 ## 2. Approvals
@@ -458,8 +463,10 @@ These are real limits. Some are design limits, some are not built yet.
   path falls back to the host-wide read rule. In `ovara box` the repository
   scope on the key still applies.
 - **Non-HTTP protocols.** SSH, database protocols and raw TCP are not
-  inspected; the boundary drops them. HTTP/2, gRPC and WebSockets are not
-  supported through the interception.
+  inspected: through the proxy they are decided, counted and receipted as
+  opaque tunnels (1.11), never read; around the proxy the boundary drops
+  them. HTTP/2 and WebSockets are not supported through the interception,
+  and gRPC only as such a tunnel.
 - **`fail_open`.** With `fail_open` set in `proxy.json`, requests go out
   when the gateway is down or a receipt cannot be written. `ovara doctor`
   reports it.

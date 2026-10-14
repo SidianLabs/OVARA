@@ -82,6 +82,7 @@ func main() {
 	if err := srv.SetMCPGate(cfg.MCPGate == nil || *cfg.MCPGate, cfg.MCPPinsFile); err != nil {
 		log.Fatalf("mcp pins: %v", err)
 	}
+	srv.SetTCPGate(cfg.TCPGate == nil || *cfg.TCPGate)
 	srv.ApplyConfig(cfg)
 	srv.SetClientAuth(cfg.AgentToken)
 	defer srv.WatchAgentFiles(*configPath, cfg.RevokedAgentsFile, 250*time.Millisecond)()

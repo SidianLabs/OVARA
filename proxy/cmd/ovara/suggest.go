@@ -124,6 +124,13 @@ func suggestRules(receiptsFile, pubFile, agent string, since time.Duration, now 
 		s := seen[k]
 		if s.write {
 			writes++
+			if strings.HasPrefix(s.resource, "tcp:") {
+				rules = append(rules, map[string]any{
+					"action_type": "tcp.connect", "environment": "*", "resource": s.resource, "allow": true,
+					"description": fmt.Sprintf("%s %s] a connection (not HTTPS, opaque) the agent attempted %d time(s), first %s; accept only if this destination is intended", suggestedMarker, day, s.count, s.first.Format(time.RFC3339)),
+				})
+				continue
+			}
 			rules = append(rules, map[string]any{
 				"action_type": "http.request", "environment": "*", "resource": s.resource, "allow": true,
 				"description": fmt.Sprintf("%s %s] a write the agent attempted %d time(s), first %s; accept only if exactly this write is intended", suggestedMarker, day, s.count, s.first.Format(time.RFC3339)),
@@ -146,6 +153,14 @@ func suggestRules(receiptsFile, pubFile, agent string, since time.Duration, now 
 // suggestFor classifies one receipt: the host to read (write=false) or the
 // exact write (write=true), and whether it is worth a rule at all.
 func suggestFor(r receipts.Receipt) (resource string, write, ok bool) {
+	// The TCP gate receipts a tunnel as CONNECT tcp://host:port; the rule
+	// that would allow it names that one destination.
+	if hp, isTunnel := strings.CutPrefix(r.URL, "tcp://"); isTunnel && r.Method == http.MethodConnect {
+		if (r.Decision == "escalate" && r.Rule == "") || (r.Decision == "deny" && strings.Contains(r.Rule, profileMarker(profileObserve))) {
+			return "tcp:" + hp, true, true
+		}
+		return "", false, false
+	}
 	u, err := url.Parse(r.URL)
 	if err != nil || u.Scheme != "https" || u.User != nil {
 		return "", false, false

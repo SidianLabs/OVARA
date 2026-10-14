@@ -19,6 +19,13 @@ import (
 // upstream has answered and before the answer reaches the agent. A request
 // that never goes upstream gets one receipt with no phase.
 
+// The two receipts of a request that goes upstream (receipts.Entry.Phase).
+const (
+	phaseAttempt = "attempt"
+	phaseOutcome = "outcome"
+	outcomeSent  = "sent" // the attempt's Outcome: the request went upstream
+)
+
 // agentLabel identifies the client in receipts: a stable hash of the proxy
 // credential it presented, never the credential itself.
 func agentLabel(token string) string {

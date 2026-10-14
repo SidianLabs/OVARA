@@ -174,7 +174,7 @@ box in the first release (see tiers, §4.4).
 | Package installs | Through the proxy, with registry pins, install-script policy, new-dependency approval | **built, tested** (`-profile strict`; `tests/box/strict.sh` with real npm and pip) (§9) |
 | Secrets | Never present in the box; injected by the proxy; scrubbed on return | **built, tested** |
 | Process control (kill Ovara, edit policy, forge receipts) | Agent runs as a different unprivileged user with no access to Ovara's directory | **built, tested** (`tests/redteam/separate-user`, 19 attacks) |
-| Non-HTTP protocols (SSH, raw TCP, DNS to the outside) | Dropped by the boundary (no route; DNS off unless `OVARA_BOUNDARY_DNS=1`); tier 2 has no interface but loopback | **built, tested**: netns (27 checks), from inside a tier 2 box (28) and the docker recipe (29) (`tests/redteam/boundary`; docker mode run for the first time in milestone 4) |
+| Non-HTTP protocols (SSH, raw TCP, DNS to the outside) | Dropped by the boundary (no route; DNS off unless `OVARA_BOUNDARY_DNS=1`); tier 2 has no interface but loopback. Through the proxy (a CONNECT to another port) they are decided as `tcp.connect`, counted and receipted as opaque tunnels | **built, tested**: netns (27 checks), from inside a tier 2 box (28) and the docker recipe (29) (`tests/redteam/boundary`; docker mode run for the first time in milestone 4) |
 
 ### 4.4 Isolation tiers (what the box is made of)
 

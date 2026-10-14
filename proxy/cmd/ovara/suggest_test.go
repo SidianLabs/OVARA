@@ -102,3 +102,56 @@ func TestPolicySuggest_EmptyChain(t *testing.T) {
 		t.Fatalf("%v %v %s", err, rules, summary)
 	}
 }
+
+// The TCP gate receipts a tunnel as CONNECT tcp://host:port; a held one, or
+// one the observe profile refused, is proposed as a tcp.connect rule for
+// that destination. An allowed one needs no rule.
+func TestPolicySuggest_Tunnels(t *testing.T) {
+	dir := t.TempDir()
+	chainFile, pubFile := filepath.Join(dir, "receipts.jsonl"), filepath.Join(dir, "pub.hex")
+	chain, err := receipts.LoadOrCreate(chainFile, filepath.Join(dir, "r.key"), pubFile)
+	if chain != nil {
+		t.Cleanup(func() { _ = chain.Close() })
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []receipts.Entry{
+		{Method: "CONNECT", URL: "tcp://db.internal:5432", Decision: "escalate", Status: 503, Agent: "a"},
+		{Method: "CONNECT", URL: "tcp://db.internal:5432", Decision: "escalate", Status: 503, Agent: "a"},
+		{Method: "CONNECT", URL: "tcp://smtp.example.com:587", Decision: "deny", Status: 403, Rule: "[profile observe] no tunnels", Agent: "a"},
+		{Method: "CONNECT", URL: "tcp://bad.example:22", Decision: "deny", Status: 403, Rule: "no ssh", Agent: "a"},
+	} {
+		if _, err := chain.Append(e, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// an allowed tunnel: attempt and outcome, as the proxy writes them
+	attempt, err := chain.Append(receipts.Entry{Method: "CONNECT", URL: "tcp://cache.internal:6379", Decision: "allow", Rule: "redis is allowed", Phase: "attempt", Outcome: "sent", Agent: "a"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chain.Append(receipts.Entry{Method: "CONNECT", URL: "tcp://cache.internal:6379", Decision: "allow", Status: 200, Rule: "redis is allowed", Phase: "outcome", AttemptID: attempt.ReceiptID, ReqBytes: 10, RespBytes: 20, Agent: "a"}, false); err != nil {
+		t.Fatal(err)
+	}
+	rules, _, err := suggestRules(chainFile, pubFile, "", 0, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]map[string]any{}
+	for _, r := range rules {
+		got[r["resource"].(string)] = r
+	}
+	if len(got) != 2 {
+		t.Fatalf("want rules for the held and the observe-refused tunnels only, got %v", got)
+	}
+	for _, res := range []string{"tcp:db.internal:5432", "tcp:smtp.example.com:587"} {
+		r := got[res]
+		if r == nil || r["action_type"] != "tcp.connect" || r["allow"] != true || r["environment"] != "*" {
+			t.Errorf("%s: %v", res, r)
+		}
+	}
+	if !strings.Contains(got["tcp:db.internal:5432"]["description"].(string), "2 time(s)") {
+		t.Errorf("the count: %v", got["tcp:db.internal:5432"]["description"])
+	}
+}

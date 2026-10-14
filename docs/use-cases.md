@@ -281,10 +281,14 @@ injected over HTTPS.
 
 ## What Ovara is not for
 
-- **Non-HTTP traffic.** SSH, database protocols and raw TCP are invisible to the
-  proxy. In enforced mode they are blocked (no route); in cooperative mode they
-  are simply not seen. HTTP/2-only services, gRPC and WebSockets are not
-  supported through the interception.
+- **Reading non-HTTP traffic.** SSH, database protocols and raw TCP that go
+  through the proxy (a CONNECT to a port other than 443) are decided as
+  `tcp.connect` on `tcp:<host>:<port>`, held or refused like any action,
+  and an open tunnel is counted and receipted, but nothing inside it is
+  read and no credential is injected into it. Around the proxy such traffic
+  is invisible: in enforced mode it is blocked (no route), in cooperative
+  mode simply not seen. HTTP/2-only services and WebSockets are not
+  supported through the interception; gRPC only as such a tunnel.
 - **Stopping prompt injection.** It limits the damage an injected agent can do
   (it cannot push without you, cannot send to unknown hosts, never held your
   keys, and for a while after it reads an issue, a PR comment or another

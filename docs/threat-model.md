@@ -27,6 +27,7 @@ decision is written to a signed, hash-chained receipt log.
 | Data smuggled in a host name (DNS exfiltration) | A host name is not resolved until policy has approved a request to it; inside the boundary, DNS is off unless you turn it on | Always |
 | The agent sends data out through its own model API (an MCP connector, a web-fetch tool, an image "by URL" that the provider fetches) | Only the inference endpoints are allowed by default, and the proxy reads every model request body and pauses requests that use those features (`model_gate`) | The default policy is kept, and `model_gate` is on |
 | An MCP server changes a tool's description after you trusted it (rug pull), hides instructions in it (tool poisoning), or describes another server's tools (shadowing) | Tool definitions are pinned per server; the first list, a new tool and a changed definition are shown to a person (old and new side by side, hidden characters and instruction-like wording flagged) before the agent sees them, and a refused list never reaches it | The server is reached through the proxy over HTTP, or a stdio server is started through `ovara mcp wrap` running as a user the agent cannot act as; `mcp_gate` is on |
+| The agent opens a connection that is not HTTPS (a database, a mail server, SSH, a message broker) to move data or act where the proxy cannot read | A CONNECT to a port other than 443 is decided as `tcp.connect` on `tcp:<host>:<port>` before anything is dialled (paused by default; what the port suggests and that the tunnel is opaque are shown); an open tunnel's bytes each way are counted against the host's egress budget and receipted, and a stopped agent's tunnel is cut | `tcp_gate` is on (the default) and the agent's traffic goes through the proxy; the boundary drops what goes around it |
 | The agent calls an MCP tool it should not (send an email, delete a repository) | Every tool call is decided by policy (`mcp.tool_call`, paused by default) with its arguments shown; a tool whose definition was never approved is refused | Same |
 | A framework's own tool, run in-process (a mail library, a database driver, a file delete), does something it should not: the proxy never sees it | With the SDK tool guard around the tool, every call is decided by policy (`tool.call`, paused by default) with the arguments' hash and a masked preview shown, claimed once when approved, and its outcome reported; a report for a denied decision is kept as a security event | The tool is wrapped with the guard (code inside the agent: it binds an author who uses it, not one who removes it) |
 | The agent adds its own credential (an account it controls) next to the one Ovara injects | On a host Ovara holds a key for, the agent's own credential headers are removed before the real one is attached, and the real one is set after hop-by-hop headers are stripped | Always |
@@ -118,8 +119,10 @@ decision is written to a signed, hash-chained receipt log.
   lists and tool calls are checked, not resources or prompts. The warnings
   on a definition are hints, not detection.
 - **Non-HTTP protocols.** Only HTTP and HTTPS through the proxy are inspected.
-  CONNECT is limited to port 443; HTTP/2, gRPC and WebSockets are not
-  supported through the interception.
+  A CONNECT to another port is decided and counted as an opaque tunnel
+  (`tcp.connect`), never read: data inside it is not seen, and credentials
+  are not injected into it. HTTP/2 and WebSockets are not supported through
+  the interception, and gRPC only as such a tunnel.
 
 ## Modes
 

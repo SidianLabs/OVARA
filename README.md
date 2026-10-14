@@ -567,8 +567,10 @@ this page that goes further than it is a mistake.
   binding, which sends only short-lived tokens limited to the repository
   (see above); otherwise use a fine-grained token scoped to one repository.
   Never bind a key to a host that echoes requests back.
-- **Plain HTTP and other protocols.** Coverage of non-HTTP protocols is
-  uneven.
+- **Plain HTTP and other protocols.** A connection that is not HTTPS (a
+  database, mail, SSH) is decided, counted and receipted as an opaque
+  tunnel (`tcp.connect`), not read: nothing inside it is inspected and no
+  credential is injected into it.
 - **The model API.** The agent may call its model's inference endpoint without
   asking (it has to). The proxy reads those requests and refuses features that
   would make the provider fetch a URL or connect to a server for the agent
