@@ -335,6 +335,10 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   stopped ones, and labels the receipts name that have no token now) its
   state, the approvals waiting on a person, what it last did and how its
   last run ended, from the attestations. `-json` for a dashboard.
+- `ovara doctor` reports the receipt chain's size and the number of
+  attestations, and warns past 256 MiB; `docs/operations.md` has a
+  retention and export section (scheduled export, bundling, rotating the
+  deployment directory).
 - **Approvals from Slack.** `chat.slack` in `proxy.json` (a channel ID, the
   user IDs allowed to decide, a bot token in `var/slack.token` or a named
   variable) makes `ovara run` post every paused request to the channel as

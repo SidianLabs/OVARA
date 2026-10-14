@@ -849,9 +849,12 @@ Order matters: 0 before anything (today's release cannot restart); 1 before
 3. **Where the model API key lives for Aider/opencode-style agents that
    want it in a config file**: placeholder in the file, substituted at the
    proxy, same as env vars. Needs a test per agent.
-4. **Receipt retention and size** for long runs: compaction exists
-   (`record.compactSigned`); the box needs a retention knob and a size
-   warning in `ovara doctor`.
+4. **Receipt retention and size** for long runs: answered for now.
+   `ovara doctor` reports the chain's size and warns past 256 MiB;
+   `docs/operations.md` (Retention and export) says what to do: export on
+   a schedule, bundle, and rotate the deployment directory rather than cut
+   the live chain. A chain that can be archived from the front without
+   losing verifiability is still to come.
 5. **Multi-agent / sub-agent runs**: one box per top-level run; sub-agents
    share it and the receipts tag them by process. Decide whether sub-agents
    get their own agent tokens (traceability) or share one (simplicity).
