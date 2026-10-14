@@ -38,8 +38,9 @@ type Server struct {
 	failOpen        bool
 	transport       *http.Transport
 	dialer          *net.Dialer
-	publicEgress    bool // SSRF guard: only public destinations may be dialed
-	connectPort443  bool // CONNECT targets restricted to :443
+	publicEgress    bool   // SSRF guard: only public destinations may be dialed
+	upstreamHost    string // host:port of upstream_proxy (upstream.go); dialled as given
+	connectPort443  bool   // CONNECT targets restricted to :443
 	escalateTimeout time.Duration
 	escalatePoll    time.Duration
 	// escalateRetry: an unanswered hold is answered with 503 and
@@ -267,6 +268,10 @@ func (s *Server) checkDestination(ctx context.Context, host string) error {
 	if !s.publicEgress {
 		return nil
 	}
+	if s.upstreamHost != "" {
+		// the upstream proxy resolves the name; an IP literal is still ours to refuse
+		return s.checkLiteralDestination(host)
+	}
 	_, err := resolvePublic(ctx, host)
 	return err
 }
@@ -289,7 +294,8 @@ func (s *Server) checkLiteralDestination(host string) error {
 // within this single call still cannot inject a private address, because
 // we dial the exact IP we validated.
 func (s *Server) dialChecked(ctx context.Context, network, addr string) (net.Conn, error) {
-	if !s.publicEgress {
+	if !s.publicEgress || s.isUpstreamAddr(addr) {
+		// the upstream proxy is on the corporate network: dialled as given
 		return s.dialer.DialContext(ctx, network, addr)
 	}
 	host, port, err := net.SplitHostPort(addr)

@@ -313,6 +313,25 @@ push to refs/heads/main on github.com/acme/app
 `policy test` is a dry run against the live policy: nothing is sent and no
 approval is opened.
 
+### Behind a corporate proxy
+
+On a network where everything leaves through a company proxy, tell Ovara in
+`proxy.json` and nothing else changes:
+
+```json
+"upstream_proxy": "http://proxy.corp.example:3128",
+"upstream_ca_bundle": "/etc/ssl/corp-ca.pem"
+```
+
+Ovara's own requests go through that proxy (with the credentials in the URL,
+if any) and the TLS it verifies trusts the bundle besides the system roots,
+which is what a TLS-inspecting proxy or an internal CA needs. The agent sees
+none of it: it still talks to Ovara only, with Ovara's CA, and `ovara env`
+keeps pointing it there. Names are then resolved by the company proxy after
+policy has allowed the request; an IP literal that is not public is still
+refused by Ovara. `ovara doctor` checks both settings, and warns when this
+shell has a proxy in its environment that `proxy.json` does not know about.
+
 ### Several agents, and stopping one
 
 Give each agent its own proxy token, so the log and every approval say

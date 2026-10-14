@@ -46,6 +46,7 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ### 1.3 A host name is not resolved before policy has allowed a request to it
 - **Holds in:** all modes.
+- **Conditions:** with `upstream_proxy` set in `proxy.json`, the name is resolved by that proxy, after the decision; Ovara still refuses an IP literal that is not public (`TestUpstreamProxy_RequestsGoThroughItWithoutLocalDNS`), and the agent never learns the upstream proxy or its CA.
 - **Tests:** `proxy/internal/proxy`: `TestConnectDoesNotResolveNamesBeforePolicy`.
 
 ### 1.4 Reads cannot carry much data

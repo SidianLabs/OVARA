@@ -285,6 +285,15 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   a write is never remembered, a resource with a wildcard offers nothing,
   and every remembered rule names who, when and the approval. Run-scoped
   rules go when the run ends, whatever they were for.
+- **Behind a corporate proxy.** `proxy.json` takes `upstream_proxy`
+  (http(s)://host:port, credentials allowed) and `upstream_ca_bundle` (a
+  PEM file trusted besides the system roots). Ovara's own requests, the
+  credential broker's included, go through the proxy, and TLS to the
+  world is verified against the bundle: what a TLS-inspecting proxy or an
+  internal CA needs. The agent still talks to Ovara only, with Ovara's
+  CA. Names are then resolved by the upstream proxy after policy allowed
+  the request; a non-public IP literal is still refused. `ovara doctor`
+  checks both and warns when the shell's proxy is not in `proxy.json`.
 
 **`ovara run -- <agent>`: one command**
 

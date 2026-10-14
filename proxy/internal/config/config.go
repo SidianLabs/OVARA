@@ -87,6 +87,15 @@ type Config struct {
 	// once per further host (action type egress.open_hosts).
 	OpenReads *OpenReads `json:"open_reads,omitempty"`
 
+	// UpstreamProxy is how Ovara itself reaches the internet on a network
+	// that routes through a corporate proxy: http://host:port or
+	// https://host:port, userinfo allowed. UpstreamCABundle is a PEM file
+	// trusted for the TLS Ovara verifies besides the system roots (a
+	// TLS-inspecting proxy, an internal CA). The agent sees neither: it
+	// talks to Ovara only, with Ovara's CA.
+	UpstreamProxy    string `json:"upstream_proxy,omitempty"`
+	UpstreamCABundle string `json:"upstream_ca_bundle,omitempty"`
+
 	// Agents are named proxy clients, each with its own token (name ->
 	// token). The proxy accepts any of them, and agent_token too, records
 	// the name in receipts and approvals, and keeps the taint rule and the

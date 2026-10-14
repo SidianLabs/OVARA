@@ -206,6 +206,7 @@ func auditDeployment(dir string) []check {
 		out = append(out, check{"unsafe flags", "PASS", "fail_open and unsafe_no_agent_auth are off"})
 	}
 	out = append(out, auditCredentials(dir, pcfg)...)
+	out = append(out, auditUpstream(dir, pcfg)...)
 
 	// --- CA / keys ----------------------------------------------------------
 	// CA files are created by ca.LoadOrCreate on first `ovara run`, so a

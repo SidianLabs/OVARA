@@ -472,6 +472,24 @@ func wire(cfg *config.Config) (*proxy.Server, *ca.CA, error) {
 		return nil, nil, fmt.Errorf("mcp pins: %w", err)
 	}
 	srv.ApplyConfig(cfg)
+	// A corporate network: Ovara's own requests go through its proxy and
+	// trust its CA; the agent still talks to Ovara only.
+	if cfg.UpstreamProxy != "" || cfg.UpstreamCABundle != "" {
+		var bundle []byte
+		if cfg.UpstreamCABundle != "" {
+			b, err := os.ReadFile(inDir(".", cfg.UpstreamCABundle)) //nolint:gosec // the operator's own file, named in proxy.json
+			if err != nil {
+				return nil, nil, fmt.Errorf("upstream_ca_bundle: %w", err)
+			}
+			bundle = b
+		}
+		if err := srv.SetUpstream(cfg.UpstreamProxy, bundle); err != nil {
+			return nil, nil, err
+		}
+		if d := srv.UpstreamDescription(); d != "" {
+			log.Printf("upstream proxy %s: Ovara's own requests go through it; the agent still talks to Ovara only", d)
+		}
+	}
 	srv.SetClientAuth(cfg.AgentToken)
 	return srv, rootCA, nil
 }
