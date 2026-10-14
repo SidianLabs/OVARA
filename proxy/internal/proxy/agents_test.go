@@ -237,6 +237,9 @@ func TestBrokenRevokedFileKeepsAgentsStopped(t *testing.T) {
 	srv, _, _ := newActionServer(t, "allow")
 	up := newRecorder(t)
 	_, revoked := watchFiles(t, srv, map[string]string{agentAlpha: tokAlpha})
+	// As TestKilledAgentIsRefusedWithinASecond: the agent is accepted once
+	// the watcher has loaded the files, and only then is the stop written.
+	waitCode(t, srv, up.URL+"/a", tokAlpha, 200)
 	stopAgents(t, revoked, agentAlpha)
 	waitCode(t, srv, up.URL+"/a", tokAlpha, http.StatusForbidden)
 	if err := os.WriteFile(revoked, []byte("{not json"), 0o600); err != nil {
