@@ -77,6 +77,11 @@ func (s *Server) receiptEntry(f *receiptFacts, method, url, decision string, sta
 		e.Reasons = append(e.Reasons, f.gw.ReasonCodes...)
 	}
 	e.Reasons = append(e.Reasons, f.reasons...)
+	// Who the agent acts for, when its scope says: on the record with
+	// every receipt of its requests.
+	if who := s.forOf(f.agent.name); who != "" {
+		e.Reasons = append(e.Reasons, "for:"+who)
+	}
 	// approval_id names one approval; any other this request was asked
 	// about is listed in the reasons.
 	for _, id := range f.approvals {

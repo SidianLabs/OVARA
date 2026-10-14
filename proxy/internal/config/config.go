@@ -107,6 +107,12 @@ type Config struct {
 	// model budget per name. `ovara agent add|list|remove` edit this map;
 	// a running proxy picks up changes within a second.
 	Agents map[string]string `json:"agents,omitempty"`
+	// AgentScopes narrow named agents on top of the policy: the resources
+	// each may act on, the agent it is a sub-agent of (a sub-agent's list
+	// fits inside its parent's; stopping the parent stops it), and who it
+	// acts for (shown and recorded, never used to decide). `ovara agent
+	// add NAME -parent P -for WHO -allow PATTERN` writes them.
+	AgentScopes map[string]AgentScope `json:"agent_scopes,omitempty"`
 	// RevokedAgentsFile lists agents stopped by `ovara kill` (default
 	// var/revoked_agents.json). The proxy re-reads it within a second and
 	// refuses every request from a stopped agent.
@@ -195,6 +201,9 @@ func Load(path string) (*Config, error) {
 		c.RevokedAgentsFile = "var/revoked_agents.json"
 	}
 	if err := ValidateAgents(c.Agents, c.AgentToken); err != nil {
+		return nil, err
+	}
+	if err := ValidateAgentScopes(c.AgentScopes, c.Agents, c.AgentToken); err != nil {
 		return nil, err
 	}
 	if c.MCPPinsFile == "" {

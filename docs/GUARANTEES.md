@@ -355,6 +355,11 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
   stopped. It lasts across restarts until `ovara agent restore`.
 - **Tests:** `proxy/internal/proxy`: `TestKilledAgentIsRefusedWithinASecond`, `TestKilledAgentsOpenTunnelCarriesNoMore`, `TestKilledAgentsWaitingRequestStops`, `TestAgentsStreamingResponseIsCutWhenStoppedOrRemoved`, `TestBrokenRevokedFileKeepsAgentsStopped`; `proxy/cmd/ovara`: `TestKillStopsOneAgentAndDeniesItsApprovals`, `TestKillWithoutGatewayStillStops`.
 
+### 7.5 A sub-agent can only narrow its parent, and an agent acts for whom it says
+- **Holds in:** all modes, for named agents with a scope (`agent_scopes` in `proxy.json`; `ovara agent add NAME -parent P -for WHO -allow PATTERN`).
+- **What it covers:** a scoped agent acts only on the resources its allow list names, as policy sees them (`METHOD url`, `tcp:host:port`); anything else is refused before policy is asked, with a receipt (reason `agent_scope`). A sub-agent's list must fit inside its parent's (every pattern of the child fits a pattern of the parent, the child's own wildcards read as text, a limited parent never covers an unlimited child), checked when the agent is added and whenever `proxy.json` is read, and a file that breaks it leaves the running proxy on its previous agents; stopping an agent stops its sub-agents within the agent watch interval. Who an agent acts for (`for`) is shown with every approval (`for: …`) and written into every receipt of its requests (`for:<who>`); it is a label the operator set, never a field a request can supply, and it decides nothing. The scope covers what the proxy decides; a box's shell commands and an SDK's tool calls are the policy's and the gateway's, where capability leases and delegation chains do the narrowing.
+- **Tests:** `proxy/internal/config`: `TestValidateAgentScopes`, `TestScopeCoversAndInScope`, `TestReadWriteAgentScopes`; `proxy/internal/proxy`: `TestAgentScope_LimitsWhatAnAgentMayDo`, `TestAgentScope_UnscopedAgentsAreUnchanged`, `TestAgentScope_CoversTunnels`; `proxy/cmd/ovara`: `TestAgentAdd_Scopes`.
+
 ## 8. MCP
 
 These hold for MCP (JSON-RPC 2.0) traffic Ovara can see: requests through

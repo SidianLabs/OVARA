@@ -187,7 +187,7 @@ func cmdInit(args []string) error {
 		return err
 	}
 	for _, n := range names {
-		if err := agentAdd(io.Discard, dir, n); err != nil {
+		if err := agentAdd(io.Discard, dir, n, config.AgentScope{}); err != nil {
 			return err
 		}
 	}

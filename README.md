@@ -455,6 +455,22 @@ requests are refused within a second ("this agent was stopped by its
 operator"), what it was waiting on is denied, and it stays stopped after a
 restart until you restore it.
 
+An agent can be narrowed beyond the policy, and act for someone:
+
+```bash
+ovara agent add support -dir mydir -for alice@example.com \
+    -allow 'GET https://api.example.com/*' -allow 'tcp:db.internal:5432'
+ovara agent add triage -dir mydir -parent support -allow 'GET https://api.example.com/tickets/*'
+```
+
+A scoped agent acts only on what its `-allow` patterns name (the resource
+as policy sees it: `METHOD url`, `tcp:host:port`); anything else is
+refused before policy is asked, with a receipt (`agent_scope`). A sub-agent's
+list must fit inside its parent's, so delegation can only narrow, and
+stopping the parent stops its sub-agents. `-for` is shown with every
+approval and recorded in every receipt of that agent's requests ("for:
+alice@example.com"); it names, it never decides.
+
 ### Untrusted content and model spend
 
 An agent that has just read something anyone can write (a GitHub or GitLab

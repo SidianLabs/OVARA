@@ -55,13 +55,21 @@ func cmdAgent(args []string) error {
 	if sub == "restore" {
 		fs.BoolVar(&all, "all", false, "let every stopped agent back in")
 	}
+	var sc config.AgentScope
+	var allow multiFlag
+	if sub == "add" {
+		fs.StringVar(&sc.Parent, "parent", "", "the agent this one is a sub-agent of: its -allow list must fit inside the parent's, and stopping the parent stops it")
+		fs.StringVar(&sc.For, "for", "", "who the agent acts for (a user, a ticket): shown with every approval and recorded in every receipt, never used to decide")
+		fs.Var(&allow, "allow", "a resource pattern the agent may act on (\"GET https://api.example.com/*\", \"tcp:db.internal:5432\"); repeatable; without any, the policy alone decides")
+	}
 	name, err := splitName(fs, rest)
 	if err != nil {
 		return err
 	}
 	switch sub {
 	case "add":
-		return agentAdd(os.Stdout, *dir, name)
+		sc.Allow = allow
+		return agentAdd(os.Stdout, *dir, name, sc)
 	case "list":
 		return agentList(os.Stdout, *dir)
 	case "remove":
@@ -90,16 +98,20 @@ func revokedPath(dir string) (string, error) {
 	return p, nil
 }
 
-func agentAdd(w io.Writer, dir, name string) error {
+func agentAdd(w io.Writer, dir, name string, sc config.AgentScope) error {
 	if err := config.ValidAgentName(name); err != nil {
 		return err
 	}
-	agents, _, err := config.ReadAgents(proxyJSONPath(dir))
+	agents, legacy, err := config.ReadAgents(proxyJSONPath(dir))
 	if err != nil {
 		return err
 	}
 	if _, ok := agents[name]; ok {
 		return fmt.Errorf("agent %q already exists (ovara agent remove %s first to give it a new token)", name, name)
+	}
+	scopes, err := config.ReadAgentScopes(proxyJSONPath(dir))
+	if err != nil {
+		return err
 	}
 	tok, err := config.NewAgentToken()
 	if err != nil {
@@ -109,11 +121,31 @@ func agentAdd(w io.Writer, dir, name string) error {
 		agents = map[string]string{}
 	}
 	agents[name] = tok
+	scoped := sc.Parent != "" || sc.For != "" || len(sc.Allow) > 0
+	if scoped {
+		if scopes == nil {
+			scopes = map[string]config.AgentScope{}
+		}
+		scopes[name] = sc
+		// Refused before anything is written: a sub-agent wider than its
+		// parent, or a parent that does not exist.
+		if err := config.ValidateAgentScopes(scopes, agents, legacy); err != nil {
+			return err
+		}
+	}
 	if err := config.WriteAgents(proxyJSONPath(dir), agents); err != nil {
 		return err
 	}
+	if scoped {
+		if err := config.WriteAgentScopes(proxyJSONPath(dir), scopes); err != nil {
+			return err
+		}
+	}
 	// The token is not printed: scrollback and CI logs keep what is printed.
 	fmt.Fprintf(w, "added agent %q: its token is in %s (readable only by you); a running Ovara accepts it within a second\n", name, proxyJSONPath(dir))
+	if scoped {
+		fmt.Fprintf(w, "scope: %s\n", describeScope(sc))
+	}
 	fmt.Fprintf(w, "start it in a shell set up with:  eval \"$(ovara env -dir %s -agent %s)\"\n", dir, name)
 	return nil
 }
@@ -126,8 +158,26 @@ func agentRemove(w io.Writer, dir, name string) error {
 	if _, ok := agents[name]; !ok {
 		return fmt.Errorf("no agent named %q (see ovara agent list)", name)
 	}
+	scopes, err := config.ReadAgentScopes(proxyJSONPath(dir))
+	if err != nil {
+		return err
+	}
+	var children []string
+	for n, sc := range scopes {
+		if sc.Parent == name {
+			children = append(children, n)
+		}
+	}
+	if len(children) > 0 {
+		sort.Strings(children)
+		return fmt.Errorf("agent %q has sub-agents (%s): remove them first", name, strings.Join(children, ", "))
+	}
 	delete(agents, name)
+	delete(scopes, name)
 	if err := config.WriteAgents(proxyJSONPath(dir), agents); err != nil {
+		return err
+	}
+	if err := config.WriteAgentScopes(proxyJSONPath(dir), scopes); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "removed agent %q: a running Ovara refuses its token within a second, also in connections it already has open\n", name)
@@ -147,6 +197,10 @@ func agentList(w io.Writer, dir string) error {
 		return err
 	}
 	rv, err := config.LoadRevoked(rp)
+	if err != nil {
+		return err
+	}
+	scopes, err := config.ReadAgentScopes(proxyJSONPath(dir))
 	if err != nil {
 		return err
 	}
@@ -174,9 +228,31 @@ func agentList(w io.Writer, dir string) error {
 		if n == config.DefaultAgentName {
 			note = "  (agent_token)"
 		}
+		if sc, ok := scopes[n]; ok {
+			note += "  " + describeScope(sc)
+		}
 		fmt.Fprintf(w, "%-20s %s%s\n", n, state, note)
 	}
 	return nil
+}
+
+// describeScope says what a scope limits, for a person.
+func describeScope(sc config.AgentScope) string {
+	var parts []string
+	if sc.Parent != "" {
+		parts = append(parts, "sub-agent of "+sc.Parent)
+	}
+	if sc.For != "" {
+		parts = append(parts, "for "+sc.For)
+	}
+	switch len(sc.Allow) {
+	case 0:
+	case 1:
+		parts = append(parts, "allowed only: "+sc.Allow[0])
+	default:
+		parts = append(parts, fmt.Sprintf("allowed only: %s (+%d more)", sc.Allow[0], len(sc.Allow)-1))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func agentRestore(w io.Writer, dir, name string) error {

@@ -29,7 +29,7 @@ func initDeployment(t *testing.T) string {
 func TestAgentAddListEnvRemove(t *testing.T) {
 	dir := initDeployment(t)
 	var out bytes.Buffer
-	if err := agentAdd(&out, dir, "ci-bot"); err != nil {
+	if err := agentAdd(&out, dir, "ci-bot", config.AgentScope{}); err != nil {
 		t.Fatal(err)
 	}
 	agents, legacy, err := config.ReadAgents(filepath.Join(dir, "proxy.json"))
@@ -48,11 +48,11 @@ func TestAgentAddListEnvRemove(t *testing.T) {
 			t.Fatalf("proxy.json mode %v", fi.Mode().Perm())
 		}
 	}
-	if err := agentAdd(&out, dir, "ci-bot"); err == nil {
+	if err := agentAdd(&out, dir, "ci-bot", config.AgentScope{}); err == nil {
 		t.Fatal("added the same agent twice")
 	}
 	for _, bad := range []string{"Bad", "default", ""} {
-		if err := agentAdd(&out, dir, bad); err == nil {
+		if err := agentAdd(&out, dir, bad, config.AgentScope{}); err == nil {
 			t.Fatalf("agent name %q accepted", bad)
 		}
 	}
@@ -119,7 +119,7 @@ func TestKillStopsOneAgentAndDeniesItsApprovals(t *testing.T) {
 	dir := initDeployment(t)
 	var out bytes.Buffer
 	for _, n := range []string{"ci", "rev"} {
-		if err := agentAdd(&out, dir, n); err != nil {
+		if err := agentAdd(&out, dir, n, config.AgentScope{}); err != nil {
 			t.Fatal(err)
 		}
 	}

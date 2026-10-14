@@ -706,9 +706,17 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(http.StatusForbidden, map[string]any{"error": "action denied", "reasons": []string{"resource_too_long"}})
 		return
 	}
+	// A scoped agent acts only on what its allow list names (agents.go):
+	// outside it, the request is refused before policy is asked.
+	if name, out := s.outOfScope(r.Context(), r.Method+" "+url); out {
+		decision = gwDeny
+		facts.reasons = []string{"agent_scope"}
+		writeJSON(http.StatusForbidden, scopeRefusal(name))
+		return
+	}
 
 	failedOpen := false
-	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, withAgentPreview(r.Context(), requestContext(r, hb)))
+	d, err := s.gw.CheckWithContext(r.Context(), r.Method, url, s.withForPreview(r.Context(), withAgentPreview(r.Context(), requestContext(r, hb))))
 	if err != nil {
 		log.Printf("gateway check failed for %s: %v", url, err)
 		if !s.failOpen {

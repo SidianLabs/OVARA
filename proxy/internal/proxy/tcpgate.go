@@ -123,7 +123,12 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request, hostname, 
 		"warning":  "opaque tunnel: Ovara cannot see what is sent inside it; the bytes each way are counted against the host's egress budget and receipted",
 		"why":      "a connection to a port other than 443 is not HTTPS Ovara can inspect",
 	}
-	d, err := s.gw.CheckAction(ctx, actionTCPConnect, resource, withAgentPreview(ctx, preview))
+	if name, out := s.outOfScope(ctx, resource); out {
+		facts.reasons = []string{"agent_scope"}
+		writeJSON(http.StatusForbidden, scopeRefusal(name))
+		return
+	}
+	d, err := s.gw.CheckAction(ctx, actionTCPConnect, resource, s.withForPreview(ctx, withAgentPreview(ctx, preview)))
 	if err != nil {
 		log.Printf("tcp gate: gateway check for %s failed: %v", resource, err)
 		if !s.failOpen {

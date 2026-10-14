@@ -423,6 +423,19 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   The observe profile refuses such downloads. `docs/use-cases.md` §8 says
   how to point Chromium or Playwright at Ovara and how a session cookie
   binding keeps a login out of the agent. `docs/GUARANTEES.md` 1.13, 2.2.
+- **Agent scopes: sub-agents that can only narrow, and on-behalf-of.**
+  `ovara agent add NAME -allow PATTERN... -parent P -for WHO` (and
+  `agent_scopes` in `proxy.json`) limits a named agent to the resources
+  its patterns name, as policy sees them (`METHOD url`,
+  `tcp:host:port`); anything else is refused before policy is asked and
+  receipted (`agent_scope`). A sub-agent's list must fit inside its
+  parent's, checked when it is added and whenever `proxy.json` is read
+  (a file that breaks it leaves the running proxy on its previous
+  agents); stopping an agent stops its sub-agents; a parent with
+  sub-agents cannot be removed first. `-for` names who the agent acts for:
+  shown with every approval (`for: …`), written into every receipt of its
+  requests (`for:<who>`), never used to decide. `ovara agent list` shows
+  the scopes. `docs/GUARANTEES.md` 7.5.
 - Spec 0.1, later: the decision API gains `POST /v1/runtime/outcome` (the
   caller reports how an allowed action went; §2.1) and the resource model
   the `tool.call` action type with `tool:<name>` resources (an agent

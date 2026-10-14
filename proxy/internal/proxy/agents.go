@@ -58,6 +58,9 @@ type agentRegistry struct {
 	mu      sync.RWMutex
 	tokens  map[string]string // name -> token
 	stopped map[string]bool   // names, or config.AllAgents
+	// scopes narrow named agents (config.AgentScope): what each may act
+	// on, its parent, who it acts for.
+	scopes map[string]config.AgentScope
 	// authOn says client authentication is required. It is set as soon as
 	// any client credential is configured (agent_token or an agent) and
 	// never cleared while the proxy runs: removing the last agent leaves
@@ -68,7 +71,53 @@ type agentRegistry struct {
 }
 
 func newAgentRegistry() *agentRegistry {
-	return &agentRegistry{tokens: map[string]string{}, stopped: map[string]bool{}, refusals: newRateLimiter(20, 1)}
+	return &agentRegistry{tokens: map[string]string{}, stopped: map[string]bool{}, scopes: map[string]config.AgentScope{}, refusals: newRateLimiter(20, 1)}
+}
+
+// SetAgentScopes replaces the agents' scopes (config.ValidateAgentScopes
+// is the caller's: a scope here is taken as valid).
+func (s *Server) SetAgentScopes(scopes map[string]config.AgentScope) {
+	m := make(map[string]config.AgentScope, len(scopes))
+	for k, v := range scopes {
+		m[k] = v
+	}
+	s.ids.mu.Lock()
+	s.ids.scopes = m
+	s.ids.mu.Unlock()
+}
+
+// scopeOf returns the agent's scope, if it has one.
+func (r *agentRegistry) scopeOf(name string) (config.AgentScope, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	sc, ok := r.scopes[name]
+	return sc, ok
+}
+
+// outOfScope reports the agent behind ctx when resource is outside its
+// scope: a scoped agent acts only on the resources its allow list names.
+func (s *Server) outOfScope(ctx context.Context, resource string) (string, bool) {
+	name := agentOf(ctx).name
+	sc, ok := s.ids.scopeOf(name)
+	if !ok || sc.InScope(resource) {
+		return "", false
+	}
+	return name, true
+}
+
+// forOf is who the agent acts for, "" when its scope does not say.
+func (s *Server) forOf(name string) string {
+	sc, _ := s.ids.scopeOf(name)
+	return sc.For
+}
+
+// scopeRefusal answers a request outside the agent's scope.
+func scopeRefusal(name string) map[string]any {
+	return map[string]any{
+		"error":   "outside the scope of agent " + name,
+		"reasons": []string{"agent_scope"},
+		"hint":    "the agent's allow list (agent_scopes in proxy.json) decides this; a sub-agent's list can only narrow its parent's",
+	}
 }
 
 // SetAgents replaces the named agents (name -> token). Invalid entries are
@@ -122,11 +171,20 @@ func (s *Server) SetStoppedAgents(names []string) {
 	s.ids.mu.Unlock()
 }
 
-// isStopped reports whether the agent named name has been stopped.
+// isStopped reports whether the agent named name has been stopped, itself
+// or through a parent: stopping an agent stops its sub-agents.
 func (r *agentRegistry) isStopped(name string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.stopped[config.AllAgents] || (name != "" && r.stopped[name])
+	if r.stopped[config.AllAgents] {
+		return true
+	}
+	for n, depth := name, 0; n != "" && depth < 32; n, depth = r.scopes[n].Parent, depth+1 {
+		if r.stopped[n] {
+			return true
+		}
+	}
+	return false
 }
 
 // proxyCredential returns the token a client presented in
@@ -281,11 +339,25 @@ func withAgentPreview(ctx context.Context, preview map[string]string) map[string
 	if name == "" {
 		return preview
 	}
-	out := make(map[string]string, len(preview)+1)
+	out := make(map[string]string, len(preview)+2)
 	for k, v := range preview {
 		out[k] = v
 	}
 	out["agent"] = name
+	return out
+}
+
+// withForPreview adds who the agent acts for, when its scope says.
+func (s *Server) withForPreview(ctx context.Context, preview map[string]string) map[string]string {
+	who := s.forOf(agentOf(ctx).name)
+	if who == "" {
+		return preview
+	}
+	out := make(map[string]string, len(preview)+1)
+	for k, v := range preview {
+		out[k] = v
+	}
+	out["for"] = who
 	return out
 }
 
@@ -320,7 +392,13 @@ func (s *Server) WatchAgentFiles(proxyJSON, revokedFile string, interval time.Du
 			log.Printf("agents: keeping the current agents: %v", err)
 			return
 		}
+		scopes, err := config.ReadAgentScopes(proxyJSON)
+		if err != nil {
+			log.Printf("agents: keeping the current agents and scopes: %v", err)
+			return
+		}
 		s.SetAgents(agents)
+		s.SetAgentScopes(scopes)
 	}
 	lastErr := ""
 	loadRevoked := func() {
@@ -372,6 +450,7 @@ func (s *Server) WatchAgentFiles(proxyJSON, revokedFile string, interval time.Du
 // budget from proxy.json.
 func (s *Server) applyAgentConfig(c *config.Config) {
 	s.SetAgents(c.Agents)
+	s.SetAgentScopes(c.AgentScopes)
 	if t := c.Taint; t != nil {
 		s.SetTaint(t.On == nil || *t.On, time.Duration(t.WindowMinutes)*time.Minute, t.UntrustedReads, t.ExemptWrites)
 	}
