@@ -53,7 +53,7 @@ fi
 
 # --- the commands the "model" asks the agent to run (one tool call each) ------
 cat > /tmp/cmds.txt <<'EOF'
-curl -s -o /dev/null -w 'N1 %{http_code}\n' --max-time 20 https://pypi.org/simple/
+curl -s --retry 2 --retry-all-errors --retry-delay 2 -o /dev/null -w 'N1 %{http_code}\n' --max-time 20 https://pypi.org/simple/
 git clone -q https://github.com/octocat/Hello-World.git /tmp/hw-$$ && echo "N2 ok" || echo "N2 fail"
 mkdir -p /tmp/npmt && cd /tmp/npmt && npm init -y >/dev/null 2>&1 && npm install left-pad >/dev/null 2>&1 && echo "N3 ok" || echo "N3 fail"
 curl -s -o /dev/null -w 'S1 %{http_code}\n' --max-time 15 https://pastebin.com/
