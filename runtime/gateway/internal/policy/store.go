@@ -368,11 +368,10 @@ func MatchResource(pattern, resource string) bool {
 // "https://pastebin.com:8443/x". A pattern that names a port keeps
 // matching only that port.
 //
-// The evaluator uses this for deny rules only. Allow rules keep exact
-// port matching (an allow for https://github.com/* must not start to
-// cover https://github.com:8443/), and so do escalate rules, which keeps
-// the widening limited to the one effect that can only make a decision
-// stricter.
+// The evaluator uses this for deny and escalate rules. Allow rules keep
+// exact port matching (an allow for https://github.com/* must not start to
+// cover https://github.com:8443/), which keeps the widening limited to the
+// effects that can only make a decision stricter.
 func MatchResourceAnyPort(pattern, resource string) bool {
 	if pattern == "" {
 		return true

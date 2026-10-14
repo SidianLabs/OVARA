@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ovara.dev/spec/0.1/policy.schema.json",
+  "title": "Ovara policy document (contract C2, spec 0.1)",
+  "description": "A policy is a JSON document with a version, a precedence, a default decision and a list of rules. It is what runtime/gateway/internal/policy loads; see spec/policy.md for how rules are matched and how overlapping rules resolve.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rules"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "An operator's label for this policy; it goes into every receipt as part of the policy hash. Empty means the loader's hint, else \"v1-default\"."
+    },
+    "precedence": {
+      "type": "string",
+      "enum": ["order", "most-specific"],
+      "description": "How overlapping rules resolve. \"most-specific\" is what `ovara init` writes and what new policies must use; \"order\" (deny, then allow, then escalate, whatever the pattern) is kept for policies written before it. Absent means \"order\"."
+    },
+    "default": {
+      "type": "string",
+      "enum": ["escalate", "deny"],
+      "description": "The decision when no rule matches. Absent means \"escalate\"."
+    },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action_type", "environment"],
+      "description": "One rule. Exactly one of allow, deny and escalate is true. action_type and environment are compared exactly, or match everything as \"*\"; a rule without them would match nothing and is refused at load.",
+      "properties": {
+        "action_type": { "type": "string", "description": "The action type the rule is about (spec/resource-model.md), or \"*\"." },
+        "environment": { "type": "string", "description": "The environment the rule is about (\"dev\", \"production\", ...), or \"*\"." },
+        "resource": {
+          "type": "string",
+          "description": "A glob over the canonical resource: '*' matches any run of characters, everything else is literal; empty matches every resource. A URL-shaped pattern (\"scheme://...\" or \"METHOD scheme://...\") is matched against the canonical form with a host-boundary check; any other pattern is a plain glob."
+        },
+        "allow": { "type": "boolean" },
+        "deny": { "type": "boolean" },
+        "escalate": { "type": "boolean" },
+        "min_trust_score": { "type": "number", "description": "Legacy: deny when the caller's trust score is below this." },
+        "min_trust_level": { "type": "string", "description": "Legacy: deny or escalate when the caller's trust level is below this." },
+        "require_lease": { "type": "boolean", "description": "Legacy (SDK callers): an allow needs a valid capability lease, else the decision escalates." },
+        "conditions": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Validator metadata only; a condition the gateway does not evaluate is refused at load, because the rule would otherwise apply to every request.",
+          "properties": {
+            "depends_on": {},
+            "ref": {}
+          }
+        },
+        "description": { "type": "string", "description": "An annotation for people; it names the rule in decisions and receipts (matched_rule). Never evaluated." }
+      }
+    }
+  }
+}

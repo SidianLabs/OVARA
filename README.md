@@ -23,6 +23,9 @@ is written to a signed, tamper-evident receipt log you can verify later.
 > **Status: early (v0.9, pre-release).** The core described on this page works and
 > is tested. Most framework integrations
 > are experimental, see [What's solid and what isn't](#whats-solid-and-what-isnt).
+> The contracts another implementation would have to meet (resource model,
+> policy, decision API, receipts) are written down in [`spec/`](spec/README.md)
+> (0.1: what this code does, with schemas and drift tests).
 
 ---
 

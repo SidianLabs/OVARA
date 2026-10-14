@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ovara.dev/spec/0.1/decision-response.schema.json",
+  "title": "Decision response (contract C3, spec 0.1)",
+  "description": "The answer to POST /v1/runtime/check. It is runtime/gateway/internal/models.DecisionResponse.",
+  "type": "object",
+  "required": ["decision_id", "decision", "reason_codes", "requires_approval"],
+  "properties": {
+    "decision_id": { "type": "string", "description": "Names this decision; an approval can be created for it, and a receipt cites it." },
+    "decision": { "type": "string", "enum": ["allow", "deny", "escalate"] },
+    "reason_codes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Why, as stable codes (spec/decision-api.md lists them). A client acts on the decision, never on a reason."
+    },
+    "trust_score": { "type": "number" },
+    "trust_level": { "type": "string" },
+    "requires_approval": { "type": "boolean", "description": "True for escalate." },
+    "approval_id": { "type": "string", "description": "Set when the gateway opened an approval while deciding." },
+    "receipt_stub": {
+      "type": "object",
+      "description": "Facts the caller's own receipt should carry, among them policy_hash (the policy decided under) and action_digest (the digest of the evaluated request that an approval binds)."
+    },
+    "trust_context": { "type": "object" },
+    "evaluation_summary": { "type": "string" },
+    "matched_rule": { "type": "string", "description": "The rule that decided, by its description or a generated name, when one did." }
+  }
+}

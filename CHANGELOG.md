@@ -233,6 +233,20 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
 - A git push is decided ref by ref; an allow for refs does not cover
   deleting them unless it says `(delete)`.
 
+**Spec 0.1**
+
+- `spec/` writes down the four contracts another implementation, or a tool
+  embedding this one, has to agree with: the resource model (canonical
+  forms per action type), the policy document and precedence, the decision
+  API (roles, check, approvals, claim) and the receipt chain (line format,
+  signing form, keys, anchors, verification), with JSON Schemas for the
+  policy document, the decision request and response and the receipt line.
+  Drift tests next to each type (`spec_schema_test.go` in
+  `runtime/gateway/internal/policy`, `internal/models` and
+  `proxy/internal/receipts`) fail when a member is added to the code or a
+  schema without the other. 0.1 means "what the code does today"; 1.0
+  waits for the external review and a second implementation.
+
 **`ovara run -- <agent>`: one command**
 
 - `ovara run -- opencode` (or `claude`, `codex`, any command) starts Ovara,
