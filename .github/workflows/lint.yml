@@ -24,7 +24,7 @@ jobs:
           - tools/migration
           - tools/benchmarks
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # --new-from-rev below needs the PR's base commit in the clone.
           fetch-depth: 0
