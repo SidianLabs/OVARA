@@ -17,6 +17,7 @@ func newSegChain(t *testing.T, dir string) (*Chain, ed25519.PublicKey) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = c.Close() }) // Windows cannot remove an open file
 	return c, c.key.Public().(ed25519.PublicKey)
 }
 
@@ -148,6 +149,11 @@ func TestSegments_InterruptedRotationIsFinished(t *testing.T) {
 	segs := SegmentFiles(path)
 	if len(segs) == 0 {
 		t.Fatal("no segment")
+	}
+	// the writer is gone, and the rotation it was in the middle of left
+	// the segment written and the current file still holding its receipts
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, gunzipFile(t, segs[len(segs)-1]), 0o600); err != nil {
 		t.Fatal(err)

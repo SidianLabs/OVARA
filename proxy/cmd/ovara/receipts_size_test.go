@@ -32,6 +32,7 @@ func TestReceipts_100kRotateCompressWarn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = chain.Close() }) // Windows cannot remove an open file
 	chain.SetRotation(cfg.ReceiptsSegmentBytes)
 	chain.SetAnchoring(receipts.AnchorPathFor(chainPath), "", 1000)
 	for i := 0; i < n; i++ {
