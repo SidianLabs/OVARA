@@ -154,7 +154,7 @@ r RMSECS "$(( $(date +%s) - t0 ))"
 cd "$OVARA_WORKSPACE" && echo "changed in ci" >> README.ci && r DONE yes
 A
 chmod 755 /tmp/cagent.sh
-timeout 300 ovara box -dir $D -ui off -profile ci -user ovara-agent $P -- bash /tmp/cagent.sh > /tmp/c-box.out 2>&1
+timeout 300 ovara box -dir $D -ui off -profile ci -user ovara-agent -mount /tmp/cagent.sh:/tmp/cagent.sh $P -- bash /tmp/cagent.sh > /tmp/c-box.out 2>&1
 C_EXIT=$?
 cval() { grep -E "^AGENTRESULT $1 " /tmp/c-box.out | head -1 | cut -d' ' -f3- ; }
 echo "--- ovara box output (tail)"; grep -v '^AGENTRESULT ' /tmp/c-box.out | grep -vE '^(APPROVAL|SKIP) ' | tail -12
