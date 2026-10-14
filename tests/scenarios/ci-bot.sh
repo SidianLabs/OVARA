@@ -53,6 +53,18 @@ check "B1 the expected write goes straight through" 200 "$(code -X POST -d x htt
 check "B2 a different write to the same host still stops (503, told to retry)" 503 "$(code -X POST -d x https://httpbin.org/anything/ci/other)"
 check "B3 a write to a known dump site is denied at once" 403 "$(code -X POST -d x https://webhook.site/abc)"
 
+echo "=== P. policy profiles (ovara policy profile)"
+ovara policy profile balanced -dir /tmp/d >/dev/null 2>&1; sleep 3
+check "P1 balanced: a read from an unlisted host goes through" 200 "$(code https://example.org/)"
+check "P2 balanced: a write still waits for a person (503)" 503 "$(code -X POST -d x https://httpbin.org/anything/ci/profile)"
+check "P3 balanced: a known dump site is still refused" 403 "$(code https://pastebin.com/)"
+ovara policy profile observe -dir /tmp/d >/dev/null 2>&1; sleep 3
+check "P4 observe: a write is refused at once, not held (403)" 403 "$(code -X POST -d x https://httpbin.org/anything/ci/profile)"
+n=$(ovara policy suggest -dir /tmp/d 2>/dev/null | grep -c '"resource"')
+[ "$n" -ge 3 ] && ok "P5 ovara policy suggest proposes rules from the receipts ($n)" || bad "P5 policy suggest" "$n rule(s)"
+ovara policy profile strict -dir /tmp/d >/dev/null 2>&1; sleep 3
+check "P6 strict again: the unlisted read waits for a person (503)" 503 "$(code https://example.org/)"
+
 echo "=== C. 'allow X, deny every other write' (fail fast instead of waiting)"
 setpolicy '{"action_type":"http.request","environment":"*","resource":"POST https://httpbin.org/anything/ci/expected","allow":true,"description":"the one write"}' \
           '{"action_type":"http.request","environment":"*","resource":"POST *","deny":true,"description":"no other writes in CI"}'

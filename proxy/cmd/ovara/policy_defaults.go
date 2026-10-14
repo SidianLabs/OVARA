@@ -171,6 +171,11 @@ func defaultPolicyRules() []map[string]any {
 		// approving doubles that host's allowance for the run. Resource
 		// "budget:<host>"; allow a host here to never be asked about it.
 		fsRule("egress.budget", "*", "escalate", "Unusually heavy traffic to one host pauses for a person"),
+		// Under a profile that lets reads through to any host (balanced,
+		// observe: `ovara policy profile`), the distinct unlisted hosts an
+		// agent reads are counted; past open_reads.max_hosts (proxy.json)
+		// each further host pauses once. Resource "host:<host>".
+		fsRule("egress.open_hosts", "*", "escalate", "A read from yet another unlisted host, past the per-run cap, pauses for a person (balanced and observe profiles)"),
 		// --- end proxy follow-up questions ---
 		// --- per-agent questions (proxy/internal/proxy taint.go, modelbudget.go) ---
 		// For a while (taint_window_minutes, default 30) after the agent

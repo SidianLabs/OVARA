@@ -267,6 +267,20 @@ asked once. To trust another host, add a rule for it to `policy.json`, or use
 "approve and trust this host for reads" on the approval page, which lasts until
 `ovara run` stops.
 
+That is the **strict** policy profile, the default. If listing hosts is the
+wrong fit (an agent that reads documentation all over the web), switch the
+profile: `ovara policy profile balanced -dir mydir` lets it read from any
+public host without asking and keeps everything else: each read stays
+bounded, traffic stays metered per host, the distinct unlisted hosts it reads
+are capped per agent and run (`open_reads` in `proxy.json`, 50 by default;
+past that each further host asks once), every read leaves a receipt, and a
+write soon after an untrusted read still pauses. `observe` is for a first run
+on a project: reads are free, writes and tool calls are refused at once (never
+held), and `ovara policy suggest` turns the run's receipts into the rules a
+strict policy would need. `ovara policy profile` shows the current one;
+`ovara init -profile balanced` starts with one. (`ovara box -profile
+dev|strict` is a different setting: how the box treats package installs.)
+
 `allow` lets it through, `escalate` pauses it for you, `deny` blocks it. If more
 than one rule matches, **the most specific one decides** (more literal
 characters in its pattern; among equals deny beats allow beats escalate), so

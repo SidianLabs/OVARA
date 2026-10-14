@@ -41,6 +41,9 @@ func (s *Server) ApplyConfig(c *config.Config) {
 	if b := c.EgressBudget; b != nil {
 		s.SetEgressBudget(!b.Off, b.RequestsPerMinute, b.BytesPerMinute)
 	}
+	if o := c.OpenReads; o != nil {
+		s.SetOpenReads(!o.Off, o.MaxHosts)
+	}
 	if c.ModelGateAsk != nil {
 		s.modelGateNoAsk = !*c.ModelGateAsk
 	}

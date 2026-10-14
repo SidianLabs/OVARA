@@ -34,6 +34,12 @@ func cmdPolicy(args []string) error {
 	if len(args) > 0 && args[0] == "test" {
 		return cmdPolicyTest(args[1:])
 	}
+	if len(args) > 0 && args[0] == "profile" {
+		return cmdPolicyProfile(args[1:])
+	}
+	if len(args) > 0 && args[0] == "suggest" {
+		return cmdPolicySuggest(args[1:])
+	}
 	fs := flag.NewFlagSet("policy", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "deployment directory (where `ovara init` wrote policy.json)")
 	if err := fs.Parse(args); err != nil {

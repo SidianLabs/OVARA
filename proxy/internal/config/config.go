@@ -81,6 +81,11 @@ type Config struct {
 	// Past it a person is asked (action type egress.budget); an approval
 	// doubles that host's allowance for the rest of the run.
 	EgressBudget *EgressBudget `json:"egress_budget"`
+	// OpenReads caps, per agent and run, the distinct hosts read under a
+	// rule that allows reads from any host (the balanced and observe
+	// profiles mark such rules "[open read]"). Past it a person is asked
+	// once per further host (action type egress.open_hosts).
+	OpenReads *OpenReads `json:"open_reads,omitempty"`
 
 	// Agents are named proxy clients, each with its own token (name ->
 	// token). The proxy accepts any of them, and agent_token too, records
@@ -120,6 +125,13 @@ type EgressBudget struct {
 	Off               bool  `json:"off"`
 	RequestsPerMinute int   `json:"requests_per_minute"`
 	BytesPerMinute    int64 `json:"bytes_per_minute"`
+}
+
+// OpenReads is the per-agent cap on distinct unlisted hosts read under an
+// open-read rule. Zero keeps the default (50 hosts per agent per run).
+type OpenReads struct {
+	Off      bool `json:"off"`
+	MaxHosts int  `json:"max_hosts"`
 }
 
 func Load(path string) (*Config, error) {

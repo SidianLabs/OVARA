@@ -59,6 +59,7 @@ type Server struct {
 	modelGateNoAsk bool          // model-gate findings are refused, not asked
 	limits         limits        // body, push and read size bounds (limits.go)
 	budget         *egressBudget // per-host allowance for allowed traffic; nil = off
+	openReads      *openReads    // per-agent cap on hosts read under an open-read rule; nil = off
 
 	// per-agent state
 	ids         *agentRegistry // named agents and stopped agents (agents.go)
@@ -117,6 +118,7 @@ func New(c *ca.CA, gw *gateway.Client, bindings []creds.Binding, chain *receipts
 		held:           &heldCounter{n: map[string]int{}},
 		limits:         defaultLimits(),
 		budget:         newEgressBudget(0, 0),
+		openReads:      newOpenReads(0),
 		ids:            newAgentRegistry(),
 		taint:          newTaintTracker(),
 		modelBudget:    newModelBudget(0, 0, 0),
@@ -855,6 +857,15 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		// is asked (budget.go). Model calls resend their whole conversation
 		// every turn, so only their count is metered, not their size.
 		host := normalizeHost(r.URL.Hostname())
+		// A read let through by a rule that allows reads from any host (the
+		// balanced and observe profiles) counts toward the agent's cap on
+		// unlisted hosts (openreads.go).
+		if isOpenRead(d.MatchedRule, d.Decision, r.Method) {
+			outcome, id := s.checkOpenHosts(r.Context(), host)
+			if !second(outcome, id, map[string]any{"error": "open-read host cap reached", "reasons": []string{"open_hosts_exceeded"}, "host": host}) {
+				return
+			}
+		}
 		n := int64(readRequestBytes(r))
 		if hb != nil && !s.isModelHost(host) {
 			n += hb.size

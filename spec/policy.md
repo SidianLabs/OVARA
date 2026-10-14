@@ -121,6 +121,14 @@ Named profiles (`strict`, `balanced`, `observe`) and policy layering (an
 organisation's policy that a project's may only narrow) are planned and
 will be additive: a document without them means what it means today.
 
+Policy **profiles** (`ovara policy profile strict|balanced|observe`) are not
+a document feature: they are rule sets the reference implementation marks
+in rule descriptions (`[profile NAME]`, and `[open read]` on a rule that
+allows reads from any host), which this contract sees as ordinary rules.
+The proxy's per-agent cap on hosts read under an `[open read]` rule is one
+of its follow-up questions (action type `egress.open_hosts`), outside this
+contract.
+
 ## 7. Tests that fix this contract
 
 `runtime/gateway/internal/policy`: `spec_schema_test.go`,

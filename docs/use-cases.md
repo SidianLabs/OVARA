@@ -201,7 +201,10 @@ mistake, not what a compromised job can do.
 Verified by `tests/scenarios/run.sh ci-bot` against the real binary: allowed
 reads pass; an unapproved write and a read from an unlisted host are held for
 the configured timeout and then told to retry (503), and their approvals stay
-open for a person (approving one makes the job's retry run); the one allowed
+open for a person (approving one makes the job's retry run); under the
+`balanced` profile the unlisted read goes through and the write still waits,
+under `observe` the write is refused at once and `ovara policy suggest`
+proposes rules from the receipts; the one allowed
 write passes while a different write to the same host still stops; a dump site
 is refused at once; a catch-all deny refuses instantly but also blocks the
 allowed write; every decision is in the receipts, the chain verifies, and

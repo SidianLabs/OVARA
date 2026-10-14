@@ -733,6 +733,10 @@ box adds `fs.commit_back`. Resources per type:
 
 ### 11.4 Profiles
 
+(These are the box's install profiles, `-profile dev|strict`. The policy
+profiles `strict|balanced|observe` of `ovara policy profile` are a different
+setting, applied to the deployment's `policy.json`; a box runs under either.)
+
 | Profile | Default | Reads | Writes | Commands | Installs | Approval timeout |
 |---|---|---|---|---|---|---|
 | `dev` | escalate | trusted list free, others pause | pause | read/build/test free, destructive pause | free | 60 s |

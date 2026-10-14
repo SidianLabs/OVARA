@@ -54,9 +54,9 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 - **Tests:** `proxy/internal/proxy`: `TestReadsThatCarryDataAreRefused`, `TestLowercaseMethodStillGuarded`, `TestReadBudgetCoversPathAndHeaders`, `TestTunnelHeadersAreBounded`, `TestMethodOverrideHeadersAreNotForwarded`, `TestConnectNon443Denied`, `TestPlainProxyHTTPSNon443Refused`, `TestLongResourceIsRefusedAndReceiptBounded`.
 
 ### 1.5 Only hosts on the trusted list are read without asking
-- **Holds in:** all modes.
-- **Conditions:** the default policy from `ovara init` is kept. "Trust this host for reads" from an approval adds a reads-only rule for one host that is removed when `ovara run` stops.
-- **Tests:** `tests/scenarios/scenarios.sh`; `proxy/cmd/ovara`: `TestTrustReadHost_AddsReadOnlyRulesOnce`, `TestTrustReadHost_SaysWhereAndWhenAndLastsOneRun`, `TestUI_TrustButtonSaysWhatItDoes`.
+- **Holds in:** all modes, under the `strict` policy profile (the default).
+- **Conditions:** the default policy from `ovara init` is kept. "Trust this host for reads" from an approval adds a reads-only rule for one host that is removed when `ovara run` stops. Under the `balanced` and `observe` profiles (`ovara policy profile`) reads from any public host are allowed instead; 1.4, 1.7 and 1.10 bound them, and the trusted list then says which hosts are not counted against the cap.
+- **Tests:** `tests/scenarios/scenarios.sh`; `proxy/cmd/ovara`: `TestTrustReadHost_AddsReadOnlyRulesOnce`, `TestTrustReadHost_SaysWhereAndWhenAndLastsOneRun`, `TestUI_TrustButtonSaysWhatItDoes`, `TestDefaultPolicyHasNoHostlessAllow`, `TestProfiles_SwitchReplacesOnlyTheProfileRules`.
 
 ### 1.6 The model API is limited to inference, and its bodies are read
 - **Holds in:** all modes.
@@ -79,6 +79,12 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 - **Conditions:** `model_gate` is on (the default), for the hosts it covers.
 - **What it covers:** a model request body the gate reads as JSON is read strictly: UTF-8, one value with only white space around it, no `NaN` or `Infinity`, and no object with two members of the same name (also when one is spelt with `\u` escapes). Before policy is asked, the body is replaced by the canonical encoding of the value read: members sorted by name, no white space, strings escaped one way, numbers byte for byte as written, arrays in order. Those bytes go upstream (Content-Length set), and the approval context's `body_sha256`, `body_bytes` and preview and the receipts' `body_sha256` are of them. So the provider cannot read something the gate did not, whatever its JSON reader does with duplicates, trailing data or invalid UTF-8. A body with duplicate member names or invalid UTF-8 is refused (403, `model_request_ambiguous`), not asked about. A body that is not JSON is asked about (`model_request_not_json`) and, if approved, sent as the person saw it. Reading the canonical form gives the same value as reading the original (a lone `\u` surrogate escape reads as U+FFFD, as it does for the check), and encoding it again gives the same bytes. A 1 MiB request is re-encoded in about 20 ms.
 - **Tests:** `proxy/internal/proxy`: `TestModelRequestForwardedCanonical`, `TestModelRequestDuplicateKeysRefused`, `TestModelGate`; `proxy/internal/canonjson`: `TestCanonicalForm`, `TestCanonicalRefuses`, `TestCanonicalProperties`, `FuzzCanonical`, `TestCanonical1MiBIsFast`.
+
+### 1.10 Under an open-read profile, the distinct unlisted hosts an agent reads are capped per run
+- **Holds in:** all modes, under the `balanced` and `observe` profiles.
+- **Conditions:** `open_reads` is not turned off in `proxy.json` (default: 50 hosts per agent per run).
+- **What it covers:** a read allowed by a rule that allows reads from any host (`[open read]` in its description) counts its host toward the agent's cap; past the cap each further host pauses for a person once (action type `egress.open_hosts`), and an approval admits that host for the rest of the run. Hosts a rule names are not counted. The strict policy's guards keep deciding under the profiles: a credentialed read of secrets still pauses, a dump site is still refused, and under `observe` the model API stays reachable while every other write is refused at once, never held. `ovara policy suggest` reads only a chain that verifies.
+- **Tests:** `proxy/internal/proxy`: `TestOpenReadsAskPastTheHostCap`, `TestOpenReadsCountOnlyCatchAllReads`; `runtime/gateway/internal/evaluator`: `TestMostSpecific_OpenReadProfilesKeepTheGuards`; `proxy/cmd/ovara`: `TestProfiles_SwitchReplacesOnlyTheProfileRules`, `TestInit_Profile`, `TestPolicySuggest_FromReceipts`.
 
 ---
 

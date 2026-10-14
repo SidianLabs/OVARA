@@ -259,6 +259,22 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   branch that landed, the error). `ovara box -agent NAME` runs the box as a
   named agent. Schemas `manifest.schema.json` and `event.schema.json` with
   drift tests; the box end-to-end suites check a real run's stream.
+- **Policy profiles: `strict`, `balanced`, `observe`** (`ovara init -profile`,
+  `ovara policy profile`). Strict is the policy as it was. Balanced answers
+  "do I have to list every website?" with no: reads from any public host
+  are allowed, each read bounded (`max_read_request_bytes`), metered per
+  host (`egress_budget`), capped per agent and run by distinct unlisted
+  host (`open_reads` in `proxy.json`, 50 by default; past it each further
+  host pauses once, action type `egress.open_hosts`) and receipted, and a
+  write soon after an untrusted read still pauses; writes, credentialed
+  reads of secrets, tool calls and dump sites are decided as before.
+  Observe is for a first run: reads free; writes, provider-side fetches and
+  MCP tool calls refused at once, never held; then `ovara policy suggest`
+  turns the verified receipts into the rules a strict policy would need
+  (one read allow per unlisted host, one exact allow per refused or held
+  write, never a wildcard write). A profile's rules are marked and
+  switching replaces only them. (`ovara box -profile dev|strict` is
+  unchanged: it is about installs.)
 
 **`ovara run -- <agent>`: one command**
 

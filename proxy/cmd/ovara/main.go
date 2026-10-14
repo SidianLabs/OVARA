@@ -120,6 +120,9 @@ func usage() {
   env [-dir .]          print the environment to run your agent through Ovara
   policy [-dir .]       explain the rules in plain English
   policy test "<METHOD URL>"  what would happen if the agent did this (dry run)
+  policy profile [NAME] show or switch the policy profile: strict | balanced | observe
+  policy suggest        the rules a strict policy would need for what the agent
+                        did, from the receipts (after an observe run)
   watch [-dir .]        answer approval requests live: approve / deny each one
   approvals [-dir .]    list agent requests waiting for approval
   log [-dir .] [-n 50]  what the agent did (allowed/approved/blocked), integrity-checked
@@ -142,6 +145,7 @@ func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	force := fs.Bool("force", false, "overwrite existing files (an existing var/receipt.key is always kept)")
 	agents := fs.String("agents", "", "comma-separated names of agents to give their own proxy tokens (more later with `ovara agent add`)")
+	profile := fs.String("profile", profileStrict, "policy profile: strict (reads only from the trusted hosts; the default), balanced (reads from any public host, bounded, capped and receipted) or observe (reads free; writes refused at once, never held); `ovara policy profile` switches later")
 	// The directory may come before the flags: `ovara init mydir -agents a,b`.
 	var dir string
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -163,6 +167,9 @@ func cmdInit(args []string) error {
 			names = append(names, n)
 		}
 	}
+	if err := validProfile(*profile); err != nil {
+		return err
+	}
 	if _, err := deploy(dir, "8080", *force); err != nil {
 		return err
 	}
@@ -171,12 +178,17 @@ func cmdInit(args []string) error {
 			return err
 		}
 	}
+	if *profile != profileStrict {
+		if _, err := applyProfile(dir, *profile); err != nil {
+			return err
+		}
+	}
 	fmt.Printf("initialized ovara deployment in %s\n\n", dir)
 	// The token itself is not printed: terminal scrollback and CI logs keep
 	// what is printed. The ovara commands that need it read it from there.
 	fmt.Printf("operator token (gateway-root — keep it scarce): stored in %s (operator_tokens), readable only by you\n\n", filepath.Join(dir, "config.json"))
-	fmt.Println("What you got: a policy (policy.json) where reading is free, changes need")
-	fmt.Println("your approval, and known data-dump sites are blocked. Edit it any time.")
+	fmt.Printf("What you got: a policy (policy.json), profile %s. Edit it any time; `ovara policy profile` switches profiles.\n", *profile)
+	fmt.Println("  " + profileSummary(*profile))
 	fmt.Println()
 	fmt.Println("next steps:")
 	fmt.Println("  1. give Ovara the real API keys (the agent never sees them):")
