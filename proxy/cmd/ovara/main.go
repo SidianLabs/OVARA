@@ -661,6 +661,15 @@ func cmdRun(args []string) error {
 		log.Printf("approve in your browser: %s", uiURL)
 	}
 	log.Printf("risky requests pause until you answer them (browser page above, or `ovara watch`)")
+	if cfg.Chat != nil && cfg.Chat.Slack != nil {
+		bridge, err := newSlackBridge(cfg, ".")
+		if err != nil {
+			return fmt.Errorf("chat approvals: %w", err)
+		}
+		stopChat := bridge.start()
+		defer stopChat()
+		log.Print(bridge.describe())
+	}
 	listenAddr := cfg.ListenAddr
 	addrs := proxyListenAddrs(listenAddr, boundaryIP)
 	if len(addrs) > 1 {

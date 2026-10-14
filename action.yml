@@ -15,8 +15,14 @@ inputs:
     description: "A whole policy.json to use instead of the default, as a path in the workspace."
     default: ""
   hold-seconds:
-    description: "How long a request without a rule is held for an approval before the agent is told to retry (HTTP 503). Nobody answers in CI, so keep it short."
+    description: "How long a request without a rule is held for an approval before the agent is told to retry (HTTP 503). Nobody answers in CI, so keep it short; with slack-channel, make it long enough for a person."
     default: "10"
+  slack-channel:
+    description: "Approvals from Slack: the channel ID (C…) every paused request is posted to and answered in. The bot token comes from OVARA_SLACK_TOKEN in this step's env (from a secret)."
+    default: ""
+  slack-approvers:
+    description: "Slack user IDs (U…, comma or space separated) whose thread replies decide. Nobody else's count; with none, the channel is told but cannot decide."
+    default: ""
   binary:
     description: "An ovara binary to use instead of building one from this action's checkout."
     default: ""

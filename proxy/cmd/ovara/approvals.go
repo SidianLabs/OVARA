@@ -265,10 +265,16 @@ func (c *adminClient) pending() ([]pendingApproval, error) {
 	return resp.Approvals, nil
 }
 
+// The two verbs of the approvals API.
+const (
+	verdictApprove = "approve"
+	verdictDeny    = "deny"
+)
+
 func (c *adminClient) resolve(id string, approve bool, who, reason string) error {
-	verb := "deny"
+	verb := verdictDeny
 	if approve {
-		verb = "approve"
+		verb = verdictApprove
 	}
 	body := map[string]string{"resolved_by": who}
 	if reason != "" {

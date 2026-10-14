@@ -212,6 +212,11 @@ is refused at once; a catch-all deny refuses instantly but also blocks the
 allowed write; every decision is in the receipts, the chain verifies, and
 `ovara run` exits on SIGTERM with the record intact.
 
+If someone can be reached, approvals from Slack (README, *Approvals from
+Slack*; `slack-channel` on the action) post each paused request to a channel
+and take the answer from its thread, from the listed people only; with a
+hold long enough the job waits for them.
+
 ## 5. Your own agent or agentic harness  — *mechanism tested*
 
 For an agent loop you wrote (LangChain, an MCP client, a custom tool-calling

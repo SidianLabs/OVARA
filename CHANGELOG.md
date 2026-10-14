@@ -311,6 +311,17 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   pinned by `policy_baseline_pubkey`, a baseline that does not verify stops
   the gateway instead of being skipped; `ovara doctor` checks it and warns
   when it is unsigned. Spec: `spec/policy.md` §6.
+- **Approvals from Slack.** `chat.slack` in `proxy.json` (a channel ID, the
+  user IDs allowed to decide, a bot token in `var/slack.token` or a named
+  variable) makes `ovara run` post every paused request to the channel as
+  the approval page shows it and take the answer from a reply in the
+  thread (`approve` or `deny`, a reason after a colon). Only the listed
+  people decide; bots and everyone else are ignored, and with nobody listed
+  the channel is told but cannot decide. Slack is polled (nothing listens),
+  through `upstream_proxy` when set. The GitHub Action takes
+  `slack-channel` and `slack-approvers`, with the token as
+  `OVARA_SLACK_TOKEN` in the step's env. `ovara doctor` checks the setup.
+  Tested against a stand-in for Slack's API, not a live workspace yet.
 
 **`ovara run -- <agent>`: one command**
 

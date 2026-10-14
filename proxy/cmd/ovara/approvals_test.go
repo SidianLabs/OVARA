@@ -43,6 +43,7 @@ type fakeGateway struct {
 	mu       sync.Mutex
 	pending  []pendingApproval
 	resolved map[string]string // id → "approve"|"deny"
+	by       map[string]string // id → "resolved_by|reason", when the test wants it
 	token    string
 }
 
@@ -70,9 +71,14 @@ func (f *fakeGateway) handler() http.Handler {
 	}))
 	resolve := func(verb string) http.HandlerFunc {
 		return auth(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			f.resolved[r.PathValue("id")] = verb
+			if f.by != nil {
+				f.by[r.PathValue("id")] = body["resolved_by"] + "|" + body["reason"]
+			}
 			w.Write([]byte("{}"))
 		})
 	}

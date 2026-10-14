@@ -341,6 +341,31 @@ policy has allowed the request; an IP literal that is not public is still
 refused by Ovara. `ovara doctor` checks both settings, and warns when this
 shell has a proxy in its environment that `proxy.json` does not know about.
 
+### Approvals from Slack
+
+When nobody is at the terminal (a CI job, a box running overnight), paused
+requests can go to a Slack channel and be answered there. Make a Slack app
+with a bot token (scopes `chat:write`, and `channels:history`, or
+`groups:history` for a private channel), invite the bot to the channel, put
+the token on one line in `mydir/var/slack.token` (owner-only; or name a
+variable with `token_env`) and add to `proxy.json`:
+
+```json
+"chat": {"slack": {"channel": "C0123ABCD", "allowed_users": ["U0AAAAAAA", "U0BBBBBBB"]}}
+```
+
+`ovara run` then posts every paused request to the channel as the approval
+page shows it (destination, method, size, the redacted preview, the agent)
+and takes the answer from a reply in that thread: `approve` or `deny`, a
+reason after a colon. Only replies from the user IDs in `allowed_users`
+count; everyone else, and every bot, is ignored, and with no IDs listed the
+channel is told but cannot decide. The thread records who decided, and so
+does the gateway (`slack:U0AAAAAAA`). Slack is polled, so nothing of yours
+has to be reachable from the internet; a corporate `upstream_proxy` is
+honoured. `ovara doctor` checks the setup. Channel and user IDs are in
+Slack's channel details and profiles. This is tested against a stand-in for
+Slack's API, not a live workspace yet.
+
 ### In GitHub Actions
 
 One step puts the rest of the job behind Ovara. The action builds Ovara from
@@ -373,8 +398,11 @@ secret-looking variables are emptied), a request without a rule is held for
 action's post step stops Ovara and writes the verified receipts to the job
 summary, with the rules an `observe` run would have needed. Inputs: `profile`,
 `rules` (a JSON array put in front of the policy), `policy` (a whole
-`policy.json`), `hold-seconds`, `binary`. `.github/workflows/action.yml` runs
-it against this repository on every change.
+`policy.json`), `hold-seconds`, `binary`; `slack-channel` and `slack-approvers`
+send the job's paused requests to Slack (see above; the bot token goes in
+the step's `env:` as `OVARA_SLACK_TOKEN`, and `hold-seconds` should then be
+long enough for a person to answer). `.github/workflows/action.yml` runs it
+against this repository on every change.
 
 Everything after the step goes through Ovara, first-party actions included:
 `upload-artifact` or `cache` would have their uploads to GitHub's services

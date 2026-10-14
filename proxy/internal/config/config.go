@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 
 	"ovara.proxy/internal/creds"
@@ -95,6 +96,10 @@ type Config struct {
 	// talks to Ovara only, with Ovara's CA.
 	UpstreamProxy    string `json:"upstream_proxy,omitempty"`
 	UpstreamCABundle string `json:"upstream_ca_bundle,omitempty"`
+	// Chat also shows every paused request in a chat channel and takes
+	// the answer from there (ovara run polls; nothing listens). One
+	// provider for now: Slack.
+	Chat *Chat `json:"chat,omitempty"`
 
 	// Agents are named proxy clients, each with its own token (name ->
 	// token). The proxy accepts any of them, and agent_token too, records
@@ -198,6 +203,9 @@ func Load(path string) (*Config, error) {
 	if err := c.validateClientAuth(); err != nil {
 		return nil, err
 	}
+	if err := c.Chat.validate(); err != nil {
+		return nil, err
+	}
 	return &c, nil
 }
 
@@ -224,4 +232,50 @@ func (c *Config) validateClientAuth() error {
 		return fmt.Errorf("refusing to start: credentialed proxy listening on all interfaces (%s) with no agent_token — set agent_token, bind to a boundary/loopback address, or set unsafe_no_agent_auth=true", c.ListenAddr)
 	}
 	return nil // specific bind without token: the boundary NIC's trust domain
+}
+
+// Chat is where paused requests are also shown and may be answered.
+type Chat struct {
+	Slack *SlackChat `json:"slack,omitempty"`
+}
+
+// SlackChat posts each paused request to a Slack channel; a reply in the
+// thread from one of AllowedUsers decides it. Nobody else's reply counts,
+// and with no AllowedUsers the channel is told but cannot decide.
+type SlackChat struct {
+	Channel      string   `json:"channel"`              // the channel's ID (C… or G…, from its details), where the bot was invited
+	TokenFile    string   `json:"token_file,omitempty"` // a bot token (xoxb-…) on one line, owner-only; default var/slack.token
+	TokenEnv     string   `json:"token_env,omitempty"`  // or the variable that holds it, read by ovara run (the agent never gets it)
+	AllowedUsers []string `json:"allowed_users"`        // Slack user IDs (U…, from the profile) whose thread replies decide
+	PollSec      int      `json:"poll_sec,omitempty"`   // how often the threads are read; default 4
+}
+
+var (
+	slackChannelIDRe = regexp.MustCompile(`^[CGD][A-Z0-9]{6,}$`)
+	slackUserIDRe    = regexp.MustCompile(`^[UW][A-Z0-9]{6,}$`)
+)
+
+func (c *Chat) validate() error {
+	if c == nil {
+		return nil
+	}
+	s := c.Slack
+	if s == nil {
+		return fmt.Errorf("chat: no provider set up (chat.slack)")
+	}
+	if !slackChannelIDRe.MatchString(s.Channel) {
+		return fmt.Errorf("chat.slack.channel %q: the channel's ID is needed (C…, in the channel's details), not its name", s.Channel)
+	}
+	for _, u := range s.AllowedUsers {
+		if !slackUserIDRe.MatchString(u) {
+			return fmt.Errorf("chat.slack.allowed_users: %q is not a Slack user ID (U…, in the person's profile)", u)
+		}
+	}
+	if s.TokenFile == "" && s.TokenEnv == "" {
+		s.TokenFile = "var/slack.token"
+	}
+	if s.PollSec <= 0 {
+		s.PollSec = 4
+	}
+	return nil
 }

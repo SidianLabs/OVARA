@@ -80,6 +80,13 @@ async function main() {
   const hold = Number(input("hold-seconds", "10"));
   if (!Number.isInteger(hold) || hold < 1) throw new Error("hold-seconds: want a whole number of seconds");
   pcfg.escalate_timeout_sec = hold;
+  // approvals from Slack: the token stays in this step's env, read by ovara run
+  const slackChannel = input("slack-channel", "");
+  if (slackChannel) {
+    if (!process.env.OVARA_SLACK_TOKEN) throw new Error("slack-channel is set but OVARA_SLACK_TOKEN is not: put the bot token in this step's env, from a secret");
+    const approvers = input("slack-approvers", "").split(/[\s,]+/).filter(Boolean);
+    pcfg.chat = { slack: { channel: slackChannel, allowed_users: approvers, token_env: "OVARA_SLACK_TOKEN" } };
+  }
   fs.writeFileSync(proxyPath, JSON.stringify(pcfg, null, 2) + "\n");
 
   // Ovara for the job; its log is in the deployment directory

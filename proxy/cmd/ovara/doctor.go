@@ -217,6 +217,7 @@ func auditDeployment(dir string) []check {
 	}
 	out = append(out, auditCredentials(dir, pcfg)...)
 	out = append(out, auditUpstream(dir, pcfg)...)
+	out = append(out, auditChat(dir, pcfg)...)
 
 	// --- CA / keys ----------------------------------------------------------
 	// CA files are created by ca.LoadOrCreate on first `ovara run`, so a

@@ -106,6 +106,7 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 - **Conditions:** the agent does not run as Ovara's user (see 6.1).
 - **What it covers:** the agent's proxy token cannot reach the approval API. The approval page uses a fresh per-run token that opens only the page, is served on loopback only and cannot be framed.
 - **Tests:** `runtime/gateway/internal/auth`: `TestRoleAgent_OperatorEndpointsDenied`; `runtime/gateway/internal/handlers`: `TestRT16_AgentOnOperatorRoute`, `TestRT04_CrossAgentApprovalCreate`; `proxy/cmd/ovara`: `TestUI_PageTokenIsNotTheOperatorToken`, `TestStartUI_LinkCarriesAFreshPageToken`, `TestStartUI_RefusesNonLoopback`, `TestUI_PageIsNotFramable`, `TestOpenUI_TakenPortStopsTheRun`; `tests/redteam/separate-user/run.sh`.
+- **From chat:** a Slack thread reply decides only when it comes from a user ID listed in `chat.slack.allowed_users`; replies from anyone else and from bots change nothing, and with no IDs listed the channel is told but cannot decide. The decision is recorded as `slack:<user id>`. Tests: `proxy/cmd/ovara`: `TestSlackBridge_OnlyAllowedPeopleDecide`, `TestSlackBridge_NoAllowedUsersMeansNotifyOnly`.
 
 ### 2.4 Approvals do not pile up or wait forever
 - **Holds in:** all modes.
