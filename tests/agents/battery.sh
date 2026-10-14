@@ -10,20 +10,33 @@ set -u
 #   MODE=box        the same through `ovara box` (workspace copy, box user, netns)
 #   MODE=box2       through `ovara box -tier 2` (a container from BOX_IMAGE,
 #                   default ovara-box-test); runs on the host (tests/box/host.sh)
+# and two variants of any mode:
+#   PROFILE=balanced  the deployment uses the balanced profile (reads from any
+#                     public host); the blocked-site checks must still hold
+#   UPSTREAM=1        Ovara's own outbound side goes through a CONNECT proxy
+#                     (upstream_proxy.py), as on a corporate network
 MODE="${MODE:-coop}"
+PROFILE="${PROFILE:-strict}"
+UPSTREAM="${UPSTREAM:-}"
 AGENT="${AGENT:-agent}"
 export DEBIAN_FRONTEND=noninteractive
 export PATH=$PATH:/usr/local/go/bin
 git config --global --add safe.directory '*'
 rm -rf /work; git clone -q /repo /work
 (cd /work/proxy && CGO_ENABLED=0 go build -o /usr/local/bin/ovara ./cmd/ovara) || { echo "BUILD FAILED"; exit 1; }
-cd /tmp && rm -rf d && ovara init d >/dev/null 2>&1
+cd /tmp && rm -rf d && ovara init d -profile "$PROFILE" >/dev/null 2>&1
+if [ -n "$UPSTREAM" ]; then
+  : > /tmp/upstream.log
+  python3 /repo/tests/agents/upstream_proxy.py 3128 /tmp/upstream.log &
+  for i in $(seq 1 20); do (echo > /dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.5; done
+fi
 cat > /tmp/cfg.py <<'PY'
-import json
+import json, os
 p = json.load(open('/tmp/d/proxy.json')); p['escalate_timeout_sec'] = 12
+if os.environ.get('UPSTREAM'): p['upstream_proxy'] = 'http://127.0.0.1:3128'
 json.dump(p, open('/tmp/d/proxy.json', 'w'), indent=2)
 PY
-python3 /tmp/cfg.py
+UPSTREAM="$UPSTREAM" python3 /tmp/cfg.py
 REALKEY="REALSECRET-0123456789abcdef"
 
 if [ "$MODE" = enforced ]; then
@@ -150,6 +163,8 @@ print("commands that returned a result: %d" % len(res))
 PY
 
 mode="$AGENT $MODE"; pass=0; fail=0; info=0
+[ "$PROFILE" = strict ] || mode="$mode $PROFILE"
+[ -z "$UPSTREAM" ] || mode="$mode upstream"
 val() { python3 -c "import json;print(json.load(open('/tmp/results.json')).get('$1','NO-RESULT'))"; }
 ok()   { echo "PASS  $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL  $1  -- $2"; fail=$((fail+1)); }
@@ -212,6 +227,12 @@ for line in open('/tmp/d/var/receipts.jsonl'):
 for (h, m, d), n in sorted(c.items()):
     print("  %-40s %-6s %-9s x%d" % (h, m, d, n))
 PY3
+if [ -n "$UPSTREAM" ]; then
+  echo "=== [$mode] Ovara's own traffic went through the upstream proxy"
+  grep -q "^CONNECT pypi.org:443 200" /tmp/upstream.log && ok "U1 the allowed read to pypi.org was made through the upstream proxy" || bad "U1 upstream proxy" "no CONNECT pypi.org:443 in its log"
+  grep -q "pastebin.com\|webhook.site" /tmp/upstream.log && bad "U2 a denied host reached the upstream proxy" "$(grep -E 'pastebin.com|webhook.site' /tmp/upstream.log | head -2)" || ok "U2 nothing for a denied host ever reached the upstream proxy"
+  note "U3 $(grep -c '^CONNECT' /tmp/upstream.log) connection(s) made through the upstream proxy"
+fi
 echo "=== [$mode] the record"
 ovara log -dir /tmp/d 2>&1 | tail -3
 ovara log -dir /tmp/d 2>&1 | grep -q "signed and unbroken" && ok "receipt chain verifies" || bad "receipt chain" "not verified"

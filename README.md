@@ -336,7 +336,8 @@ Ovara's own requests go through that proxy (with the credentials in the URL,
 if any) and the TLS it verifies trusts the bundle besides the system roots,
 which is what a TLS-inspecting proxy or an internal CA needs. The agent sees
 none of it: it still talks to Ovara only, with Ovara's CA, and `ovara env`
-keeps pointing it there. Names are then resolved by the company proxy after
+keeps pointing it there (the agents battery runs this way in CI, `UPSTREAM=1`
+in `tests/agents`). Names are then resolved by the company proxy after
 policy has allowed the request; an IP literal that is not public is still
 refused by Ovara. `ovara doctor` checks both settings, and warns when this
 shell has a proxy in its environment that `proxy.json` does not know about.

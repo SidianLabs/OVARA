@@ -8,7 +8,9 @@
 #   tests/agents/run.sh harness           a custom agent harness against the
 #                                         gateway's decision API (SDK + agent token)
 #
-# AGENT is opencode (default), anthropic or codex.
+# AGENT is opencode (default), anthropic or codex. PROFILE=balanced runs the
+# deployment under the balanced profile; UPSTREAM=1 puts a CONNECT proxy
+# between Ovara and the internet (battery.sh).
 #
 # Needs Docker and outbound internet. It builds the checked-out commit inside
 # a Linux container, so it tests what is committed, not your working tree
@@ -32,7 +34,7 @@ flags=()
 [ "$what" = enforced ] || [ "$what" = box ] && flags+=(--privileged)
 
 docker build -q -t ovara-agents "$here" >/dev/null
-out="$(docker run --rm ${flags[@]+"${flags[@]}"} -e MODE="$what" -v "$repo:/repo:ro" ovara-agents \
+out="$(docker run --rm ${flags[@]+"${flags[@]}"} -e MODE="$what" -e PROFILE="${PROFILE:-strict}" -e UPSTREAM="${UPSTREAM:-}" -v "$repo:/repo:ro" ovara-agents \
   bash -c "tr -d '\r' < /repo/tests/agents/$script > /tmp/t.sh && bash /tmp/t.sh" 2>&1)" || true
 echo "$out" | grep -v '^go: downloading'
 echo "$out" | grep -Eq "$expect" || { echo "agent test ($what${script:+ $script}) failed" >&2; exit 1; }

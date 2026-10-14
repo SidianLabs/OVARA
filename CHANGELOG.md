@@ -311,6 +311,10 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   pinned by `policy_baseline_pubkey`, a baseline that does not verify stops
   the gateway instead of being skipped; `ovara doctor` checks it and warns
   when it is unsigned. Spec: `spec/policy.md` §6.
+- The agents battery (`tests/agents`) also runs under the `balanced`
+  profile (`PROFILE=balanced`: every blocked-site check still holds) and
+  behind an upstream CONNECT proxy (`UPSTREAM=1`: Ovara's own traffic goes
+  through it, a denied host never reaches it), as two more CI jobs.
 - **Approvals from Slack.** `chat.slack` in `proxy.json` (a channel ID, the
   user IDs allowed to decide, a bot token in `var/slack.token` or a named
   variable) makes `ovara run` post every paused request to the channel as

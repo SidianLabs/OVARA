@@ -91,6 +91,28 @@ jobs:
       - name: Real ${{ matrix.agent }} behind Ovara (${{ matrix.mode }})
         run: tests/agents/run.sh ${{ matrix.mode }} ${{ matrix.agent }}
 
+  # The same battery under the balanced profile (reads from any public host,
+  # and still no reach to a blocked site) and behind an upstream CONNECT
+  # proxy (Ovara's own outbound side through it, as on a corporate network).
+  agents-variants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: balanced, mode: coop, profile: balanced, upstream: "" }
+          - { variant: upstream, mode: enforced, profile: strict, upstream: "1" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull Docker Hub images through mirror.gcr.io (Docker Hub rate-limits shared runners)
+        run: bash .github/scripts/docker-hub-mirror.sh
+      - name: Real opencode behind Ovara (${{ matrix.mode }}, ${{ matrix.variant }})
+        env:
+          PROFILE: ${{ matrix.profile }}
+          UPSTREAM: ${{ matrix.upstream }}
+        run: tests/agents/run.sh ${{ matrix.mode }} opencode
+
   box:
     runs-on: ubuntu-latest
     timeout-minutes: 20
