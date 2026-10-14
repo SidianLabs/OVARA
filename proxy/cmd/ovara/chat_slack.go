@@ -147,7 +147,22 @@ func (b *slackBridge) start() (stop func()) {
 			}
 		}
 	}()
-	return func() { close(stopc); <-donec }
+	return func() {
+		close(stopc)
+		<-donec
+		b.closeAll("ovara run stopped; this request is no longer waiting.")
+	}
+}
+
+// closeAll leaves a note in every open thread and forgets them.
+func (b *slackBridge) closeAll(note string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for id, th := range b.threads {
+		b.reply(th.ts, note)
+		delete(b.threads, id)
+		b.done[id] = true
+	}
 }
 
 // tick is one round: requests that ended elsewhere are closed in their

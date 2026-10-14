@@ -310,7 +310,8 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   covers both layers. Signed with `ovara policy baseline keygen|sign` and
   pinned by `policy_baseline_pubkey`, a baseline that does not verify stops
   the gateway instead of being skipped; `ovara doctor` checks it and warns
-  when it is unsigned. Spec: `spec/policy.md` §6.
+  when it is unsigned. Spec: `spec/policy.md` §6. A refusal's body also
+  carries a `hint` saying which layer refused and what can change it.
 - The agents battery (`tests/agents`) also runs under the `balanced`
   profile (`PROFILE=balanced`: every blocked-site check still holds) and
   behind an upstream CONNECT proxy (`UPSTREAM=1`: Ovara's own traffic goes

@@ -28,6 +28,8 @@ import (
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/mcp"
 	"ovara.proxy/internal/receipts"
+
+	"ovara.runtime.gateway/pkg/baseline"
 )
 
 type Server struct {
@@ -1137,9 +1139,20 @@ func (s *Server) heldAnswer(w http.ResponseWriter, decisionID, approvalID, rule 
 
 // withRule adds the policy rule that decided, when one did, so a refusal
 // says what to change.
+// withRule names the rule that decided and, on a refusal, which layer it
+// belongs to and what can change it: an agent or a person reading the body
+// should know where to go next.
 func withRule(m map[string]any, rule string) map[string]any {
-	if rule != "" {
-		m["rule"] = rule
+	if rule == "" {
+		return m
+	}
+	m["rule"] = rule
+	if m["error"] == "action denied" { // a policy refusal, not a hold or an expired approval
+		if strings.HasPrefix(rule, baseline.Label) {
+			m["hint"] = "refused by the organisation's baseline policy: the project's policy.json cannot allow this; only whoever signs the baseline can"
+		} else {
+			m["hint"] = "refused by the project's policy: the rule named here, in its policy.json, decides this (ovara policy; ovara policy suggest after an observe run)"
+		}
 	}
 	return m
 }

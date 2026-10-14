@@ -211,6 +211,22 @@ func (f *fakeSlack) threadOf2(id string) string {
 	return ""
 }
 
+func TestSlackBridge_StopNotesOpenThreads(t *testing.T) {
+	_, fs, b, _ := newSlackTest(t, []string{"U1"}, approvalAt("apr_1", "POST https://httpbin.org:443/anything"))
+	b.every = time.Hour
+	stop := b.start()
+	for i := 0; i < 50 && fs.topLevel() == 0; i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	stop()
+	if got := fs.inThread("apr_1"); len(got) != 1 || !strings.Contains(got[0], "ovara run stopped") {
+		t.Fatalf("thread after stop: %q", got)
+	}
+	if len(b.threads) != 0 {
+		t.Fatal("threads kept after stop")
+	}
+}
+
 func TestSlackBridge_NoAllowedUsersMeansNotifyOnly(t *testing.T) {
 	gw, fs, b, _ := newSlackTest(t, nil, approvalAt("apr_9", "POST https://httpbin.org:443/anything"))
 	if !strings.Contains(b.describe(), "cannot decide") {

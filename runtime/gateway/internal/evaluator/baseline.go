@@ -3,11 +3,8 @@ package evaluator
 import (
 	"ovara.runtime.gateway/internal/models"
 	"ovara.runtime.gateway/internal/policy"
+	"ovara.runtime.gateway/pkg/baseline"
 )
-
-// baselineLabel starts the rule name of a decision the organisation's
-// baseline made, so a refusal says which layer refused.
-const baselineLabel = "org baseline: "
 
 // SetBaseline installs an organisation's policy that the project's policy
 // (the store the evaluator was made with) may only narrow. nil removes it.
@@ -35,7 +32,7 @@ func (e *Evaluator) layeredWith(store *policy.Store, actionRules, envRules []pol
 	if b.Rule == "" {
 		return p
 	}
-	b.Rule = baselineLabel + b.Rule
+	b.Rule = baseline.Label + b.Rule
 	switch {
 	case b.Denied:
 		return b

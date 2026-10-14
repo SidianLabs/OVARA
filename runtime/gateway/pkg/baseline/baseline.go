@@ -52,3 +52,7 @@ func Verify(data []byte, sigHex, pubHex string) error {
 
 // SigPath is where the detached signature of the file at path lives.
 func SigPath(path string) string { return path + ".sig" }
+
+// Label starts the rule name of a decision the baseline made, so a refusal
+// says which layer refused: "org baseline: <rule>".
+const Label = "org baseline: "
