@@ -122,5 +122,9 @@ kill -TERM $OVARA
 for i in $(seq 1 20); do kill -0 $OVARA 2>/dev/null || break; sleep 0.5; done
 kill -0 $OVARA 2>/dev/null && bad "D3 ovara stops when the job ends" "still running 10s after SIGTERM" || ok "D3 ovara stops when the job ends (SIGTERM)"
 ovara log -dir /tmp/d 2>&1 | grep -q "signed and unbroken" && ok "D4 the record still verifies after shutdown" || bad "D4 record after shutdown" "not verified"
+ovara attest verify -dir /tmp/d >/tmp/attest.out 2>&1 && ok "D5 the run's attestation verifies offline ($(grep -c . /tmp/attest.out) lines)" || bad "D5 attestation" "$(tail -3 /tmp/attest.out)"
+ovara incident bundle -dir /tmp/d -out /tmp/case.tar.gz >/dev/null 2>&1; mkdir -p /tmp/case && tar -xzf /tmp/case.tar.gz -C /tmp/case
+A=$(ls /tmp/case/ovara-incident/attestations/*.intoto.json 2>/dev/null | tail -1)
+[ -n "$A" ] && (cd /tmp/case/ovara-incident && ovara attest verify "$A" -receipts receipts.jsonl -pubkey receipt_pubkey.hex -segment segment.json >/tmp/attest2.out 2>&1) && ok "D6 the same statement verifies from the incident bundle alone" || bad "D6 attestation from the bundle" "$(tail -3 /tmp/attest2.out 2>/dev/null)"
 
 echo; echo "RESULT: $pass passed, $fail failed"

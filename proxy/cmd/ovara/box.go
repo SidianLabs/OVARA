@@ -172,6 +172,9 @@ func cmdBox(args []string) (err error) {
 
 	// the run directory: traversable, not listable; work and home owned by the agent
 	runID := time.Now().UTC().Format("20060102-150405")
+	runStarted := time.Now()
+	var receiptsBefore int // the chain's length before the run, once Ovara is up
+	proxyUp, landedCommit := false, ""
 	runDir := filepath.Join(boxRunsRoot, runID)
 	if err := os.MkdirAll(boxRunsRoot, 0o711); err != nil {
 		return err
@@ -189,6 +192,17 @@ func cmdBox(args []string) (err error) {
 	// the run's summary: filled in as it goes, written last whatever happens
 	summary := &sandbox.Summary{Outcome: sandbox.OutcomeFailed}
 	defer func() {
+		// The attestation comes last, after the Ovara the box started has
+		// stopped (its stop is deferred later, so it runs first) and the
+		// summary is final. Without a proxy nothing was recorded to attest.
+		if proxyUp {
+			if rel, aerr := attestBoxRun(o, cfg, runID, runStarted, receiptsBefore, landedCommit, summary); aerr != nil {
+				fmt.Fprintf(os.Stderr, "==> no attestation for this run: %v\n", aerr)
+			} else {
+				summary.Attestation = rel
+				fmt.Fprintf(os.Stderr, "==> attestation: %s (ovara attest verify -dir %s)\n", rel, o.dir)
+			}
+		}
 		last := sandbox.Event{Event: sandbox.EventRunFinished, Summary: summary}
 		if err != nil {
 			last.Error = err.Error()
@@ -272,7 +286,7 @@ func cmdBox(args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	runArgs := []string{"run", "-dir", o.dir, "-ui", o.ui}
+	runArgs := []string{"run", "-dir", o.dir, "-ui", o.ui, "-no-attest"} // the box attests the whole run itself
 	if o.tier == 1 {
 		runArgs = append(runArgs, "--boundary", "netns", "--boundary-name", o.name)
 	}
@@ -316,13 +330,14 @@ func cmdBox(args []string) (err error) {
 		return fmt.Errorf("ovara run did not come up: %w", err)
 	}
 	events.Emit(sandbox.Event{Event: sandbox.EventProxyStarted})
+	proxyUp = true
 	// the certificate is created by the first `ovara run`; copy it now if it was not there before
 	if _, err := os.Stat(caPub); err != nil {
 		if b, err := os.ReadFile(inDir(o.dir, cfg.CACertFile)); err == nil {
 			_ = os.WriteFile(caPub, b, 0o644) //nolint:gosec // the PUBLIC certificate: the agent must be able to read it
 		}
 	}
-	receiptsBefore := receiptLineCount(inDir(o.dir, cfg.ReceiptsFile))
+	receiptsBefore = receiptLineCount(inDir(o.dir, cfg.ReceiptsFile))
 
 	// 4. the agent, inside
 	sigs := make(chan os.Signal, 2)
@@ -461,6 +476,7 @@ func cmdBox(args []string) (err error) {
 	fmt.Fprintf(os.Stderr, "==> changes are on branch %s of %s (%s); review and merge it like a pull request\n", branch, ws.Project, commit[:12])
 	summary.Outcome = sandbox.OutcomeClean
 	summary.Branch, summary.Commit = branch, commit[:12]
+	landedCommit = commit
 	ended(sandbox.EventCommitBackLanded, sandbox.Event{Branch: branch, Commit: commit[:12], Files: len(plan.allowed)})
 	if exitCode != 0 {
 		return fmt.Errorf("agent exited with status %d", exitCode)

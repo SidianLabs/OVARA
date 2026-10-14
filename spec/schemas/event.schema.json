@@ -46,7 +46,8 @@
         "commands": { "$ref": "#/$defs/counts", "description": "Through the command gate; absent when the gate was off." },
         "commit_back": { "type": "string", "enum": ["", "disabled", "nothing", "kept", "refused", "not_approved", "landed"], "description": "How the changes ended; empty when the run failed before that." },
         "branch": { "type": "string" },
-        "commit": { "type": "string" }
+        "commit": { "type": "string" },
+        "attestation": { "type": "string", "description": "Where the run's signed statement was written, relative to the deployment: var/attestations/<run>.intoto.json (evidence.md §8, attestation.schema.json)." }
       }
     },
     "counts": {

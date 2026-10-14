@@ -111,9 +111,48 @@ Offline, with the chain file, the key history and the anchor file:
 The result says how many receipts verified, where it failed and why, and
 how many legacy lines there were. `ovara log` prints it; `ovara log export`
 emits only verified receipts (JSONL or OCSF); `ovara incident bundle`
-packs the chain, anchors, keys and policy for a third party to verify.
+packs the chain, anchors, keys, policy and attestations (§8) for a third
+party to verify.
 
-## 8. Vectors and tests
+## 8. The attestation
+
+A run (`ovara run`, `ovara run -- <agent>`, `ovara box`) ends with one
+signed statement about it, `var/attestations/<run>.intoto.json`: an
+in-toto v1 Statement in a DSSE envelope, signed with the receipt key.
+Schema: [`schemas/attestation.schema.json`](schemas/attestation.schema.json).
+
+- **Subjects.** The run's own receipts (`ovara/run/<run>/receipts.jsonl`,
+  `sha256` over its lines, each with its newline) and, when changes
+  landed, the branch (`refs/heads/<branch>`, `gitCommit` the full commit).
+- **Predicate** (`https://ovara.dev/spec/0.1/attestation/run`): `run_id`,
+  `runtime`, `agent`, `started`, `finished`; `manifest.sha256` for a box
+  run, over the manifest as `ovara box -print-manifest` writes it;
+  `policy.hashes`, every `policy_hash` the run's receipts carry, first
+  seen first; `receipts`: `after` (receipts in the chain before the run),
+  `count`, `prev_hash` (the first one's link), `head` (the last one's
+  hash) and `sha256` (over the lines); `approvals`, one per approval id
+  with the resource, the approver and the time; `hosts`, one per
+  authority with how its requests were decided; `summary`, the run's
+  (C5 §3).
+- **Signature.** DSSE: Ed25519 over `"DSSEv1 " + len(payloadType) + " " +
+  payloadType + " " + len(payload) + " " + payload`, with the receipt
+  key; `keyid` is the receipt key's id (§5). The two messages this key
+  signs never collide: a receipt payload starts with
+  `ovara-proxy-receipt-v2`, an attestation with `DSSEv1`.
+- **Verification** (`ovara attest verify`; offline, with the chain file,
+  the key history and the anchors, where a bundle's cut must start at or
+  before the run): the envelope and statement types are these; a
+  signature verifies under a key of the history that was in use at
+  `finished` and not revoked by then; the chain verifies (§7); the run's
+  lines are found by `after` and `count`, and `prev_hash`, `head` and
+  `sha256` are recomputed from them; `policy.hashes`, `approvals`,
+  `hosts`, and the summary's request counts and host count are recomputed
+  from them; the subjects name those receipts and, when present, the
+  summary's branch and commit; a manifest given must digest to
+  `manifest.sha256`. Any difference fails. A chain that does not verify is
+  never attested.
+
+## 9. Vectors and tests
 
 `sdk/testdata/receipts_v2.json` is generated from the Go implementation
 (`proxy/internal/receipts/sdk_vectors_test.go`) and consumed by
@@ -129,3 +168,12 @@ pass them.
 `TestNoUpstreamBytesWithoutReceipt`, `TestReceiptNamesEveryApprovalAskedFor`;
 `proxy/cmd/ovara`: `TestRunRefusesToResumeACutLog`,
 `TestLogExportRefusesTamperedChain`, `TestPrintLog_DetectsTampering`.
+
+The attestation (§8): `proxy/internal/attest`:
+`TestAttestation_BuildSignWriteVerify`, `TestAttestation_TamperingFails`,
+`TestAttestation_VerifiesFromABundleCut`, `TestAttestation_EmptyRun`,
+`TestPAEIsDSSEv1`, `TestSpecAttestationSchemaMatchesTheCode`;
+`proxy/cmd/ovara`: `TestAttestCLI_VerifyListShow`; end to end,
+`tests/scenarios/ci-bot.sh` (D5, D6: a real run's statement, from the
+deployment and from its incident bundle) and `tests/box/box.sh` (a box
+run's).

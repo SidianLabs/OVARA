@@ -30,6 +30,15 @@ function main() {
     summary += "\nThe rules a strict policy would have needed for this run (`ovara policy suggest`):\n\n```json\n" + (s.stdout || "").trim() + "\n```\n" + (s.stderr || "").trim() + "\n";
   }
   summary += "\nEvidence: `" + path.join(dir, "var", "receipts.jsonl") + "` with `var/receipt_pubkey.hex` (upload them as an artifact to keep them; `ovara log -receipts ... -pubkey ...` verifies them anywhere).\n";
+  try {
+    const adir = path.join(dir, "var", "attestations");
+    const files = fs.readdirSync(adir).filter((n) => n.endsWith(".intoto.json")).sort();
+    if (files.length) {
+      const v = out(bin, ["attest", "verify", "-dir", dir]);
+      summary += "\nAttestation: `" + path.join(adir, files[files.length - 1]) + "`, an in-toto statement signed with the receipt key (`ovara attest verify FILE -receipts ... -pubkey ...` checks it anywhere):\n\n```\n" + ((v.stdout || "") + (v.stderr || "")).trim() + "\n```\n";
+      if (v.status !== 0) console.log("::warning::the run's attestation did not verify");
+    }
+  } catch (e) { /* no attestation was written */ }
   const f = process.env.GITHUB_STEP_SUMMARY;
   if (f) fs.appendFileSync(f, summary); else console.log(summary);
 }

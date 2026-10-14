@@ -424,6 +424,19 @@ A tool that watches the stream can answer `command.paused` and
 `commit_back.waiting` through the approval API or `ovara approve <id>`,
 and read the receipts (`ovara log export`) for the full record.
 
+### 6.6 The attestation
+
+Every run ends with one signed statement about it, in the deployment at
+`var/attestations/<run>.intoto.json`: an in-toto statement in a DSSE
+envelope, signed with the receipt key (spec C4 §8). Its subjects are the
+run's own receipts and, when the changes landed, the branch and its commit;
+its predicate carries the manifest's digest, the policy hashes, the exact
+receipts (position, count, hash), every approval and who gave it, the host
+table and the summary. The `run.finished` summary names the file. `ovara
+attest verify` checks it against the chain, the key history and the anchors,
+recomputing every claim from the receipts; it needs nothing that is not in
+the incident bundle, so an auditor can verify a run without Ovara.
+
 ## 7. The file boundary
 
 ### 7.1 What the box sees

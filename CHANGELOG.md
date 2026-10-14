@@ -316,6 +316,19 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   profile (`PROFILE=balanced`: every blocked-site check still holds) and
   behind an upstream CONNECT proxy (`UPSTREAM=1`: Ovara's own traffic goes
   through it, a denied host never reaches it), as two more CI jobs.
+- **An attestation for every run.** `ovara run`, `ovara run -- <agent>` and
+  `ovara box` end by writing `var/attestations/<run>.intoto.json`: an
+  in-toto statement in a DSSE envelope, signed with the receipt key, whose
+  subjects are the run's receipts and the commit the changes landed as, and
+  whose predicate carries the policy hashes, the exact receipts (position,
+  count, hash, chain head), every approval and approver, the host table,
+  the summary and, for a box, the manifest's digest. `ovara attest verify`
+  checks it offline from the incident bundle (which now carries the
+  attestations), recomputing every claim from the receipts; `attest list`
+  and `attest show` read them. The `run.finished` summary names the file,
+  and the GitHub Action's job summary shows the verification. Spec:
+  `spec/evidence.md` §8, `spec/schemas/attestation.schema.json`;
+  `docs/GUARANTEES.md` 5.7.
 - **Approvals from Slack.** `chat.slack` in `proxy.json` (a channel ID, the
   user IDs allowed to decide, a bot token in `var/slack.token` or a named
   variable) makes `ovara run` post every paused request to the channel as

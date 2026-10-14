@@ -244,6 +244,19 @@ ovara incident bundle -dir mydir -out case.tar.gz # receipts, keys, anchors and 
 ovara keys rotate-receipt -dir mydir              # new receipt key (revoke-receipt, list-receipt)
 ```
 
+Every run also ends with an **attestation**, `mydir/var/attestations/<run>.intoto.json`:
+an in-toto statement signed with the receipt key that says who ran, under
+which policy, exactly which receipts are the run's, what was approved and by
+whom, which hosts were reached and how it ended (for `ovara box`, the manifest
+and the commit the changes landed as). Anyone holding the bundle and the public
+key can check it, with no Ovara running:
+
+```bash
+ovara attest verify -dir mydir                    # the newest run (-run ID for another; -manifest F for a box run)
+ovara attest verify RUN.intoto.json -receipts receipts.jsonl -pubkey receipt_pubkey.hex -segment segment.json   # from an incident bundle
+ovara attest list -dir mydir                      # every run, with its outcome (attest show prints one)
+```
+
 ### Your rules live in `mydir/policy.json`
 
 The default policy `ovara init` writes is short and readable (shown here

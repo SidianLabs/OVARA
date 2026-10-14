@@ -232,6 +232,7 @@ print('refused', 'yes' if any(e['event'] == 'command.refused' and e.get('command
 print('notapproved', sum(1 for e in evs if e['event'] == 'command.not_approved' and 'rm -rf /tmp/victim' in e.get('command', '')))
 print('order', ' '.join(e['event'] for e in evs if e['event'] in ('run.created', 'workspace.copied', 'proxy.started', 'agent.started', 'agent.exited', 'commit_back.waiting', 'commit_back.landed', 'run.finished')))
 print('fixed', len(set(e['run_id'] for e in evs)), 'v1' if all(e['v'] == 1 and e['time'].endswith('Z') for e in evs) else 'bad')
+print('attest', 'yes' if str(s.get('attestation', '')).startswith('var/attestations/') else 'no')
 PY
 ev() { grep "^$1 " /tmp/events.summary | cut -d' ' -f2-; }
 check "the stream starts with run.created carrying the manifest" "run.created 0.1 $TIER bash" "$(ev first)"
@@ -240,6 +241,8 @@ check "the refused sudo is in the stream (command.refused)" yes "$(ev refused)"
 check "the rm -rf the person refused is in the stream (command.not_approved)" 1 "$(ev notapproved)"
 check "the lifecycle events come in order" "run.created workspace.copied proxy.started agent.started agent.exited commit_back.waiting commit_back.landed run.finished" "$(ev order)"
 check "one run id; every line is v1 with a UTC time" "1 v1" "$(ev fixed)"
+check "the summary names the run's attestation" yes "$(ev attest)"
+ovara attest verify -dir $D >/tmp/attest.out 2>&1 && ok "the run's attestation verifies: $(grep -o 'changes on branch [^,]*' /tmp/attest.out)" || bad "attestation" "$(tail -3 /tmp/attest.out)"
 
 echo "=== commit-back"
 cd $P

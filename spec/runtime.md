@@ -114,7 +114,10 @@ is for the person's tools, policy for the gate.
   gate; absent when the gate was off;
 - `commit_back`: the `commit_back.*` event that ended it, after the dot, or
   empty when the run failed before that; `branch` and `commit` when it
-  landed.
+  landed;
+- `attestation`: where the run's signed statement was written, relative to
+  the deployment (`var/attestations/<run>.intoto.json`; C4 §8), absent when
+  none could be written.
 
 ## 4. Conformance
 

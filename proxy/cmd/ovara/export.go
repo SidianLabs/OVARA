@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"ovara.proxy/internal/attest"
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/receipts"
 	"ovara.runtime.gateway/pkg/server"
@@ -229,6 +230,10 @@ What is in here
   policy.json           the policy file at the time of the bundle
   policy.sha256         its policy_hash (the value receipts carry in
                         "policy_hash" for decisions made under it)
+  attestations/*.intoto.json
+                        one signed statement per run (in-toto, DSSE): who
+                        ran, under which policy, exactly which receipts,
+                        what was approved, which hosts, what came back
   verify.txt            the result of verifying the chain when the bundle
                         was made
 
@@ -238,6 +243,12 @@ How to check it offline
   This checks every signature (with the key that was valid at each
   receipt's time), the hash links between receipts, and the anchors that
   fall inside the cut. It needs nothing but these files.
+
+  ovara attest verify attestations/RUN.intoto.json -receipts receipts.jsonl -pubkey receipt_pubkey.hex -segment segment.json
+
+  This checks a run's statement: its signature under the receipt key, and
+  that the receipts, approvals, hosts and summary it names are exactly
+  what the chain holds for that run (the cut must start at or before it).
 
 What it does not prove
   - Anchors here were kept on the same machine as the log. If the
@@ -354,6 +365,13 @@ func cmdIncident(args []string) error {
 			name string
 			data []byte
 		}{"policy.sha256", []byte(h + "\n")})
+	}
+	if names, err := attestationFiles(*dir); err == nil {
+		for _, n := range names {
+			if err := addFile("attestations/"+n, filepath.Join(attest.Dir(*dir), n)); err != nil {
+				return err
+			}
+		}
 	}
 
 	f, err := os.OpenFile(*out, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)

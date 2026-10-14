@@ -71,6 +71,8 @@ func main() {
 		err = cmdIncident(os.Args[2:])
 	case "keys":
 		err = cmdKeys(os.Args[2:])
+	case "attest":
+		err = cmdAttest(os.Args[2:])
 	case "env":
 		err = cmdEnv(os.Args[2:])
 	case "policy":
@@ -133,6 +135,9 @@ func usage() {
   log export [-format jsonl|ocsf] [-since T]   verified receipts for a SIEM
   incident bundle -out F.tar.gz [-since T]     receipts, anchors, keys and policy to check offline
   keys rotate-receipt | revoke-receipt -key K | list-receipt   manage the receipt signing key
+  attest verify [-run ID] | list | show   the signed statement every run ends with
+                        (who ran, under which policy, which receipts, what came
+                        back); verify needs only the bundle and the public key
   mcp wrap -dir D -name NAME -- <server cmd>  run a stdio MCP server through
                         Ovara: tool definitions pinned, every tool call decided
   approve <id>          let a waiting request through (-remember SCOPE also keeps it:
@@ -547,7 +552,9 @@ func cmdRun(args []string) error {
 	repairRegistry := fs.Bool("repair-registry", false, "once, for a deployment an older build left unable to restart (\"same file_seq with different hash\"): accept its identity registry if this gateway signed it, and seal it again")
 	agentName := fs.String("agent", "", "with a command: run it as this named agent (ovara agent add NAME), with its own proxy token")
 	presetName := fs.String("preset", "auto", "with a command: the agent preset applied to the deployment: auto (by the program's name), none, or opencode | claude | codex")
+	noAttest := fs.Bool("no-attest", false, "do not write the run's attestation when Ovara stops (ovara box writes one for the whole run)")
 	fs.Parse(args)
+	started := time.Now()
 	command := fs.Args() // after "--": the agent to run through Ovara
 	server.RepairIdentityRegistry = *repairRegistry
 	if *packageGate != "" { // read after the chdir below: make it absolute now
@@ -641,6 +648,7 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	before := receiptLineCount(cfg.ReceiptsFile) // the chain's length before this run
 	// Named agents and stopped agents are re-read while the proxy runs:
 	// `ovara agent add|remove` and `ovara kill` take effect within a second.
 	stopWatch := srv.WatchAgentFiles("proxy.json", cfg.RevokedAgentsFile, 250*time.Millisecond)
@@ -711,9 +719,22 @@ func cmdRun(args []string) error {
 	}
 	if len(command) == 0 {
 		// Serve until the gateway stops (a signal).
-		return <-served
+		err := <-served
+		if !*noAttest {
+			attestAfterRun(absDir, cfg, *agentName, started, before, 0, err == nil)
+		}
+		return err
 	}
-	return runAgent(command, cwd, absDir, cfg, *agentName, gatewayDone)
+	err = runAgent(command, cwd, absDir, cfg, *agentName, gatewayDone)
+	if !*noAttest {
+		code := 0
+		var ae *agentExit
+		if errors.As(err, &ae) {
+			code = ae.code
+		}
+		attestAfterRun(absDir, cfg, *agentName, started, before, code, err == nil || ae != nil)
+	}
+	return err
 }
 
 // flagSet reports whether a flag was given on the command line.

@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ovara.dev/spec/0.1/attestation.schema.json",
+  "title": "Run attestation (contract C4, spec 0.1)",
+  "description": "The signed statement a run ends with: an in-toto v1 Statement in a DSSE envelope, signed with the deployment's receipt key, at var/attestations/<run>.intoto.json. `ovara attest verify` checks it with the receipt chain, the key history and the anchors alone. See spec/evidence.md section 9.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["payloadType", "payload", "signatures"],
+  "properties": {
+    "payloadType": { "const": "application/vnd.in-toto+json" },
+    "payload": { "type": "string", "description": "base64 of the statement (#/$defs/statement). What is signed is the DSSE pre-authentication encoding: \"DSSEv1 \" + len(payloadType) + \" \" + payloadType + \" \" + len(payload) + \" \" + payload." },
+    "signatures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["keyid", "sig"],
+        "properties": {
+          "keyid": { "type": "string", "description": "The receipt key's id (receipt-v2 kid): the first 16 hex digits of the SHA-256 of the public key." },
+          "sig": { "type": "string", "description": "base64 Ed25519 signature over the pre-authentication encoding." }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["_type", "subject", "predicateType", "predicate"],
+      "properties": {
+        "_type": { "const": "https://in-toto.io/Statement/v1" },
+        "subject": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/subject" }, "description": "The run's own receipts (ovara/run/<run>/receipts.jsonl, sha256 over its lines) and, when changes landed, the branch (refs/heads/<branch>, gitCommit)." },
+        "predicateType": { "const": "https://ovara.dev/spec/0.1/attestation/run" },
+        "predicate": { "$ref": "#/$defs/predicate" }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "digest"],
+      "properties": {
+        "name": { "type": "string" },
+        "digest": { "type": "object", "additionalProperties": { "type": "string" }, "description": "sha256 or gitCommit, hex." }
+      }
+    },
+    "predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "runtime", "agent", "started", "finished", "policy", "receipts", "approvals", "hosts", "summary"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "runtime": { "type": "string", "enum": ["ovara box", "ovara run"] },
+        "agent": { "type": "string", "description": "The named agent the run was attributed to, or \"default\"." },
+        "started": { "type": "string", "format": "date-time" },
+        "finished": { "type": "string", "format": "date-time" },
+        "manifest": { "$ref": "#/$defs/digest", "description": "A box run: the manifest it was made from, as `ovara box -print-manifest` writes it." },
+        "policy": { "$ref": "#/$defs/policy" },
+        "receipts": { "$ref": "#/$defs/receipts" },
+        "approvals": { "type": "array", "items": { "$ref": "#/$defs/approval" } },
+        "hosts": { "type": "array", "items": { "$ref": "#/$defs/host" } },
+        "summary": { "$ref": "event.schema.json#/$defs/summary", "description": "The run's summary (C5 section 3), as the launcher reported it; its request counts and host count are recomputed from the receipts at verification." }
+      }
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256"],
+      "properties": { "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hashes"],
+      "properties": { "hashes": { "type": "array", "items": { "type": "string" }, "description": "Every policy_hash the run's receipts carry, first seen first; more than one means the policy changed during the run." } }
+    },
+    "receipts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["after", "count", "prev_hash", "head", "sha256"],
+      "properties": {
+        "after": { "type": "integer", "minimum": 0, "description": "Receipts in the chain before the run." },
+        "count": { "type": "integer", "minimum": 0, "description": "The run's receipts." },
+        "prev_hash": { "type": "string", "description": "The first one's link to what came before; empty at the start of a chain." },
+        "head": { "type": "string", "description": "The hash of the last one; empty when there are none." },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Over the run's lines, each with its newline." }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "resource", "at"],
+      "properties": {
+        "id": { "type": "string" },
+        "resource": { "type": "string", "description": "Method and URL." },
+        "approver": { "type": "string" },
+        "at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "allowed", "paused", "denied"],
+      "properties": {
+        "host": { "type": "string", "description": "The authority of the receipts' URL (host and port)." },
+        "allowed": { "type": "integer" },
+        "paused": { "type": "integer" },
+        "denied": { "type": "integer" },
+        "errors": { "type": "integer" }
+      }
+    }
+  }
+}

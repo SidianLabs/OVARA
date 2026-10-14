@@ -66,4 +66,5 @@ jobs:
             ${{ steps.ovara.outputs.dir }}/var/anchors.jsonl
             ${{ steps.ovara.outputs.dir }}/var/receipt_pubkey.hex
             ${{ steps.ovara.outputs.dir }}/var/receipt_keys.jsonl
+            ${{ steps.ovara.outputs.dir }}/var/attestations
             ${{ steps.ovara.outputs.dir }}/policy.json

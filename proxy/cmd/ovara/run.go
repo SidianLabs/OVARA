@@ -148,9 +148,18 @@ func runAgent(command []string, cwd, dir string, cfg *config.Config, agentName s
 // the run let through, held and refused, and how many hosts it named),
 // prints the line, and returns the tally for the run's summary.
 func printRunSummary(receiptsFile string, skip int) (c sandbox.Counts, hosts int) {
+	c, hosts, total := tallyReceipts(receiptsFile, skip)
+	fmt.Fprintf(os.Stderr, "==> %d request(s) through Ovara: %d allowed, %d paused, %d denied; %d host(s)\n",
+		total, c.Allowed, c.Paused, c.Denied, hosts)
+	return c, hosts
+}
+
+// tallyReceipts counts the receipts after the first skip lines by decision,
+// and the distinct hosts they name.
+func tallyReceipts(receiptsFile string, skip int) (c sandbox.Counts, hosts, total int) {
 	b, _ := os.ReadFile(receiptsFile) // absent: a run that made no request
 	seen := map[string]bool{}
-	n, total := 0, 0
+	n := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
 		if line == "" {
 			continue
@@ -185,9 +194,7 @@ func printRunSummary(receiptsFile string, skip int) (c sandbox.Counts, hosts int
 			seen[h] = true
 		}
 	}
-	fmt.Fprintf(os.Stderr, "==> %d request(s) through Ovara: %d allowed, %d paused, %d denied; %d host(s)\n",
-		total, c.Allowed, c.Paused, c.Denied, len(seen))
-	return c, len(seen)
+	return c, len(seen), total
 }
 
 // receiptLineCount is the number of lines in the receipts file (0 when it

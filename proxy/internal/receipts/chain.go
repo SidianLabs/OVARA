@@ -619,3 +619,16 @@ func syncDir(dir string) {
 		d.Close()
 	}
 }
+
+// LoadSigningKey reads the receipt signing key for the one other thing it
+// signs: a run's attestation (internal/attest). The two never collide:
+// every receipt payload starts with domainV2, every attestation payload
+// with the DSSE prefix.
+func LoadSigningKey(keyFile string) (ed25519.PrivateKey, error) { return loadKey(keyFile) }
+
+// ReadVerifiedSegment is ReadVerified for a chain file that is a cut of a
+// longer chain (seg says where it starts), as an incident bundle holds.
+func ReadVerifiedSegment(path string, ring *KeyRing, seg Segment) (*VerifyResult, []Verified) {
+	res, _, recs := verifySegment(path, ring, seg)
+	return res, recs
+}

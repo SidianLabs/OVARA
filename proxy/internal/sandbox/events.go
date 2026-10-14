@@ -82,6 +82,9 @@ type Summary struct {
 	CommitBack string `json:"commit_back"`
 	Branch     string `json:"branch,omitempty"`
 	Commit     string `json:"commit,omitempty"`
+	// Attestation is where the run's signed statement was written, relative
+	// to the deployment (var/attestations/<run>.intoto.json; spec C4 §8).
+	Attestation string `json:"attestation,omitempty"`
 }
 
 // Counts tallies decisions.

@@ -304,3 +304,26 @@ func RevokeKey(pubKeyFile, which string, at time.Time) (string, error) {
 	}
 	return target.KeyID, writeHistory(histPath, hist)
 }
+
+// VerifyAt checks a signature by key kid over msg, made at time at, the
+// way receipts are checked: the key must be known, in use at that time
+// and not revoked by then. For the other thing the receipt key signs, a
+// run's attestation (internal/attest).
+func (k *KeyRing) VerifyAt(kid string, at time.Time, msg, sig []byte) error {
+	rec := k.record(kid)
+	if rec == nil {
+		return errors.New("signed by an unknown key")
+	}
+	if len(sig) != ed25519.SignatureSize || !ed25519.Verify(k.pubs[kid], msg, sig) {
+		return errors.New("signature invalid")
+	}
+	switch {
+	case rec.RevokedAt != nil && !at.Before(*rec.RevokedAt):
+		return fmt.Errorf("signed by key %s, revoked at %s", rec.KeyID, rec.RevokedAt.Format(time.RFC3339))
+	case rec.NotAfter != nil && at.After(*rec.NotAfter):
+		return fmt.Errorf("signed by key %s after it was rotated out (%s)", rec.KeyID, rec.NotAfter.Format(time.RFC3339))
+	case rec.NotBefore != nil && at.Before(*rec.NotBefore):
+		return fmt.Errorf("signed by key %s before it was in use (%s)", rec.KeyID, rec.NotBefore.Format(time.RFC3339))
+	}
+	return nil
+}

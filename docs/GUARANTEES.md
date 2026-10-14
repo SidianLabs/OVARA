@@ -213,6 +213,12 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 - **What it covers:** stores, journals, logs and keys are written 0600; the deployment and `var/` directories are 0711 (other users cannot list them, and can open only the public CA certificate, which the agent needs); `policy.json` is 0600; `ovara init` does not print the operator token. `ovara doctor` fails on loose key and policy permissions.
 - **Tests:** `runtime/gateway/internal/logging`: `TestDecisionLogger_OwnerOnly`; `proxy/cmd/ovara`: `TestInitKeepsTokenAndPolicyPrivate`, `TestDoctorPolicyReadableAndIssuerKey`, `TestDoctorSeesFailOpenInProxyJSON`.
 
+### 5.7 A run's attestation verifies offline, from the bundle alone
+- **Holds in:** all modes (`ovara run`, `ovara run -- <agent>`, `ovara box`).
+- **Conditions:** the receipt chain verifies (a chain that does not is never attested); the verifier holds the public key from somewhere other than the bundle.
+- **What it covers:** when a run ends, Ovara writes an in-toto statement in a DSSE envelope signed with the receipt key: who ran, under which policy hashes, exactly which receipts are the run's (position, count, their hash, the chain head), every approval and who gave it, the host table, the summary and, for a box run, the manifest's digest and the commit the changes landed as. `ovara attest verify` checks the signature against the key history, the chain and its anchors, and recomputes everything the statement claims from the receipts. A changed statement, a changed receipt, another key, a bundle cut that does not hold the run, a summary that disagrees with the receipts, or a different manifest all fail. The incident bundle carries the attestations.
+- **Tests:** `proxy/internal/attest`: `TestAttestation_BuildSignWriteVerify`, `TestAttestation_TamperingFails`, `TestAttestation_VerifiesFromABundleCut`, `TestAttestation_EmptyRun`, `TestPAEIsDSSEv1`, `TestSpecAttestationSchemaMatchesTheCode`; `proxy/cmd/ovara`: `TestAttestCLI_VerifyListShow`; `tests/scenarios/ci-bot.sh` D5 and D6; `tests/box/box.sh` (a real box run's statement).
+
 ---
 
 ## 6. Box
