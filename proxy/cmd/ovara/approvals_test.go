@@ -22,7 +22,9 @@ func TestDescribe(t *testing.T) {
 		"POST https://github.com/org/repo.git/git-receive-pack refs/heads/main":      "push to refs/heads/main on github.com/org/repo",
 		"POST https://github.com/org/repo.git/git-receive-pack":                      "push code on github.com/org/repo",
 		"POST https://github.com/o/r.git/git-receive-pack refs/heads/a,refs/tags/v1": "push to refs/heads/a, refs/tags/v1 on github.com/o/r",
-		"weird": "weird",
+		"weird":           "weird",
+		"tool:send_email": "call tool send_email",
+		"tool:we%20ird":   "call tool we ird",
 		"POST https://github.com/octocat/Hello-World.git/git-upload-pack":     "fetch code from github.com/octocat/Hello-World",
 		"GET https://github.com:443/o/r.git/info/refs":                        "look up branches of github.com/o/r",
 		"CONNECT UNAUTH github.com:443":                                       "connect to github.com without the agent's proxy token (refused; git and curl retry with it automatically)",
@@ -275,5 +277,21 @@ func TestContextLines_BodyAndHeaders(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in:\n%s", want, text)
 		}
+	}
+}
+
+func TestContextLines_ToolCall(t *testing.T) {
+	a := pendingApproval{ActionType: "tool.call", Resource: "tool:send_email", Context: map[string]string{
+		"tool": "send_email", "framework": "langchain", "arguments_bytes": "41",
+		"arguments_sha256": "ab12", "arguments": `{"password": "***", "to": "a@example.com"}`, "agent": "support-bot",
+	}}
+	got := strings.Join(contextLines(a), "\n")
+	for _, want := range []string{"tool: send_email", "framework: langchain", "arguments size: 41", "arguments sha256: ab12", `arguments: {"password": "***", "to": "a@example.com"}`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "arguments sha256") > strings.Index(got, "arguments: {") {
+		t.Errorf("the hash should come before the preview:\n%s", got)
 	}
 }

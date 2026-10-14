@@ -33,6 +33,7 @@ func TestRoleAgent_AllowedEndpoints(t *testing.T) {
 	for _, ep := range []struct{ method, path string }{
 		{"POST", "/v1/runtime/check"},
 		{"POST", "/v1/runtime/batch-check"},
+		{"POST", "/v1/runtime/outcome"},
 		{"POST", "/v1/approval/create"},
 		{"GET", "/v1/approval/appr_123"},
 		{"POST", "/v1/approval/appr_123/claim"},

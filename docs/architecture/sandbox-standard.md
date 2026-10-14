@@ -14,7 +14,7 @@
 > of the ci-bot scenario, where an organisation baseline refuses a project
 > rule. **S3** is next; its VM driver and rootless tier 2 need macOS, Windows
 > and a container runtime to develop against. The `[exists]`, `[extend]` and
-> `[new]` marks below are as of the plan's writing.
+> `[new]` marks below are as of the plan's writing. **Track G has started** (§13): G1, the tool guard for agent frameworks, is on the PR (gateway outcome endpoint, Python and TypeScript guards, the agents harness in CI).
 
 Status: PLAN. Written against the repository as it stands on branch
 `ccr-83c761fa-y5ms22` (PR #43). Every component is tagged **[exists]**,
@@ -276,6 +276,7 @@ canonicalise the same action to the same string.
 | `shell` | `shell:<normalised command line>` (base name, git global options dropped, aliases resolved, rm flags merged) | `shell:git push --force origin main` |
 | `fs.commit_back.path` / `fs.commit_back` | `path:<relative path>` / `commit:<branch>` | `path:.github/workflows/ci.yml` |
 | `mcp.tools` / `mcp.tool_call` | `mcp:<server>` / `mcp:<server>/<tool>` | `mcp:stdio:fs/write_file` |
+| `tool.call` | `tool:<name>` (an agent framework's in-process tool, through the SDK tool guard; the arguments' hash is in the approval's context) | `tool:send_email` |
 | `package.install` | `npm:<name>@<version>`, `pypi:…`, `download:<registry path>` | |
 | `model.server_feature`, `model.budget`, `egress.budget`, `taint.write` | `model:<host> <feature>`, `model-budget:<agent>`, `budget:<host>`, `taint:<resource>` | |
 
@@ -549,10 +550,12 @@ docs' tested/not-tested labels are updated in the same change.
 | **S3** Portability | VM driver (macOS, Windows); rootless tier 2; WebSocket decision | `box.md` M6 numbers equal to Linux; rootless tier 2 passes `tests/box` |
 | **S4** Evidence as attestation + control plane | in-toto attestation at `finish`; fleet view; kill across the fleet; retention and export schedules; multi-tenant key custody | an auditor-style verification of a run from the bundle alone; a tenant cannot read another's receipts in a test |
 | **S5** Standard | spec `1.0`; conformance suite packaged; second implementation passes; external review complete; advisories shipped; governance published | all of the above true at once |
+| **G** Any agent | the general-agents track in §13: tool guard (G1), TCP gate (G2), body-aware API gates (G3), browser agents (G4), identity and delegation (G5), policy depth (G6), deployment and scale (G7) | each item's exit criteria in §13 |
 | later | Tier 3 microVM (`box.md` M9); SSH gate | |
 
 Order: S1 before everything (the interface must stop moving before others
-build on it). S2 and S3 can run in parallel. S4 after S2. S5 last.
+build on it). S2 and S3 can run in parallel. S4 after S2. S5 last. Track G
+runs after S2, in parallel with S3 and S4, in its own order (G1 to G7).
 
 ---
 
@@ -595,3 +598,32 @@ S1, in this order, on the current branch after PR #43 merges:
 
 Then S2's `balanced` and `observe` profiles, because they are what makes the
 answer to "do I have to list every website?" become "no".
+
+---
+
+## 13. Track G: any agent, not only coding agents
+
+The sandboxes companies use to test agents today are the agent frameworks'
+own (a tool allow-list, a dry-run flag, a mocked provider) and the general
+isolation tools (containers, VMs, egress firewalls). Ovara's difference is
+the decision and the record: every action decided by one policy, held for a
+person with evidence, receipted and attested. Sections 1–12 built that for
+coding agents, whose actions are HTTP, git, shell and MCP. An agent of any
+other kind (support, operations, research, browsing, a sub-agent of another
+agent) acts in ways the proxy does not see or cannot name. Track G closes
+those gaps, in this order:
+
+| # | Gap | Deliverable | Exit criteria | Status |
+|---|---|---|---|---|
+| **G1** Tool calls inside the process | A framework's tools run as functions: the proxy sees nothing | `ToolGuard` (Python) and `createToolGuard` (TypeScript): every wrapped call decided (`tool.call`, `tool:<name>`, the arguments' size, hash and masked preview as context), held and claimed like any action, refused when policy says so, its outcome reported to `POST /v1/runtime/outcome` and kept as an `action.outcome` event; shown in the CLI, the page and Slack; refused under `observe` | the agents harness runs guarded calls against a real gateway in CI: approved runs, denied and policy-denied never run, fail-fast returns the approval id and the identical call gets it back, a forged or lying outcome is refused | **done on PR #43** (gateway-decided calls are not yet in the proxy's receipt chain or the attestation: G1b) |
+| **G2** Non-HTTP destinations | Mail (SMTP/IMAP), databases (Postgres, MySQL, Redis), SSH, gRPC, raw TCP go around the proxy or are refused wholesale | A TCP gate in the proxy: a CONNECT to a non-HTTP port is decided as `tcp.connect` (`tcp:<host>:<port>`, protocol named when recognised), receipted with bytes each way, bounded by the egress budget, with a per-protocol reader for the ones worth more (the SMTP envelope, the SQL verb) | a mail-sending agent and a database agent pass a battery: listed destinations allowed, unlisted held, a denied one never connects, receipts carry bytes | planned |
+| **G3** Verbs in the body | GraphQL, cloud JSON APIs (AWS, GCP, Azure), JSON-RPC: one URL, every operation | Body-aware gates like the model and MCP gates: the operation name and type (`graphql:<host>/<operation>` mutation vs query, `aws:<service>:<action>`, `jsonrpc:<host>/<method>`), decided and shown; the approval binds the body hash as today | the GitHub GraphQL and an AWS SDK call are decided by operation in tests; a mutation disguised as a query is caught | planned |
+| **G4** Browser and computer-use agents | The agent drives a browser: form posts and downloads are HTTP, but the person needs to see the page, not a URL | Approvals carry the page title, the form's fields (masked) and the referrer; downloads decided by type and size; per-site logins injected by the proxy so the agent never holds a password; a Playwright/CDP preset for `ovara run -- <agent>` | a browsing agent completes a purchase flow with every write held and shown as a form; a download of an executable is refused | planned |
+| **G5** Identity and delegation | Who is acting for whom: an agent for a user, a sub-agent for its parent | On-behalf-of principals in decisions and receipts; a sub-agent's credential can only narrow its parent's (capability leases and delegation chains the gateway already verifies, surfaced in `ovara agent add -parent`); OAuth token exchange (RFC 8693) for brokered bindings with the acting user as subject; CIBA for approvals from the user's own device | a sub-agent's request outside its parent's scope is refused with the chain in the receipt; a token minted for user A is never sent on user B's request | planned |
+| **G6** Policy depth | Rules name resources; they do not see content or flows | Content rules on outbound bodies (data-loss patterns: keys, card numbers, named fields), information-flow taint from sources to destinations (what was read from X may not go to Y), approval routing by risk and role (who is asked, in which channel, with what deadline) | a body carrying a secret pattern is held with the match shown; a read from a customer record cannot be posted to a public host without a question; a high-risk action reaches the named approvers only | planned |
+| **G7** Deployment and scale | One deployment per laptop or job | A Kubernetes sidecar mode (the proxy and gateway next to the agent pod, policy from a ConfigMap, receipts shipped), rootless tier 2, rolling attestations for agents that never stop (a statement per interval, chained), a control plane for many deployments and tenants (`ovara status` across them, key custody per tenant) | a fleet of ten sidecars under one baseline; an auditor verifies a day of a long-running agent from its rolling statements; a tenant cannot read another's receipts | planned |
+
+Each item adds to the spec (`spec/`), to `docs/GUARANTEES.md` with its
+tests, and to the agents battery, like S1–S4 did. Nothing in Track G
+changes the five contracts' meaning: new action types, resource forms and
+endpoints are added, never redefined.

@@ -104,8 +104,12 @@ func contextLines(a pendingApproval) []string {
 		// MCP: the server, and for a tool call the tool and its arguments
 		{"mcp_server", "MCP server"},
 		{"tool", "tool"},
+		// SDK tool guard: the framework asking, and the hash that binds the
+		// approval to these exact arguments
+		{"framework", "framework"},
 		{"tool_sha256", "tool definition sha256"},
 		{"arguments_bytes", "arguments size"},
+		{"arguments_sha256", "arguments sha256"},
 		{"arguments", "arguments"},
 	}
 	var out []string
@@ -295,6 +299,14 @@ func describe(resource string) string {
 	}
 	if rest, ok := strings.CutPrefix(resource, "commit:"); ok {
 		return "bring the agent's changes back to " + rest + " as a new branch"
+	}
+	// an agent framework's tool guard (SDK): "tool:<name>", the name escaped
+	// like an MCP tool's
+	if rest, ok := strings.CutPrefix(resource, "tool:"); ok {
+		if name, err := url.PathUnescape(rest); err == nil {
+			rest = name
+		}
+		return "call tool " + rest
 	}
 	// strict installs: "npm:left-pad@1.3.0"
 	for _, eco := range []string{"npm", "pypi", "go", "crate"} {

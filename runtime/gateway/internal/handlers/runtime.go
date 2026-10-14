@@ -152,6 +152,9 @@ type decisionEntry struct {
 	Request    *models.ActionRequest
 	Response   *models.DecisionResponse
 	Timestamp  time.Time
+	// Outcome is what the caller reported after acting on the decision
+	// (POST /v1/runtime/outcome); nil until it does. One report per decision.
+	Outcome *ActionOutcome
 }
 
 func newDecisionCache() *decisionCache {
@@ -218,6 +221,20 @@ func (c *decisionCache) GetWithRequest(id string) (*models.ActionRequest, *model
 	return e.Request, e.Response, true
 }
 
+// SetOutcome records the caller's report for a live decision. It returns
+// the decision's request and response, and false when the decision is
+// unknown or expired, or already has an outcome (the first report stands).
+func (c *decisionCache) SetOutcome(id string, out *ActionOutcome) (*models.ActionRequest, *models.DecisionResponse, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.decisions[id]
+	if !ok || e.Request == nil || time.Since(e.Timestamp) > c.ttl || e.Outcome != nil {
+		return nil, nil, false
+	}
+	e.Outcome = out
+	return e.Request, e.Response, true
+}
+
 func (c *decisionCache) StartCleanup(interval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -263,6 +280,7 @@ func (h *Handler) LookupDecision(id string) (*models.ActionRequest, *models.Deci
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/runtime/check", h.handleCheck)
 	mux.HandleFunc("POST /v1/runtime/batch-check", h.handleBatchCheck)
+	mux.HandleFunc("POST /v1/runtime/outcome", h.handleOutcome)
 	mux.HandleFunc("GET /v1/runtime/decision/{id}", h.handleGetDecision)
 	mux.HandleFunc("GET /v1/runtime/agent/{agent_id}/recent", h.handleGetAgentRecentDecisions)
 	mux.HandleFunc("GET /v1/runtime/status", h.handleGetStatus)

@@ -21,6 +21,7 @@ and a new route is operator-only until listed here:
 |---|---|
 | `POST /v1/runtime/check` | have an action decided |
 | `POST /v1/runtime/batch-check` | several at once |
+| `POST /v1/runtime/outcome` | report how an action it was allowed to run went |
 | `POST /v1/approval/create` | open an approval for its own escalated decision |
 | `GET /v1/approval/{id}` | read its own approval |
 | `POST /v1/approval/{id}/claim` | claim its own approved approval before acting |
@@ -56,6 +57,27 @@ Reason codes a client may see (`reason_codes`): `allowed`, `policy_allow`,
 `risky_git_pattern`, `production_target`, `weak_lease_scope`, `revoked`,
 `revocation_unavailable`, `revocation_epoch_stale`. A client acts on the
 decision; reasons are for people and receipts. New codes may be added.
+
+### 2.1 `POST /v1/runtime/outcome` — `{decision_id, status, duration_ms?, error?}`
+
+The caller says how the action went after acting on a decision (`status`
+`ok` or `error`, the error's text for the latter, bounded to 600 bytes).
+The gateway keeps it as an `action.outcome` event naming the decision, the
+agent, the action and resource, so the decision and what happened share one
+record. Reporting never changes a decision.
+
+- `200 {decision_id, status, recorded}`.
+- `404` for a decision the gateway never produced or no longer holds; `403`
+  for another principal's decision (an operator may report any); `409` for
+  a second report on the same decision, and for a decision that was
+  **denied**: nothing was allowed to run, so the report is evidence of a
+  caller that ignored the answer, and is kept as a `security.violation`
+  event (`outcome_for_denied_decision`), as a foreign report is
+  (`cross_principal_outcome`).
+
+An SDK tool guard reports every call it ran; a harness of your own should
+too. A missing outcome is not proof that nothing ran: the record of what
+was *allowed* is the decision and its receipt.
 
 ## 3. Approvals
 
@@ -115,7 +137,11 @@ changes are recorded in `CHANGELOG.md` under "Spec".
 `runtime/gateway/internal/handlers`: the identity red team (`TestRT*`:
 foreign subjects, cross-agent create and get, replay, stale requests),
 `TestClaim_IsSingleUseAndOwnerOnly`, `TestApprovalHandler_FloodControl`,
-`TestApprovalHandler_ExpiredApproval`, the approval-context binding tests;
+`TestApprovalHandler_ExpiredApproval`, the approval-context binding tests,
+`TestOutcome_*` (the outcome report: owner or operator only, once, never
+for a denied decision);
 `runtime/gateway/internal/approval`: `TestOpen_*`, `TestClaim_*`;
 `runtime/gateway/internal/models`: `spec_schema_test.go`;
-`tests/agents/harness.sh` (a custom harness against the API, 16 checks).
+`sdk/python/tests/test_guard.py` and `sdk/typescript/src/__tests__/guard.test.ts`
+(the tool guards' use of this API against a stand-in gateway);
+`tests/agents/harness.sh` (a custom harness against the API, 24 checks).

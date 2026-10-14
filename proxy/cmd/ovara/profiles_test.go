@@ -75,13 +75,13 @@ func TestProfiles_SwitchReplacesOnlyTheProfileRules(t *testing.T) {
 		t.Fatalf("to observe: %v, was %q", err, was)
 	}
 	all, n, res = ruleSet(t, dir)
-	if len(all) != base+8 || n != 8 {
+	if len(all) != base+9 || n != 9 {
 		t.Fatalf("observe: %d rules (%d profile)", len(all), n)
 	}
 	for k, want := range map[string]string{
 		"http.request GET *": "allow", "http.request HEAD *": "allow",
 		"http.request POST *": "deny", "http.request PUT *": "deny", "http.request PATCH *": "deny", "http.request DELETE *": "deny",
-		"model.server_feature model:*": "deny", "mcp.tool_call mcp:*": "deny",
+		"model.server_feature model:*": "deny", "mcp.tool_call mcp:*": "deny", "tool.call tool:*": "deny",
 		// the defaults' own questions are still there
 		"model.server_feature *": "escalate", "mcp.tool_call *": "escalate", "http.request GET https://mine.example/*": "allow",
 	} {

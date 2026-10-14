@@ -514,6 +514,31 @@ the server without the wrapper is not stopped by it. A stdio server that is
 not wrapped is invisible to Ovara, and WebSocket transports are not
 supported.
 
+### Any agent, any framework
+
+The proxy sees what leaves over the network. What a framework's tools do
+in-process (send an email through a library, delete a file, run a query) it
+cannot see. The SDKs' **tool guard** closes that gap: wrap a tool and every
+call is decided by the gateway before it runs, held for a person like any
+other action, refused when policy says so, and reported when it is done.
+
+```python
+from ovara_sdk import ToolGuard
+guard = ToolGuard("http://127.0.0.1:8080", api_key=AGENT_TOKEN, agent="support-bot")
+
+@guard.tool("send_email")
+def send_email(to: str, subject: str, body: str) -> str: ...
+```
+
+The person asked sees the tool, the size and hash of its arguments and a
+preview with secret-looking values masked, in the CLI, the approval page or
+Slack like everything else; the approval is bound to those exact arguments.
+Rules name the tool (`"action_type": "tool.call"`, `"resource":
+"tool:send_email"`); an unlisted tool pauses under `strict` and `balanced`
+and is refused under `observe`. `createToolGuard` is the same in
+TypeScript. `docs/use-cases.md` §5 has the LangChain and async forms, and
+`tests/agents/harness.py` is a complete harness run in CI.
+
 ## How strong is the protection?
 
 Be clear about what you are buying. Every promise, the mode it holds in and

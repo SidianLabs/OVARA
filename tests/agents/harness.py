@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from ovara_sdk import ActionRequest, OvaraClient
+from ovara_sdk import ActionRequest, OvaraClient, ToolDenied, ToolGuard, ToolHeld
 
 base, token = sys.argv[1].rstrip("/"), sys.argv[2]
 results = []
@@ -123,6 +123,81 @@ async def main():
            "issued_at": "2020-01-01T00:00:00Z"}
     st = http("POST", "/v1/runtime/check", old)
     say(st[0] >= 400 or st[1].get("decision") == "deny", "a request dated years ago is refused", "HTTP %s %s" % (st[0], st[1].get("decision")))
+
+    print("=== a tool guard: the framework's own tool calls, decided by the gateway")
+    # The guard wraps the functions the model calls. It holds the agent token,
+    # like the rest of this harness, and cannot approve anything.
+    guard = ToolGuard(base, api_key=token, agent="harness", framework="custom", wait_seconds=40, poll_seconds=1)
+    ran = []
+    guard.on_hold = lambda call: print("APPROVAL " + call.approval_id, flush=True)   # the shell script plays the human
+
+    @guard.tool("send_email")
+    async def send_email(to, subject):
+        ran.append(to)
+        return "sent"
+
+    @guard.tool("post_tweet")
+    async def post_tweet(text):
+        ran.append(text)
+        return "posted"
+
+    @guard.tool("delete_everything")
+    async def delete_everything():
+        ran.append("rm")
+        return "gone"
+
+    @guard.tool("deploy")
+    async def deploy(env):
+        ran.append(env)
+        return "deployed"
+
+    # the human approves (third answer)
+    try:
+        r = await send_email("a@example.com", "hello")
+        say(r == "sent" and ran == ["a@example.com"], "a held tool call runs once a person approves it", "ran=%s" % ran)
+    except Exception as e:  # noqa: BLE001
+        say(False, "a held tool call runs once a person approves it", repr(e))
+    last = guard.last
+    say(last is not None and last.claimed and last.outcome_recorded is True,
+        "the approval is claimed before the tool runs and the outcome is on record", str(last))
+    # the human denies (fourth answer)
+    try:
+        await post_tweet("hi")
+        say(False, "a tool call a person denies never runs", "it ran")
+    except ToolDenied as e:
+        say("denied" in str(e) and "hi" not in ran, "a tool call a person denies never runs", str(e))
+    except Exception as e:  # noqa: BLE001
+        say(False, "a tool call a person denies never runs", repr(e))
+    # a deny written in policy: refused outright, nobody is asked
+    try:
+        await delete_everything()
+        say(False, "a tool the policy denies is refused outright", "it ran")
+    except ToolDenied as e:
+        say("denied by policy" in str(e) and "rm" not in ran, "a tool the policy denies is refused outright", str(e))
+    except Exception as e:  # noqa: BLE001
+        say(False, "a tool the policy denies is refused outright", repr(e))
+    # fail fast: nobody answers these; the approval stays open for a person
+    guard.wait_seconds, guard.on_hold = 0, None
+    try:
+        await deploy("prod")
+        say(False, "with wait_seconds=0 a held call fails fast with the approval id", "it ran")
+    except ToolHeld as e:
+        say(e.approval_id.startswith("apr_") and "prod" not in ran, "with wait_seconds=0 a held call fails fast with the approval id", str(e))
+        try:
+            await deploy("prod")
+            say(False, "the identical call gets the same open approval back", "it ran")
+        except ToolHeld as e2:
+            say(e2.approval_id == e.approval_id, "the identical call gets the same open approval back", "%s then %s" % (e.approval_id, e2.approval_id))
+    except Exception as e:  # noqa: BLE001
+        say(False, "with wait_seconds=0 a held call fails fast with the approval id", repr(e))
+    # the record cannot be faked
+    forged = http("POST", "/v1/runtime/outcome", {"decision_id": "dec_forged-" + uuid.uuid4().hex, "status": "ok"})
+    say(forged[0] == 404, "an outcome cannot be reported for a decision the gateway never made", "HTTP %s" % forged[0])
+    denied = await c.check(ActionRequest(action_type="tool.call", resource="tool:delete_everything", environment="local"))
+    lied = http("POST", "/v1/runtime/outcome", {"decision_id": denied.get("decision_id"), "status": "ok"})
+    say(denied.get("decision") == "deny" and lied[0] == 409,
+        "an outcome reported for a denied decision is refused and kept as a security event", "decision=%s HTTP %s" % (denied.get("decision"), lied[0]))
+    await guard.aclose()
 
     await c.aclose()
     print("HARNESS_RESULT %d passed %d failed" % (sum(results), len(results) - sum(results)))

@@ -53,6 +53,7 @@ type rtStack struct {
 	keys       map[string]ed25519.PrivateKey
 	trustedPub map[string][]byte
 	handler    *Handler
+	policy     *policy.Store
 }
 
 func newRTStack(t *testing.T) *rtStack {
@@ -84,6 +85,7 @@ func newRTStack(t *testing.T) *rtStack {
 	}
 	h.SetEnrollment(enr)
 	st.handler = h
+	st.policy = policyStore
 
 	approvalStore := approval.NewInMemoryStore()
 	approvalHandler := NewApprovalHandler(approval.NewService(approvalStore))

@@ -350,6 +350,29 @@ each promise, is in [`docs/GUARANTEES.md`](docs/GUARANTEES.md).
   `slack-channel` and `slack-approvers`, with the token as
   `OVARA_SLACK_TOKEN` in the step's env. `ovara doctor` checks the setup.
   Tested against a stand-in for Slack's API, not a live workspace yet.
+- **A tool guard for any agent framework.** `ToolGuard` (Python) and
+  `createToolGuard` (TypeScript) wrap the functions a framework's tools
+  run in-process, which the proxy cannot see. Every call is decided by the
+  gateway first (`tool.call`, resource `tool:<name>`), with the arguments'
+  size, SHA-256 and a preview with secret-looking values masked as the
+  approval's context; a deny raises and the function never runs; an
+  escalation opens an approval and waits (`wait_seconds`, 0 to fail fast
+  with the approval id; the identical call gets a late answer back) and
+  claims it before running; an unreachable gateway means the tool does not
+  run. Afterwards the guard reports how it went to the new
+  `POST /v1/runtime/outcome` (agent credential; owner or operator only;
+  once; a report for a denied decision is refused and kept as a security
+  event), recorded as an `action.outcome` event. `ovara approvals` and
+  Slack show a tool call as "call tool <name>" with its framework and
+  argument hash; the observe profile refuses every guarded call. Spec:
+  `spec/decision-api.md` §2.1, `spec/resource-model.md`;
+  `docs/GUARANTEES.md` 2.5. The agents harness in CI exercises it against
+  a real gateway. Gateway-decided calls are in the gateway's receipts and
+  events, not yet in the proxy's receipt chain or the run attestation.
+- Spec 0.1, later: the decision API gains `POST /v1/runtime/outcome` (the
+  caller reports how an allowed action went; §2.1) and the resource model
+  the `tool.call` action type with `tool:<name>` resources (an agent
+  framework's in-process tool calls, through the SDK tool guard).
 
 **`ovara run -- <agent>`: one command**
 

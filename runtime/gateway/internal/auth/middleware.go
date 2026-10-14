@@ -48,6 +48,10 @@ func agentAllowed(method, path string) bool {
 		return true
 	case method == http.MethodPost && path == "/v1/runtime/batch-check":
 		return true
+	// The caller reports how an action it was allowed (or approved) to run
+	// went. It records; it never decides, and the handler checks ownership.
+	case method == http.MethodPost && path == "/v1/runtime/outcome":
+		return true
 	case method == http.MethodPost && path == "/v1/approval/create":
 		return true
 	// Poll approval status by id. Resolution verbs are POSTs; the

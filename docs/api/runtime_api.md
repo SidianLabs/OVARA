@@ -85,6 +85,7 @@ Common HTTP statuses:
 |--------|------|-------------|
 | `POST` | `/v1/runtime/check` | Evaluate single action |
 | `POST` | `/v1/runtime/batch-check` | Evaluate multiple actions |
+| `POST` | `/v1/runtime/outcome` | Report how an allowed or approved action went (agent credential; owner or operator only) |
 | `GET` | `/v1/runtime/decision/{id}` | Retrieve cached decision |
 
 ### Approvals

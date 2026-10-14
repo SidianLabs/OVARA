@@ -225,15 +225,40 @@ loop), there are two layers, and they cover different things:
 - **Network calls** — anything your tools do over HTTP(S) can be routed through
   the proxy with the environment `ovara env` prints. No code changes. This
   covers API calls, package installs, `git` over HTTPS, web fetches.
-- **Actions that are not network calls** — deleting local files, running a
-  shell command. The proxy cannot see these. If you want them gated, call the
-  gateway's decision API from your harness before executing
-  (`POST /v1/runtime/check` with `action_type` `shell`, `exec`, …) and obey the
-  answer. The TypeScript and Python clients in `sdk/` wrap this; they are not
-  published to npm or PyPI yet.
+- **Actions that are not network calls** — the functions your tools run
+  in-process: sending an email through a library, deleting local files,
+  running a query, a shell command. The proxy cannot see these. Wrap each
+  tool with the SDK's **tool guard** and it is decided by the gateway before
+  it runs, held for a person like any other action (who sees the tool, the
+  arguments' hash and a preview with secrets masked), refused when policy
+  says so, and reported when it is done:
 
-The second layer is integration work you do yourself; Ovara will decide and
-record, but only if your harness asks and honours the answer.
+  ```python
+  from ovara_sdk import ToolGuard
+  guard = ToolGuard("http://127.0.0.1:8080", api_key=AGENT_TOKEN, agent="support-bot")
+
+  @guard.tool("send_email")
+  def send_email(to: str, subject: str, body: str) -> str: ...
+
+  tool = StructuredTool.from_function(guard.wrap(delete_file, "delete_file"))  # LangChain
+  ```
+
+  ```ts
+  const guard = createToolGuard({ baseUrl, apiKey: AGENT_TOKEN, agent: "support-bot" });
+  const sendEmail = guard.wrap("send_email", async (to: string, body: string) => { ... });
+  ```
+
+  A denied call raises `ToolDenied` and the function never runs; a held call
+  waits for the answer (`wait_seconds`, 0 to fail fast and retry later with
+  the approval id). Rules name the tool: `{"action_type": "tool.call",
+  "resource": "tool:send_email", "escalate": true}`. The raw decision API
+  (`POST /v1/runtime/check`, `/v1/runtime/outcome`) is there for a harness
+  that wants to do this itself. The SDKs are not published to npm or PyPI
+  yet: install them from `sdk/`.
+
+The second layer is code inside your agent: Ovara decides and records, but
+only the calls that go through the guard. `tests/agents/harness.py` is a
+complete example, run in CI against a real gateway.
 
 ## 6. Evaluating or red-teaming an untrusted agent  — *tested (boundary)*
 
