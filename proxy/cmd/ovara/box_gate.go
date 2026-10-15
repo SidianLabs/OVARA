@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"time"
@@ -24,6 +25,13 @@ import (
 // only box-init (root in the guest) holds. Without it an agent could put
 // requests of its own to the gate: approval prompts for programs that are
 // not running, whose answers could then be remembered for the real ones.
+
+// Where tier 2's sockets live inside the box: a directory only root can enter.
+const (
+	boxSockDir   = "/run/ovara"
+	boxProxySock = "proxy.sock"
+	boxGateSock  = "gate.sock"
+)
 
 type gateRequest struct {
 	Argv []string `json:"argv"`
@@ -139,4 +147,39 @@ func dialGateTCP(addr, token string, timeout time.Duration) (*remoteGate, net.Co
 	}
 	_ = c.SetDeadline(time.Time{})
 	return &remoteGate{enc: enc, dec: dec}, c, nil
+}
+
+// relayTo accepts on ln and pipes each connection to a fresh dial().
+func relayTo(ln net.Listener, dial func() (net.Conn, error)) {
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer c.Close()
+			u, err := dial()
+			if err != nil {
+				return
+			}
+			defer u.Close()
+			pipe(c, u)
+		}()
+	}
+}
+
+// pipe copies both ways until either side is done, then closes both.
+func pipe(a, b net.Conn) {
+	done := make(chan struct{}, 2)
+	cp := func(dst, src net.Conn) {
+		_, _ = io.Copy(dst, src)
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+		done <- struct{}{}
+	}
+	go cp(a, b)
+	go cp(b, a)
+	<-done
+	<-done
 }

@@ -82,10 +82,6 @@ var boxEtcMasked = []string{
 // device nodes the box gets, bound from the host's
 var boxDevices = []string{"null", "zero", "full", "random", "urandom", "tty"}
 
-// tier1DstRefused lists where a -mount may not land in a tier 1 box: the
-// box's own system, devices and run directory.
-var tier1DstRefused = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/dev", "/proc", "/sys", "/run", "/tmp", "/var/tmp", boxRunsRoot}
-
 // tier1Command is the traced process `ovara box` starts for a tier 1 box:
 // box-init -tier1, with its spec on a pipe. Call done once the process has
 // exited.

@@ -168,6 +168,11 @@ jobs:
           bin=ovara; [ "$GOOS" = windows ] && bin=ovara.exe
           mkdir -p "dist/$name"
           (cd proxy && go build -trimpath -ldflags "-s -w -X main.version=${TAG} -X main.boxImage=ghcr.io/sidianlabs/ovara-box@${BOX_DIGEST}" -o "../dist/$name/$bin" ./cmd/ovara)
+          # `ovara box` on macOS runs the box in a Linux VM; the guest's
+          # ovara rides in the same archive, under the same checksum
+          if [ "$GOOS" = darwin ]; then
+            (cd proxy && GOOS=linux go build -trimpath -ldflags "-s -w -X main.version=${TAG}" -o "../dist/$name/ovara-linux-$GOARCH" ./cmd/ovara)
+          fi
           cp LICENSE README.md "dist/$name/"
           cd dist
           if [ "$GOOS" = windows ]; then zip -qr "$name.zip" "$name"; else tar -czf "$name.tar.gz" "$name"; fi

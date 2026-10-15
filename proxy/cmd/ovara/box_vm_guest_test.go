@@ -95,13 +95,19 @@ func TestVMGuest_RunsTheAgentBehindTheGate(t *testing.T) {
 	if err := os.WriteFile(bin, data, 0o755); err != nil { //nolint:gosec // must be executable by the agent
 		t.Fatal(err)
 	}
+	// the workspace arrives as a tar, as `ovara box` sends it
+	src := filepath.Join(base, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "README"), []byte("project\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	treeIn := filepath.Join(base, "tree-in.tar")
+	if err := writeTreeFile(src, treeIn); err != nil {
+		t.Fatal(err)
+	}
 	work := filepath.Join(base, "work")
-	if err := os.Mkdir(work, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, "README"), []byte("project\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 
 	token, _ := newGateToken()
 	addr, asked, gateDone := startGate(t, token)
@@ -116,7 +122,7 @@ exit 3`
 		Env:  []string{"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/" + agentUser, "OVARA_TEST_BOXINIT=1"},
 		Dir:  work, User: agentUser,
 		Gate: true, GateAddr: addr, GateToken: token,
-		TreeOut: filepath.Join(base, "tree.tar"),
+		TreeIn: treeIn, TreeOut: filepath.Join(base, "tree.tar"),
 	}
 	specPath := filepath.Join(base, "spec.json")
 	sb, _ := json.Marshal(spec)
@@ -139,6 +145,9 @@ exit 3`
 	if _, err := os.Stat(specPath); err == nil {
 		t.Error("the spec (with the gate token) was left in the guest")
 	}
+	if _, err := os.Stat(treeIn); err == nil {
+		t.Error("the incoming workspace tar was left in the guest")
+	}
 	tf, err := os.Open(spec.TreeOut)
 	if err != nil {
 		t.Fatalf("no workspace tar: %v\n%s", err, out)
@@ -158,6 +167,9 @@ exit 3`
 	}
 	if st := read("status.txt"); !strings.Contains(st, "NoNewPrivs:\t1") || !strings.Contains(st, "Seccomp:\t2") {
 		t.Errorf("the agent's process is not under no_new_privs and a seccomp filter:\n%s", st)
+	}
+	if read("README") != "project" {
+		t.Errorf("the workspace that went in did not come back: %q", read("README"))
 	}
 	if read("out.txt") != "changed" {
 		t.Errorf("the agent's change did not come back: %q", read("out.txt"))
@@ -182,10 +194,15 @@ func TestVMGuest_RefusesToStartWithoutTheGate(t *testing.T) {
 		t.Skip("needs root")
 	}
 	base := t.TempDir()
-	work := filepath.Join(base, "work")
-	if err := os.Mkdir(work, 0o755); err != nil {
+	src := filepath.Join(base, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	treeIn := filepath.Join(base, "tree-in.tar")
+	if err := writeTreeFile(src, treeIn); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(base, "work")
 	token, _ := newGateToken()
 	addr, _, _ := startGate(t, token)
 	wrong, _ := newGateToken()
@@ -193,7 +210,7 @@ func TestVMGuest_RefusesToStartWithoutTheGate(t *testing.T) {
 		Argv: []string{"sh", "-c", "touch " + filepath.Join(work, "ran")},
 		Dir:  work, User: "ovara-vmtest-nogate",
 		Gate: true, GateAddr: addr, GateToken: wrong,
-		TreeOut: filepath.Join(base, "tree.tar"),
+		TreeIn: treeIn, TreeOut: filepath.Join(base, "tree.tar"),
 	}
 	t.Cleanup(func() { _ = exec.Command("userdel", "-r", spec.User).Run() }) //nolint:gosec // fixed test user
 	specPath := filepath.Join(base, "spec.json")
@@ -219,3 +236,18 @@ func errorsAs(err error, target **exec.ExitError) bool {
 }
 
 var _ = io.EOF
+
+// procHasUID decides which processes a stop signals: it must match this
+// process by its own uid and nothing else.
+func TestProcHasUID(t *testing.T) {
+	me := os.Getpid()
+	if !procHasUID(me, os.Getuid()) {
+		t.Errorf("procHasUID(self, %d) = false", os.Getuid())
+	}
+	if procHasUID(me, os.Getuid()+12345) {
+		t.Error("procHasUID matched another uid")
+	}
+	if procHasUID(1<<30, os.Getuid()) {
+		t.Error("procHasUID matched a process that does not exist")
+	}
+}

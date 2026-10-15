@@ -722,7 +722,7 @@ nftables). The product has to work the same on every developer machine:
 | Host | How the box runs | Ovara runs | Status |
 |---|---|---|---|
 | Linux | tier 1 (netns) or tier 2 (container) directly | on the host | tier 1 and tier 2 built and tested (tier 2 in CI on GitHub's runners) |
-| macOS | tier 2 inside a Lima/Colima VM; `ovara box` drives it | on the host, proxy reachable from the VM's network only | not built |
+| macOS | the box inside a Lima VM; `ovara box` drives it (`-vm lima`, the default) | on the host, proxy and command gate reachable from the VM's network only | built (§10.1); tested end to end on Linux with a stand-in VM; not yet run on a real Mac |
 | Windows | tier 2 inside WSL2 (Docker Desktop's VM or a dedicated distro) | on the host (Windows binary) or inside WSL2 | not built |
 | CI | tier 1 in a privileged job, or tier 0 with the `ci` profile when privilege is unavailable | same job | tier 0 tested (`ci-bot`), tier 1 tested in the agent matrix |
 
@@ -803,11 +803,49 @@ non-root user under `no_new_privs` and the filter, a program the gate refuses
 never runs, the spec is gone, and a wrong token stops the run before the
 agent starts.
 
-Not built yet, in the order they come: `ovara box` choosing the VM on macOS
-and running Ovara on the host side (the box's orchestration is Linux-only
-code today and has to be split); a macOS CI job that boots Lima for real;
-then WSL2. Until all of that ships, the first-paragraph rule above stands:
-macOS and Windows are cooperative only.
+The host side (`ovara box -vm lima`, `cmd/ovara/box_vm_host.go`) ties it
+together, and on macOS it is the default, since tiers 1 and 2 need a Linux
+host. `ovara box` runs as the person there (Lima refuses root), keeps its
+runs in the deployment directory, and for each run:
+
+1. starts Ovara on the host as for tier 2, and the command gate on a port
+   only the run's token opens;
+2. creates the VM with its lockdown and verifies it from inside, or stops;
+3. copies in the workspace as one tar (so a link in the project cannot pull
+   a host file into the guest), Ovara's public CA, the Linux build of ovara
+   (`ovara-linux-<arch>` next to the macOS one, or `-vm-binary`) and the
+   guest spec;
+4. runs `box-init -vm` there as root, and so the agent as its own user;
+5. copies the workspace tar out, unpacks it strictly, puts it in place of the
+   host's copy, and hands over to the same commit-back as every tier;
+6. deletes the VM. `-cpus` and `-memory` size it.
+
+A stop (SIGTERM or Ctrl-C to `ovara box`) is done in order: the host runs
+`box-init -vm-stop` in the guest, box-init sends SIGTERM to every process of
+the agent's user (SIGKILL after 10 seconds), still writes the workspace, and
+it comes back as after a normal exit; the gate refuses any new program
+meanwhile. A second signal, or a guest that has not finished within two
+minutes, ends the run at once, and then the workspace stays as it went in.
+
+End to end on Linux in CI: `TestVMBox_EndToEnd` runs the real binary with a
+network namespace standing in for the VM (`-vm netns-test`, offered only
+when `OVARA_BOX_VM_NETNS_TEST=1`; it shares the host's file system and is
+not a boundary). Everything but the hypervisor is the code a Lima run uses:
+the agent runs as its own non-root user under `no_new_privs` and the seccomp
+filter, a request to a blocked site gets Ovara's 403, a direct connection
+out is blocked, `sudo` is refused by the gate, the project goes in without
+`.env`, the agent's change comes back, and nothing of the VM is left. The
+test fails if the gate is turned off. `TestVMBox_StopBringsTheWorkBack`
+stops a run with SIGTERM and checks that the agent got SIGTERM in the guest
+and that what it wrote came back; it fails if the stop kills the guest's
+command instead.
+
+Not done yet: **no real Lima VM has booted this code on a Mac** — that needs
+a macOS CI runner (the owner's) and is the next step, followed by WSL2 for
+Windows. Until a real Mac run passes the agents matrix, the first-paragraph
+rule above stands: macOS and Windows are documented as cooperative only, and
+`-vm lima` is new and unproven there. The VM choice is a launcher flag, not
+yet part of the run manifest (C5); adding it is an RFC (`spec/rfcs/`).
 
 ## 11. Policy model v2
 
@@ -899,7 +937,7 @@ project extends.
 | **install policy** (registry pins, new-dependency pause) | `proxy/internal/lockfiles`, `proxy/internal/proxy/packages.go`, `-profile strict` | yes |
 | **policy v2** evaluator + migrate + shadow check | `runtime/gateway/internal/{policy,evaluator}` | yes |
 | **box image** (tier 2): agent runtimes, no secrets, read-only root | `box/Dockerfile` | yes |
-| **VM driver** (Lima / WSL2) | `proxy/internal/vm` | started: the driver interface and the Lima driver (hardened instance config, guest network lockdown, fail-closed verify), and the guest side of the box (`box-init -vm`); `ovara box` does not use them yet; WSL2 not started (§10.1) |
+| **VM driver** (Lima / WSL2) | `proxy/internal/vm` | started: the driver interface and the Lima driver (hardened instance config, guest network lockdown, fail-closed verify), the guest side of the box (`box-init -vm`) and `ovara box -vm lima` (the default on macOS); tested end to end on Linux with a stand-in VM, not yet booted on a real Mac; WSL2 not started (§10.1) |
 | tests: agents matrix, scenarios, red teams | `tests/` | yes; grows per milestone |
 
 ## 13. Data flows

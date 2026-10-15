@@ -34,10 +34,21 @@ type Driver interface {
 	CopyIn(ctx context.Context, name, hostSrc, guestDst string) error
 	// CopyOut copies a file or directory out of the VM.
 	CopyOut(ctx context.Context, name, guestSrc, hostDst string) error
-	// Run runs argv inside the VM and returns its exit status.
+	// Run runs argv as root inside the VM and returns its exit status.
+	// Root, because the box's guest side sets up the agent's user; nothing
+	// runs in the guest as the image's own user.
 	Run(ctx context.Context, name string, argv []string, stdio Stdio) (int, error)
 	// Delete stops and removes the VM and its disk.
 	Delete(ctx context.Context, name string) error
+
+	// HostName is how the guest names the host; it resolves inside the
+	// guest without DNS, which the lockdown drops.
+	HostName() string
+	// HostListen is the host address the guest's connections to HostName
+	// arrive at: where Ovara's proxy and the command gate must listen.
+	HostListen() string
+	// GuestDir is a directory in the guest for one run's files.
+	GuestDir() string
 }
 
 // Stdio is the agent's terminal, passed through to a command in the VM.

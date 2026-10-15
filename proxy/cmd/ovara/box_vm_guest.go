@@ -20,18 +20,18 @@ package main
 //     unpack (box_vm_tree.go): links stay links, devices and FIFOs stay out.
 
 import (
-	"archive/tar"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,40 +40,9 @@ import (
 	"ovara.proxy/internal/boxgate"
 )
 
-// vmGuestSpec is what the host hands box-init -vm: a file in the guest that
-// box-init reads and removes before the agent exists.
-type vmGuestSpec struct {
-	Argv      []string `json:"argv"`
-	Env       []string `json:"env"`
-	Dir       string   `json:"dir"`  // the workspace in the guest
-	User      string   `json:"user"` // created if missing; never root or an admin
-	Gate      bool     `json:"gate"`
-	GateAddr  string   `json:"gate_addr"`  // host:port of the host's command gate
-	GateToken string   `json:"gate_token"` // opens it
-	TreeOut   string   `json:"tree_out"`   // where to write the workspace tar
-}
-
-var vmUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
-
 // adminGroups are groups whose members can become root on a stock Linux
 // image; the agent's user must be in none of them.
 var adminGroups = map[string]bool{"root": true, "sudo": true, "admin": true, "wheel": true, "adm": true, "lxd": true, "docker": true}
-
-func (s *vmGuestSpec) validate() error {
-	if len(s.Argv) == 0 {
-		return errors.New("box-init -vm: no agent command")
-	}
-	if !vmUserRE.MatchString(s.User) || s.User == "root" {
-		return fmt.Errorf("box-init -vm: agent user %q", s.User)
-	}
-	if !filepath.IsAbs(s.Dir) || !filepath.IsAbs(s.TreeOut) {
-		return errors.New("box-init -vm: the workspace and the tree must be absolute paths")
-	}
-	if s.Gate && (s.GateAddr == "" || len(s.GateToken) < 32) {
-		return errors.New("box-init -vm: the command gate needs an address and the run's token")
-	}
-	return nil
-}
 
 // runVMGuest is box-init -vm SPEC. It returns the agent's exit status.
 func runVMGuest(specPath string) (int, error) {
@@ -99,6 +68,20 @@ func runVMGuest(specPath string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// the workspace arrives as a tar so that nothing in it is followed on
+	// the way in; it is unpacked as strictly as on the way out
+	tin, err := os.Open(spec.TreeIn) //nolint:gosec // the path the host passed
+	if err != nil {
+		return 0, fmt.Errorf("box-init -vm: the workspace: %w", err)
+	}
+	err = extractTree(tin, spec.Dir, treeMaxBytes, treeMaxEntries)
+	tin.Close()
+	if err != nil {
+		return 0, fmt.Errorf("box-init -vm: unpacking the workspace: %w", err)
+	}
+	if err := os.Remove(spec.TreeIn); err != nil {
+		return 0, err
+	}
 	if err := chownTree(spec.Dir, uid, gid); err != nil {
 		return 0, fmt.Errorf("box-init -vm: handing the workspace to %s: %w", spec.User, err)
 	}
@@ -114,6 +97,14 @@ func runVMGuest(specPath string) (int, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}, //nolint:gosec // validated non-negative ids from the user database
 	}
+
+	// a stop from the host (box-init -vm-stop) ends the agent and still
+	// writes the workspace for the host
+	agentDone := make(chan struct{})
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+	defer signal.Stop(sigs)
+	go stopAgentOnSignal(sigs, agentDone, uid)
 
 	code := 0
 	if spec.Gate {
@@ -135,13 +126,16 @@ func runVMGuest(specPath string) (int, error) {
 				return len(e.Argv) >= 3 && e.Argv[1] == boxInitCmd && e.Argv[2] == "-vm-exec"
 			},
 		}
-		if code, err = tr.Run(cmd); err != nil {
+		code, err = tr.Run(cmd)
+		if err != nil {
+			close(agentDone)
 			return 0, fmt.Errorf("box-init -vm: %w", err)
 		}
 	} else {
 		if err := cmd.Run(); err != nil {
 			var ee *exec.ExitError
 			if !errors.As(err, &ee) {
+				close(agentDone)
 				return 0, err
 			}
 			code = ee.ExitCode()
@@ -150,6 +144,7 @@ func runVMGuest(specPath string) (int, error) {
 			}
 		}
 	}
+	close(agentDone)
 
 	// every process of the agent is gone (the tracer kills what is left
 	// when the agent exits), so the tree below cannot change under us
@@ -157,6 +152,106 @@ func runVMGuest(specPath string) (int, error) {
 		return code, fmt.Errorf("box-init -vm: packing the workspace: %w", err)
 	}
 	return code, nil
+}
+
+// vmStopGrace is how long the agent has after SIGTERM before SIGKILL.
+var vmStopGrace = 10 * time.Second
+
+// stopAgentOnSignal stops the agent when box-init -vm gets SIGTERM or
+// SIGHUP: every process of the agent's user gets SIGTERM, then SIGKILL
+// until the agent is gone (a process started meanwhile goes too). SIGINT is
+// left to the terminal, which gives it to the agent itself.
+func stopAgentOnSignal(sigs <-chan os.Signal, agentDone <-chan struct{}, uid int) {
+	for {
+		select {
+		case <-agentDone:
+			return
+		case s := <-sigs:
+			if s == syscall.SIGINT {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "[ovara] %s: stopping the agent\n", s)
+			signalUser(uid, syscall.SIGTERM)
+			select {
+			case <-agentDone:
+				return
+			case <-time.After(vmStopGrace):
+			}
+			for {
+				signalUser(uid, syscall.SIGKILL)
+				select {
+				case <-agentDone:
+					return
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
+		}
+	}
+}
+
+// signalUser sends sig to every process running as uid (real or
+// effective). Never root's: uid 0 is refused.
+func signalUser(uid int, sig syscall.Signal) {
+	if uid <= 0 {
+		return
+	}
+	for _, pid := range procPIDs() {
+		if procHasUID(pid, uid) {
+			_ = syscall.Kill(pid, sig)
+		}
+	}
+}
+
+func procPIDs() []int {
+	ents, _ := os.ReadDir("/proc")
+	var pids []int
+	for _, e := range ents {
+		if pid, err := strconv.Atoi(e.Name()); err == nil && pid > 0 {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// procHasUID reports whether pid's real or effective uid is uid.
+func procHasUID(pid, uid int) bool {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/status")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if rest, ok := strings.CutPrefix(line, "Uid:"); ok {
+			f := strings.Fields(rest)
+			want := strconv.Itoa(uid)
+			return len(f) >= 2 && (f[0] == want || f[1] == want)
+		}
+	}
+	return false
+}
+
+// runVMStop is box-init -vm-stop SPEC, the host's way to stop a run: it
+// sends SIGTERM to the root box-init -vm that was started with SPEC, which
+// stops the agent and still writes the workspace. A run already over is
+// not an error.
+func runVMStop(specPath string) error {
+	if os.Geteuid() != 0 {
+		return errors.New("box-init -vm-stop must run as root in the guest")
+	}
+	want := []string{boxInitCmd, "-vm", specPath}
+	for _, pid := range procPIDs() {
+		if pid == os.Getpid() || !procHasUID(pid, 0) {
+			continue
+		}
+		b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+		if err != nil {
+			continue
+		}
+		argv := strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
+		if len(argv) == 4 && slices.Equal(argv[1:], want) {
+			return syscall.Kill(pid, syscall.SIGTERM)
+		}
+	}
+	return nil
 }
 
 // runVMExec is the shim: running as the agent's user, it takes away new
@@ -255,88 +350,4 @@ func chownTree(dir string, uid, gid int) error {
 		}
 		return os.Lchown(p, uid, gid)
 	})
-}
-
-// writeTreeFile writes dir as a tar to out, readable by the guest's own user
-// (the one the host copies files out as) and by no one who could change it.
-func writeTreeFile(dir, out string) error {
-	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644) //nolint:gosec // a path the host chose, created fresh
-	if err != nil {
-		return err
-	}
-	if err := writeTree(dir, f, treeMaxBytes, treeMaxEntries); err != nil {
-		f.Close()
-		os.Remove(out)
-		return err
-	}
-	return f.Close()
-}
-
-// writeTree writes dir's directories, regular files and symbolic links to
-// w, links as links and every file opened without following one. Anything
-// else (a FIFO, a device, a socket) is left out and said so: reading a FIFO
-// the agent left would hang, and a device is not a project file.
-func writeTree(dir string, w io.Writer, maxBytes int64, maxEntries int) error {
-	tw := tar.NewWriter(w)
-	var total int64
-	n := 0
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if p == dir {
-			return nil
-		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-		if n++; n > maxEntries {
-			return fmt.Errorf("more than %d entries", maxEntries)
-		}
-		info, err := os.Lstat(p)
-		if err != nil {
-			return err
-		}
-		mode := int64(info.Mode().Perm())
-		switch {
-		case info.IsDir():
-			return tw.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: rel + "/", Mode: mode})
-		case info.Mode()&os.ModeSymlink != 0:
-			target, err := os.Readlink(p)
-			if err != nil {
-				return err
-			}
-			return tw.WriteHeader(&tar.Header{Typeflag: tar.TypeSymlink, Name: rel, Linkname: target, Mode: 0o777})
-		case info.Mode().IsRegular():
-			if total += info.Size(); total > maxBytes {
-				return fmt.Errorf("more than %d bytes of files", maxBytes)
-			}
-			fd, err := unix.Open(p, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-			if err != nil {
-				return err
-			}
-			f := os.NewFile(uintptr(fd), p)
-			defer f.Close()
-			if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: rel, Mode: mode, Size: info.Size()}); err != nil {
-				return err
-			}
-			written, err := io.Copy(tw, io.LimitReader(f, info.Size()))
-			if err != nil {
-				return err
-			}
-			if written != info.Size() {
-				return fmt.Errorf("%s changed while it was read", rel)
-			}
-			return nil
-		default:
-			fmt.Fprintf(os.Stderr, "[ovara] left in the box (not a file, directory or link): %s\n", termSafe(rel))
-			return nil
-		}
-	})
-	if err != nil {
-		return err
-	}
-	return tw.Close()
 }

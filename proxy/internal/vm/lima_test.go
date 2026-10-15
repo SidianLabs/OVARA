@@ -192,7 +192,7 @@ func TestLima_RunReturnsTheGuestStatus(t *testing.T) {
 	if err != nil || code != 7 {
 		t.Fatalf("Run = %d, %v; want 7, nil", code, err)
 	}
-	if got := calls(t, log); got[0] != "shell --workdir=/ ovara-test-1 -- sh -c exit-seven" {
+	if got := calls(t, log); got[0] != "shell --workdir=/ ovara-test-1 -- sudo -- sh -c exit-seven" {
 		t.Fatalf("call %q", got[0])
 	}
 }

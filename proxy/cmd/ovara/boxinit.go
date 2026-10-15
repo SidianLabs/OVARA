@@ -28,7 +28,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -38,12 +37,6 @@ import (
 	"syscall"
 
 	"ovara.proxy/internal/boxgate"
-)
-
-const (
-	boxSockDir   = "/run/ovara"
-	boxProxySock = "proxy.sock"
-	boxGateSock  = "gate.sock"
 )
 
 // box-init -tier1 enters namespaces and drops credentials on the thread
@@ -64,6 +57,7 @@ func cmdBoxInit(args []string) error {
 	tier1 := fs.Bool("tier1", false, "tier 1: become the agent described by the spec on fd 3 (box_tier1.go)")
 	vmSpec := fs.String("vm", "", "inside a VM: run the agent described by this spec file (box_vm_guest.go)")
 	vmExec := fs.Bool("vm-exec", false, "inside a VM: the shim that becomes the agent (box_vm_guest.go)")
+	vmStop := fs.String("vm-stop", "", "inside a VM: stop the run started with this spec file, keeping its workspace")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -72,6 +66,9 @@ func cmdBoxInit(args []string) error {
 	}
 	if *vmExec {
 		return runVMExec(fs.Args())
+	}
+	if *vmStop != "" {
+		return runVMStop(*vmStop)
 	}
 	if *vmSpec != "" {
 		code, err := runVMGuest(*vmSpec)
@@ -144,39 +141,4 @@ func cmdBoxInit(args []string) error {
 	}
 	os.Exit(code)
 	return nil
-}
-
-// relayTo accepts on ln and pipes each connection to a fresh dial().
-func relayTo(ln net.Listener, dial func() (net.Conn, error)) {
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		go func() {
-			defer c.Close()
-			u, err := dial()
-			if err != nil {
-				return
-			}
-			defer u.Close()
-			pipe(c, u)
-		}()
-	}
-}
-
-// pipe copies both ways until either side is done, then closes both.
-func pipe(a, b net.Conn) {
-	done := make(chan struct{}, 2)
-	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
-		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
-		done <- struct{}{}
-	}
-	go cp(a, b)
-	go cp(b, a)
-	<-done
-	<-done
 }

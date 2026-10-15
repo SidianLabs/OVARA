@@ -34,6 +34,12 @@ var limaImages = []limaImage{
 
 func (l *Lima) Name() string { return "lima" }
 
+// HostListen: Lima's user-mode network delivers the guest's connections to
+// host.lima.internal to the host's loopback.
+func (l *Lima) HostListen() string { return "127.0.0.1" }
+func (l *Lima) HostName() string   { return limaHost }
+func (l *Lima) GuestDir() string   { return "/tmp/ovara-run" }
+
 // limaConfig is the subset of Lima's instance configuration Ovara sets. It
 // is written as JSON, which Lima reads as YAML. Every setting that would
 // let the guest see or reach the host is turned off explicitly rather than
@@ -209,7 +215,7 @@ func (l *Lima) Run(ctx context.Context, name string, argv []string, stdio Stdio)
 	if len(argv) == 0 {
 		return 0, errors.New("vm run: no command")
 	}
-	args := append([]string{"shell", "--workdir=/", name, "--"}, argv...)
+	args := append([]string{"shell", "--workdir=/", name, "--", "sudo", "--"}, argv...)
 	_, err := l.limactl(ctx, &stdio, args...)
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
