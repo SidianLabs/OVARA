@@ -271,8 +271,8 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ### 6.4 Every command the agent runs is seen and checked
 - **Holds in:** box tier 1, box tier 2 (unless `-no-command-gate`).
-- **What it covers:** every exec, by any route, is stopped before its first instruction and checked against `shell:` rules on a normalised command line; denied commands are killed, paused ones wait for a person. The agent cannot shed the tracer.
-- **Tests:** `proxy/internal/boxgate`: `TestTracer_SeesEveryExecAndKillsDenied`, `TestPolicyLine`; `proxy/cmd/ovara`: `TestCommandGate_PolicyLineAndLaunch`, `TestDefaultPolicy_ShellRulesSeeThroughRespelling`; `tests/box/box.sh`.
+- **What it covers:** every exec, by any route, is stopped before its first instruction and checked against `shell:` rules on a normalised command line; denied commands are killed, paused ones wait for a person. The agent cannot shed the tracer. In tier 1 the agent also runs under a seccomp filter that refuses the cross-process memory syscalls, so a sibling cannot rewrite a checked command's arguments after the check (see Limitations).
+- **Tests:** `proxy/internal/boxgate`: `TestTracer_SeesEveryExecAndKillsDenied`, `TestPolicyLine`; `proxy/cmd/ovara`: `TestCommandGate_PolicyLineAndLaunch`, `TestDefaultPolicy_ShellRulesSeeThroughRespelling`, `TestBoxSeccompBlocksCrossProcessMemory`; `tests/box/box.sh`.
 
 ### 6.5 Only the reviewed tree comes back
 - **Holds in:** box tier 1, box tier 2.
@@ -462,9 +462,15 @@ These are real limits. Some are design limits, some are not built yet.
   defined in a config file is not caught by the `rm` or `git push` rules.
   The network and file boundaries do not depend on these rules.
 - **Arguments rewritten after the check.** The gate reads a command's
-  arguments from the stopped process. Another process of the same agent
-  could change them before the program reads them. The program itself
-  cannot change.
+  arguments from the stopped process; another process of the same agent
+  would have to reach into that memory to change them. In **tier 1** this is
+  closed: a seccomp filter the agent runs under refuses the syscalls one
+  process uses to read or write another's memory (`process_vm_writev`,
+  `process_vm_readv`, `ptrace`), so a sibling cannot (a debugger inside the
+  box gets `EPERM` too). In **tier 2** the container runtime's default
+  seccomp profile still permits them between the container's processes; a
+  box-specific profile is pending. The program image itself cannot change in
+  either tier.
 - **Restarting without client tokens.** Client authentication cannot be
   relaxed while Ovara runs, but a proxy started with no `agent_token` and
   no agents on a loopback or boundary address runs without it, as it

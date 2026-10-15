@@ -40,11 +40,20 @@ An implementation conforms to a contract when it passes the tests that fix
 it. They are ordinary Go tests and shell suites in this repository, listed
 per contract in each document's last section; the agents matrix, the
 boundary red team and the separate-user attacks (`tests/`) are the
-end-to-end part. A packaged runner that points them at another
-implementation is planned; until then, conformance means running them.
+end-to-end part.
+
+Portable, machine-readable vectors a second implementation can run against
+itself — resource canonicalisation and matching (C1), policy specificity and
+precedence (C2), and the receipt vectors (C4) — are packaged in
+[`conformance/`](../conformance/README.md), generated from this
+implementation and guarded against drift in CI.
 
 ## Changing a contract
 
-Open a pull request that changes the code, the document and the schema
-together. The drift tests will not let a field into the code without its
-schema, or into a schema without the code.
+A contract change goes through an RFC so implementers see it before it ships:
+copy [`rfcs/0000-template.md`](rfcs/0000-template.md), open it, and after
+approval land one pull request that changes the code, the document, the schema
+and the conformance vectors together. The drift tests will not let a field
+into the code without its schema, or into a schema without the code. The
+process, the compatibility promise and the deprecation policy are in
+[`GOVERNANCE.md`](../GOVERNANCE.md).

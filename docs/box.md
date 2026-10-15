@@ -568,13 +568,31 @@ applied the same way the proxy applies network decisions:
 In tier 2 the tracer is the container's PID 1 and the decision is made on
 the host; the policy, the approvals and the receipts are the same.
 
-Limit, in both tiers: the gate reads the command line from the stopped
-process's memory. Another process of the same agent could rewrite that
-memory before the program reads its arguments, so the line the person
-approved is not a hard guarantee of the arguments the program used. The
-program itself (the executable) cannot change, every further exec is
-stopped again, and the network and file boundaries do not depend on the
-gate.
+The gate reads the command line from the stopped process's memory, so the
+one way the approved line could differ from the arguments the program then
+uses is another process of the same agent reaching into that memory before
+the program reads it. Writing one process's memory from another needs the
+ptrace-class syscalls (`process_vm_writev`, or `ptrace`'s own poke), and a
+box process holds no capability that would let it reach outside the box, so
+the only possible target is a sibling in the same box.
+
+- **Tier 1** closes this: before the agent execs, box-init installs a
+  seccomp filter (inherited by the whole tree, held in place by
+  `no_new_privs`) that refuses `process_vm_writev`, `process_vm_readv` and
+  `ptrace` with `EPERM`, so no box process can read or write another's
+  memory (`installBoxSeccomp`, `cmd/ovara/box_seccomp_linux.go`). The
+  gate's tracer is a separate host process and is unaffected. A debugger
+  run inside the box gets `EPERM` as a result — the box is a sandbox, not a
+  debugging environment.
+- **Tier 2** still relies on the container runtime's default seccomp
+  profile, which permits these syscalls between the container's own
+  processes; a box-specific profile that removes them (while leaving the
+  host-side tracer its ptrace) is the next step (§3 of the roadmap's
+  hardening stage).
+
+Independently of the gate: the program image itself cannot change, every
+further exec is stopped again, and the network and file boundaries do not
+depend on the gate.
 
 Every command produces a receipt: command, directory, decision, exit
 status, duration, output size. Output itself is not recorded unless the

@@ -169,6 +169,13 @@ func runTier1Init() error {
 	if err := syscall.Setresuid(spec.UID, spec.UID, spec.UID); err != nil {
 		return fmt.Errorf("box-init -tier1: setuid: %w", err)
 	}
+	// Last, so it covers the agent and its whole tree but nothing above:
+	// refuse the syscalls one box process would use to reach into another's
+	// memory, which is the one way the command gate's reading of a program's
+	// arguments could be undone (docs/box.md §8).
+	if err := installBoxSeccomp(); err != nil {
+		return fmt.Errorf("box-init -tier1: %w", err)
+	}
 	err = syscall.Exec(path, spec.Argv, spec.Env) //nolint:gosec // the agent command is what the person asked `ovara box` to run
 	fmt.Fprintf(os.Stderr, "[ovara] %s: %v\n", termSafe(spec.Argv[0]), err)
 	os.Exit(126)

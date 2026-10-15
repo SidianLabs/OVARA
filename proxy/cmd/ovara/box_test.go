@@ -155,3 +155,15 @@ func TestImageNotFoundSaysHowToBuildIt(t *testing.T) {
 		}
 	}
 }
+
+// checkTier1Tools names the missing command (ip) instead of letting the
+// boundary fail mid-setup and `ovara run` only time out.
+func TestCheckTier1Tools(t *testing.T) {
+	saved := os.Getenv("PATH")
+	defer os.Setenv("PATH", saved)
+	os.Setenv("PATH", t.TempDir()) // nothing on PATH
+	err := checkTier1Tools()
+	if err == nil || !strings.Contains(err.Error(), "`ip`") {
+		t.Fatalf("empty PATH: want an error naming ip, got %v", err)
+	}
+}
