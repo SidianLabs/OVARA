@@ -142,3 +142,16 @@ func TestAgentImage(t *testing.T) {
 		t.Fatal("unknown agent accepted")
 	}
 }
+
+// A missing -agent-image image is built from box/agents on top of the box
+// image; building box/ under the agent's name would leave the agent out.
+func TestImageNotFoundSaysHowToBuildIt(t *testing.T) {
+	if msg := imageNotFound("ovara-box-codex").Error(); !strings.Contains(msg, "`docker build -t ovara-box box/` then `docker build --build-arg AGENT=codex -t ovara-box-codex box/agents`") {
+		t.Fatalf("agent image: %s", msg)
+	}
+	for _, image := range []string{"ovara-box", "ovara-box-cursor", "mybox"} {
+		if msg := imageNotFound(image).Error(); !strings.Contains(msg, "`docker build -t "+image+" box/`") {
+			t.Fatalf("%s: %s", image, msg)
+		}
+	}
+}
