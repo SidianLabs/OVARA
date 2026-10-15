@@ -134,6 +134,9 @@ func cmdBox(args []string) (err error) {
 		if err := checkMountsFor(o.mounts, o.dir, tier1DstRefused); err != nil {
 			return err
 		}
+		if err := checkTier1Tools(); err != nil {
+			return err
+		}
 	}
 	if o.tier == 2 {
 		if err := checkMounts(o.mounts, o.dir); err != nil {
@@ -813,6 +816,22 @@ func serveGate(ln net.Listener, gate *commandGate) {
 			return
 		}
 	}
+}
+
+// checkTier1Tools fails early, with a clear message, when the host is
+// missing a command the tier 1 network boundary needs. Without it the
+// boundary script fails mid-setup and `ovara run` only times out
+// ("did not come up"), which does not say what is wrong.
+func checkTier1Tools() error {
+	if _, err := exec.LookPath("ip"); err != nil {
+		return errors.New("ovara box -tier 1 needs the `ip` command for its network namespace (install iproute2), or use -tier 2 for a container")
+	}
+	if _, err := exec.LookPath("iptables"); err != nil {
+		if _, err := exec.LookPath("nft"); err != nil {
+			return errors.New("ovara box -tier 1 needs `iptables` or `nft` to firewall the boundary (install iptables or nftables), or use -tier 2 for a container")
+		}
+	}
+	return nil
 }
 
 // ensureImage makes sure the box image is there, pulling it when it names a

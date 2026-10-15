@@ -41,7 +41,7 @@ curl -sSL https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.sh | s
 irm https://raw.githubusercontent.com/SidianLabs/OVARA/main/install.ps1 | iex       # Windows
 ```
 
-Or build it yourself with Go 1.25+: `cd proxy && go build -o ovara ./cmd/ovara`.
+Or build it yourself with Go 1.26+: `cd proxy && go build -o ovara ./cmd/ovara`.
 
 ```bash
 ovara demo                         # no setup, no network, no root

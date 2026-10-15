@@ -19,7 +19,7 @@ ovara version
 `install.sh` puts `ovara` in `~/.local/bin`, which `sudo` does not search;
 the second line puts it where `sudo ovara` finds it.
 
-Or from source (Go 1.25+):
+Or from source (Go 1.26+):
 
 ```bash
 git clone https://github.com/SidianLabs/OVARA && cd OVARA/proxy
