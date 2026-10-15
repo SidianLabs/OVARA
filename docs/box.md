@@ -733,6 +733,53 @@ only" on macOS/Windows is acceptable for a first release **if the docs say
 so in the first paragraph**; a release that claims the box on those
 platforms without the VM is not acceptable.
 
+### 10.1 The VM driver (built so far)
+
+`proxy/internal/vm` is the host's side of the VM platforms. A `Driver`
+creates a VM, verifies it, copies the workspace in and the result out, runs
+a command in it and deletes it; Lima (macOS) is the first, WSL2 and the
+tier 3 microVM are meant to be further drivers behind the same interface.
+
+What the Lima driver does today:
+
+- **Instance config, hardened by setting, not by default.** Lima's defaults
+  share the home directory, forward guest ports to the host's loopback and
+  copy the host's proxy variables into the guest. Ovara's config turns each
+  off explicitly: no mounts (the workspace is copied in), no SSH agent or X11
+  forwarding, the host user's SSH keys not authorised in the guest, no port
+  forwards in either direction of the guest's addresses, no proxy variables
+  copied in, containerd off. Ubuntu 24.04 cloud images, amd64 and arm64.
+- **Guest network lockdown.** A provisioning script that Lima runs as root
+  at every boot loads an nft table `ovara_vm` in the guest: every packet out
+  is dropped unless it is loopback, the reply to a connection made *to* the
+  guest (Lima's own control channel), or TCP to the host's proxy or
+  command-gate port. DNS and QUIC are dropped by name; IPv6 falls to the
+  drop policy and is also switched off. The host is found through the
+  guest's hosts file (`host.lima.internal`), not DNS.
+- **Fail closed.** Before an agent runs, `Verify` checks from inside the VM
+  that the table is loaded with a drop policy and that a direct connection to
+  a public address fails. Any other outcome, including an error running the
+  check, is a refusal. Every driver call also refuses a VM whose name is not
+  `ovara-...`, so Ovara never touches a VM it did not make.
+
+How it is tested without a Mac: the guest is a Linux kernel and only the
+hypervisor is missing, so CI's root job runs the real provisioning script
+in a network namespace standing in for the guest, twice (Lima reprovisions
+at every boot), and checks from inside it that the proxy and gate ports
+answer while another host port, TCP 53 and a UDP datagram to 443 do not
+(`TestLockdown_GuestReachesOnlyTheProxyAndGate`); the test fails if the drop
+policy is removed. The `limactl` command sequence, the config and the
+fail-closed checks are tested against a stand-in `limactl`.
+
+Not built yet, in the order they come: the guest side of the box (box-init
+running tier 1 inside the VM, the agent unprivileged so it cannot unload the
+lockdown, proxy and gate relayed to the host over TCP with a per-run token
+instead of root-only sockets); `ovara box` choosing the VM on macOS and
+running Ovara on the host side; commit-back by copying the workspace out
+into the existing file gate; a macOS CI job that boots Lima for real; then
+WSL2. Until all of that ships, the first-paragraph rule above stands:
+macOS and Windows are cooperative only.
+
 ## 11. Policy model v2
 
 ### 11.1 The gap in v1
@@ -823,7 +870,7 @@ project extends.
 | **install policy** (registry pins, new-dependency pause) | `proxy/internal/lockfiles`, `proxy/internal/proxy/packages.go`, `-profile strict` | yes |
 | **policy v2** evaluator + migrate + shadow check | `runtime/gateway/internal/{policy,evaluator}` | yes |
 | **box image** (tier 2): agent runtimes, no secrets, read-only root | `box/Dockerfile` | yes |
-| **VM driver** (Lima / WSL2) | `proxy/internal/vm` | no |
+| **VM driver** (Lima / WSL2) | `proxy/internal/vm` | started: the driver interface and the Lima driver (hardened instance config, guest network lockdown, fail-closed verify); `ovara box` does not use it yet; WSL2 not started (§10.1) |
 | tests: agents matrix, scenarios, red teams | `tests/` | yes; grows per milestone |
 
 ## 13. Data flows

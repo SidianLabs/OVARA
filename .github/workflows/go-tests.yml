@@ -64,6 +64,16 @@ jobs:
       - name: Tier 1 tests as root
         working-directory: proxy/cmd/ovara
         run: sudo -E env "PATH=$PATH" "$RUNNER_TEMP/ovara-cmd.test" -test.run 'Tier1|Box' -test.count=1 -test.v
+      # The VM guest's network lockdown, checked for real: a network
+      # namespace stands in for the guest and runs the provisioning script.
+      - name: Build the VM test binary
+        working-directory: proxy
+        run: go test -c -o "$RUNNER_TEMP/ovara-vm.test" ./internal/vm
+      - name: VM guest lockdown as root
+        working-directory: proxy/internal/vm
+        run: |
+          command -v nft >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q nftables; }
+          sudo -E env "PATH=$PATH" OVARA_REQUIRE_LOCKDOWN_TEST=1 "$RUNNER_TEMP/ovara-vm.test" -test.run 'Lockdown' -test.count=1 -test.v
 
   e2e:
     runs-on: ubuntu-latest

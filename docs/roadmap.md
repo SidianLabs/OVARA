@@ -65,7 +65,7 @@ Linux VM (Lima / WSL2) with Ovara on the host side.
 
 | Work | Who | Exit test |
 |---|---|---|
-| `ovara box` on macOS drives a Lima VM; on Windows, WSL2 | here | the agents matrix passes in the VM with the same numbers as Linux |
+| `ovara box` on macOS drives a Lima VM; on Windows, WSL2 | here; **started** (`proxy/internal/vm`: Lima driver, hardened config, guest network lockdown tested in CI, fail-closed verify — `box.md` §10.1); the guest side of the box and the `ovara box` wiring are next | the agents matrix passes in the VM with the same numbers as Linux |
 | CI that can run a nested VM | **owner: self-hosted runners** (a Mac and a Windows machine) or larger runners with nested virtualization | the matrix runs on every PR |
 
 Until this stage ships, the docs say in their first paragraph that macOS
