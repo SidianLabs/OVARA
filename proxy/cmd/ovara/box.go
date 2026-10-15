@@ -804,18 +804,7 @@ func serveGate(ln net.Listener, gate *commandGate) {
 		return
 	}
 	defer c.Close()
-	dec := json.NewDecoder(c)
-	enc := json.NewEncoder(c)
-	for {
-		var req gateRequest
-		if err := dec.Decode(&req); err != nil {
-			return
-		}
-		v := gate.decide(boxgate.Exec{Exe: req.Exe, Argv: req.Argv, Cwd: req.Cwd})
-		if err := enc.Encode(gateReply{Allow: v == boxgate.Allow}); err != nil {
-			return
-		}
-	}
+	serveGateConn(c, json.NewDecoder(c), gate.decide)
 }
 
 // checkTier1Tools fails early, with a clear message, when the host is

@@ -63,7 +63,7 @@ jobs:
         run: go test -c -o "$RUNNER_TEMP/ovara-cmd.test" ./cmd/ovara
       - name: Tier 1 tests as root
         working-directory: proxy/cmd/ovara
-        run: sudo -E env "PATH=$PATH" "$RUNNER_TEMP/ovara-cmd.test" -test.run 'Tier1|Box' -test.count=1 -test.v
+        run: sudo -E env "PATH=$PATH" "$RUNNER_TEMP/ovara-cmd.test" -test.run 'Tier1|Box|VMGuest|WriteTree' -test.count=1 -test.v
       # The VM guest's network lockdown, checked for real: a network
       # namespace stands in for the guest and runs the provisioning script.
       - name: Build the VM test binary

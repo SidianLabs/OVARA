@@ -771,13 +771,42 @@ answer while another host port, TCP 53 and a UDP datagram to 443 do not
 policy is removed. The `limactl` command sequence, the config and the
 fail-closed checks are tested against a stand-in `limactl`.
 
-Not built yet, in the order they come: the guest side of the box (box-init
-running tier 1 inside the VM, the agent unprivileged so it cannot unload the
-lockdown, proxy and gate relayed to the host over TCP with a per-run token
-instead of root-only sockets); `ovara box` choosing the VM on macOS and
-running Ovara on the host side; commit-back by copying the workspace out
-into the existing file gate; a macOS CI job that boots Lima for real; then
-WSL2. Until all of that ships, the first-paragraph rule above stands:
+The guest side of the box (`box-init -vm`, `cmd/ovara/box_vm_guest.go`)
+runs as root in the guest once the host has copied in the workspace and a
+spec:
+
+- **The agent is its own unprivileged user**, created in the guest and in no
+  group that can become root (the image's own user has passwordless sudo, so
+  the agent is never it). As that user it cannot unload the lockdown.
+- **Every program goes to the host's command gate**, over TCP this time:
+  the guest's lockdown lets the whole guest reach the gate port, so the
+  connection opens with a per-run token that only box-init holds. It reads
+  it from the spec and deletes the spec before the agent exists. A
+  connection without the token gets no answer, so an agent cannot ask the
+  gate about programs that are not running and have the answers remembered.
+  Without the gate box-init does not start the agent.
+- **The agent starts through a shim** (`box-init -vm-exec`) that, as the
+  agent's user, sets `no_new_privs` and the box's seccomp filter before the
+  agent's first instruction, the same protection tier 1 has (§8). The gate
+  never sees the shim; it sees the agent's own exec.
+- **The workspace comes back as one tar** written after the agent and every
+  process it started have gone: directories, files and links, links kept as
+  links and never read through, FIFOs and devices left out (`writeTree`). The
+  host unpacks it into a fresh directory and refuses anything that could
+  write outside it: absolute names, `..`, a path through a link, a repeated
+  name, any other entry type, more than 8 GiB or a million entries
+  (`extractTree`). Then the existing commit-back reads it as for any box.
+
+Tested on Linux as root with this host as the guest and a gate in the test
+as the host (`TestVMGuest_*`, CI's root job): the agent runs as a fresh
+non-root user under `no_new_privs` and the filter, a program the gate refuses
+never runs, the spec is gone, and a wrong token stops the run before the
+agent starts.
+
+Not built yet, in the order they come: `ovara box` choosing the VM on macOS
+and running Ovara on the host side (the box's orchestration is Linux-only
+code today and has to be split); a macOS CI job that boots Lima for real;
+then WSL2. Until all of that ships, the first-paragraph rule above stands:
 macOS and Windows are cooperative only.
 
 ## 11. Policy model v2
@@ -870,7 +899,7 @@ project extends.
 | **install policy** (registry pins, new-dependency pause) | `proxy/internal/lockfiles`, `proxy/internal/proxy/packages.go`, `-profile strict` | yes |
 | **policy v2** evaluator + migrate + shadow check | `runtime/gateway/internal/{policy,evaluator}` | yes |
 | **box image** (tier 2): agent runtimes, no secrets, read-only root | `box/Dockerfile` | yes |
-| **VM driver** (Lima / WSL2) | `proxy/internal/vm` | started: the driver interface and the Lima driver (hardened instance config, guest network lockdown, fail-closed verify); `ovara box` does not use it yet; WSL2 not started (§10.1) |
+| **VM driver** (Lima / WSL2) | `proxy/internal/vm` | started: the driver interface and the Lima driver (hardened instance config, guest network lockdown, fail-closed verify), and the guest side of the box (`box-init -vm`); `ovara box` does not use them yet; WSL2 not started (§10.1) |
 | tests: agents matrix, scenarios, red teams | `tests/` | yes; grows per milestone |
 
 ## 13. Data flows

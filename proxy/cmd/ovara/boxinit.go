@@ -46,18 +46,6 @@ const (
 	boxGateSock  = "gate.sock"
 )
 
-// gateRequest and gateReply are the command gate's wire format between
-// box-init (inside) and `ovara box` (host): one JSON object per line.
-type gateRequest struct {
-	Argv []string `json:"argv"`
-	Exe  string   `json:"exe,omitempty"`
-	Cwd  string   `json:"cwd,omitempty"`
-}
-
-type gateReply struct {
-	Allow bool `json:"allow"`
-}
-
 // box-init -tier1 enters namespaces and drops credentials on the thread
 // that then calls exec: keep main on the main thread from the start, so
 // the agent takes over the process as it is.
@@ -74,11 +62,23 @@ func cmdBoxInit(args []string) error {
 	proxyAddr := fs.String("proxy", "127.0.0.1:9443", "address inside the box where the proxy relay listens")
 	gateOn := fs.Bool("gate", true, "check every exec with the host's command gate")
 	tier1 := fs.Bool("tier1", false, "tier 1: become the agent described by the spec on fd 3 (box_tier1.go)")
+	vmSpec := fs.String("vm", "", "inside a VM: run the agent described by this spec file (box_vm_guest.go)")
+	vmExec := fs.Bool("vm-exec", false, "inside a VM: the shim that becomes the agent (box_vm_guest.go)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *tier1 {
 		return runTier1Init()
+	}
+	if *vmExec {
+		return runVMExec(fs.Args())
+	}
+	if *vmSpec != "" {
+		code, err := runVMGuest(*vmSpec)
+		if err != nil {
+			return err
+		}
+		os.Exit(code)
 	}
 	argv := fs.Args()
 	if len(argv) == 0 {
@@ -144,25 +144,6 @@ func cmdBoxInit(args []string) error {
 	}
 	os.Exit(code)
 	return nil
-}
-
-// remoteGate asks the host for each exec. Any failure to get an answer is a
-// refusal.
-type remoteGate struct {
-	enc *json.Encoder
-	dec *json.Decoder
-}
-
-func (g *remoteGate) decide(e boxgate.Exec) boxgate.Verdict {
-	if err := g.enc.Encode(gateRequest{Argv: e.Argv, Exe: e.Exe, Cwd: e.Cwd}); err != nil {
-		fmt.Fprintf(os.Stderr, "[ovara] command gate gone, refusing: %s\n", termSafe(boxgate.CommandLine(e)))
-		return boxgate.Deny
-	}
-	var r gateReply
-	if err := g.dec.Decode(&r); err != nil || !r.Allow {
-		return boxgate.Deny
-	}
-	return boxgate.Allow
 }
 
 // relayTo accepts on ln and pipes each connection to a fresh dial().
