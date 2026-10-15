@@ -1,0 +1,60 @@
+{
+  "comment": "C2 policy-precedence conformance vectors generated from runtime/gateway/internal/evaluator; do not edit by hand (regenerate with OVARA_WRITE_CONFORMANCE=1 go test ./internal/evaluator -run TestConformancePrecedence). policy + (action_type, environment, resource) -\u003e decision, matched_rule. See conformance/README.md.",
+  "vectors": [
+    {
+      "policy": "{\"version\":\"c2-order\",\"rules\":[\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"*github.com*\",\"allow\":true,\"description\":\"reads from github\"},\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"POST *\",\"deny\":true,\"description\":\"no writes\"}\n\t\t]}",
+      "action_type": "http.request",
+      "environment": "local",
+      "resource": "GET https://api.github.com/x",
+      "decision": "allow",
+      "matched_rule": "reads from github"
+    },
+    {
+      "policy": "{\"version\":\"c2-order\",\"rules\":[\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"*github.com*\",\"allow\":true,\"description\":\"reads from github\"},\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"POST *\",\"deny\":true,\"description\":\"no writes\"}\n\t\t]}",
+      "action_type": "http.request",
+      "environment": "local",
+      "resource": "POST https://api.github.com/x",
+      "decision": "deny",
+      "matched_rule": "no writes"
+    },
+    {
+      "policy": "{\"version\":\"c2-order\",\"rules\":[\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"*github.com*\",\"allow\":true,\"description\":\"reads from github\"},\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"POST *\",\"deny\":true,\"description\":\"no writes\"}\n\t\t]}",
+      "action_type": "http.request",
+      "environment": "local",
+      "resource": "GET https://example.com/x",
+      "decision": "escalate"
+    },
+    {
+      "policy": "{\"version\":\"c2-ms\",\"precedence\":\"most-specific\",\"default\":\"deny\",\"rules\":[\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"*\",\"escalate\":true,\"description\":\"ask by default\"},\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"GET https://pypi.org/*\",\"allow\":true,\"description\":\"pypi reads\"}\n\t\t]}",
+      "action_type": "http.request",
+      "environment": "local",
+      "resource": "GET https://pypi.org/simple/x",
+      "decision": "allow",
+      "matched_rule": "pypi reads"
+    },
+    {
+      "policy": "{\"version\":\"c2-ms\",\"precedence\":\"most-specific\",\"default\":\"deny\",\"rules\":[\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"*\",\"escalate\":true,\"description\":\"ask by default\"},\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"GET https://pypi.org/*\",\"allow\":true,\"description\":\"pypi reads\"}\n\t\t]}",
+      "action_type": "http.request",
+      "environment": "local",
+      "resource": "GET https://example.com/x",
+      "decision": "escalate",
+      "matched_rule": "ask by default"
+    },
+    {
+      "policy": "{\"version\":\"c2-ms\",\"precedence\":\"most-specific\",\"default\":\"deny\",\"rules\":[\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"*\",\"escalate\":true,\"description\":\"ask by default\"},\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"GET https://pypi.org/*\",\"allow\":true,\"description\":\"pypi reads\"}\n\t\t]}",
+      "action_type": "shell",
+      "environment": "local",
+      "resource": "shell:rm -rf /",
+      "decision": "deny",
+      "matched_rule": "default: deny"
+    },
+    {
+      "policy": "{\"version\":\"c2-tie\",\"precedence\":\"most-specific\",\"rules\":[\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"POST *\",\"allow\":true,\"description\":\"allow writes\"},\n\t\t\t{\"action_type\":\"http.request\",\"environment\":\"*\",\"resource\":\"POST *\",\"deny\":true,\"description\":\"deny writes\"}\n\t\t]}",
+      "action_type": "http.request",
+      "environment": "local",
+      "resource": "POST https://example.com/x",
+      "decision": "deny",
+      "matched_rule": "deny writes"
+    }
+  ]
+}

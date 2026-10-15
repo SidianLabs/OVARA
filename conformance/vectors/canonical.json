@@ -1,0 +1,69 @@
+{
+  "comment": "C1/C2 conformance vectors generated from runtime/gateway/internal/policy; do not edit by hand (regenerate with OVARA_WRITE_CONFORMANCE=1 go test ./internal/policy -run TestConformanceVectors). See conformance/README.md. CanonicalResource(input); canonical=null means not canonical.",
+  "vectors": [
+    {
+      "input": "GET https://api.github.com/x",
+      "canonical": "GET https://api.github.com/x"
+    },
+    {
+      "input": "GET https://api.github.com:443/x",
+      "canonical": "GET https://api.github.com/x"
+    },
+    {
+      "input": "get HTTPS://API.GITHUB.COM./x",
+      "canonical": "GET https://api.github.com/x"
+    },
+    {
+      "input": "https://api.github.com",
+      "canonical": null
+    },
+    {
+      "input": "GET https://api.github.com/a//b",
+      "canonical": "GET https://api.github.com/a/b"
+    },
+    {
+      "input": "GET https://api.github.com/x?a=b#frag",
+      "canonical": "GET https://api.github.com/x?a=b"
+    },
+    {
+      "input": "GET http://host:80/x",
+      "canonical": "GET http://host/x"
+    },
+    {
+      "input": "GET http://host:8080/x",
+      "canonical": "GET http://host:8080/x"
+    },
+    {
+      "input": "GET https://api.github.com/foo/../bar",
+      "canonical": null
+    },
+    {
+      "input": "GET https://api.github.com/foo/%2e%2e/bar",
+      "canonical": null
+    },
+    {
+      "input": "GET https://user@api.github.com/x",
+      "canonical": null
+    },
+    {
+      "input": "POST https://github.com/o/r.git/git-receive-pack refs/heads/main",
+      "canonical": "POST https://github.com/o/r.git/git-receive-pack refs/heads/main"
+    },
+    {
+      "input": "api.github.com/x",
+      "canonical": null
+    },
+    {
+      "input": "",
+      "canonical": null
+    },
+    {
+      "input": "GET https://[::1]:8443/x",
+      "canonical": "GET https://[::1]:8443/x"
+    },
+    {
+      "input": "lower://x/y",
+      "canonical": null
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "comment": "C1/C2 conformance vectors generated from runtime/gateway/internal/policy; do not edit by hand (regenerate with OVARA_WRITE_CONFORMANCE=1 go test ./internal/policy -run TestConformanceVectors). See conformance/README.md. Specificity(pattern): the precedence key, higher wins.",
+  "vectors": [
+    {
+      "pattern": "",
+      "specificity": 0
+    },
+    {
+      "pattern": "*",
+      "specificity": 0
+    },
+    {
+      "pattern": "POST *",
+      "specificity": 5
+    },
+    {
+      "pattern": "GET https://pypi.org/*",
+      "specificity": 21
+    },
+    {
+      "pattern": "*://pastebin.com/*",
+      "specificity": 16
+    },
+    {
+      "pattern": "GET https://api.github.com/x",
+      "specificity": 28
+    },
+    {
+      "pattern": "shell:rm -rf *",
+      "specificity": 13
+    },
+    {
+      "pattern": "tcp:*:5432",
+      "specificity": 9
+    }
+  ]
+}

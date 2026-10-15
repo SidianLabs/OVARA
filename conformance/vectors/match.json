@@ -1,0 +1,260 @@
+{
+  "comment": "C1/C2 conformance vectors generated from runtime/gateway/internal/policy; do not edit by hand (regenerate with OVARA_WRITE_CONFORMANCE=1 go test ./internal/policy -run TestConformanceVectors). See conformance/README.md. MatchResource(pattern, resource).",
+  "vectors": [
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com:443/x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://API.GITHUB.COM/x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET HTTPS://api.github.com/x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com./x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/x?a=b",
+      "match": true
+    },
+    {
+      "pattern": "https://*.github.com/*",
+      "resource": "GET https://api.github.com/x",
+      "match": true
+    },
+    {
+      "pattern": "https://*.github.com/*",
+      "resource": "GET https://github.com/x",
+      "match": false
+    },
+    {
+      "pattern": "*://*api.github.com/*",
+      "resource": "GET https://sub.api.github.com/x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://sub.api.github.com/x",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com.evil.com/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://evil.com/api.github.com/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com@evil.com/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://evil.com@api.github.com/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com:444/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://notapi.github.com.evil.com/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api-github.com/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://140.82.121.4/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://[2606:4700::1]/",
+      "match": false
+    },
+    {
+      "pattern": "GET https://api.github.com/*",
+      "resource": "GET https://api.github.com/x",
+      "match": true
+    },
+    {
+      "pattern": "GET https://api.github.com/*",
+      "resource": "POST https://api.github.com/x",
+      "match": false
+    },
+    {
+      "pattern": "GET https://api.github.com/*",
+      "resource": "get https://api.github.com/x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET http://api.github.com/x",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "api.github.com/x",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "not a url at all",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "https://evil.com/?x= https://api.github.com/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://evil.com https://api.github.com/",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/x bogus",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "ANYTHING https://api.github.com/x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "ANYTHING https://evil.com/x",
+      "match": false
+    },
+    {
+      "pattern": "GET https://api.github.com/*",
+      "resource": "ANYTHING https://api.github.com/x",
+      "match": false
+    },
+    {
+      "pattern": "*git-receive-pack refs/heads/prod*",
+      "resource": "POST https://github.com/o/r.git/git-receive-pack refs/heads/prod",
+      "match": true
+    },
+    {
+      "pattern": "*github.com/o/r.git/* refs/heads/main",
+      "resource": "POST https://github.com/o/r.git/git-receive-pack refs/heads/main",
+      "match": true
+    },
+    {
+      "pattern": "*github.com* refs/heads/prod*",
+      "resource": "POST https://github.com/o/r.git/x refs/heads/dev",
+      "match": false
+    },
+    {
+      "pattern": "*refs/tags/v1*",
+      "resource": "GET https://github.com/o/r.git/x refs/heads/main,refs/tags/v1",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/x notrefs/y",
+      "match": false
+    },
+    {
+      "pattern": "",
+      "resource": "anything at all",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/foo/%2e%2e/bar/x",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/foo/%2e/bar",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/foo/../bar/x",
+      "match": false
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/foo/%252e%252e/bar/x",
+      "match": true
+    },
+    {
+      "pattern": "*https://api.github.com/*",
+      "resource": "GET https://api.github.com/%2e%2e/x",
+      "match": false
+    },
+    {
+      "pattern": "*internal*",
+      "resource": "POST https://internal.corp/x",
+      "match": true
+    },
+    {
+      "pattern": "*internal*",
+      "resource": "POST https://external.com/x",
+      "match": false
+    },
+    {
+      "pattern": "shell:rm -rf *",
+      "resource": "shell:rm -rf /tmp/x",
+      "match": true
+    },
+    {
+      "pattern": "shell:git push*",
+      "resource": "shell:git status",
+      "match": false
+    },
+    {
+      "pattern": "mcp:*/delete_*",
+      "resource": "mcp:https://srv/mcp/delete_everything",
+      "match": true
+    },
+    {
+      "pattern": "tcp:*:5432",
+      "resource": "tcp:db.internal:5432",
+      "match": true
+    },
+    {
+      "pattern": "tcp:*:5432",
+      "resource": "tcp:db.internal:5433",
+      "match": false
+    }
+  ]
+}
