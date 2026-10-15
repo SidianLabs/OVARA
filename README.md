@@ -697,6 +697,8 @@ key protection (KMS/HSM) is not built yet. See [`SECURITY.md`](SECURITY.md) and
 - **Every network connection Ovara itself makes (no telemetry):** [`docs/network.md`](docs/network.md)
 - **Where this is going (the plan for a sandbox standard, with the roadmap and its status):** [`docs/architecture/sandbox-standard.md`](docs/architecture/sandbox-standard.md)
 - **Security model and reporting a vulnerability:** [`SECURITY.md`](SECURITY.md)
+- **Governance, the compatibility promise and contract RFCs:** [`GOVERNANCE.md`](GOVERNANCE.md)
+- **Checking another implementation against the contracts:** [`conformance/`](conformance/README.md)
 - **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 Apache 2.0. Copyright 2026 SidianLabs.

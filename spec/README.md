@@ -50,6 +50,10 @@ implementation and guarded against drift in CI.
 
 ## Changing a contract
 
-Open a pull request that changes the code, the document and the schema
-together. The drift tests will not let a field into the code without its
-schema, or into a schema without the code.
+A contract change goes through an RFC so implementers see it before it ships:
+copy [`rfcs/0000-template.md`](rfcs/0000-template.md), open it, and after
+approval land one pull request that changes the code, the document, the schema
+and the conformance vectors together. The drift tests will not let a field
+into the code without its schema, or into a schema without the code. The
+process, the compatibility promise and the deprecation policy are in
+[`GOVERNANCE.md`](../GOVERNANCE.md).
