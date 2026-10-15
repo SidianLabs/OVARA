@@ -61,6 +61,25 @@ verifiers (`sdk/*/...`). Each vector carries a receipt `line`, whether it is
 implementation reaches the same verdict for every vector, including the
 tamper cases.
 
+## A second implementation
+
+[`impl-python/conformance_check.py`](impl-python/conformance_check.py) is an
+independent, standard-library-only implementation of the C1 and C2 string
+contracts (canonicalisation, matching, specificity) that runs itself against
+the vectors above:
+
+```
+python3 -I conformance/impl-python/conformance_check.py
+```
+
+It is deliberately a different implementation from the Go reference — its job
+is to prove the contracts are precise enough to build from the spec alone, and
+to catch anything that only works because of the reference's internals
+(sandbox-standard.md §9.4). CI runs it on every change, so the Go reference,
+the vectors and this implementation stay in agreement. Receipt verification
+(C4) already has independent implementations in `sdk/python` and
+`sdk/typescript`.
+
 ## The live suites (C3, C5, and enforcement)
 
 Some conformance can only be shown against a running sandbox. These live in

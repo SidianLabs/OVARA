@@ -132,3 +132,8 @@ jobs:
       - name: Test
         working-directory: sdk/python
         run: python -m pytest -q
+      # A second, independent implementation of the C1/C2 contracts must
+      # agree with the conformance vectors (which the Go reference generates
+      # and is drift-tested against). Stdlib only.
+      - name: Conformance (second implementation)
+        run: python3 -I conformance/impl-python/conformance_check.py
