@@ -94,6 +94,10 @@ func TestAgentScope_CoversTunnels(t *testing.T) {
 	}
 	roundTrip(t, c, br, "scoped")
 	c.Close()
+	// the proxy writes the closed tunnel's outcome receipt from a goroutine
+	// the test server does not wait for: wait for it here, or it can land
+	// after the test, while the temporary directory is being removed
+	tunnelReceipts(t, chainFile, echo)
 
 	c2, _, status2, body := connectThrough(t, proxyAddr, other, asAgent(tokAlpha))
 	defer c2.Close()
@@ -106,9 +110,6 @@ func TestAgentScope_CoversTunnels(t *testing.T) {
 	if accepts.Load() != 1 {
 		t.Fatalf("destination accepts %d", accepts.Load())
 	}
-	// the first tunnel's outcome receipt is written when the proxy sees it
-	// close, which can land after the refusal, so the refusal is looked
-	// for rather than assumed last
 	all := allReceiptsOf(t, chainFile)
 	refused := false
 	for _, r := range all {
