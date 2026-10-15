@@ -694,6 +694,7 @@ key protection (KMS/HSM) is not built yet. See [`SECURITY.md`](SECURITY.md) and
 - **Where it fits (laptop, sandbox, CI, your own harness) and what is verified:** [`docs/use-cases.md`](docs/use-cases.md)
 - **What Ovara guarantees, mode by mode, with the tests:** [`docs/GUARANTEES.md`](docs/GUARANTEES.md)
 - **What Ovara does and does not protect against:** [`docs/threat-model.md`](docs/threat-model.md)
+- **Every network connection Ovara itself makes (no telemetry):** [`docs/network.md`](docs/network.md)
 - **Where this is going (the plan for a sandbox standard, with the roadmap and its status):** [`docs/architecture/sandbox-standard.md`](docs/architecture/sandbox-standard.md)
 - **Security model and reporting a vulnerability:** [`SECURITY.md`](SECURITY.md)
 - **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
