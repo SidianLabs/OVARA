@@ -43,11 +43,9 @@ func TestBoxSeccompBlocksCrossProcessMemory(t *testing.T) {
 		}
 		os.Exit(0)
 	}
-	// no_new_privs is a precondition for an unprivileged seccomp filter; the
-	// child sets it the same way box-init does.
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err == nil {
-		// setting it in the parent is harmless and lets the child inherit it
-	}
+	// no_new_privs is a precondition for an unprivileged seccomp filter; set
+	// it in the parent (harmless) so the child inherits it.
+	_ = unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
 	cmd := exec.Command(os.Args[0], "-test.run", "TestBoxSeccompBlocksCrossProcessMemory") //nolint:gosec // this test binary
 	cmd.Env = append(os.Environ(), "OVARA_SECCOMP_HELPER=1")
 	out, err := cmd.CombinedOutput()

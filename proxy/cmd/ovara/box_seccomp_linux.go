@@ -45,10 +45,10 @@ func installBoxSeccomp() error {
 
 	const (
 		// classic-BPF opcodes (linux/bpf_common.h)
-		bpfLdW   = 0x00 | 0x00 | 0x20 // BPF_LD | BPF_W | BPF_ABS
-		bpfJmpEq = 0x05 | 0x10 | 0x00 // BPF_JMP | BPF_JEQ | BPF_K
-		bpfJmpGe = 0x05 | 0x30 | 0x00 // BPF_JMP | BPF_JGE | BPF_K
-		bpfRet   = 0x06 | 0x00        // BPF_RET | BPF_K
+		bpfLdW   = 0x20 // BPF_LD | BPF_W | BPF_ABS
+		bpfJmpEq = 0x15 // BPF_JMP | BPF_JEQ | BPF_K
+		bpfJmpGe = 0x35 // BPF_JMP | BPF_JGE | BPF_K
+		bpfRet   = 0x06 // BPF_RET | BPF_K
 
 		// seccomp_data field offsets
 		offNr   = 0
@@ -58,8 +58,8 @@ func installBoxSeccomp() error {
 		// syscall number; the box is 64-bit, so deny that ABI wholesale
 		x32Bit = 0x40000000
 
-		retAllow = 0x7fff0000              // SECCOMP_RET_ALLOW
-		retDeny  = 0x00050000 | 0x00000001 // SECCOMP_RET_ERRNO | EPERM
+		retAllow = 0x7fff0000 // SECCOMP_RET_ALLOW
+		retDeny  = 0x00050001 // SECCOMP_RET_ERRNO | EPERM(1)
 	)
 
 	// Build the program, then fix up jump offsets so every "this is a
@@ -88,16 +88,18 @@ func installBoxSeccomp() error {
 	// Patch jump targets now that the layout is fixed. The arch check denies
 	// on mismatch (Jf); every other test denies on match (Jt). Offsets are
 	// the number of instructions to skip, so they stay valid for both arches.
+	// The program is a dozen instructions, so every offset fits in a uint8.
 	for i := range prog {
+		off := byte(deny - i - 1)
 		switch {
 		case prog[i].Code == bpfJmpEq && prog[i].K == auditArch:
-			prog[i].Jf = uint8(deny - i - 1)
+			prog[i].Jf = off
 		case prog[i].Code == bpfJmpGe || prog[i].Code == bpfJmpEq:
-			prog[i].Jt = uint8(deny - i - 1)
+			prog[i].Jt = off
 		}
 	}
 
-	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
+	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]} //nolint:gosec // a fixed dozen-instruction program
 	if _, _, errno := unix.Syscall(unix.SYS_SECCOMP, uintptr(unix.SECCOMP_SET_MODE_FILTER), 0, uintptr(unsafe.Pointer(&fprog))); errno != 0 {
 		return fmt.Errorf("installing the box seccomp filter: %w", errno)
 	}
