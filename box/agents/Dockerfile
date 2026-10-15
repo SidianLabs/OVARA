@@ -2,7 +2,7 @@
 #
 #   docker build -t ovara-box box/
 #   docker build --build-arg AGENT=codex -t ovara-box-codex box/agents
-#   sudo ovara box -tier 2 -agent codex ./myrepo -- codex
+#   sudo ovara box -agent-image codex ./myrepo -- codex
 #
 # Releases publish ghcr.io/sidianlabs/ovara-box-<agent>:<tag> for claude,
 # codex, opencode and aider. The agent is installed into the image (as root,

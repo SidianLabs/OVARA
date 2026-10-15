@@ -831,6 +831,15 @@ func ensureImage(image string) error {
 			return nil
 		}
 	}
+	return imageNotFound(image)
+}
+
+// imageNotFound says how to build a missing box image from the Ovara
+// repository: an -agent-image one is the box image with the agent added.
+func imageNotFound(image string) error {
+	if agent, ok := strings.CutPrefix(image, boxDefaultImage+"-"); ok && boxAgents[agent] {
+		return fmt.Errorf("box image %q not found: build it from the Ovara repository with `docker build -t %s box/` then `docker build --build-arg AGENT=%s -t %s box/agents`, or pass -image", image, boxDefaultImage, agent, image)
+	}
 	return fmt.Errorf("box image %q not found: build it with `docker build -t %s box/` from the Ovara repository (and extend it with your agent), or pass -image", image, image)
 }
 

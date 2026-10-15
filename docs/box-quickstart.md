@@ -132,7 +132,7 @@ that shows whether it has been edited.
 ## If something goes wrong
 
 - `box image "ovara-box" not found`: a source build; run
-  `docker build -t ovara-box box/` (and, for `-agent`,
+  `docker build -t ovara-box box/` (and, for `-agent-image claude`,
   `docker build --build-arg AGENT=claude -t ovara-box-claude box/agents`).
 - `ovara box needs root`: run it with `sudo`; the agent itself never runs
   as root.
