@@ -62,7 +62,7 @@ jobs:
       # modules targeting go1.25+ ("language version lower than targeted").
       # goinstall builds the linter with the runner's Go so the check passes.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v1.64
           install-mode: goinstall
