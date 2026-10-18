@@ -87,7 +87,7 @@ jobs:
           tags: ghcr.io/sidianlabs/ovara-box:${{ github.event.inputs.tag || github.ref_name }}
           sbom: true
           provenance: mode=max
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/sidianlabs/ovara-box
           subject-digest: ${{ steps.push.outputs.digest }}
@@ -129,7 +129,7 @@ jobs:
           tags: ghcr.io/sidianlabs/ovara-box-${{ matrix.agent }}:${{ github.event.inputs.tag || github.ref_name }}
           sbom: true
           provenance: mode=max
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/sidianlabs/ovara-box-${{ matrix.agent }}
           subject-digest: ${{ steps.push.outputs.digest }}
@@ -200,7 +200,7 @@ jobs:
       # integrity only), it can be verified independently:
       #   gh attestation verify <archive> --repo SidianLabs/OVARA
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/ovara_*
