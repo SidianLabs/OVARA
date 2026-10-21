@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"sync"
@@ -52,8 +53,11 @@ func NewWatcher(source *LocalFileSource) (*Watcher, error) {
 // finds new files by diffing the directory listing, and a rename over the
 // same name that races with fsnotify re-watching the file can produce no
 // event at all: the directory notifications are merged and the name was
-// never missing from the listing. The poll compares the file's identity,
-// modification time and size, so a replaced file is always noticed.
+// never missing from the listing. The poll compares a hash of the file's
+// contents, so a replaced or edited file is always noticed. (File identity
+// is no help here: on Windows os.SameFile resolves it lazily by path, so
+// after a rename both sides name the new file.) Policy files are small, so
+// reading one twice a second costs nothing.
 func (w *Watcher) Watch(filePath string) error {
 	w.base = filepath.Base(filePath)
 	w.path = filePath
@@ -116,7 +120,7 @@ func (w *Watcher) forward() {
 
 func (w *Watcher) poll() {
 	defer w.wg.Done()
-	last, _ := os.Stat(w.path)
+	last := snapshot(w.path)
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	for {
@@ -125,8 +129,8 @@ func (w *Watcher) poll() {
 			return
 		case <-t.C:
 		}
-		cur, _ := os.Stat(w.path)
-		if !fileChanged(last, cur) {
+		cur := snapshot(w.path)
+		if cur == last {
 			continue
 		}
 		last = cur
@@ -138,11 +142,17 @@ func (w *Watcher) poll() {
 	}
 }
 
-// fileChanged reports whether the file went missing, appeared, was replaced
-// by a different file, or was modified. A nil FileInfo means "not there".
-func fileChanged(prev, cur os.FileInfo) bool {
-	if prev == nil || cur == nil {
-		return (prev == nil) != (cur == nil)
+// fileState is what the poll compares: whether the file could be read, and a
+// hash of its contents.
+type fileState struct {
+	readable bool
+	sum      [sha256.Size]byte
+}
+
+func snapshot(path string) fileState {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return fileState{}
 	}
-	return !os.SameFile(prev, cur) || !prev.ModTime().Equal(cur.ModTime()) || prev.Size() != cur.Size()
+	return fileState{readable: true, sum: sha256.Sum256(b)}
 }

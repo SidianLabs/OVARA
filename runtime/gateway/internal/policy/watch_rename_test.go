@@ -109,27 +109,32 @@ func TestWatcher_RemoveOfPolicyFileCounts(t *testing.T) {
 	}
 }
 
-func TestFileChanged(t *testing.T) {
+func TestSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.json")
-	os.WriteFile(path, []byte("a"), 0o600)
-	a, _ := os.Stat(path)
-	same, _ := os.Stat(path)
-	if fileChanged(a, same) {
+	mustWrite(t, path, "a")
+	a := snapshot(path)
+	if a != snapshot(path) {
 		t.Error("an untouched file counted as changed")
 	}
 	tmp := filepath.Join(dir, ".policy.tmp")
-	os.WriteFile(tmp, []byte("b"), 0o600)
-	os.Rename(tmp, path)
-	replaced, _ := os.Stat(path)
-	if !fileChanged(a, replaced) {
+	mustWrite(t, tmp, "b") // same size, different contents
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+	replaced := snapshot(path)
+	if a == replaced {
 		t.Error("a file renamed over the original did not count as changed")
 	}
-	if !fileChanged(replaced, nil) || !fileChanged(nil, replaced) {
-		t.Error("the file disappearing or appearing did not count as changed")
+	if missing := snapshot(filepath.Join(dir, "gone.json")); missing == replaced || missing.readable {
+		t.Error("a missing file did not count as different")
 	}
-	if fileChanged(nil, nil) {
-		t.Error("a file missing both times counted as changed")
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -142,15 +147,17 @@ func TestWatcher_PollReportsReplacedFile(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.json")
-	os.WriteFile(path, []byte(fmt.Sprintf(doc, "v1")), 0o600)
+	mustWrite(t, path, fmt.Sprintf(doc, "v1"))
 	w := &Watcher{base: "policy.json", path: path, events: make(chan fsnotify.Event, 4), done: make(chan struct{})}
 	w.wg.Add(1)
 	go w.poll()
 	defer func() { close(w.done); w.wg.Wait() }()
 
 	tmp := filepath.Join(dir, ".policy.tmp")
-	os.WriteFile(tmp, []byte(fmt.Sprintf(doc, "v2")), 0o600)
-	os.Rename(tmp, path)
+	mustWrite(t, tmp, fmt.Sprintf(doc, "v2"))
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case ev := <-w.events:
 		if !w.IsPolicyEvent(ev) {
@@ -164,7 +171,7 @@ func TestWatcher_PollReportsReplacedFile(t *testing.T) {
 func TestWatcher_CloseEndsEventsAndIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.json")
-	os.WriteFile(path, []byte(fmt.Sprintf(doc, "v1")), 0o600)
+	mustWrite(t, path, fmt.Sprintf(doc, "v1"))
 	store, _ := LoadStoreFromFile(path, "")
 	w, err := NewWatcher(NewLocalFileSource(path, "", store))
 	if err != nil {
@@ -173,8 +180,12 @@ func TestWatcher_CloseEndsEventsAndIsIdempotent(t *testing.T) {
 	if err := w.Watch(path); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil { // second Close must be a no-op
+		t.Fatal(err)
+	}
 	for range w.Events() { // must terminate: Close closes the channel
 	}
 }
