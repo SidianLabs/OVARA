@@ -177,10 +177,13 @@ var Table = []Rule{
 	{Name: "syslog", Amd64: 103, Arm64: 116, Errno: unix.EPERM, Group: "admin"},
 	{Name: "settimeofday", Amd64: 164, Arm64: 170, Errno: unix.EPERM, Group: "admin"},
 	{Name: "clock_settime", Amd64: 227, Arm64: 112, Errno: unix.EPERM, Group: "admin"},
-	{Name: "clock_adjtime", Amd64: 305, Arm64: 266, Errno: unix.EPERM, Group: "admin"},
-	{Name: "adjtimex", Amd64: 159, Arm64: 171, Errno: unix.EPERM, Group: "admin"},
-	{Name: "sethostname", Amd64: 170, Arm64: 161, Errno: unix.EPERM, Group: "admin"},
-	{Name: "setdomainname", Amd64: 171, Arm64: 162, Errno: unix.EPERM, Group: "admin"},
+	// a host name is only worth setting in a UTS namespace of one's own
+	// (nix, bubblewrap and runc do), so these lift with the namespaces
+	{Name: "sethostname", Amd64: 170, Arm64: 161, Errno: unix.EPERM, Lift: LiftUserNS, Group: "admin"},
+	{Name: "setdomainname", Amd64: 171, Arm64: 162, Errno: unix.EPERM, Lift: LiftUserNS, Group: "admin"},
+	// (adjtimex and clock_adjtime are not here: their read-only form, modes 0,
+	// is open to everyone and tools use it, and setting the clock needs
+	// CAP_SYS_TIME in any case; a filter cannot read the modes field.)
 
 	// --- x86 only: arm64 has no number for these, so its program omits them
 	{Name: "modify_ldt", Amd64: 154, Arm64: NoNr, Errno: unix.EPERM, Group: "legacy"},

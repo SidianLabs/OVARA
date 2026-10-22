@@ -173,6 +173,15 @@ func cmdBox(args []string) (err error) {
 		if err := ensureImage(o.image); err != nil {
 			return err
 		}
+		// the agent is started through this very binary, as the agent's user
+		// (box_shim_linux.go): everyone must be able to read and run it
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if err := checkRunnableByAll(self); err != nil {
+			return err
+		}
 	}
 	if _, err := os.Stat(filepath.Join(o.dir, "config.json")); err != nil {
 		fmt.Fprintf(os.Stderr, "==> first run: ovara init %s\n", o.dir)
@@ -401,6 +410,9 @@ func cmdBox(args []string) (err error) {
 		envs: o.envs, cmd: o.cmd, gate: gate, noGate: o.noGate, sigs: sigs,
 		user: o.user, uid: uid, gid: gid, name: o.name, tier1FS: o.tier1FS, visibleProcs: o.visibleProcs, image: o.image, mounts: o.mounts, pids: o.pids, memory: o.memory, cpus: o.cpus, selfPath: self,
 		allowUserNS: x.allowUserNS, allowDebuggers: x.allowDebuggers,
+	}
+	for _, line := range seccompOptOutNotes(x.allowUserNS, x.allowDebuggers, drv == nil && o.tier == 2, !o.noGate) {
+		fmt.Fprintln(os.Stderr, line)
 	}
 	events.Emit(sandbox.Event{Event: sandbox.EventAgentStarted, Command: strings.Join(o.cmd, " ")})
 	var exitCode int
@@ -967,4 +979,40 @@ func githubRepoOf(project string) string {
 		return ""
 	}
 	return parseGitHubRemote(strings.TrimSpace(string(out)))
+}
+
+// checkRunnableByAll fails unless everyone can read and run path. A tier 2
+// agent is started through the ovara binary as the agent's own user, so a
+// binary only root may run would fail there, late and confusingly.
+func checkRunnableByAll(path string) error {
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm()&0o005 != 0o005 {
+		return fmt.Errorf("tier 2 starts the agent through %s as the agent's user, so it must be readable and executable by everyone (chmod 755 it)", path)
+	}
+	return nil
+}
+
+// seccompOptOutNotes says, at the start of a run, which of the box's seccomp
+// opt-outs are on and what they do and do not do. The opt-outs are launcher
+// flags only: they are not in the run manifest, the events or the attestation
+// yet, so this line is where a run records that it was started with them.
+func seccompOptOutNotes(allowUserNS, allowDebuggers, tier2, gateOn bool) []string {
+	var out []string
+	if allowUserNS {
+		l := "==> seccomp: -allow-user-namespaces: the agent may create user, network and mount namespaces and use the mount calls; this reopens the kernel attack surface a user namespace opens"
+		if tier2 {
+			l += " (tier 2: Docker's default profile still refuses them)"
+		}
+		out = append(out, l)
+	}
+	if allowDebuggers {
+		l := "==> seccomp: -allow-debuggers: ptrace, process_vm_readv/writev and perf_event_open are allowed; this reopens the routes one box process has into another's memory"
+		if gateOn {
+			l += ". The command gate already traces every process, so gdb, strace and AddressSanitizer's leak check still cannot attach: add -no-command-gate for those"
+		}
+		if tier2 {
+			l += " (tier 2: Docker's default profile still refuses perf_event_open)"
+		}
+		out = append(out, l)
+	}
+	return out
 }

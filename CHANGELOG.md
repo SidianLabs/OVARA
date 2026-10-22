@@ -10,6 +10,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Focus: make the product usable and understandable for people running coding
 agents, and fix correctness bugs found in an in-depth review.
 
+### Changed: the box refuses the kernel entry points an agent has no use for
+
+- Every box now runs the agent under one seccomp filter (tier 1, tier 2 and
+  the VM box; tier 2 had none of its own, only Docker's default profile). It
+  refuses new user, network and mount namespaces and the mount family,
+  `io_uring`, `bpf`, `userfaultfd`, the key store, `perf_event_open`, kexec and
+  module loading, the socket families `AF_ALG`, `AF_RDS`, `AF_KEY`,
+  `AF_PACKET`, `AF_TIPC` and `AF_VSOCK`, four netlink protocols, the
+  ptrace-class calls and foreign ABIs. It fails closed. The list, the answers
+  and what real tools lose are in `docs/box.md` section 8.3. A tool that needs
+  a refused facility now fails: a debugger gets `EPERM`, AddressSanitizer's
+  leak check exits 1 unless `ASAN_OPTIONS=detect_leaks=0`, Chromium needs
+  `--no-sandbox`, an agent's own bubblewrap sandbox cannot start (it runs
+  without it, inside the box), and 32-bit programs cannot run.
+- New launcher flags `-allow-user-namespaces` and `-allow-debuggers` lift the
+  parts of the filter some tools need. They are flags only (not in the run
+  manifest, events or attestation yet); a run started with either prints a
+  note saying so.
+- A tier 2 box starts the agent through the `ovara` binary as the agent's own
+  user, so that binary must be readable and executable by everyone
+  (`install.sh` now installs it `0755`); `ovara box` says so before starting
+  if it is not.
+- The docs no longer say the command gate's checked arguments cannot be
+  changed. The filter removes the ptrace-class routes between box processes;
+  closing the rest is on the roadmap.
+
 ### Added: short-lived credentials
 
 - A credential binding can mint its token instead of holding one. A

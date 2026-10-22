@@ -153,12 +153,6 @@ func runTier1(a *boxAgent) (int, error) {
 // box-init (PID 1) relays 127.0.0.1:<port> to the proxy socket and asks the
 // gate socket about every exec. Both sockets live in a root-only directory.
 func runTier2(a *boxAgent) (int, error) {
-	// The agent starts through the exec shim, which is this very binary run
-	// as the agent's user (box_shim_linux.go): it must be readable and
-	// executable by everyone, not only root.
-	if st, err := os.Stat(a.selfPath); err != nil || st.Mode().Perm()&0o005 != 0o005 {
-		return 0, fmt.Errorf("tier 2 starts the agent through %s as the agent's user, so it must be readable and executable by everyone (chmod 755 it)", a.selfPath)
-	}
 	sockDir := filepath.Join(a.runDir, "sock")
 	if err := os.Mkdir(sockDir, 0o700); err != nil {
 		return 0, err

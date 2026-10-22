@@ -126,10 +126,10 @@ fi
 
 mkdir -p "$DEST"
 mv "$tmp/ovara-bin" "$DEST/ovara"
-chmod +x "$DEST/ovara"
+chmod 755 "$DEST/ovara" # everyone must be able to run it: a tier 2 agent starts through it as its own user
 if [ -f "$tmp/ovara-linux-bin" ]; then
   mv "$tmp/ovara-linux-bin" "$DEST/ovara-linux-$arch"
-  chmod +x "$DEST/ovara-linux-$arch"
+  chmod 755 "$DEST/ovara-linux-$arch"
 fi
 
 cat <<EOF

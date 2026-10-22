@@ -139,8 +139,8 @@ var spec = []probe{
 	{"quotactl", a(0), "EPERM", LiftNone, ""}, {"quotactl_fd", a(0), "EPERM", LiftNone, ""},
 	{"lookup_dcookie", a(0), "EPERM", LiftNone, ""}, {"syslog", a(0), "EPERM", LiftNone, ""},
 	{"settimeofday", a(0), "EPERM", LiftNone, ""}, {"clock_settime", a(0), "EPERM", LiftNone, ""},
-	{"clock_adjtime", a(0), "EPERM", LiftNone, ""}, {"adjtimex", a(0), "EPERM", LiftNone, ""},
-	{"sethostname", a(0), "EPERM", LiftNone, ""}, {"setdomainname", a(0), "EPERM", LiftNone, ""},
+	{"sethostname", a(0), "EPERM", LiftUserNS, "a UTS namespace of one's own is where it is useful"},
+	{"setdomainname", a(0), "EPERM", LiftUserNS, ""},
 
 	// --- x86 only
 	{"modify_ldt", a(0), "EPERM", LiftNone, "amd64 only"},
@@ -158,6 +158,7 @@ var controls = []string{
 	"landlock_create_ruleset", "exit_group", "rt_sigaction", "ioctl", "fcntl", "connect", "bind", "listen", "accept4", "sendmsg",
 	"recvmsg", "setsockopt", "getsockopt", "setuid", "setresuid", "capset", "mincore", "memfd_secret", "personality",
 	"getpriority", "clock_gettime", "clock_nanosleep", "nanosleep", "timerfd_create", "inotify_init1", "fanotify_init",
+	"adjtimex", "clock_adjtime", // their read-only form is open to everyone
 	"setrlimit", "prlimit64", "sched_setaffinity", "madvise", "mlock", "membarrier", "statx", "getdents64", "unlinkat",
 }
 

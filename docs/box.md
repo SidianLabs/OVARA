@@ -336,7 +336,8 @@ planned
    token never appears on a command line; tier 2 = the
    same inside a container from a small image with the agent's runtime
    (node, python, git) and nothing else, `--cap-drop ALL`, read-only root,
-   seccomp default, no host mounts except the workspace and a scratch
+   Docker's default seccomp profile plus the box's own filter (§8.3), no host
+   mounts except the workspace and a scratch
    volume (§6.4). Both tiers need root on the host today (tier 1 for the
    netns; tier 2 to hand the workspace to the box's uid and to keep Ovara's
    sockets in a directory only root can enter). Rootless tier 2 is later.
@@ -379,6 +380,7 @@ properties, each checked by `tests/box/box.sh` with `TIER=2`:
 | No network but Ovara | `--network none`: the container has loopback only. PID 1 (`ovara box-init`) listens on `127.0.0.1:9443` inside and relays each connection to Ovara's proxy through `/run/ovara/proxy.sock`, a Unix socket the host mounts | only `lo`; direct TCP, UDP, the Docker host gateway and cloud metadata have no route; the red team runs inside (`tests/redteam/boundary`, `MODE=inside`) |
 | The agent cannot reach Ovara's sockets | `/run/ovara` is a host directory, mode 0700, owned by root; the agent is uid 10001 | `ls /run/ovara` and connecting to either socket are refused |
 | No privilege | `--cap-drop ALL`, then only `SETUID`, `SETGID` and `KILL` for PID 1 (to drop to the agent's uid and stop its processes); the agent's capability sets are empty; `--security-opt no-new-privileges` | `CapEff` and `CapPrm` are 0, `NoNewPrivs` is 1; `sudo` is killed by the gate and could not elevate anyway |
+| The box's seccomp filter | the agent starts through `ovara box-init -exec-shim` (this same binary, run as the agent's user, so it must be readable and executable by everyone), which installs the filter of §8.3 and execs the agent; PID 1, the gate's tracer, is not under it; Docker's default profile stays in force beneath | `Seccomp` is 2 and a probe of ptrace, a new user namespace, `clone3` and a packet socket gets the filter's answers (`tests/box/box.sh`, both tiers) |
 | Read-only root | `--read-only`; `/tmp` and `/scratch` are in-memory; `/work` and `/home/agent` are the run's directories | writing under `/usr` and `/etc` fails |
 | Nothing of the host | mounts: the workspace, a fresh home, the Ovara binary and the public CA read-only, the socket directory read-only, and `-mount` paths read-only (secret and system locations refused, §6.1) | the host's project, `/var/lib/ovara` and the Docker socket are absent; no credential files |
 | Command gate | PID 1 starts the agent traced (`internal/boxgate`) and asks the host about each exec over `/run/ovara/gate.sock`; the host side is the same gate as tier 1 | the tier 1 gate checks pass unchanged (`sudo` killed, `rm -rf` paused and refused) |
@@ -638,53 +640,69 @@ and this one only adds to it.
 
 | Refused | Why | Answer |
 |---|---|---|
-| creating user, network, mount, pid, uts, ipc, cgroup and time namespaces (`unshare`, `clone` with a `CLONE_NEW*` flag), `setns`; the mount family (`mount`, `umount2`, `pivot_root`, `chroot`, `open_tree`, `move_mount`, `fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr`) | a user namespace gives an unprivileged process the capabilities most kernel bugs need (netfilter, ipv6, overlayfs); the mount family is useless without one | `EPERM` |
+| creating user, network, mount, pid, uts, ipc, cgroup and time namespaces (`unshare`, `clone` with a `CLONE_NEW*` flag), `setns`; the mount family (`mount`, `umount2`, `pivot_root`, `chroot`, `open_tree`, `open_tree_attr`, `move_mount`, `fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr`); `sethostname` and `setdomainname` | a user namespace gives an unprivileged process the capabilities most kernel bugs need (netfilter, ipv6, overlayfs); the mount family is useless without one | `EPERM` |
 | `clone3` | its flags live in memory, which BPF cannot read; libc falls back to `clone`, whose flags it can | `ENOSYS` |
 | `io_uring_setup`, `_enter`, `_register` | a large, fast-moving attack surface; libuv (node) and the like fall back to their thread pools | `ENOSYS` |
-| `bpf`, `userfaultfd`, `keyctl`, `add_key`, `request_key`, `kexec_*`, module loading, `reboot`, `open_by_handle_at`, `name_to_handle_at`, and the capability-gated administration calls (swap, accounting, quotas, the clock, the host name) | exploit primitives and calls the agent has no business with | `EPERM` |
+| `bpf`, `userfaultfd`, `keyctl`, `add_key`, `request_key`, `kexec_*`, module loading, `reboot`, `open_by_handle_at`, `name_to_handle_at`, and the capability-gated administration calls (swap, accounting, quotas, `syslog`, `lookup_dcookie`, setting the clock; the x86-only `modify_ldt`, `iopl`, `ioperm`) | exploit primitives and calls the agent has no business with | `EPERM` |
 | `socket` and `socketpair` for `AF_ALG`, `AF_RDS`, `AF_KEY`, `AF_PACKET`, `AF_TIPC`, `AF_VSOCK`; `AF_NETLINK` with protocol `NETLINK_XFRM`, `_AUDIT`, `_NETFILTER`, `_CRYPTO` | each has carried a bug reachable without privilege; `NETLINK_ROUTE` stays (Go, node, Chromium and glibc use it) | `EAFNOSUPPORT`, `EPROTONOSUPPORT` |
 | `ptrace`, `process_vm_readv`, `process_vm_writev`, `perf_event_open`, `pidfd_getfd`, `kcmp`, `process_madvise` | one box process reaching into another (§8.1) | `EPERM` |
 | a foreign ABI (32-bit on amd64) and the x32 range | a different call table could name the same call differently | `EPERM` |
 
-It never refuses `splice`, `sendfile`, `copy_file_range` (Go's `io.Copy`
-between sockets fails hard without them), `seccomp`, `prctl`, `landlock_*`,
-`memfd_create`, `execveat` or `personality`, and does not close `AF_NETLINK`
-as a whole. Arguments are compared by their low 32 bits only, because the
+The table in `proxy/internal/boxseccomp/table.go` is the authority for the
+exact list. It never refuses `splice`, `sendfile`, `copy_file_range` (Go's
+`io.Copy` between sockets fails hard without them), `seccomp`, `prctl`,
+`landlock_*`, `memfd_create`, `execveat`, `personality`, or `adjtimex` and
+`clock_adjtime` (their read-only form is open to everyone and tools use it),
+and does not close `AF_NETLINK` as a whole. Arguments are compared by their low 32 bits only, because the
 kernel ignores the rest of an int or a flag word and a rule that read the
 high half could be dodged with garbage there.
 
 It fails closed. If the filter cannot be installed (an architecture other
-than amd64 and arm64, a kernel that will not take it, a filter that is not
-in force afterwards) the agent is not started.
+than amd64 and arm64, a kernel that will not take it) or the kernel does not
+answer a probe the way this filter does afterwards (a packet socket must get
+`EAFNOSUPPORT`, which neither the kernel nor Docker's profile says), the
+agent is not started.
 
 Two opt-outs, both off by default and fixed when the agent starts:
 
-- `-allow-user-namespaces` lifts the namespace and mount refusals together.
+- `-allow-user-namespaces` lifts the namespace refusals, the mount family and
+  `sethostname`/`setdomainname` together.
   It brings back tools that build their own sandbox from namespaces
   (Chromium's, bubblewrap, nix, rootless podman, `unshare -r`) and reopens
   the kernel surface a user namespace opens. Tier 2's Docker profile still
   blocks user namespaces whatever this flag says. It does not lift `clone3`'s
   `ENOSYS` (harmless: libc and Chromium fall back), `setns`, `io_uring`,
   `bpf`, or the socket rules.
-- `-allow-debuggers` lifts `ptrace`, `process_vm_*` and `perf_event_open`
-  (gdb, strace, rr, py-spy, AddressSanitizer's leak check, perf). It reopens
-  the routes in §8.1; `pidfd_getfd`, `kcmp` and `process_madvise` stay
-  refused.
+- `-allow-debuggers` lifts `ptrace`, `process_vm_readv`, `process_vm_writev`
+  and `perf_event_open`. It reopens the routes in §8.1; `pidfd_getfd`, `kcmp`
+  and `process_madvise` stay refused. It is not enough on its own for gdb,
+  strace, rr or AddressSanitizer's leak check: while the command gate is on
+  (the default) it already traces every process of the agent, and a process
+  can have only one tracer, so those tools also need `-no-command-gate`. In
+  tier 2 Docker's own profile still refuses `perf_event_open`.
+
+Both are launcher flags only: they are not in the run manifest, the events or
+the attestation yet (a manifest-driven run starts with the filter fully on),
+so a run started with either prints a `==> seccomp:` line saying so.
 
 What this costs real tools, measured with node, python, go, git, gcc,
 cargo, curl and a Playwright Chromium under the filter: nothing in the
-default set except what the opt-outs name. gdb and strace get `EPERM` and
-AddressSanitizer's leak check exits 1 (`ASAN_OPTIONS=detect_leaks=0`);
-Chromium's own sandbox needs `--no-sandbox` in the box (Playwright's default
-launch already passes it); an agent's own bubblewrap sandbox cannot start, so
-it runs without it inside the box, which is the boundary that matters. A tier
-2 box newly inherits the first two from tier 1.
+default set except what the opt-outs name. gdb and strace get `EPERM`; every
+program built with AddressSanitizer exits 1 at exit, even a clean one, with a
+message blaming ptrace, unless `ASAN_OPTIONS=detect_leaks=0`; 32-bit
+programs cannot run (their first call is refused and they die with a
+segmentation fault, not a readable error); Chromium's own sandbox needs
+`--no-sandbox` in the box (Playwright's default launch already passes it); an
+agent's own bubblewrap sandbox cannot start, so it runs without it inside the
+box, which is the boundary that matters. A tier 2 box newly inherits these
+from tier 1.
 
 What it does not do: it removes entry points, it does not prove the rest of
 the kernel safe. Tiers 1 and 2 still share the host's kernel, a kernel bug
 reachable through the calls and sockets that stay open still leaves the box,
-and the CVE numbers behind the refused facilities come from secondary sources
-and should be checked against the NVD before they are cited elsewhere. The
+and the 2025-2026 kernel bugs that motivated the list are known to us from
+secondary reports, so check any specific one against the NVD before citing
+it. The
 host's own settings (`user.max_user_namespaces`, `kernel.io_uring_disabled`,
 a patched kernel, a current container engine) are the other half and are not
 checked by Ovara yet. A microVM tier is the real answer to kernel exploits
@@ -697,7 +715,10 @@ against `golang.org/x/sys`; checks the jump arithmetic against the kernel's
 instruction cap and against a plain reading of the rules; and installs the
 real filter in a child process and compares the kernel's answers with and
 without it, on every thread and across `exec`. `TestVMBox_SeccompOptOuts`
-runs the whole shim path with each opt-out.
+runs the whole shim path with each opt-out (with a network namespace standing
+in for the VM: the VM box has not been booted on a real Mac), and
+`tests/box/box.sh` checks the filter's answers inside a real tier 1 box and a
+real tier 2 container.
 
 ## 9. Package installs
 

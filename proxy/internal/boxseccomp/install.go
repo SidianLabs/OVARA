@@ -75,5 +75,22 @@ func install(prog []insn) error {
 	if mode != unix.SECCOMP_MODE_FILTER {
 		return errors.New("the box seccomp filter is not in force after installing it")
 	}
+	return verifyInForce()
+}
+
+// verifyInForce asks the kernel one question only this filter answers the
+// way it does: a packet socket. Without CAP_NET_RAW the kernel's own answer is
+// EPERM (and Docker's default profile also says EPERM); this filter says
+// EAFNOSUPPORT, and it keeps saying it under every opt-out. Mode 2 alone
+// would be true of any filter, a container runtime's included, and so cannot
+// show that this one is installed.
+func verifyInForce() error {
+	r, _, errno := unix.Syscall(unix.SYS_SOCKET, uintptr(unix.AF_PACKET), uintptr(unix.SOCK_RAW), 0)
+	if errno == 0 {
+		_ = unix.Close(int(r))
+	}
+	if errno != unix.EAFNOSUPPORT {
+		return fmt.Errorf("the box seccomp filter does not answer: a packet socket gave %v, not the filter's EAFNOSUPPORT", errno)
+	}
 	return nil
 }
