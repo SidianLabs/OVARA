@@ -10,13 +10,22 @@
 // come back only through CommitBack, which lands them on a new branch in
 // the real repository and never touches its working tree.
 //
-// Everything the agent can write is untrusted, and that includes the
-// workspace's own .git: its config can name programs (fsmonitor, hooks,
-// filter and diff drivers) that git runs for whoever calls it, and the
-// launcher calls git as root. So once the agent has started, the launcher
-// never runs git on the agent's .git. It keeps a repository of its own
-// next to the workspace (Control), out of the agent's reach, reads the
-// agent's files into it as plain content, and builds the commit there.
+// A git repository's config can name programs (fsmonitor, hooks, filter and
+// diff drivers) that git runs for whoever calls it, and the launcher calls
+// git as root. This is true of the source project too, whose config is read
+// the moment the workspace is made (before the agent starts), not only of the
+// agent's copy: a hostile repo could otherwise run code on the host just by
+// being the target of `ovara box`. So every git the launcher runs carries
+// core.fsmonitor=false and core.hooksPath=/dev/null (gitEnv); with fsmonitor
+// off, the one worktree read of the source (gitStatusPaths) classifies files
+// by stat and does not run their content filters either. The regression is
+// TestCreate_DoesNotRunSourceRepoPrograms.
+//
+// Everything the agent can write is untrusted too, and that includes the
+// workspace's own .git. So once the agent has started, the launcher never
+// runs git on the agent's .git. It keeps a repository of its own next to the
+// workspace (Control), out of the agent's reach, reads the agent's files into
+// it as plain content, and builds the commit there.
 package workspace
 
 import (
@@ -727,6 +736,18 @@ var gitEnv = []string{
 	"GIT_AUTHOR_NAME=ovara-box", "GIT_AUTHOR_EMAIL=box@ovara.invalid",
 	"GIT_COMMITTER_NAME=ovara-box", "GIT_COMMITTER_EMAIL=box@ovara.invalid",
 	"GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0",
+	// Every git Ovara runs touches an untrusted repository: the source
+	// project (its own config, read when the workspace is made) or the
+	// agent's copy. A repository's config can name programs git runs as the
+	// launcher, on the host, before the agent or any approval: core.fsmonitor
+	// on an index refresh (git status), a hook (core.hooksPath) on a checkout
+	// or commit. These env overrides turn both off for every invocation, so a
+	// hostile repo cannot run code on the host through them (docs/box.md §6.5;
+	// the ctl path sets the same with -c). Content filters are handled per
+	// call where the source worktree is read.
+	"GIT_CONFIG_COUNT=2",
+	"GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false",
+	"GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null",
 }
 
 func gitOut(dir string, args ...string) (string, error) {
