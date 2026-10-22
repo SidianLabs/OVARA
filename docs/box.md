@@ -181,8 +181,8 @@ box in the first release (see tiers, §4.4).
 | Tier | Isolation | Stops | Does not stop | Platforms |
 |---|---|---|---|---|
 | **0 cooperative** | `ovara env` only | mistakes | a program that ignores the proxy settings | all |
-| **1 user+netns+mount ns** | separate unprivileged user, network namespace with no route except Ovara, a root file system of its own (system directories read-only, workspace and fresh home read-write; `-tier1-fs host` turns this off), no_new_privs, the command gate | everything in §4.3 for a non-root agent | kernel exploits; a root agent; signals to host processes of the agent's own user (no PID namespace) | Linux (built) |
-| **2 container** | a container with no network interface but loopback (the proxy through a root-only socket), no capabilities for the agent, read-only root, no-new-privileges, Docker's default seccomp profile, nothing of the host mounted but the workspace (§6.4) | the same, plus the host filesystem by construction | kernel exploits | Linux (built, milestone 4); Docker Desktop later |
+| **1 user+netns+mount ns** | separate unprivileged user, network namespace with no route except Ovara, a root file system of its own (system directories read-only, workspace and fresh home read-write; `-tier1-fs host` turns this off), no_new_privs, the box's seccomp filter (§8.3), the command gate | everything in §4.3 for a non-root agent | kernel exploits; a root agent; signals to host processes of the agent's own user (no PID namespace) | Linux (built) |
+| **2 container** | a container with no network interface but loopback (the proxy through a root-only socket), no capabilities for the agent, read-only root, no-new-privileges, Docker's default seccomp profile plus the box's own filter (§8.3), nothing of the host mounted but the workspace (§6.4) | the same, plus the host filesystem by construction | kernel exploits | Linux (built, milestone 4); Docker Desktop later |
 | **3 microVM** | tier 2 inside Firecracker / Cloud Hypervisor, Ovara outside the VM | kernel exploits from inside | hardware side channels; Ovara bugs | Linux hosts with KVM; later |
 
 The first Box release ships tiers 1 and 2. macOS and Windows get tier 1 or 2
@@ -336,7 +336,8 @@ planned
    token never appears on a command line; tier 2 = the
    same inside a container from a small image with the agent's runtime
    (node, python, git) and nothing else, `--cap-drop ALL`, read-only root,
-   seccomp default, no host mounts except the workspace and a scratch
+   Docker's default seccomp profile plus the box's own filter (§8.3), no host
+   mounts except the workspace and a scratch
    volume (§6.4). Both tiers need root on the host today (tier 1 for the
    netns; tier 2 to hand the workspace to the box's uid and to keep Ovara's
    sockets in a directory only root can enter). Rootless tier 2 is later.
@@ -379,6 +380,7 @@ properties, each checked by `tests/box/box.sh` with `TIER=2`:
 | No network but Ovara | `--network none`: the container has loopback only. PID 1 (`ovara box-init`) listens on `127.0.0.1:9443` inside and relays each connection to Ovara's proxy through `/run/ovara/proxy.sock`, a Unix socket the host mounts | only `lo`; direct TCP, UDP, the Docker host gateway and cloud metadata have no route; the red team runs inside (`tests/redteam/boundary`, `MODE=inside`) |
 | The agent cannot reach Ovara's sockets | `/run/ovara` is a host directory, mode 0700, owned by root; the agent is uid 10001 | `ls /run/ovara` and connecting to either socket are refused |
 | No privilege | `--cap-drop ALL`, then only `SETUID`, `SETGID` and `KILL` for PID 1 (to drop to the agent's uid and stop its processes); the agent's capability sets are empty; `--security-opt no-new-privileges` | `CapEff` and `CapPrm` are 0, `NoNewPrivs` is 1; `sudo` is killed by the gate and could not elevate anyway |
+| The box's seccomp filter | the agent starts through `ovara box-init -exec-shim` (this same binary, run as the agent's user, so it must be readable and executable by everyone), which installs the filter of §8.3 and execs the agent; PID 1, the gate's tracer, is not under it; Docker's default profile stays in force beneath | `Seccomp` is 2 and a probe of ptrace, a new user namespace, `clone3` and a packet socket gets the filter's answers (`tests/box/box.sh`, both tiers) |
 | Read-only root | `--read-only`; `/tmp` and `/scratch` are in-memory; `/work` and `/home/agent` are the run's directories | writing under `/usr` and `/etc` fails |
 | Nothing of the host | mounts: the workspace, a fresh home, the Ovara binary and the public CA read-only, the socket directory read-only, and `-mount` paths read-only (secret and system locations refused, §6.1) | the host's project, `/var/lib/ovara` and the Docker socket are absent; no credential files |
 | Command gate | PID 1 starts the agent traced (`internal/boxgate`) and asks the host about each exec over `/run/ovara/gate.sock`; the host side is the same gate as tier 1 | the tier 1 gate checks pass unchanged (`sudo` killed, `rm -rf` paused and refused) |
@@ -568,27 +570,28 @@ applied the same way the proxy applies network decisions:
 In tier 2 the tracer is the container's PID 1 and the decision is made on
 the host; the policy, the approvals and the receipts are the same.
 
-The gate reads the command line from the stopped process's memory, so the
-one way the approved line could differ from the arguments the program then
-uses is another process of the same agent reaching into that memory before
-the program reads it. Writing one process's memory from another needs the
-ptrace-class syscalls (`process_vm_writev`, or `ptrace`'s own poke), and a
-box process holds no capability that would let it reach outside the box, so
-the only possible target is a sibling in the same box.
+The gate reads the command line from the stopped process's memory, so a
+line could differ from the arguments the program then uses if another
+process of the same agent reached into that memory before the program read
+it. The box makes that harder, and does not claim to have made it
+impossible:
 
-- **Tier 1** closes this: before the agent execs, box-init installs a
-  seccomp filter (inherited by the whole tree, held in place by
-  `no_new_privs`) that refuses `process_vm_writev`, `process_vm_readv` and
-  `ptrace` with `EPERM`, so no box process can read or write another's
-  memory (`installBoxSeccomp`, `cmd/ovara/box_seccomp_linux.go`). The
-  gate's tracer is a separate host process and is unaffected. A debugger
-  run inside the box gets `EPERM` as a result — the box is a sandbox, not a
-  debugging environment.
-- **Tier 2** still relies on the container runtime's default seccomp
-  profile, which permits these syscalls between the container's own
-  processes; a box-specific profile that removes them (while leaving the
-  host-side tracer its ptrace) is the next step (§3 of the roadmap's
-  hardening stage).
+- **Every tier and the VM box** run the agent under a seccomp filter
+  (§8.3, `internal/boxseccomp`), installed after `no_new_privs` so nothing in
+  the tree can shed it. It refuses the ptrace-class calls (`ptrace`,
+  `process_vm_readv`, `process_vm_writev`, `pidfd_getfd`, `kcmp`,
+  `process_madvise`), so those routes between box processes are closed. The
+  gate's tracer is a separate process and is unaffected (in tier 2 it is the
+  container's PID 1, which the agent does not run under). A debugger run
+  inside the box gets `EPERM`; `-allow-debuggers` brings the calls back.
+- The gate also reads the command line again just before a program resumes
+  and kills it if it is no longer the one that was checked (`Tracer.Changed`;
+  `ovara box` prints what was decided and what it became). A decision can take
+  minutes when a person is asked, so this removes the long window; a short
+  one remains.
+- That is a reduction, not a guarantee that a checked command's arguments
+  cannot change: closing the remaining ways is tracked in the roadmap (Stage
+  3).
 
 Independently of the gate: the program image itself cannot change, every
 further exec is stopped again, and the network and file boundaries do not
@@ -627,6 +630,101 @@ already fuzzed), so one policy language covers all three exits. The
 "escalate everything not listed" default for a stricter profile is not
 built (§11.4).
 
+### 8.3 The box's seccomp filter
+
+Tiers 1 and 2 share the host's kernel, and the kernel is where 2025-2026's
+local privilege escalations and container escapes have gone: the bugs reach
+for a handful of facilities an agent has no use for, and most of them need a
+capability that an unprivileged user namespace hands out. So every agent
+runs under a deny-list seccomp filter (`proxy/internal/boxseccomp`,
+hand-assembled classic BPF, default allow), installed by the agent's own
+process after `no_new_privs`, in tier 1 by `box-init -tier1` and in tier 2
+and the VM box by a small shim (`box-init -exec-shim`) that `box-init` starts
+in the agent's place. Filters stack: tier 2's Docker profile stays in force
+and this one only adds to it.
+
+| Refused | Why | Answer |
+|---|---|---|
+| creating user, network, mount, pid, uts, ipc, cgroup and time namespaces (`unshare`, `clone` with a `CLONE_NEW*` flag), `setns`; the mount family (`mount`, `umount2`, `pivot_root`, `chroot`, `open_tree`, `open_tree_attr`, `move_mount`, `fsopen`, `fsconfig`, `fsmount`, `fspick`, `mount_setattr`); `sethostname` and `setdomainname` | a user namespace gives an unprivileged process the capabilities most kernel bugs need (netfilter, ipv6, overlayfs); the mount family is useless without one | `EPERM` |
+| `clone3` | its flags live in memory, which BPF cannot read; libc falls back to `clone`, whose flags it can | `ENOSYS` |
+| `io_uring_setup`, `_enter`, `_register` | a large, fast-moving attack surface; libuv (node) and the like fall back to their thread pools | `ENOSYS` |
+| `bpf`, `userfaultfd`, `keyctl`, `add_key`, `request_key`, `kexec_*`, module loading, `reboot`, `open_by_handle_at`, `name_to_handle_at`, and the capability-gated administration calls (swap, accounting, quotas, `syslog`, `lookup_dcookie`, setting the clock; the x86-only `modify_ldt`, `iopl`, `ioperm`) | exploit primitives and calls the agent has no business with | `EPERM` |
+| `socket` and `socketpair` for `AF_ALG`, `AF_RDS`, `AF_KEY`, `AF_PACKET`, `AF_TIPC`, `AF_VSOCK`; `AF_NETLINK` with protocol `NETLINK_XFRM`, `_AUDIT`, `_NETFILTER`, `_CRYPTO` | each has carried a bug reachable without privilege; `NETLINK_ROUTE` stays (Go, node, Chromium and glibc use it) | `EAFNOSUPPORT`, `EPROTONOSUPPORT` |
+| `ptrace`, `process_vm_readv`, `process_vm_writev`, `perf_event_open`, `pidfd_getfd`, `kcmp`, `process_madvise` | one box process reaching into another (§8.1) | `EPERM` |
+| a foreign ABI (32-bit on amd64) and the x32 range | a different call table could name the same call differently | `EPERM` |
+
+The table in `proxy/internal/boxseccomp/table.go` is the authority for the
+exact list. It never refuses `splice`, `sendfile`, `copy_file_range` (Go's
+`io.Copy` between sockets fails hard without them), `seccomp`, `prctl`,
+`landlock_*`, `memfd_create`, `execveat`, `personality`, or `adjtimex` and
+`clock_adjtime` (their read-only form is open to everyone and tools use it),
+and does not close `AF_NETLINK` as a whole. Arguments are compared by their low 32 bits only, because the
+kernel ignores the rest of an int or a flag word and a rule that read the
+high half could be dodged with garbage there.
+
+It fails closed. If the filter cannot be installed (an architecture other
+than amd64 and arm64, a kernel that will not take it) or the kernel does not
+answer a probe the way this filter does afterwards (a packet socket must get
+`EAFNOSUPPORT`, which neither the kernel nor Docker's profile says), the
+agent is not started.
+
+Two opt-outs, both off by default and fixed when the agent starts:
+
+- `-allow-user-namespaces` lifts the namespace refusals, the mount family and
+  `sethostname`/`setdomainname` together.
+  It brings back tools that build their own sandbox from namespaces
+  (Chromium's, bubblewrap, nix, rootless podman, `unshare -r`) and reopens
+  the kernel surface a user namespace opens. Tier 2's Docker profile still
+  blocks user namespaces whatever this flag says. It does not lift `clone3`'s
+  `ENOSYS` (harmless: libc and Chromium fall back), `setns`, `io_uring`,
+  `bpf`, or the socket rules.
+- `-allow-debuggers` lifts `ptrace`, `process_vm_readv`, `process_vm_writev`
+  and `perf_event_open`. It reopens the routes in §8.1; `pidfd_getfd`, `kcmp`
+  and `process_madvise` stay refused. It is not enough on its own for gdb,
+  strace, rr or AddressSanitizer's leak check: while the command gate is on
+  (the default) it already traces every process of the agent, and a process
+  can have only one tracer, so those tools also need `-no-command-gate`. In
+  tier 2 Docker's own profile still refuses `perf_event_open`.
+
+Both are launcher flags only: they are not in the run manifest, the events or
+the attestation yet (a manifest-driven run starts with the filter fully on),
+so a run started with either prints a `==> seccomp:` line saying so.
+
+What this costs real tools, measured with node, python, go, git, gcc,
+cargo, curl and a Playwright Chromium under the filter: nothing in the
+default set except what the opt-outs name. gdb and strace get `EPERM`; every
+program built with AddressSanitizer exits 1 at exit, even a clean one, with a
+message blaming ptrace, unless `ASAN_OPTIONS=detect_leaks=0`; 32-bit
+programs cannot run (their first call is refused and they die with a
+segmentation fault, not a readable error); Chromium's own sandbox needs
+`--no-sandbox` in the box (Playwright's default launch already passes it); an
+agent's own bubblewrap sandbox cannot start, so it runs without it inside the
+box, which is the boundary that matters. A tier 2 box newly inherits these
+from tier 1.
+
+What it does not do: it removes entry points, it does not prove the rest of
+the kernel safe. Tiers 1 and 2 still share the host's kernel, a kernel bug
+reachable through the calls and sockets that stay open still leaves the box,
+and the 2025-2026 kernel bugs that motivated the list are known to us from
+secondary reports, so check any specific one against the NVD before citing
+it. The
+host's own settings (`user.max_user_namespaces`, `kernel.io_uring_disabled`,
+a patched kernel, a current container engine) are the other half and are not
+checked by Ovara yet. A microVM tier is the real answer to kernel exploits
+(§4.4).
+
+Tested: `proxy/internal/boxseccomp` checks the program for both
+architectures against a hand-written spec, with garbage in every high word,
+and fails when any rule or clause is removed; checks every call number
+against `golang.org/x/sys`; checks the jump arithmetic against the kernel's
+instruction cap and against a plain reading of the rules; and installs the
+real filter in a child process and compares the kernel's answers with and
+without it, on every thread and across `exec`. `TestVMBox_SeccompOptOuts`
+runs the whole shim path with each opt-out (with a network namespace standing
+in for the VM: the VM box has not been booted on a real Mac), and
+`tests/box/box.sh` checks the filter's answers inside a real tier 1 box and a
+real tier 2 container.
+
 ## 9. Package installs
 
 **Built in milestone 5** (`ovara box -profile strict`; `proxy/internal/lockfiles`,
@@ -635,8 +733,8 @@ built (§11.4).
 - When the box starts, the launcher reads the project's lockfiles in the
   workspace: `package-lock.json`/`npm-shrinkwrap.json`, `yarn.lock` (classic
   and berry), `pnpm-lock.yaml`, `requirements*.txt` pins, `poetry.lock`,
-  `uv.lock`, `Pipfile.lock`, `go.sum`, `Cargo.lock`, `Gemfile.lock` and
-  `gradle.lockfile`. Lockfiles inside `node_modules`, `vendor` and the like
+  `uv.lock`, `Pipfile.lock`, `go.sum`, `Cargo.lock`, `Gemfile.lock`,
+  `gradle.lockfile` and `composer.lock`. Lockfiles inside `node_modules`, `vendor` and the like
   are not the project's and are not read. It hands the pinned packages,
   with any digests the lockfiles record, to Ovara (`ovara run
   -package-gate`).
@@ -672,8 +770,19 @@ built (§11.4).
 - A registry that is not in the trusted list is not read freely, so a
   package manager pointed at it pauses at its first request (tested with
   `--registry https://registry.npmmirror.com/`).
+- PHP: Composer downloads a Packagist package hosted on GitHub as an
+  archive of one commit (`api.github.com/repos/<owner>/<repo>/zipball/<commit>`,
+  redirected to `codeload.github.com`), and `composer.lock` records that
+  commit. The proxy names the download `github:<owner>/<repo>@<commit>`, so
+  the pinned commit goes through and any other commit pauses, including the
+  same version tag moved to new code. Packagist's index is metadata. A
+  package hosted elsewhere, or fetched with `git clone` when the archive is
+  unavailable, goes through the URL policy only.
 - `npm audit` stays free (exact-path rules); strict sets
-  `npm_config_ignore_scripts=true` for the agent.
+  `npm_config_ignore_scripts=true` for the agent, and
+  `COMPOSER_NO_INTERACTION=1`, so a Composer plugin the project has not
+  listed in `allow-plugins` is never enabled by answering a prompt
+  (Composer runs no dependency's scripts, only plugins).
 
 Tested (`tests/box/strict.sh`, CI job `box-strict`): `npm ci` and `pip
 install -r` of pinned packages ask no one; a new npm and a new pip package
@@ -722,7 +831,7 @@ nftables). The product has to work the same on every developer machine:
 | Host | How the box runs | Ovara runs | Status |
 |---|---|---|---|
 | Linux | tier 1 (netns) or tier 2 (container) directly | on the host | tier 1 and tier 2 built and tested (tier 2 in CI on GitHub's runners) |
-| macOS | tier 2 inside a Lima/Colima VM; `ovara box` drives it | on the host, proxy reachable from the VM's network only | not built |
+| macOS | the box inside a Lima VM; `ovara box` drives it (`-vm lima`, the default) | on the host, proxy and command gate reachable from the VM's network only | built (§10.1); tested end to end on Linux with a stand-in VM; not yet run on a real Mac |
 | Windows | tier 2 inside WSL2 (Docker Desktop's VM or a dedicated distro) | on the host (Windows binary) or inside WSL2 | not built |
 | CI | tier 1 in a privileged job, or tier 0 with the `ci` profile when privilege is unavailable | same job | tier 0 tested (`ci-bot`), tier 1 tested in the agent matrix |
 
@@ -732,6 +841,121 @@ VM; commit-back crosses the VM boundary through the file gate. "Cooperative
 only" on macOS/Windows is acceptable for a first release **if the docs say
 so in the first paragraph**; a release that claims the box on those
 platforms without the VM is not acceptable.
+
+### 10.1 The VM driver (built so far)
+
+`proxy/internal/vm` is the host's side of the VM platforms. A `Driver`
+creates a VM, verifies it, copies the workspace in and the result out, runs
+a command in it and deletes it; Lima (macOS) is the first, WSL2 and the
+tier 3 microVM are meant to be further drivers behind the same interface.
+
+What the Lima driver does today:
+
+- **Instance config, hardened by setting, not by default.** Lima's defaults
+  share the home directory, forward guest ports to the host's loopback and
+  copy the host's proxy variables into the guest. Ovara's config turns each
+  off explicitly: no mounts (the workspace is copied in), no SSH agent or X11
+  forwarding, the host user's SSH keys not authorised in the guest, no port
+  forwards in either direction of the guest's addresses, no proxy variables
+  copied in, containerd off. Ubuntu 24.04 cloud images, amd64 and arm64.
+- **Guest network lockdown.** A provisioning script that Lima runs as root
+  at every boot loads an nft table `ovara_vm` in the guest: every packet out
+  is dropped unless it is loopback, the reply to a connection made *to* the
+  guest (Lima's own control channel), or TCP to the host's proxy or
+  command-gate port. DNS and QUIC are dropped by name; IPv6 falls to the
+  drop policy and is also switched off. The host is found through the
+  guest's hosts file (`host.lima.internal`), not DNS.
+- **Fail closed.** Before an agent runs, `Verify` checks from inside the VM
+  that the table is loaded with a drop policy and that a direct connection to
+  a public address fails. Any other outcome, including an error running the
+  check, is a refusal. Every driver call also refuses a VM whose name is not
+  `ovara-...`, so Ovara never touches a VM it did not make.
+
+How it is tested without a Mac: the guest is a Linux kernel and only the
+hypervisor is missing, so CI's root job runs the real provisioning script
+in a network namespace standing in for the guest, twice (Lima reprovisions
+at every boot), and checks from inside it that the proxy and gate ports
+answer while another host port, TCP 53 and a UDP datagram to 443 do not
+(`TestLockdown_GuestReachesOnlyTheProxyAndGate`); the test fails if the drop
+policy is removed. The `limactl` command sequence, the config and the
+fail-closed checks are tested against a stand-in `limactl`.
+
+The guest side of the box (`box-init -vm`, `cmd/ovara/box_vm_guest.go`)
+runs as root in the guest once the host has copied in the workspace and a
+spec:
+
+- **The agent is its own unprivileged user**, created in the guest and in no
+  group that can become root (the image's own user has passwordless sudo, so
+  the agent is never it). As that user it cannot unload the lockdown.
+- **Every program goes to the host's command gate**, over TCP this time:
+  the guest's lockdown lets the whole guest reach the gate port, so the
+  connection opens with a per-run token that only box-init holds. It reads
+  it from the spec and deletes the spec before the agent exists. A
+  connection without the token gets no answer, so an agent cannot ask the
+  gate about programs that are not running and have the answers remembered.
+  Without the gate box-init does not start the agent.
+- **The agent starts through a shim** (`box-init -exec-shim`) that, as the
+  agent's user, sets `no_new_privs` and the box's seccomp filter before the
+  agent's first instruction, the same protection tier 1 has (§8.3). Tier 2
+  starts its agent the same way. The gate never sees the shim; it sees the
+  agent's own exec.
+- **The workspace comes back as one tar** written after the agent and every
+  process it started have gone: directories, files and links, links kept as
+  links and never read through, FIFOs and devices left out (`writeTree`). The
+  host unpacks it into a fresh directory and refuses anything that could
+  write outside it: absolute names, `..`, a path through a link, a repeated
+  name, any other entry type, more than 8 GiB or a million entries
+  (`extractTree`). Then the existing commit-back reads it as for any box.
+
+Tested on Linux as root with this host as the guest and a gate in the test
+as the host (`TestVMGuest_*`, CI's root job): the agent runs as a fresh
+non-root user under `no_new_privs` and the filter, a program the gate refuses
+never runs, the spec is gone, and a wrong token stops the run before the
+agent starts.
+
+The host side (`ovara box -vm lima`, `cmd/ovara/box_vm_host.go`) ties it
+together, and on macOS it is the default, since tiers 1 and 2 need a Linux
+host. `ovara box` runs as the person there (Lima refuses root), keeps its
+runs in the deployment directory, and for each run:
+
+1. starts Ovara on the host as for tier 2, and the command gate on a port
+   only the run's token opens;
+2. creates the VM with its lockdown and verifies it from inside, or stops;
+3. copies in the workspace as one tar (so a link in the project cannot pull
+   a host file into the guest), Ovara's public CA, the Linux build of ovara
+   (`ovara-linux-<arch>` next to the macOS one, or `-vm-binary`) and the
+   guest spec;
+4. runs `box-init -vm` there as root, and so the agent as its own user;
+5. copies the workspace tar out, unpacks it strictly, puts it in place of the
+   host's copy, and hands over to the same commit-back as every tier;
+6. deletes the VM. `-cpus` and `-memory` size it.
+
+A stop (SIGTERM or Ctrl-C to `ovara box`) is done in order: the host runs
+`box-init -vm-stop` in the guest, box-init sends SIGTERM to every process of
+the agent's user (SIGKILL after 10 seconds), still writes the workspace, and
+it comes back as after a normal exit; the gate refuses any new program
+meanwhile. A second signal, or a guest that has not finished within two
+minutes, ends the run at once, and then the workspace stays as it went in.
+
+End to end on Linux in CI: `TestVMBox_EndToEnd` runs the real binary with a
+network namespace standing in for the VM (`-vm netns-test`, offered only
+when `OVARA_BOX_VM_NETNS_TEST=1`; it shares the host's file system and is
+not a boundary). Everything but the hypervisor is the code a Lima run uses:
+the agent runs as its own non-root user under `no_new_privs` and the seccomp
+filter, a request to a blocked site gets Ovara's 403, a direct connection
+out is blocked, `sudo` is refused by the gate, the project goes in without
+`.env`, the agent's change comes back, and nothing of the VM is left. The
+test fails if the gate is turned off. `TestVMBox_StopBringsTheWorkBack`
+stops a run with SIGTERM and checks that the agent got SIGTERM in the guest
+and that what it wrote came back; it fails if the stop kills the guest's
+command instead.
+
+Not done yet: **no real Lima VM has booted this code on a Mac** — that needs
+a macOS CI runner (the owner's) and is the next step, followed by WSL2 for
+Windows. Until a real Mac run passes the agents matrix, the first-paragraph
+rule above stands: macOS and Windows are documented as cooperative only, and
+`-vm lima` is new and unproven there. The VM choice is a launcher flag, not
+yet part of the run manifest (C5); adding it is an RFC (`spec/rfcs/`).
 
 ## 11. Policy model v2
 
@@ -823,7 +1047,7 @@ project extends.
 | **install policy** (registry pins, new-dependency pause) | `proxy/internal/lockfiles`, `proxy/internal/proxy/packages.go`, `-profile strict` | yes |
 | **policy v2** evaluator + migrate + shadow check | `runtime/gateway/internal/{policy,evaluator}` | yes |
 | **box image** (tier 2): agent runtimes, no secrets, read-only root | `box/Dockerfile` | yes |
-| **VM driver** (Lima / WSL2) | `proxy/internal/vm` | no |
+| **VM driver** (Lima / WSL2) | `proxy/internal/vm` | started: the driver interface and the Lima driver (hardened instance config, guest network lockdown, fail-closed verify), the guest side of the box (`box-init -vm`) and `ovara box -vm lima` (the default on macOS); tested end to end on Linux with a stand-in VM, not yet booted on a real Mac; WSL2 not started (§10.1) |
 | tests: agents matrix, scenarios, red teams | `tests/` | yes; grows per milestone |
 
 ## 13. Data flows

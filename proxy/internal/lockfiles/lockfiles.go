@@ -8,7 +8,9 @@
 // Read: npm (package-lock.json, npm-shrinkwrap.json), yarn (yarn.lock, v1
 // and berry), pnpm (pnpm-lock.yaml), Python (requirements*.txt pins,
 // poetry.lock, uv.lock, Pipfile.lock), Go (go.sum), Rust (Cargo.lock), Ruby
-// (Gemfile.lock) and Gradle (gradle.lockfile). Digests come from npm,
+// (Gemfile.lock), Gradle (gradle.lockfile) and PHP (composer.lock, whose
+// packages Composer downloads as GitHub archives of one commit, so they are
+// pinned as github:owner/repo@commit). Digests come from npm,
 // yarn v1 and pnpm integrity, requirements --hash, poetry and uv hashes and
 // Cargo checksums. A format it cannot read only means more packages
 // pause; it never lets one through.
@@ -20,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,12 +38,18 @@ const (
 	Crate = "crate"
 	Gem   = "gem"
 	Maven = "maven"
+	// GitHub is a source archive of one commit: what Composer downloads for
+	// a Packagist package hosted there (the "dist" in composer.lock)
+	GitHub = "github"
 )
 
 // Ref names one package version: "npm:left-pad@1.3.0".
 func Ref(ecosystem, name, version string) string {
-	if ecosystem == PyPI {
+	switch ecosystem {
+	case PyPI:
 		name = NormalizePyPI(name)
+	case GitHub:
+		name = strings.ToLower(name) // owner and repository names ignore case
 	}
 	return ecosystem + ":" + name + "@" + version
 }
@@ -112,6 +121,8 @@ func ScanPins(root string) (pins map[string][]string, files []string) {
 			got = gemfileLock(p)
 		case name == "gradle.lockfile":
 			got = gradleLock(p)
+		case name == "composer.lock":
+			got = composerLock(p)
 		default:
 			return nil
 		}
@@ -554,4 +565,63 @@ func gradleLock(path string) []pin {
 		out = append(out, pin{ref: Ref(Maven, parts[0]+":"+parts[1], parts[2])})
 	}
 	return out
+}
+
+// composer.lock: "packages" and "packages-dev", each with the archive
+// ("dist") Composer downloads and the commit ("source") it was made from.
+// A GitHub-hosted package is pinned at its commit, so a tag moved to other
+// code afterwards names a commit the lockfile does not have. Packages
+// hosted elsewhere are not named here; their downloads are not a registry
+// the proxy names either.
+func composerLock(path string) []pin {
+	b, err := os.ReadFile(path) //nolint:gosec // a lockfile in the project
+	if err != nil {
+		return nil
+	}
+	type pkg struct {
+		Dist struct {
+			URL       string `json:"url"`
+			Reference string `json:"reference"`
+		} `json:"dist"`
+		Source struct {
+			URL       string `json:"url"`
+			Reference string `json:"reference"`
+		} `json:"source"`
+	}
+	var lock struct {
+		Packages    []pkg `json:"packages"`
+		PackagesDev []pkg `json:"packages-dev"`
+	}
+	if json.Unmarshal(b, &lock) != nil {
+		return nil
+	}
+	var out []pin
+	for _, p := range append(lock.Packages, lock.PackagesDev...) {
+		if u, err := url.Parse(p.Dist.URL); err == nil {
+			if k, ref := Classify(u.Host, u.Path); k == Artifact {
+				out = append(out, pin{ref: ref})
+				continue
+			}
+		}
+		if repo, ok := githubRepoURL(p.Source.URL); ok && commitRef.MatchString(p.Source.Reference) {
+			out = append(out, pin{ref: Ref(GitHub, repo, p.Source.Reference)})
+		}
+	}
+	return out
+}
+
+// commitRef is a full git commit id.
+var commitRef = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// githubRepoURL returns owner/repo of a github.com clone URL.
+func githubRepoURL(s string) (string, bool) {
+	u, err := url.Parse(s)
+	if err != nil || !strings.EqualFold(u.Host, "github.com") {
+		return "", false
+	}
+	parts := strings.Split(strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	return parts[0] + "/" + parts[1], true
 }

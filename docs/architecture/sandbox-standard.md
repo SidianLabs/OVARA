@@ -166,7 +166,7 @@ it has no route out except through Ovara. `docs/box.md` §4 and
 Platform strategy: **every strong tier runs on Linux; other platforms run a
 Linux VM.** macOS via a Lima/Colima VM driver, Windows via WSL2, both driven
 by the same `ovara box` with Ovara on the host side (`box.md` §10,
-`proxy/internal/vm`, not built). This is the only honest way to say
+`proxy/internal/vm`, started: Lima driver and guest lockdown, `box.md` §10.1). This is the only honest way to say
 "enforced" on a laptop; cooperative mode stays for development.
 
 Design rules that must not be broken (from `box.md` §3): no secret inside the

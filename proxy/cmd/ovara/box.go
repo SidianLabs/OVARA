@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package main
 
@@ -43,20 +43,19 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 
 	"ovara.proxy/internal/boxgate"
 	"ovara.proxy/internal/config"
 	"ovara.proxy/internal/gateway"
 	"ovara.proxy/internal/lockfiles"
 	"ovara.proxy/internal/sandbox"
+	"ovara.proxy/internal/vm"
 	"ovara.proxy/internal/workspace"
 )
 
@@ -82,6 +81,10 @@ const (
 	countApproved = "approved"
 	countDenied   = "denied"
 )
+
+// tier1DstRefused lists where a -mount may not land in a tier 1 box: the
+// box's own system, devices and run directory.
+var tier1DstRefused = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/dev", "/proc", "/sys", "/run", "/tmp", "/var/tmp", boxRunsRoot}
 
 // boxAgent is what both tiers need to start the agent.
 type boxAgent struct {
@@ -109,6 +112,9 @@ type boxAgent struct {
 	memory       string   // tier 2
 	cpus         string   // tier 2
 	selfPath     string
+	// the seccomp opt-outs, every tier
+	allowUserNS    bool
+	allowDebuggers bool
 }
 
 func cmdBox(args []string) (err error) {
@@ -119,7 +125,29 @@ func cmdBox(args []string) (err error) {
 	if x.printManifest {
 		return printManifest(o)
 	}
-	if os.Geteuid() != 0 {
+	// macOS has no tier 1 or 2: there the box always runs in a Linux VM
+	if x.vm == "" && runtime.GOOS == "darwin" {
+		x.vm = "lima"
+	}
+	var drv vm.Driver
+	var vmBin string // the Linux ovara the guest runs
+	if x.vm != "" {
+		if drv, err = vmDriver(x.vm); err != nil {
+			return err
+		}
+		if len(o.mounts) > 0 {
+			return errors.New("-mount is not available with -vm yet")
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if vmBin, err = guestBinary(x.vmBinary, exe); err != nil {
+			return err
+		}
+	}
+	// a VM runs as the person (Lima refuses root); tiers 1 and 2 need root
+	if drv == nil && os.Geteuid() != 0 {
 		return errors.New("ovara box needs root (tier 1: the network namespace; tier 2: handing the workspace to the box's user and keeping Ovara's sockets out of its reach): run it with sudo; the agent itself runs as an unprivileged user")
 	}
 	project, err := filepath.Abs(o.project)
@@ -130,7 +158,7 @@ func cmdBox(args []string) (err error) {
 	if o.dir == "" {
 		o.dir = defaultBoxDir()
 	}
-	if o.tier == 1 {
+	if drv == nil && o.tier == 1 {
 		if err := checkMountsFor(o.mounts, o.dir, tier1DstRefused); err != nil {
 			return err
 		}
@@ -138,11 +166,20 @@ func cmdBox(args []string) (err error) {
 			return err
 		}
 	}
-	if o.tier == 2 {
+	if drv == nil && o.tier == 2 {
 		if err := checkMounts(o.mounts, o.dir); err != nil {
 			return err
 		}
 		if err := ensureImage(o.image); err != nil {
+			return err
+		}
+		// the agent is started through this very binary, as the agent's user
+		// (box_shim_linux.go): everyone must be able to read and run it
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if err := checkRunnableByAll(self); err != nil {
 			return err
 		}
 	}
@@ -167,7 +204,7 @@ func cmdBox(args []string) (err error) {
 		cfg.AgentToken = tok
 	}
 	uid, gid := boxContainerUID, boxContainerUID
-	if o.tier == 1 {
+	if drv == nil && o.tier == 1 {
 		if uid, gid, err = ensureUser(o.user); err != nil {
 			return err
 		}
@@ -178,8 +215,13 @@ func cmdBox(args []string) (err error) {
 	runStarted := time.Now()
 	var receiptsBefore int // the chain's length before the run, once Ovara is up
 	proxyUp, landedCommit := false, ""
-	runDir := filepath.Join(boxRunsRoot, runID)
-	if err := os.MkdirAll(boxRunsRoot, 0o711); err != nil {
+	// a VM's runs live in the person's own deployment directory
+	runsRoot := boxRunsRoot
+	if drv != nil {
+		runsRoot = filepath.Join(o.dir, "runs")
+	}
+	runDir := filepath.Join(runsRoot, runID)
+	if err := os.MkdirAll(runsRoot, 0o711); err != nil {
 		return err
 	}
 	if err := os.Mkdir(runDir, 0o711); err != nil {
@@ -232,11 +274,14 @@ func cmdBox(args []string) (err error) {
 	if ws.GitConfigScrubbed {
 		fmt.Fprintln(os.Stderr, "    credentials taken out of URLs in the copy's .git/config")
 	}
-	if err := chownAll(ws.Dir, uid, gid); err != nil {
-		return err
-	}
-	if err := os.Chown(home, uid, gid); err != nil {
-		return err
+	// the agent's user owns its copy (in a VM, box-init hands it over there)
+	if drv == nil {
+		if err := chownAll(ws.Dir, uid, gid); err != nil {
+			return err
+		}
+		if err := os.Chown(home, uid, gid); err != nil {
+			return err
+		}
 	}
 	// strict installs: what the project has pinned goes through; anything
 	// else the agent adds pauses once (the proxy's package gate)
@@ -270,7 +315,9 @@ func cmdBox(args []string) (err error) {
 			fmt.Fprintln(os.Stderr, "    warning: policy.json has no package.install rule; without one a new package is refused, not paused (add {\"action_type\": \"package.install\", \"resource\": \"*\", \"escalate\": true})")
 		}
 		// install scripts are the package manager's to stop; -env can turn them back on
-		o.envs = append(multiFlag{"npm_config_ignore_scripts=true"}, o.envs...)
+		// (Composer runs only plugins, and only ones the project allows;
+		// non-interactive, an unlisted one is never allowed at a prompt)
+		o.envs = append(multiFlag{"npm_config_ignore_scripts=true", "COMPOSER_NO_INTERACTION=1"}, o.envs...)
 	}
 	o.envs = append(multiFlag{"OVARA_BOX_PROFILE=" + o.profile}, o.envs...)
 
@@ -295,7 +342,7 @@ func cmdBox(args []string) (err error) {
 		return err
 	}
 	runArgs := []string{"run", "-dir", o.dir, "-ui", o.ui, "-no-attest"} // the box attests the whole run itself
-	if o.tier == 1 {
+	if drv == nil && o.tier == 1 {
 		runArgs = append(runArgs, "--boundary", "netns", "--boundary-name", o.name)
 	}
 	if pinnedFile != "" {
@@ -362,12 +409,19 @@ func cmdBox(args []string) (err error) {
 		dir: o.dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: o.envs, cmd: o.cmd, gate: gate, noGate: o.noGate, sigs: sigs,
 		user: o.user, uid: uid, gid: gid, name: o.name, tier1FS: o.tier1FS, visibleProcs: o.visibleProcs, image: o.image, mounts: o.mounts, pids: o.pids, memory: o.memory, cpus: o.cpus, selfPath: self,
+		allowUserNS: x.allowUserNS, allowDebuggers: x.allowDebuggers,
+	}
+	for _, line := range seccompOptOutNotes(x.allowUserNS, x.allowDebuggers, drv == nil && o.tier == 2, !o.noGate) {
+		fmt.Fprintln(os.Stderr, line)
 	}
 	events.Emit(sandbox.Event{Event: sandbox.EventAgentStarted, Command: strings.Join(o.cmd, " ")})
 	var exitCode int
-	if o.tier == 2 {
+	switch {
+	case drv != nil:
+		exitCode, err = runVM(a, drv, vmBin)
+	case o.tier == 2:
 		exitCode, err = runTier2(a)
-	} else {
+	default:
 		exitCode, err = runTier1(a)
 	}
 	if err != nil {
@@ -554,247 +608,6 @@ func mergeEnv(base, over []string) []string {
 	return out
 }
 
-// tier1Spec is what box-init -tier1 needs for a's agent (env holds the
-// proxy token: it travels on a pipe, never on a command line).
-func (a *boxAgent) tier1Spec(env []string) (tier1Spec, error) {
-	spec := tier1Spec{Netns: a.name, UID: a.uid, GID: a.gid, Env: env, Argv: a.cmd, Dir: a.ws.Dir}
-	if a.tier1FS == tier1FSHost {
-		return spec, nil
-	}
-	spec.Root = filepath.Join(a.runDir, "root")
-	if err := os.Mkdir(spec.Root, 0o700); err != nil {
-		return spec, err
-	}
-	spec.VisibleProcs = a.visibleProcs
-	spec.Binds = []tier1Bind{{Src: a.ws.Dir, Dst: a.ws.Dir, RW: true}, {Src: a.home, Dst: a.home, RW: true}}
-	if _, err := os.Stat(a.caPub); err == nil {
-		spec.Binds = append(spec.Binds, tier1Bind{Src: a.caPub, Dst: a.caPub})
-	}
-	for _, m := range a.mounts {
-		src, dst, _ := strings.Cut(m, ":")
-		abs, err := filepath.Abs(src)
-		if err != nil {
-			return spec, err
-		}
-		if abs, err = filepath.EvalSymlinks(abs); err != nil {
-			return spec, err
-		}
-		spec.Binds = append(spec.Binds, tier1Bind{Src: abs, Dst: filepath.Clean(dst)})
-	}
-	return spec, nil
-}
-
-// runTier1: the agent as an unprivileged host user inside the network
-// namespace and (unless -tier1-fs host) a root file system of its own,
-// traced from this process.
-func runTier1(a *boxAgent) (int, error) {
-	proxyIP := boundaryProxyIP(boundarySubnetIdx(a.name))
-	vars, err := agentVars(a, proxyIP, a.caPub)
-	if err != nil {
-		return 0, err
-	}
-	env := []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin",
-		"HOME=" + a.home, "USER=" + a.user, "LOGNAME=" + a.user,
-		"TERM=" + envOr("TERM", "xterm"), "LANG=" + envOr("LANG", "C.UTF-8"),
-		"NO_PROXY=" + loopbackNoProxy, "no_proxy=" + loopbackNoProxy,
-		"OVARA_BOX=1", "OVARA_BOX_TIER=1", "OVARA_WORKSPACE=" + a.ws.Dir,
-	}
-	env = mergeEnv(append(env, vars...), a.envs)
-	spec, err := a.tier1Spec(env)
-	if err != nil {
-		return 0, err
-	}
-	agent, specDone, err := tier1Command(a.selfPath, spec)
-	if err != nil {
-		return 0, err
-	}
-	defer specDone()
-	agent.Stdin, agent.Stdout, agent.Stderr = os.Stdin, os.Stdout, os.Stderr
-	fmt.Fprintf(os.Stderr, "==> tier 1: running as %s in %s (network only through Ovara at %s:%s)\n", a.user, a.ws.Dir, proxyIP, a.port)
-	if a.tier1FS == tier1FSHost {
-		fmt.Fprintf(os.Stderr, "==> -tier1-fs host: the agent sees the host's file system: %s can read any host file it has permission to (including %s). Unsafe on a machine with secrets.\n", a.user, a.ws.Project)
-	} else {
-		fmt.Fprintln(os.Stderr, "==> tier 1 file system: the host's system directories read-only, the workspace, a fresh home and /tmp; nothing else of the host")
-	}
-	if a.noGate {
-		if err := agent.Start(); err != nil {
-			return 0, fmt.Errorf("starting the agent: %w", err)
-		}
-		agentDone := make(chan error, 1)
-		go func() { agentDone <- agent.Wait() }()
-		var agentErr error
-		select {
-		case agentErr = <-agentDone:
-		case s := <-a.sigs:
-			fmt.Fprintf(os.Stderr, "\n==> %s: stopping the agent\n", s)
-			_ = syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
-			select {
-			case agentErr = <-agentDone:
-			case <-time.After(10 * time.Second):
-				_ = syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
-				agentErr = <-agentDone
-			}
-		}
-		if agentErr != nil {
-			var ee *exec.ExitError
-			if errors.As(agentErr, &ee) {
-				return ee.ExitCode(), nil
-			}
-			return 0, agentErr
-		}
-		return 0, nil
-	}
-	// the gate traces the tree from the launcher's own process; a signal
-	// to us is forwarded to the agent's process group
-	tr := &boxgate.Tracer{Decide: a.gate.decide, Skip: a.gate.skip}
-	type res struct {
-		code int
-		err  error
-	}
-	done := make(chan res, 1)
-	go func() {
-		c, err := tr.Run(agent)
-		done <- res{c, err}
-	}()
-	var r res
-	select {
-	case r = <-done:
-	case s := <-a.sigs:
-		fmt.Fprintf(os.Stderr, "\n==> %s: stopping the agent\n", s)
-		for agent.Process == nil {
-			time.Sleep(50 * time.Millisecond)
-		}
-		_ = syscall.Kill(-agent.Process.Pid, syscall.SIGTERM)
-		select {
-		case r = <-done:
-		case <-time.After(10 * time.Second):
-			_ = syscall.Kill(-agent.Process.Pid, syscall.SIGKILL)
-			r = <-done
-		}
-	}
-	if r.err != nil {
-		return 0, fmt.Errorf("running the agent under the command gate: %w", r.err)
-	}
-	return r.code, nil
-}
-
-// runTier2: the agent in a container. The container has loopback only;
-// box-init (PID 1) relays 127.0.0.1:<port> to the proxy socket and asks the
-// gate socket about every exec. Both sockets live in a root-only directory.
-func runTier2(a *boxAgent) (int, error) {
-	sockDir := filepath.Join(a.runDir, "sock")
-	if err := os.Mkdir(sockDir, 0o700); err != nil {
-		return 0, err
-	}
-	pl, err := net.Listen("unix", filepath.Join(sockDir, boxProxySock))
-	if err != nil {
-		return 0, err
-	}
-	defer pl.Close()
-	go relayTo(pl, func() (net.Conn, error) { return net.Dial("tcp", "127.0.0.1:"+a.port) })
-	if !a.noGate {
-		gl, err := net.Listen("unix", filepath.Join(sockDir, boxGateSock))
-		if err != nil {
-			return 0, err
-		}
-		defer gl.Close()
-		go serveGate(gl, a.gate)
-	}
-
-	vars, err := agentVars(a, "127.0.0.1", boxInCA)
-	if err != nil {
-		return 0, err
-	}
-	env := []string{
-		"HOME=" + boxInHome, "USER=" + boxDefaultUser, "LOGNAME=" + boxDefaultUser,
-		"TERM=" + envOr("TERM", "xterm"), "LANG=" + envOr("LANG", "C.UTF-8"),
-		"NO_PROXY=" + loopbackNoProxy, "no_proxy=" + loopbackNoProxy,
-		"OVARA_BOX=1", "OVARA_BOX_TIER=2", "OVARA_WORKSPACE=" + boxInWork,
-	}
-	env = mergeEnv(append(env, vars...), a.envs)
-	// the agent token is in there: a root-only file, not the docker command line
-	envFile := filepath.Join(a.runDir, "agent.env")
-	if err := os.WriteFile(envFile, []byte(strings.Join(env, "\n")+"\n"), 0o600); err != nil {
-		return 0, err
-	}
-	cname := boxContainerName + a.runID
-	args := []string{
-		"run", "--rm", "-i", "--name", cname, "--label", "ovara.box=" + a.runID,
-		"--network", "none",
-		"--cap-drop", "ALL", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "KILL",
-		"--security-opt", "no-new-privileges",
-		"--read-only",
-		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=4g,mode=1777",
-		"--tmpfs", "/scratch:rw,nosuid,nodev,exec,size=8g,mode=0755,uid=" + strconv.Itoa(boxContainerUID) + ",gid=" + strconv.Itoa(boxContainerUID),
-		"--ipc", "private",
-		"--hostname", "ovara-box",
-		"--pids-limit", strconv.Itoa(a.pids),
-		"-v", a.ws.Dir + ":" + boxInWork,
-		"-v", a.home + ":" + boxInHome,
-		"-v", sockDir + ":" + boxSockDir + ":ro",
-		"-v", a.selfPath + ":" + boxInBinary + ":ro",
-		"-v", a.caPub + ":" + boxInCA + ":ro",
-		"--env-file", envFile,
-		"-w", boxInWork,
-		"--user", "0:0",
-		"--entrypoint", boxInBinary,
-	}
-	if a.memory != "" {
-		args = append(args, "--memory", a.memory)
-	}
-	if a.cpus != "" {
-		args = append(args, "--cpus", a.cpus)
-	}
-	for _, m := range a.mounts {
-		src, dst, _ := strings.Cut(m, ":")
-		abs, _ := filepath.Abs(src)
-		args = append(args, "-v", abs+":"+dst+":ro")
-	}
-	if isTerminal(os.Stdin) {
-		args = append(args, "-t")
-	}
-	args = append(args, a.image, boxInitCmd,
-		"-uid", strconv.Itoa(boxContainerUID), "-gid", strconv.Itoa(boxContainerUID),
-		"-proxy", "127.0.0.1:"+a.port, "-gate="+strconv.FormatBool(!a.noGate), "--")
-	args = append(args, a.cmd...)
-	agent := exec.Command("docker", args...) //nolint:gosec // flags built here; the agent command is what the person asked to run
-	agent.Stdin, agent.Stdout, agent.Stderr = os.Stdin, os.Stdout, os.Stderr
-	agent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	fmt.Fprintf(os.Stderr, "==> tier 2: container %s from %s (no network but Ovara, no capabilities, read-only root; /work is the workspace)\n", cname, a.image)
-	if err := agent.Start(); err != nil {
-		return 0, fmt.Errorf("docker run: %w", err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- agent.Wait() }()
-	var werr error
-	select {
-	case werr = <-done:
-	case s := <-a.sigs:
-		fmt.Fprintf(os.Stderr, "\n==> %s: stopping the agent\n", s)
-		_ = exec.Command("docker", "kill", "--signal", "TERM", cname).Run() //nolint:gosec // our own container name
-		select {
-		case werr = <-done:
-		case <-time.After(10 * time.Second):
-			_ = exec.Command("docker", "kill", cname).Run() //nolint:gosec // our own container name
-			werr = <-done
-		}
-	}
-	// never leave the box behind
-	_ = exec.Command("docker", "rm", "-f", cname).Run() //nolint:gosec // our own container name
-	if werr == nil {
-		return 0, nil
-	}
-	var ee *exec.ExitError
-	if !errors.As(werr, &ee) {
-		return 0, werr
-	}
-	if ee.ExitCode() == 125 {
-		return 0, errors.New("docker could not start the box (exit 125; see the message above)")
-	}
-	return ee.ExitCode(), nil
-}
-
 // serveGate answers the box's command gate: the first connection only (the
 // box's PID 1), one decision per line, until it closes.
 func serveGate(ln net.Listener, gate *commandGate) {
@@ -804,18 +617,7 @@ func serveGate(ln net.Listener, gate *commandGate) {
 		return
 	}
 	defer c.Close()
-	dec := json.NewDecoder(c)
-	enc := json.NewEncoder(c)
-	for {
-		var req gateRequest
-		if err := dec.Decode(&req); err != nil {
-			return
-		}
-		v := gate.decide(boxgate.Exec{Exe: req.Exe, Argv: req.Argv, Cwd: req.Cwd})
-		if err := enc.Encode(gateReply{Allow: v == boxgate.Allow}); err != nil {
-			return
-		}
-	}
+	serveGateConn(c, json.NewDecoder(c), gate.decide)
 }
 
 // checkTier1Tools fails early, with a clear message, when the host is
@@ -930,11 +732,6 @@ func checkMountsFor(mounts []string, ovaraDir string, ownDst []string) error {
 		}
 	}
 	return nil
-}
-
-func isTerminal(f *os.File) bool {
-	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TCGETS)
-	return err == nil
 }
 
 // commandGate decides each exec in the box through the gateway.
@@ -1119,27 +916,6 @@ func waitPort(addr string, timeout time.Duration, proc *exec.Cmd) error {
 	return errors.New("timeout")
 }
 
-func ensureUser(name string) (uid, gid int, err error) {
-	u, err := user.Lookup(name)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "==> creating system user %s for the agent\n", name)
-		cmd := exec.Command("useradd", "--system", "--no-create-home", "--shell", "/bin/bash", name)
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return 0, 0, fmt.Errorf("useradd %s: %w", name, err)
-		}
-		if u, err = user.Lookup(name); err != nil {
-			return 0, 0, err
-		}
-	}
-	if u.Uid == "0" {
-		return 0, 0, errors.New("the agent user must not be root")
-	}
-	uid, _ = strconv.Atoi(u.Uid)
-	gid, _ = strconv.Atoi(u.Gid)
-	return uid, gid, nil
-}
-
 func chownAll(root string, uid, gid int) error {
 	return filepath.Walk(root, func(p string, _ os.FileInfo, err error) error {
 		if err != nil {
@@ -1203,4 +979,40 @@ func githubRepoOf(project string) string {
 		return ""
 	}
 	return parseGitHubRemote(strings.TrimSpace(string(out)))
+}
+
+// checkRunnableByAll fails unless everyone can read and run path. A tier 2
+// agent is started through the ovara binary as the agent's own user, so a
+// binary only root may run would fail there, late and confusingly.
+func checkRunnableByAll(path string) error {
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm()&0o005 != 0o005 {
+		return fmt.Errorf("tier 2 starts the agent through %s as the agent's user, so it must be readable and executable by everyone (chmod 755 it)", path)
+	}
+	return nil
+}
+
+// seccompOptOutNotes says, at the start of a run, which of the box's seccomp
+// opt-outs are on and what they do and do not do. The opt-outs are launcher
+// flags only: they are not in the run manifest, the events or the attestation
+// yet, so this line is where a run records that it was started with them.
+func seccompOptOutNotes(allowUserNS, allowDebuggers, tier2, gateOn bool) []string {
+	var out []string
+	if allowUserNS {
+		l := "==> seccomp: -allow-user-namespaces: the agent may create user, network and mount namespaces and use the mount calls; this reopens the kernel attack surface a user namespace opens"
+		if tier2 {
+			l += " (tier 2: Docker's default profile still refuses them)"
+		}
+		out = append(out, l)
+	}
+	if allowDebuggers {
+		l := "==> seccomp: -allow-debuggers: ptrace, process_vm_readv/writev and perf_event_open are allowed; this reopens the routes one box process has into another's memory"
+		if gateOn {
+			l += ". The command gate already traces every process, so gdb, strace and AddressSanitizer's leak check still cannot attach: add -no-command-gate for those"
+		}
+		if tier2 {
+			l += " (tier 2: Docker's default profile still refuses perf_event_open)"
+		}
+		out = append(out, l)
+	}
+	return out
 }

@@ -35,6 +35,7 @@ r() { echo "AGENTRESULT $1 $2"; }
 export PIP_CERT="$SSL_CERT_FILE" PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_INPUT=1
 r PROFILE "${OVARA_BOX_PROFILE:-unset}"
 r SCRIPTS "${npm_config_ignore_scripts:-unset}"
+r COMPOSER_NI "${COMPOSER_NO_INTERACTION:-unset}"
 W=$PWD
 npm ci --no-fund >/tmp/s-ci.out 2>&1; r LOCKED "exit=$? $( [ -f node_modules/left-pad/package.json ] && echo installed || echo missing)"
 mkdir -p /tmp/s1 && cd /tmp/s1 && npm init -y >/dev/null 2>&1
@@ -98,6 +99,7 @@ grep -qE 'strict installs: [0-9]+ pinned package\(s\) from package-lock.json, re
 echo "=== pinned packages"
 check "the agent sees the strict profile" strict "$(val PROFILE)"
 check "npm install scripts are off" true "$(val SCRIPTS)"
+check "Composer is non-interactive (no plugin enabled at a prompt)" 1 "$(val COMPOSER_NI)"
 check "npm ci of the locked left-pad needs no one" "exit=0 installed" "$(val LOCKED)"
 check "pip install of the pinned idna needs no one" "exit=0" "$(val PIPLOCKED)"
 grep -qE 'left-pad|idna' /tmp/s-human.log && bad "a pinned package was asked about" "$(grep -E 'left-pad|idna' /tmp/s-human.log)" || ok "no one was asked about a pinned package"

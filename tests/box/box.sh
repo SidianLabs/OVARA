@@ -69,6 +69,26 @@ sudo id >/tmp/sudo.out 2>&1; r SUDO "exit=$? $(head -c 40 /tmp/sudo.out | tr '\n
 rm -rf /tmp/victim; r RMRF "exit=$? victim=$( [ -e /tmp/victim/file ] && echo survived || echo gone )"
 python3 -c "import os; os.system('sudo id > /tmp/sudo2.out 2>&1')"; r SUDO2 "$( [ -s /tmp/sudo2.out ] && grep -q uid= /tmp/sudo2.out && echo ran || echo refused )"
 r LS "$(ls /nonexistent >/dev/null 2>&1; echo exit=$?)"
+# the box's seccomp filter: a filter is in force, and the kernel's own answers to a
+# few harmless calls are replaced by the filter's (ptrace on a process that does not
+# exist is ESRCH natively; unshare with CLONE_NEWUSER and garbage in the flag word's
+# high half is EINVAL natively; a packet socket is EPERM without CAP_NET_RAW; clone3
+# with a null argument is EINVAL natively)
+r SECCOMP_MODE "$(awk '/^Seccomp:/{print $2}' /proc/self/status)"
+r SECCOMP_ANSWERS "$(python3 -c '
+import ctypes, platform, socket
+libc = ctypes.CDLL(None, use_errno=True)
+nr = {"x86_64": (101, 272, 435), "aarch64": (117, 97, 435)}[platform.machine()]
+def call(n, *a):
+    ctypes.set_errno(0)
+    libc.syscall(ctypes.c_long(n), *[ctypes.c_long(x) for x in a])
+    return ctypes.get_errno()
+try:
+    socket.socket(17, socket.SOCK_RAW, 0); pk = 0
+except OSError as e:
+    pk = e.errno
+print("ptrace=%d unshare=%d clone3=%d packet=%d" % (call(nr[0], 2, 1 << 22, 0, 0), call(nr[1], 0x10000000 | (1 << 40)), call(nr[2], 0, 0), pk))
+')"
 # "approve for this run": the person allows the first of each pair for the
 # run; the identical second one must not ask again
 dd if=/dev/zero of=/tmp/dd1 bs=1 count=1 2>/dev/null; r RUNDD1 "exit=$?"
@@ -227,6 +247,11 @@ if [ "$TIER" = 2 ]; then
   check "processes in the box: the gate (root) and the agent only" "ovara-agent root" "$(val T2_PROCS)"
   check "no credential-shaped file anywhere in the image" "" "$(val T2_IMAGE_SECRETS)"
 fi
+
+echo "=== the box's seccomp filter"
+check "the agent runs under a seccomp filter" 2 "$(val SECCOMP_MODE)"
+# EPERM 1, ENOSYS 38, EAFNOSUPPORT 97
+check "ptrace, a new user namespace, clone3 and a packet socket get the filter's answers" "ptrace=1 unshare=1 clone3=38 packet=97" "$(val SECCOMP_ANSWERS)"
 
 echo "=== the command gate"
 case "$(val SUDO)" in exit=137*) ok "sudo is refused by policy: the program is killed before it runs ($(val SUDO))";; *) bad "sudo" "$(val SUDO)";; esac

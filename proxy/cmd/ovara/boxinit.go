@@ -28,7 +28,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -38,25 +37,8 @@ import (
 	"syscall"
 
 	"ovara.proxy/internal/boxgate"
+	"ovara.proxy/internal/boxseccomp"
 )
-
-const (
-	boxSockDir   = "/run/ovara"
-	boxProxySock = "proxy.sock"
-	boxGateSock  = "gate.sock"
-)
-
-// gateRequest and gateReply are the command gate's wire format between
-// box-init (inside) and `ovara box` (host): one JSON object per line.
-type gateRequest struct {
-	Argv []string `json:"argv"`
-	Exe  string   `json:"exe,omitempty"`
-	Cwd  string   `json:"cwd,omitempty"`
-}
-
-type gateReply struct {
-	Allow bool `json:"allow"`
-}
 
 // box-init -tier1 enters namespaces and drops credentials on the thread
 // that then calls exec: keep main on the main thread from the start, so
@@ -74,11 +56,30 @@ func cmdBoxInit(args []string) error {
 	proxyAddr := fs.String("proxy", "127.0.0.1:9443", "address inside the box where the proxy relay listens")
 	gateOn := fs.Bool("gate", true, "check every exec with the host's command gate")
 	tier1 := fs.Bool("tier1", false, "tier 1: become the agent described by the spec on fd 3 (box_tier1.go)")
+	vmSpec := fs.String("vm", "", "inside a VM: run the agent described by this spec file (box_vm_guest.go)")
+	execShim := fs.Bool("exec-shim", false, "the shim that installs the seccomp filter and becomes the agent (box_shim_linux.go)")
+	allowUserNS := fs.Bool("allow-userns", false, "seccomp opt-out: let the agent create namespaces and use the mount calls")
+	allowDebuggers := fs.Bool("allow-debuggers", false, "seccomp opt-out: let the agent use ptrace, process_vm_* and perf_event_open")
+	vmStop := fs.String("vm-stop", "", "inside a VM: stop the run started with this spec file, keeping its workspace")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *tier1 {
 		return runTier1Init()
+	}
+	seccompOpts := boxseccomp.Options{AllowUserNamespaces: *allowUserNS, AllowDebuggers: *allowDebuggers}
+	if *execShim {
+		return runExecShim(fs.Args(), seccompOpts)
+	}
+	if *vmStop != "" {
+		return runVMStop(*vmStop)
+	}
+	if *vmSpec != "" {
+		code, err := runVMGuest(*vmSpec)
+		if err != nil {
+			return err
+		}
+		os.Exit(code)
 	}
 	argv := fs.Args()
 	if len(argv) == 0 {
@@ -95,7 +96,16 @@ func cmdBoxInit(args []string) error {
 	}
 	go relayTo(ln, func() (net.Conn, error) { return net.Dial("unix", filepath.Join(boxSockDir, boxProxySock)) })
 
-	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // the agent command is what the person asked `ovara box` to run
+	// The agent starts through the exec shim, as the agent's user, so that it
+	// is the one under the box's seccomp filter and this process, the gate's
+	// tracer, is not (box_shim_linux.go). It is the same binary, mounted
+	// read-only at the path box-init itself runs from.
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("box-init: %w", err)
+	}
+	shim := shimArgv(self, seccompOpts, argv)
+	cmd := exec.Command(shim[0], shim[1:]...) //nolint:gosec // our own binary, then the agent command the person asked `ovara box` to run
 	cmd.Env = os.Environ()
 	cmd.Dir = "/work"
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -124,7 +134,7 @@ func cmdBoxInit(args []string) error {
 			return fmt.Errorf("box-init: command gate: %w (refusing to start the agent without it)", err)
 		}
 		g := &remoteGate{enc: json.NewEncoder(gc), dec: json.NewDecoder(gc)}
-		tr := &boxgate.Tracer{Decide: g.decide}
+		tr := &boxgate.Tracer{Decide: g.decide, Skip: shimSkipper(), Changed: argvChanged}
 		code, err = tr.Run(cmd)
 		if err != nil {
 			return fmt.Errorf("box-init: %w", err)
@@ -144,58 +154,4 @@ func cmdBoxInit(args []string) error {
 	}
 	os.Exit(code)
 	return nil
-}
-
-// remoteGate asks the host for each exec. Any failure to get an answer is a
-// refusal.
-type remoteGate struct {
-	enc *json.Encoder
-	dec *json.Decoder
-}
-
-func (g *remoteGate) decide(e boxgate.Exec) boxgate.Verdict {
-	if err := g.enc.Encode(gateRequest{Argv: e.Argv, Exe: e.Exe, Cwd: e.Cwd}); err != nil {
-		fmt.Fprintf(os.Stderr, "[ovara] command gate gone, refusing: %s\n", termSafe(boxgate.CommandLine(e)))
-		return boxgate.Deny
-	}
-	var r gateReply
-	if err := g.dec.Decode(&r); err != nil || !r.Allow {
-		return boxgate.Deny
-	}
-	return boxgate.Allow
-}
-
-// relayTo accepts on ln and pipes each connection to a fresh dial().
-func relayTo(ln net.Listener, dial func() (net.Conn, error)) {
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		go func() {
-			defer c.Close()
-			u, err := dial()
-			if err != nil {
-				return
-			}
-			defer u.Close()
-			pipe(c, u)
-		}()
-	}
-}
-
-// pipe copies both ways until either side is done, then closes both.
-func pipe(a, b net.Conn) {
-	done := make(chan struct{}, 2)
-	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
-		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
-		done <- struct{}{}
-	}
-	go cp(a, b)
-	go cp(b, a)
-	<-done
-	<-done
 }

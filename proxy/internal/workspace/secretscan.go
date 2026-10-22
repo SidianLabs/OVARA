@@ -48,7 +48,12 @@ var secretContent = []secretFinding{
 	{"an Azure storage key", regexp.MustCompile(`AccountKey=([A-Za-z0-9+/=]{40,})`), nil},
 	{"an Azure access token", regexp.MustCompile(`"accessToken"\s*:\s*"([^"]{40,})"`), looksRandom},
 	{"a kubeconfig credential", regexp.MustCompile(`(?m)^\s*(?:token|client-key-data|password)\s*:\s*["']?([^\s"']{8,})`), nil},
-	{"a key-like variable", regexp.MustCompile(`(?mi)^\s*(?:export\s+)?["']?[a-z0-9_.-]*(?:key|token|secret|passwd|password|pwd|credential|auth)[a-z0-9_.-]*["']?\s*[=:]\s*["']?([A-Za-z0-9/+_\-.=~]{16,})`), looksRandom},
+	{"a key-like variable", regexp.MustCompile(`(?mi)^\s*(?:(?:export|const|let|var|val|final|static|private|public|protected|readonly|define)\s+)*(?:\$|this\.|self\.)?["']?[a-z0-9_.-]*(?:key|token|secret|passwd|password|pwd|credential|auth)[a-z0-9_.-]*["']?\s*(?::=|[=:]|=>)\s*["']?([A-Za-z0-9/+_\-.=~]{16,})`), looksRandom},
+	// the same in a JSON, JS or PHP literal anywhere on a line
+	{"a key-like field", regexp.MustCompile(`(?i)["'][a-z0-9_.-]*(?:key|token|secret|passwd|password|pwd|credential|auth)[a-z0-9_.-]*["']\s*(?:[:,]|=>)\s*["']([A-Za-z0-9/+_\-.=~]{16,})["']`), looksRandom},
+	// a token written into a request: a curl line, a script, an HTTP file
+	{"a bearer token", regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9._~+/\-]{16,}=*)`), looksRandom},
+	{"an API key header", regexp.MustCompile(`(?i)\b(?:x-api-key|api-key|x-auth-token|private-token)["']?\s*[:=,]\s*["']?([A-Za-z0-9._\-]{16,})`), looksRandom},
 }
 
 // kubeconfig credentials count only in a kubeconfig

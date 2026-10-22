@@ -360,3 +360,50 @@ func TestWithout_RenameKeepsBothEnds(t *testing.T) {
 		t.Fatal("an empty commit-back made a branch")
 	}
 }
+
+// TestCreate_DoesNotRunSourceRepoPrograms is the regression test for a
+// GitSpawn-class bug: making the workspace must not run any program the
+// untrusted source repository names in its own config. git reads that
+// config when Ovara inspects the source (git status refreshes the index and
+// can filter worktree content), and core.fsmonitor, a hook and a content
+// filter each name a command git would otherwise run on the host, as the
+// launcher, before the agent starts and before any approval.
+func TestCreate_DoesNotRunSourceRepoPrograms(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	p := project(t)
+	marks := t.TempDir()
+	mark := func(kind string) string { return filepath.Join(marks, "RAN-"+kind) }
+	// a program that, if git runs it, leaves a file behind
+	trap := func(kind string) string {
+		return "sh -c 'touch " + mark(kind) + "; false'"
+	}
+	git(t, p, "config", "core.fsmonitor", trap("fsmonitor"))
+	git(t, p, "config", "core.hooksPath", filepath.Join(p, ".githooks"))
+	write(t, filepath.Join(p, ".githooks/post-checkout"), "#!/bin/sh\ntouch "+mark("hook")+"\n")
+	if err := os.Chmod(filepath.Join(p, ".githooks/post-checkout"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// a clean filter on a committed .gitattributes, with a modified tracked
+	// file so git would run the filter to classify it
+	write(t, filepath.Join(p, ".gitattributes"), "*.py filter=trap\n")
+	git(t, p, "add", ".gitattributes")
+	git(t, p, "commit", "--quiet", "-m", "attrs")
+	git(t, p, "config", "filter.trap.clean", "sh -c 'touch "+mark("filter")+"; cat'")
+	git(t, p, "config", "filter.trap.smudge", "sh -c 'touch "+mark("filter")+"; cat'")
+	write(t, filepath.Join(p, "app.py"), "print(4)  # changed, so the filter would run\n")
+
+	ws, err := Create(p, filepath.Join(t.TempDir(), "work"), Options{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if ws.Dir == "" {
+		t.Fatal("no workspace")
+	}
+	for _, kind := range []string{"fsmonitor", "hook", "filter"} {
+		if _, err := os.Stat(mark(kind)); err == nil {
+			t.Errorf("the source repo's %s program ran on the host during Create", kind)
+		}
+	}
+}

@@ -78,6 +78,11 @@ type boxExtra struct {
 	manifest      string // read the run from this file
 	printManifest bool   // write the run down and stop
 	events        string // append the events stream to this file
+	vm            string // run the box in a Linux VM through this driver (not in the manifest yet)
+	vmBinary      string // the Linux ovara the guest runs
+	// seccomp opt-outs (every tier; not in the manifest yet, like -vm)
+	allowUserNS    bool // -allow-user-namespaces
+	allowDebuggers bool // -allow-debuggers
 }
 
 // boxFlags binds the flags to o. o's values are the defaults, so a
@@ -93,8 +98,8 @@ func boxFlags(o *boxOptions, x *boxExtra) *flag.FlagSet {
 	fs.StringVar(&o.image, "image", o.image, "tier 2: the box image (a release pins its own published image by digest; build it from box/Dockerfile, or extend it with your agent)")
 	fs.StringVar(&x.agentImage, "agent-image", "", "tier 2: the published box image with this agent installed: claude, codex, opencode or aider (implies -tier 2; -image names any other image)")
 	fs.IntVar(&o.pids, "pids", o.pids, "tier 2: most processes the box may have at once")
-	fs.StringVar(&o.memory, "memory", o.memory, "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none)")
-	fs.StringVar(&o.cpus, "cpus", o.cpus, "tier 2: CPU limit for the box (e.g. 2; default none)")
+	fs.StringVar(&o.memory, "memory", o.memory, "tier 2: memory limit for the box (docker syntax, e.g. 8g; default none); -vm: the VM's memory in GiB, e.g. 8g (default 8)")
+	fs.StringVar(&o.cpus, "cpus", o.cpus, "tier 2: CPU limit for the box (e.g. 2; default none); -vm: the VM's CPUs (default up to 4)")
 	fs.StringVar(&o.profile, "profile", o.profile, "dev: installs are free; strict: a dependency not in the project's lockfiles pauses once with its name and version, and npm install scripts are off (docs/box.md §9); ci: strict, and no one answers: anything policy would pause (a request, a new package, a command, the commit-back) is refused at once (§11.4)")
 	fs.BoolVar(&o.untrusted, "untrusted-lockfiles", o.untrusted, "strict or ci: the project's lockfiles are not trusted (a repository you are reviewing, not your own): nothing they pin is let through without a question")
 	fs.StringVar(&o.ui, "ui", o.ui, "approval page address (loopback only; \"off\" to disable)")
@@ -111,6 +116,10 @@ func boxFlags(o *boxOptions, x *boxExtra) *flag.FlagSet {
 	fs.StringVar(&x.manifest, "manifest", "", "read the run from this manifest file (spec/runtime.md); a flag given here wins over it, a project directory or -- command given here replaces its")
 	fs.BoolVar(&x.printManifest, "print-manifest", false, "write the run these flags describe as a manifest on stdout and stop (no root needed; -manifest FILE runs it)")
 	fs.StringVar(&x.events, "events", "", "append the run's events to this file, one JSON line each, from run.created to run.finished (spec/runtime.md)")
+	fs.StringVar(&x.vm, "vm", "", "run the box in a Linux VM with Ovara on this host: lima (the default, and the only way, on macOS); -cpus and -memory size it (docs/box.md §10.1)")
+	fs.BoolVar(&x.allowUserNS, "allow-user-namespaces", false, "let the agent create user, network and mount namespaces and use the mount calls (a browser's own sandbox, bubblewrap, unshare -r): without it the box's seccomp filter refuses them. This reopens the kernel attack surface a user namespace opens (tier 2's Docker profile still blocks it); see docs/box.md section 8.3")
+	fs.BoolVar(&x.allowDebuggers, "allow-debuggers", false, "let the agent use ptrace, process_vm_readv/writev and perf_event_open: without it the box's seccomp filter refuses them. This reopens the routes one box process has into another's memory. While the command gate is on every process is already traced, so gdb, strace and AddressSanitizer's leak check need -no-command-gate as well; tier 2's Docker profile still refuses perf_event_open; see docs/box.md section 8.3")
+	fs.StringVar(&x.vmBinary, "vm-binary", "", "with -vm: the Linux build of ovara for the guest (default: this binary on Linux, ovara-linux-<arch> next to it on macOS)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: ovara box [flags] <project-dir> -- <agent command...>")
 		fmt.Fprintln(os.Stderr, "       ovara box -manifest FILE [flags] [<project-dir>] [-- <agent command...>]")

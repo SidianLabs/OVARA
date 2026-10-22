@@ -94,16 +94,23 @@ from_release() {
   fi
   tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
   mv "$tmp/$name/ovara" "$tmp/ovara-bin"
+  # macOS archives carry the Linux build `ovara box` runs inside its VM
+  if [ -f "$tmp/$name/ovara-linux-$arch" ]; then
+    mv "$tmp/$name/ovara-linux-$arch" "$tmp/ovara-linux-bin"
+  fi
 }
 
 from_source() {
   command -v git >/dev/null || die "git is required to build from source"
-  command -v go  >/dev/null || die "Go 1.25+ is required to build from source (https://go.dev/dl)"
+  command -v go  >/dev/null || die "Go 1.26+ is required to build from source (https://go.dev/dl)"
   # A pinned version builds THAT tag, never whatever main happens to be.
   if [ "$VERSION" != latest ]; then branch="$VERSION"; else branch="${OVARA_BRANCH:-main}"; fi
   say "building from source ($branch)..."
   git clone --depth 1 -b "$branch" "https://github.com/$REPO.git" "$tmp/ovara" >/dev/null 2>&1
   (cd "$tmp/ovara/proxy" && CGO_ENABLED=0 go build -trimpath -o "$tmp/ovara-bin" ./cmd/ovara)
+  if [ "$os" = darwin ] && [ -n "$arch" ]; then
+    (cd "$tmp/ovara/proxy" && CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "$tmp/ovara-linux-bin" ./cmd/ovara)
+  fi
 }
 
 detect
@@ -119,7 +126,11 @@ fi
 
 mkdir -p "$DEST"
 mv "$tmp/ovara-bin" "$DEST/ovara"
-chmod +x "$DEST/ovara"
+chmod 755 "$DEST/ovara" # everyone must be able to run it: a tier 2 agent starts through it as its own user
+if [ -f "$tmp/ovara-linux-bin" ]; then
+  mv "$tmp/ovara-linux-bin" "$DEST/ovara-linux-$arch"
+  chmod 755 "$DEST/ovara-linux-$arch"
+fi
 
 cat <<EOF
 

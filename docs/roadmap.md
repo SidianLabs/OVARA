@@ -54,7 +54,7 @@ Exit: v0.10 tagged; README's first paragraph says "beta" and "Linux".
 | **Milestone 7, real-key soak**: a nightly job runs the three agents against the real model APIs for hours, unattended, and reports the host table and the receipt chain | job built here; **owner adds API keys as repository secrets** (spend cap advised) | 7 consecutive green nights |
 | Rootless tier 2 (no root on the host: user namespaces, the socket directory owned by the invoking user's mapping) | here | box tests pass as a non-root user in the docker group |
 | Close the command gate's argv gap (`docs/box.md` §8): stop the whole tree, or read argv by `process_vm_readv` while every sibling is stopped | here | a test where a sibling rewrites argv after the exec stop cannot change what runs |
-| A tighter seccomp profile for tier 2 than Docker's default | here | box and agent suites still pass; the red team adds the removed syscalls |
+| A tighter seccomp profile than Docker's default, for every tier | **built** (`proxy/internal/boxseccomp`: namespaces, the mount family, `io_uring`, `bpf`, `userfaultfd`, odd socket families and netlink protocols, the ptrace-class calls; installed in tier 1, tier 2 and the VM box; `docs/box.md` §8.3); **not yet run in CI on GitHub**; a host preflight (`ovara doctor`: user-namespace limits, `io_uring_disabled`, engine version) and a strict allowlist mode are follow-ups | box and agent suites still pass; the red team adds the removed syscalls |
 | Fuzzing of the proxy's request parsing and the lockfile and download parsers, in CI | **built** (21 targets, `fuzz.yml` weekly and on demand) | fuzz jobs run without findings |
 | Performance: proxy latency and the gate's overhead measured per release (`docs/BENCHMARKS.md`) | here | numbers published; a regression fails the job |
 
@@ -65,7 +65,7 @@ Linux VM (Lima / WSL2) with Ovara on the host side.
 
 | Work | Who | Exit test |
 |---|---|---|
-| `ovara box` on macOS drives a Lima VM; on Windows, WSL2 | here | the agents matrix passes in the VM with the same numbers as Linux |
+| `ovara box` on macOS drives a Lima VM; on Windows, WSL2 | here; **built for macOS, not yet proven on a Mac**: Lima driver with hardened config and a verified guest lockdown, the guest side of the box, and `ovara box -vm lima` (the default on macOS), all tested end to end on Linux in CI with a stand-in VM (`box.md` §10.1); next: a macOS runner boots Lima for real, then WSL2 | the agents matrix passes in the VM with the same numbers as Linux |
 | CI that can run a nested VM | **owner: self-hosted runners** (a Mac and a Windows machine) or larger runners with nested virtualization | the matrix runs on every PR |
 
 Until this stage ships, the docs say in their first paragraph that macOS

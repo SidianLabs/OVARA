@@ -39,6 +39,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+
+	"ovara.proxy/internal/boxseccomp"
 )
 
 // the pipe box-init -tier1 reads its spec from
@@ -59,6 +61,9 @@ type tier1Spec struct {
 	// VisibleProcs accepts a /proc that shows every process of the host
 	// when the kernel cannot hide them (-allow-visible-procs).
 	VisibleProcs bool `json:"visible_procs,omitempty"`
+	// the seccomp opt-outs (-allow-user-namespaces, -allow-debuggers)
+	AllowUserNS    bool `json:"allow_userns,omitempty"`
+	AllowDebuggers bool `json:"allow_debuggers,omitempty"`
 }
 
 // tier1Bind puts a host path into the box's root.
@@ -81,10 +86,6 @@ var boxEtcMasked = []string{
 
 // device nodes the box gets, bound from the host's
 var boxDevices = []string{"null", "zero", "full", "random", "urandom", "tty"}
-
-// tier1DstRefused lists where a -mount may not land in a tier 1 box: the
-// box's own system, devices and run directory.
-var tier1DstRefused = []string{"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/dev", "/proc", "/sys", "/run", "/tmp", "/var/tmp", boxRunsRoot}
 
 // tier1Command is the traced process `ovara box` starts for a tier 1 box:
 // box-init -tier1, with its spec on a pipe. Call done once the process has
@@ -169,11 +170,12 @@ func runTier1Init() error {
 	if err := syscall.Setresuid(spec.UID, spec.UID, spec.UID); err != nil {
 		return fmt.Errorf("box-init -tier1: setuid: %w", err)
 	}
-	// Last, so it covers the agent and its whole tree but nothing above:
-	// refuse the syscalls one box process would use to reach into another's
-	// memory, which is the one way the command gate's reading of a program's
-	// arguments could be undone (docs/box.md §8).
-	if err := installBoxSeccomp(); err != nil {
+	// Last, so it covers the agent and its whole tree but nothing above: the
+	// kernel attack surface an agent has no use for (new namespaces, io_uring,
+	// bpf, odd socket families, ...) and the calls one box process would use
+	// to reach into another's memory (docs/box.md §8). On this thread, which
+	// execs the agent next.
+	if err := boxseccomp.Install(boxseccomp.Options{AllowUserNamespaces: spec.AllowUserNS, AllowDebuggers: spec.AllowDebuggers}); err != nil {
 		return fmt.Errorf("box-init -tier1: %w", err)
 	}
 	err = syscall.Exec(path, spec.Argv, spec.Env) //nolint:gosec // the agent command is what the person asked `ovara box` to run

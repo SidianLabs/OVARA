@@ -58,12 +58,25 @@ jobs:
         with:
           go-version: "1.26"
           check-latest: true   # the newest patch, not the runner's cached one (stdlib fixes)
-      - name: Build the test binary
+      # Built as the runner's user, run as root: no root-owned files in the Go caches.
+      - name: Build the test binaries and ovara
         working-directory: proxy
-        run: go test -c -o "$RUNNER_TEMP/ovara-cmd.test" ./cmd/ovara
-      - name: Tier 1 tests as root
+        run: |
+          go test -c -o "$RUNNER_TEMP/ovara-cmd.test" ./cmd/ovara
+          go test -c -o "$RUNNER_TEMP/ovara-vm.test" ./internal/vm
+          go build -o "$RUNNER_TEMP/ovara" ./cmd/ovara
+      - name: nftables (the VM guest's lockdown)
+        run: command -v nft >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q nftables; }
+      # Tier 1, the VM guest side, and `ovara box -vm` end to end with a
+      # network namespace standing in for the VM (box.md §10.1).
+      - name: Tier 1 and VM tests as root
         working-directory: proxy/cmd/ovara
-        run: sudo -E env "PATH=$PATH" "$RUNNER_TEMP/ovara-cmd.test" -test.run 'Tier1|Box' -test.count=1 -test.v
+        run: sudo -E env "PATH=$PATH" OVARA_TEST_BINARY="$RUNNER_TEMP/ovara" OVARA_REQUIRE_VM_E2E=1 "$RUNNER_TEMP/ovara-cmd.test" -test.run 'Tier1|Box|VMGuest|WriteTree' -test.count=1 -test.v
+      # The VM guest's network lockdown, checked for real: a network
+      # namespace stands in for the guest and runs the provisioning script.
+      - name: VM guest lockdown as root
+        working-directory: proxy/internal/vm
+        run: sudo -E env "PATH=$PATH" OVARA_REQUIRE_LOCKDOWN_TEST=1 "$RUNNER_TEMP/ovara-vm.test" -test.run 'Lockdown' -test.count=1 -test.v
 
   e2e:
     runs-on: ubuntu-latest
