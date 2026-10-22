@@ -16,6 +16,7 @@ var (
 	fakeGitLab = "gl" + "pat-" + "Zq8Lw2Xr5Tn9Vb3Mk6Hd"
 	fakeSlack  = "xo" + "xb-" + "1234567890-AbCdEfGhIjKl"
 	fakeRandom = "Xk29dLm3Qp8Rt5Vw7Yz1Bn4C"
+	fakeUUID   = "3f8a2c1e-9b4d-4e7a-8c21-5d6f0a9b7e34" // the shape many platforms use for API tokens
 	fakePEM    = "-----BEGIN " + "OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk=\n"
 )
 
@@ -36,6 +37,12 @@ func TestScanSecret(t *testing.T) {
 		"kubeconfig":      "apiVersion: v1\nkind: Config\nusers:\n- name: u\n  user:\n    token: pass1234\n",
 		"env":             "DEBUG=1\nSTRIPE_SECRET_KEY=sk_live_" + fakeRandom + "\n",
 		"yaml var":        "service:\n  api_token: \"" + fakeRandom + "\"\n",
+		"json field":      `{"deploy": {"railwayApiToken": "` + fakeUUID + `"}}`,
+		"js const":        "const apiToken = '" + fakeUUID + "';\n",
+		"php var":         "<?php\n$apiToken = '" + fakeUUID + "';\n",
+		"php array":       "<?php return ['api_key' => '" + fakeUUID + "'];\n",
+		"curl bearer":     "curl -H \"Authorization: Bearer " + fakeUUID + "\" https://api.example.com/graphql\n",
+		"api key header":  "GET /v1/items\nX-API-Key: " + fakeRandom + "\n",
 	}
 	for name, content := range found {
 		if what := scanSecret([]byte(content)); what == "" {
@@ -51,6 +58,9 @@ func TestScanSecret(t *testing.T) {
 		"url no secret":  "git clone https://github.com/a/b.git\nhttp://user:pass@localhost:8080\n",
 		"not kubeconfig": "token: pass1234\n",
 		"go.sum":         "golang.org/x/sys v0.20.0 h1:abcdefghijklmnopqrstuvwxyz0123456789ABCD=\n",
+		"bearer in code": "req.Header.Set(\"Authorization\", \"Bearer \"+token)\nauth := `Bearer ${TOKEN}`\n",
+		"js names":       "const tokenizer = new Tokenizer('default-word-splitter');\nconst authorName = 'jane-doe-the-writer';\n",
+		"package.json":   `{"dependencies": {"js-tokens": "^4.0.0", "keyv": "^4.5.4"}}`,
 	}
 	for name, content := range clean {
 		if what := scanSecret([]byte(content)); what != "" {
