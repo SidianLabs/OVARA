@@ -81,6 +81,7 @@ func runTier1(a *boxAgent) (int, error) {
 	}
 	defer specDone()
 	agent.Stdin, agent.Stdout, agent.Stderr = os.Stdin, os.Stdout, os.Stderr
+	defer foregroundTTY(agent.SysProcAttr)() // on a terminal the agent takes it for as long as it runs
 	fmt.Fprintf(os.Stderr, "==> tier 1: running as %s in %s (network only through Ovara at %s:%s)\n", a.user, a.ws.Dir, proxyIP, a.port)
 	if a.tier1FS == tier1FSHost {
 		fmt.Fprintf(os.Stderr, "==> -tier1-fs host: the agent sees the host's file system: %s can read any host file it has permission to (including %s). Unsafe on a machine with secrets.\n", a.user, a.ws.Project)
@@ -232,6 +233,7 @@ func runTier2(a *boxAgent) (int, error) {
 	agent := exec.Command("docker", args...) //nolint:gosec // flags built here; the agent command is what the person asked to run
 	agent.Stdin, agent.Stdout, agent.Stderr = os.Stdin, os.Stdout, os.Stderr
 	agent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	defer foregroundTTY(agent.SysProcAttr)() // with -t docker needs the terminal: it is a foreground job
 	fmt.Fprintf(os.Stderr, "==> tier 2: container %s from %s (no network but Ovara, no capabilities, read-only root; /work is the workspace)\n", cname, a.image)
 	if err := agent.Start(); err != nil {
 		return 0, fmt.Errorf("docker run: %w", err)

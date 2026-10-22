@@ -36,6 +36,20 @@ agents, and fix correctness bugs found in an in-depth review.
   changed. The filter removes the ptrace-class routes between box processes;
   closing the rest is on the roadmap.
 
+### Fixed: `ovara box` on a terminal
+
+- An interactive box hung. The agent (tier 1) or the docker client that runs
+  it (tier 2) ran in a process group of its own, which on a terminal is a
+  background group: its first read of the terminal stopped it, so an agent
+  run with `ovara box ./repo -- <agent>`, the documented way in, sat at a
+  prompt that never got a key. Piped runs, which is all CI did, were fine.
+  Now the agent takes the terminal for as long as it runs, as a shell does
+  for a foreground job: what you type reaches it, and Ctrl-C goes to the
+  agent as it would without Ovara (it used to go to `ovara box`, which sent
+  the agent SIGTERM). `ovara box` takes the terminal back when the agent is
+  done. A run that is not on a terminal, or that `ovara box` itself is not in
+  the foreground of, is unchanged.
+
 ### Added: short-lived credentials
 
 - A credential binding can mint its token instead of holding one. A
