@@ -32,6 +32,9 @@ agents, and fix correctness bugs found in an in-depth review.
   user, so that binary must be readable and executable by everyone
   (`install.sh` now installs it `0755`); `ovara box` says so before starting
   if it is not.
+- The command gate reads a program's command line again just before it
+  resumes and kills it if it is no longer the one that was checked; `ovara box`
+  says so when it does.
 - The docs no longer say the command gate's checked arguments cannot be
   changed. The filter removes the ptrace-class routes between box processes;
   closing the rest is on the roadmap.

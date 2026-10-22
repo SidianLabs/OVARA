@@ -118,7 +118,7 @@ func runTier1(a *boxAgent) (int, error) {
 	}
 	// the gate traces the tree from the launcher's own process; a signal
 	// to us is forwarded to the agent's process group
-	tr := &boxgate.Tracer{Decide: a.gate.decide, Skip: a.gate.skip}
+	tr := &boxgate.Tracer{Decide: a.gate.decide, Skip: a.gate.skip, Changed: argvChanged}
 	type res struct {
 		code int
 		err  error

@@ -472,9 +472,10 @@ These are real limits. Some are design limits, some are not built yet.
   could try to change them before the program uses them. In every tier the
   box's seccomp filter (§6.8) refuses the ptrace-class syscalls, which
   closes those routes (a debugger inside the box gets `EPERM`; `-allow-debuggers`
-  lifts it), but Ovara does not claim that a checked command's arguments
-  cannot be changed: closing the rest is on the roadmap (Stage 3). The
-  program image itself cannot change.
+  lifts it), and the gate reads the command line again just before a program
+  resumes and kills it if it changed since the check, but Ovara does not
+  claim that a checked command's arguments cannot be changed: closing the
+  rest is on the roadmap (Stage 3). The program image itself cannot change.
 - **Restarting without client tokens.** Client authentication cannot be
   relaxed while Ovara runs, but a proxy started with no `agent_token` and
   no agents on a loopback or boundary address runs without it, as it

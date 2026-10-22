@@ -42,6 +42,14 @@ func shimArgv(self string, o boxseccomp.Options, argv []string) []string {
 	return append(out, argv...)
 }
 
+// argvChanged is a Tracer.Changed: it reports a program the gate killed because
+// its command line was no longer the one that was checked when it was about to
+// resume.
+func argvChanged(decided, now boxgate.Exec) {
+	fmt.Fprintf(os.Stderr, "[ovara] command refused: its arguments changed while it was being checked (was %q, now %q)\n",
+		boxgate.CommandLine(decided), boxgate.CommandLine(now))
+}
+
 // shimSkipper returns a Tracer.Skip that lets exactly one exec through
 // unasked, the first, and only if it is the shim: a program that later runs
 // the shim itself is checked like any other.

@@ -117,7 +117,8 @@ func runVMGuest(specPath string) (int, error) {
 			Decide: g.decide,
 			// the shim is ours and runs before the agent; what it execs
 			// next is the agent, which the host decides like any program
-			Skip: shimSkipper(),
+			Skip:    shimSkipper(),
+			Changed: argvChanged,
 		}
 		code, err = tr.Run(cmd)
 		if err != nil {

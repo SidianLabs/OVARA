@@ -584,6 +584,11 @@ impossible:
   gate's tracer is a separate process and is unaffected (in tier 2 it is the
   container's PID 1, which the agent does not run under). A debugger run
   inside the box gets `EPERM`; `-allow-debuggers` brings the calls back.
+- The gate also reads the command line again just before a program resumes
+  and kills it if it is no longer the one that was checked (`Tracer.Changed`;
+  `ovara box` prints what was decided and what it became). A decision can take
+  minutes when a person is asked, so this removes the long window; a short
+  one remains.
 - That is a reduction, not a guarantee that a checked command's arguments
   cannot change: closing the remaining ways is tracked in the roadmap (Stage
   3).

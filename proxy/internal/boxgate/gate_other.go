@@ -26,8 +26,9 @@ const (
 
 // Tracer runs one command under the gate; only Linux can.
 type Tracer struct {
-	Decide func(Exec) Verdict
-	Skip   func(Exec) bool
+	Decide  func(Exec) Verdict
+	Skip    func(Exec) bool
+	Changed func(decided, now Exec)
 }
 
 // Run refuses: the command gate needs Linux ptrace.
