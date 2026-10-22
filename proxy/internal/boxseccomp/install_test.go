@@ -67,7 +67,9 @@ func kernelProbes() []kprobe {
 		{"bpf", func() unix.Errno { return sys(unix.SYS_BPF, 0xffff, 0, 0) }, "EPERM", LiftNone, false},
 		{"userfaultfd", func() unix.Errno { return sys(unix.SYS_USERFAULTFD, 0x7fffffff) }, "EPERM", LiftNone, false},
 		{"keyctl", func() unix.Errno { return sys(unix.SYS_KEYCTL, 0xffff) }, "EPERM", LiftNone, false},
-		{"reboot (bad magic: harmless natively)", func() unix.Errno { return sys(unix.SYS_REBOOT, 0, 0, 0, 0) }, "EPERM", LiftNone, false},
+		// a caller without CAP_SYS_BOOT gets EPERM from the kernel before the magic is
+		// looked at, so this tells the filter from the kernel only for a privileged caller
+		{"reboot (bad magic: harmless natively)", func() unix.Errno { return sys(unix.SYS_REBOOT, 0, 0, 0, 0) }, "EPERM", LiftNone, true},
 		{"open_by_handle_at", func() unix.Errno { return sys(unix.SYS_OPEN_BY_HANDLE_AT, ^uintptr(0), 0, 0) }, "EPERM", LiftNone, true},
 		{"mount", func() unix.Errno { return sys(unix.SYS_MOUNT, 0, 0, 0, 0, 0) }, "EPERM", LiftUserNS, true},
 	}
