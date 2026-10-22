@@ -35,6 +35,11 @@ const (
 //	crates.io/api/v1/crates/serde/1.0.200/download            crate:serde@1.0.200
 //	rubygems.org/gems/rails-7.1.0.gem                         gem:rails@7.1.0
 //	repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.jar   maven:org.slf4j:slf4j-api@2.0.9
+//	api.github.com/repos/laravel/framework/zipball/<commit>  github:laravel/framework@<commit>
+//	codeload.github.com/laravel/framework/legacy.zip/<commit> github:laravel/framework@<commit>
+//
+// The GitHub API is not a registry: only its archive downloads are named,
+// every other path of it is NotRegistry.
 func Classify(host, path string) (Kind, string) {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if p, err := url.PathUnescape(path); err == nil {
@@ -95,6 +100,25 @@ func Classify(host, path string) (Kind, string) {
 		return Unrecognised, ""
 	case "repo1.maven.org", "repo.maven.apache.org":
 		return mavenPath(path)
+	case "api.github.com":
+		// /repos/<owner>/<repo>/(zipball|tarball)/<ref>
+		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 5)
+		if len(parts) == 5 && parts[0] == "repos" && (parts[3] == "zipball" || parts[3] == "tarball") && parts[1] != "" && parts[2] != "" && parts[4] != "" {
+			return Artifact, Ref(GitHub, parts[1]+"/"+parts[2], parts[4])
+		}
+		return NotRegistry, ""
+	case "codeload.github.com":
+		// /<owner>/<repo>/(legacy.zip|zip|legacy.tar.gz|tar.gz)/<ref>
+		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 4)
+		if len(parts) == 4 && parts[0] != "" && parts[1] != "" && parts[3] != "" {
+			switch parts[2] {
+			case "legacy.zip", "zip", "legacy.tar.gz", "tar.gz":
+				return Artifact, Ref(GitHub, parts[0]+"/"+parts[1], parts[3])
+			}
+		}
+		return Unrecognised, ""
+	case "repo.packagist.org", "packagist.org":
+		return Metadata, "" // Composer's package index; the code comes from the dist URL
 	}
 	return NotRegistry, ""
 }

@@ -109,3 +109,33 @@ func TestDownload(t *testing.T) {
 		}
 	}
 }
+
+// composer.lock pins GitHub-hosted packages at their commit, from the dist
+// URL or, failing that, the source; a package hosted elsewhere is not named.
+func TestScan_ComposerLock(t *testing.T) {
+	d := t.TempDir()
+	c1 := "0123456789abcdef0123456789abcdef01234567"
+	c2 := "89abcdef0123456789abcdef0123456789abcdef"
+	put(t, d, "composer.lock", `{"packages": [
+	  {"name": "laravel-lang/lang", "version": "v15.1.0",
+	   "source": {"type": "git", "url": "https://github.com/Laravel-Lang/lang.git", "reference": "`+c1+`"},
+	   "dist": {"type": "zip", "url": "https://api.github.com/repos/Laravel-Lang/lang/zipball/`+c1+`", "reference": "`+c1+`", "shasum": ""}},
+	  {"name": "acme/nodist", "version": "1.0.0",
+	   "source": {"type": "git", "url": "https://github.com/acme/nodist.git", "reference": "`+c2+`"}},
+	  {"name": "acme/tagged", "version": "1.0.0",
+	   "source": {"type": "git", "url": "https://github.com/acme/tagged.git", "reference": "v1.0.0"}},
+	  {"name": "corp/private", "version": "2.0.0",
+	   "dist": {"type": "zip", "url": "https://repo.corp.example/dist/corp-private-2.0.0.zip"}}],
+	 "packages-dev": [
+	  {"name": "phpunit/phpunit", "version": "11.0.0",
+	   "dist": {"type": "zip", "url": "https://api.github.com/repos/sebastianbergmann/phpunit/zipball/`+c2+`"}}]}`)
+	refs, files := Scan(d)
+	want := []string{"github:acme/nodist@" + c2, "github:laravel-lang/lang@" + c1, "github:sebastianbergmann/phpunit@" + c2}
+	if strings.Join(refs, ",") != strings.Join(want, ",") || strings.Join(files, ",") != "composer.lock" {
+		t.Errorf("refs = %v files = %v, want %v", refs, files, want)
+	}
+	// what Composer downloads for the pinned package is named the same way
+	if ref, ok := Download("codeload.github.com", "/Laravel-Lang/lang/legacy.zip/"+c1); !ok || ref != want[1] {
+		t.Errorf("the download is named %q, want %q", ref, want[1])
+	}
+}

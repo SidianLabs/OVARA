@@ -266,7 +266,7 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ### 6.3 Secrets are left out of the project copy
 - **Holds in:** box tier 1, box tier 2.
-- **What it covers:** files with secret-looking names, and text files whose content looks like a private key or token, are left out and listed. Credentials in the copy's git remote URLs are removed.
+- **What it covers:** files with secret-looking names, and text files whose content looks like a private key or token, are left out and listed: known key formats, and a random-looking value given to a key-, token- or secret-named variable (shell, env, YAML, JS, PHP), JSON or array field, bearer token or API-key header. Credentials in the copy's git remote URLs are removed.
 - **Tests:** `proxy/internal/workspace`: `TestCreate_CopiesProjectWithoutSecrets`, `TestScanSecret`, `TestCreate_LeavesOutSecretsByContent`, `TestScrubGitConfig`; `tests/box/box.sh`.
 
 ### 6.4 Every command the agent runs is seen and checked
@@ -282,8 +282,8 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 ### 6.6 Strict installs: new or altered packages do not arrive unasked
 - **Holds in:** box tier 1, box tier 2 with `-profile strict`.
 - **Conditions:** the lockfiles are yours; for a repository you are reviewing, use `-untrusted-lockfiles`.
-- **What it covers:** a dependency the lockfiles do not pin pauses once by name and version (npm, PyPI, Go, crates, RubyGems, Maven); an unrecognised download from a known registry pauses; a download whose lockfile records a digest is checked as it streams and cut off on a mismatch.
-- **Tests:** `proxy/internal/lockfiles`: `TestClassify`, `TestScanPinsDigests`; `proxy/internal/proxy`: `TestDigestReader`, `TestPackageGate_DigestCheckedEndToEnd`, `TestPackageGate_UnrecognisedRegistryDownload`; `proxy/cmd/ovara`: `TestStrictPins_UntrustedLockfiles`; `tests/box/strict.sh`.
+- **What it covers:** a dependency the lockfiles do not pin pauses once by name and version (npm, PyPI, Go, crates, RubyGems, Maven; Composer packages hosted on GitHub by commit, so a moved tag pauses too); an unrecognised download from a known registry pauses; a download whose lockfile records a digest is checked as it streams and cut off on a mismatch.
+- **Tests:** `proxy/internal/lockfiles`: `TestClassify`, `TestScanPinsDigests`, `TestScan_ComposerLock`; `proxy/internal/proxy`: `TestPackageGate_ComposerArchiveIsPinnedByCommit`, `TestDigestReader`, `TestPackageGate_DigestCheckedEndToEnd`, `TestPackageGate_UnrecognisedRegistryDownload`; `proxy/cmd/ovara`: `TestStrictPins_UntrustedLockfiles`; `tests/box/strict.sh`.
 
 ### 6.7 Tier 2: the container holds
 - **Holds in:** box tier 2.

@@ -635,8 +635,8 @@ built (§11.4).
 - When the box starts, the launcher reads the project's lockfiles in the
   workspace: `package-lock.json`/`npm-shrinkwrap.json`, `yarn.lock` (classic
   and berry), `pnpm-lock.yaml`, `requirements*.txt` pins, `poetry.lock`,
-  `uv.lock`, `Pipfile.lock`, `go.sum`, `Cargo.lock`, `Gemfile.lock` and
-  `gradle.lockfile`. Lockfiles inside `node_modules`, `vendor` and the like
+  `uv.lock`, `Pipfile.lock`, `go.sum`, `Cargo.lock`, `Gemfile.lock`,
+  `gradle.lockfile` and `composer.lock`. Lockfiles inside `node_modules`, `vendor` and the like
   are not the project's and are not read. It hands the pinned packages,
   with any digests the lockfiles record, to Ovara (`ovara run
   -package-gate`).
@@ -672,8 +672,19 @@ built (§11.4).
 - A registry that is not in the trusted list is not read freely, so a
   package manager pointed at it pauses at its first request (tested with
   `--registry https://registry.npmmirror.com/`).
+- PHP: Composer downloads a Packagist package hosted on GitHub as an
+  archive of one commit (`api.github.com/repos/<owner>/<repo>/zipball/<commit>`,
+  redirected to `codeload.github.com`), and `composer.lock` records that
+  commit. The proxy names the download `github:<owner>/<repo>@<commit>`, so
+  the pinned commit goes through and any other commit pauses, including the
+  same version tag moved to new code. Packagist's index is metadata. A
+  package hosted elsewhere, or fetched with `git clone` when the archive is
+  unavailable, goes through the URL policy only.
 - `npm audit` stays free (exact-path rules); strict sets
-  `npm_config_ignore_scripts=true` for the agent.
+  `npm_config_ignore_scripts=true` for the agent, and
+  `COMPOSER_NO_INTERACTION=1`, so a Composer plugin the project has not
+  listed in `allow-plugins` is never enabled by answering a prompt
+  (Composer runs no dependency's scripts, only plugins).
 
 Tested (`tests/box/strict.sh`, CI job `box-strict`): `npm ci` and `pip
 install -r` of pinned packages ask no one; a new npm and a new pip package

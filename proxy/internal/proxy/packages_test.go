@@ -244,3 +244,34 @@ func TestUnattended_EscalatedRequestRefusedWithoutApproval(t *testing.T) {
 		t.Fatalf("body %s, took %v", rec.Body, time.Since(start))
 	}
 }
+
+// A Composer install downloads each package as a GitHub archive of one
+// commit: the commit composer.lock pins passes, any other commit of the
+// same repository (a tag moved to new code) is a question, through the
+// API's redirect to codeload too.
+func TestPackageGate_ComposerArchiveIsPinnedByCommit(t *testing.T) {
+	const pinned = "0123456789abcdef0123456789abcdef01234567"
+	const moved = "fedcba9876543210fedcba9876543210fedcba98"
+	srv, pg, hits := newPkgServer(t, true, "github:laravel-lang/lang@"+pinned)
+	pg.pkgDecision.Store("deny")
+	if rec := do(srv, http.MethodGet, "http://api.github.com/repos/Laravel-Lang/lang/zipball/"+pinned); rec.Code != 200 {
+		t.Fatalf("pinned commit: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(srv, http.MethodGet, "http://codeload.github.com/Laravel-Lang/lang/legacy.zip/"+pinned); rec.Code != 200 {
+		t.Fatalf("pinned commit after the redirect: %d %s", rec.Code, rec.Body)
+	}
+	for _, u := range []string{
+		"http://api.github.com/repos/Laravel-Lang/lang/zipball/" + moved,
+		"http://codeload.github.com/Laravel-Lang/lang/legacy.zip/" + moved,
+	} {
+		if rec := do(srv, http.MethodGet, u); rec.Code == 200 {
+			t.Fatalf("%s: an unpinned commit was downloaded", u)
+		}
+	}
+	if hits.Load() != 2 || pg.pkgChecks.Load() == 0 {
+		t.Fatalf("hits=%d checks=%d", hits.Load(), pg.pkgChecks.Load())
+	}
+	if r := pg.resources[0]; r != "github:laravel-lang/lang@"+moved {
+		t.Fatalf("the question named %q", r)
+	}
+}

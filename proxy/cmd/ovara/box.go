@@ -303,7 +303,9 @@ func cmdBox(args []string) (err error) {
 			fmt.Fprintln(os.Stderr, "    warning: policy.json has no package.install rule; without one a new package is refused, not paused (add {\"action_type\": \"package.install\", \"resource\": \"*\", \"escalate\": true})")
 		}
 		// install scripts are the package manager's to stop; -env can turn them back on
-		o.envs = append(multiFlag{"npm_config_ignore_scripts=true"}, o.envs...)
+		// (Composer runs only plugins, and only ones the project allows;
+		// non-interactive, an unlisted one is never allowed at a prompt)
+		o.envs = append(multiFlag{"npm_config_ignore_scripts=true", "COMPOSER_NO_INTERACTION=1"}, o.envs...)
 	}
 	o.envs = append(multiFlag{"OVARA_BOX_PROFILE=" + o.profile}, o.envs...)
 

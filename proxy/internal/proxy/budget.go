@@ -37,6 +37,7 @@ var packageRegistryHosts = map[string]bool{
 	"proxy.golang.org": true, "sum.golang.org": true,
 	"index.crates.io": true, "static.crates.io": true,
 	"rubygems.org": true, "repo.maven.apache.org": true, "repo1.maven.org": true,
+	"repo.packagist.org": true,
 }
 
 type hostBudget struct {
