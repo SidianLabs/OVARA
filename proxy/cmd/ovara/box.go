@@ -112,6 +112,9 @@ type boxAgent struct {
 	memory       string   // tier 2
 	cpus         string   // tier 2
 	selfPath     string
+	// the seccomp opt-outs, every tier
+	allowUserNS    bool
+	allowDebuggers bool
 }
 
 func cmdBox(args []string) (err error) {
@@ -397,6 +400,7 @@ func cmdBox(args []string) (err error) {
 		dir: o.dir, cfg: cfg, ws: ws, runID: runID, runDir: runDir, home: home, caPub: caPub, port: port,
 		envs: o.envs, cmd: o.cmd, gate: gate, noGate: o.noGate, sigs: sigs,
 		user: o.user, uid: uid, gid: gid, name: o.name, tier1FS: o.tier1FS, visibleProcs: o.visibleProcs, image: o.image, mounts: o.mounts, pids: o.pids, memory: o.memory, cpus: o.cpus, selfPath: self,
+		allowUserNS: x.allowUserNS, allowDebuggers: x.allowDebuggers,
 	}
 	events.Emit(sandbox.Event{Event: sandbox.EventAgentStarted, Command: strings.Join(o.cmd, " ")})
 	var exitCode int

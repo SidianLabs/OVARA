@@ -19,6 +19,9 @@ type vmGuestSpec struct {
 	GateToken string   `json:"gate_token"` // opens it
 	TreeIn    string   `json:"tree_in"`    // the workspace as a tar, unpacked into Dir
 	TreeOut   string   `json:"tree_out"`   // where to write the workspace tar
+	// the seccomp opt-outs (-allow-user-namespaces, -allow-debuggers)
+	AllowUserNS    bool `json:"allow_userns,omitempty"`
+	AllowDebuggers bool `json:"allow_debuggers,omitempty"`
 }
 
 var vmUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)

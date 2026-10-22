@@ -27,7 +27,7 @@ import (
 // tier1Spec is what box-init -tier1 needs for a's agent (env holds the
 // proxy token: it travels on a pipe, never on a command line).
 func (a *boxAgent) tier1Spec(env []string) (tier1Spec, error) {
-	spec := tier1Spec{Netns: a.name, UID: a.uid, GID: a.gid, Env: env, Argv: a.cmd, Dir: a.ws.Dir}
+	spec := tier1Spec{Netns: a.name, UID: a.uid, GID: a.gid, Env: env, Argv: a.cmd, Dir: a.ws.Dir, AllowUserNS: a.allowUserNS, AllowDebuggers: a.allowDebuggers}
 	if a.tier1FS == tier1FSHost {
 		return spec, nil
 	}
@@ -153,6 +153,12 @@ func runTier1(a *boxAgent) (int, error) {
 // box-init (PID 1) relays 127.0.0.1:<port> to the proxy socket and asks the
 // gate socket about every exec. Both sockets live in a root-only directory.
 func runTier2(a *boxAgent) (int, error) {
+	// The agent starts through the exec shim, which is this very binary run
+	// as the agent's user (box_shim_linux.go): it must be readable and
+	// executable by everyone, not only root.
+	if st, err := os.Stat(a.selfPath); err != nil || st.Mode().Perm()&0o005 != 0o005 {
+		return 0, fmt.Errorf("tier 2 starts the agent through %s as the agent's user, so it must be readable and executable by everyone (chmod 755 it)", a.selfPath)
+	}
 	sockDir := filepath.Join(a.runDir, "sock")
 	if err := os.Mkdir(sockDir, 0o700); err != nil {
 		return 0, err
@@ -226,7 +232,8 @@ func runTier2(a *boxAgent) (int, error) {
 	}
 	args = append(args, a.image, boxInitCmd,
 		"-uid", strconv.Itoa(boxContainerUID), "-gid", strconv.Itoa(boxContainerUID),
-		"-proxy", "127.0.0.1:"+a.port, "-gate="+strconv.FormatBool(!a.noGate), "--")
+		"-proxy", "127.0.0.1:"+a.port, "-gate="+strconv.FormatBool(!a.noGate),
+		"-allow-userns="+strconv.FormatBool(a.allowUserNS), "-allow-debuggers="+strconv.FormatBool(a.allowDebuggers), "--")
 	args = append(args, a.cmd...)
 	agent := exec.Command("docker", args...) //nolint:gosec // flags built here; the agent command is what the person asked to run
 	agent.Stdin, agent.Stdout, agent.Stderr = os.Stdin, os.Stdout, os.Stderr

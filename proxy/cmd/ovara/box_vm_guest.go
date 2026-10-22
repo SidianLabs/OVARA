@@ -13,9 +13,9 @@ package main
 //     or touch the image's own (sudo-capable) user;
 //   - it is traced, and every exec goes to the host's gate over TCP, opened
 //     with the run's token, which only this process holds;
-//   - it starts through a shim (`box-init -vm-exec`) that sets no_new_privs
+//   - it starts through a shim (`box-init -exec-shim`, box_shim_linux.go) that sets no_new_privs
 //     and the box's seccomp filter before the agent's first instruction, as
-//     tier 1 does (box_seccomp_linux.go);
+//     tier 1 does (internal/boxseccomp);
 //   - when it exits, the workspace is written as one tar for the host to
 //     unpack (box_vm_tree.go): links stay links, devices and FIFOs stay out.
 
@@ -35,9 +35,8 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"ovara.proxy/internal/boxgate"
+	"ovara.proxy/internal/boxseccomp"
 )
 
 // adminGroups are groups whose members can become root on a stock Linux
@@ -90,7 +89,8 @@ func runVMGuest(specPath string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	cmd := exec.Command(self, append([]string{boxInitCmd, "-vm-exec", "--"}, spec.Argv...)...) //nolint:gosec // our own binary, then the agent command the person gave
+	shim := shimArgv(self, boxseccomp.Options{AllowUserNamespaces: spec.AllowUserNS, AllowDebuggers: spec.AllowDebuggers}, spec.Argv)
+	cmd := exec.Command(shim[0], shim[1:]...) //nolint:gosec // our own binary, then the agent command the person gave
 	cmd.Env = spec.Env
 	cmd.Dir = spec.Dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -113,18 +113,11 @@ func runVMGuest(specPath string) (int, error) {
 			return 0, fmt.Errorf("box-init -vm: command gate %s: %w (refusing to start the agent without it)", spec.GateAddr, err)
 		}
 		defer conn.Close()
-		shimSeen := false
 		tr := &boxgate.Tracer{
 			Decide: g.decide,
 			// the shim is ours and runs before the agent; what it execs
 			// next is the agent, which the host decides like any program
-			Skip: func(e boxgate.Exec) bool {
-				if shimSeen {
-					return false
-				}
-				shimSeen = true
-				return len(e.Argv) >= 3 && e.Argv[1] == boxInitCmd && e.Argv[2] == "-vm-exec"
-			},
+			Skip: shimSkipper(),
 		}
 		code, err = tr.Run(cmd)
 		if err != nil {
@@ -251,33 +244,6 @@ func runVMStop(specPath string) error {
 			return syscall.Kill(pid, syscall.SIGTERM)
 		}
 	}
-	return nil
-}
-
-// runVMExec is the shim: running as the agent's user, it takes away new
-// privileges and the cross-process memory syscalls, then becomes the agent.
-func runVMExec(argv []string) error {
-	if len(argv) == 0 {
-		return errors.New("box-init -vm-exec: no agent command")
-	}
-	if os.Geteuid() == 0 {
-		return errors.New("box-init -vm-exec: refusing to run the agent as root")
-	}
-	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return fmt.Errorf("box-init -vm-exec: no_new_privs: %w", err)
-	}
-	if err := installBoxSeccomp(); err != nil {
-		return fmt.Errorf("box-init -vm-exec: %w", err)
-	}
-	env := os.Environ()
-	path, err := lookPathIn(argv[0], env)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[ovara] %s: %v\n", termSafe(argv[0]), err)
-		os.Exit(127)
-	}
-	err = syscall.Exec(path, argv, env) //nolint:gosec // the agent command the person gave
-	fmt.Fprintf(os.Stderr, "[ovara] %s: %v\n", termSafe(argv[0]), err)
-	os.Exit(126)
 	return nil
 }
 

@@ -80,6 +80,9 @@ type boxExtra struct {
 	events        string // append the events stream to this file
 	vm            string // run the box in a Linux VM through this driver (not in the manifest yet)
 	vmBinary      string // the Linux ovara the guest runs
+	// seccomp opt-outs (every tier; not in the manifest yet, like -vm)
+	allowUserNS    bool // -allow-user-namespaces
+	allowDebuggers bool // -allow-debuggers
 }
 
 // boxFlags binds the flags to o. o's values are the defaults, so a
@@ -114,6 +117,8 @@ func boxFlags(o *boxOptions, x *boxExtra) *flag.FlagSet {
 	fs.BoolVar(&x.printManifest, "print-manifest", false, "write the run these flags describe as a manifest on stdout and stop (no root needed; -manifest FILE runs it)")
 	fs.StringVar(&x.events, "events", "", "append the run's events to this file, one JSON line each, from run.created to run.finished (spec/runtime.md)")
 	fs.StringVar(&x.vm, "vm", "", "run the box in a Linux VM with Ovara on this host: lima (the default, and the only way, on macOS); -cpus and -memory size it (docs/box.md §10.1)")
+	fs.BoolVar(&x.allowUserNS, "allow-user-namespaces", false, "let the agent create user, network and mount namespaces and use the mount calls (a browser's own sandbox, bubblewrap, unshare -r): without it the box's seccomp filter refuses them. This reopens the kernel attack surface a user namespace opens (tier 2's Docker profile still blocks it); see docs/box.md section 8.1")
+	fs.BoolVar(&x.allowDebuggers, "allow-debuggers", false, "let the agent use ptrace, process_vm_readv/writev and perf_event_open (gdb, strace, AddressSanitizer's leak check, perf): without it the box's seccomp filter refuses them. This reopens the routes one box process has into another's memory")
 	fs.StringVar(&x.vmBinary, "vm-binary", "", "with -vm: the Linux build of ovara for the guest (default: this binary on Linux, ovara-linux-<arch> next to it on macOS)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: ovara box [flags] <project-dir> -- <agent command...>")

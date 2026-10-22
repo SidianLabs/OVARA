@@ -37,6 +37,7 @@ import (
 	"syscall"
 
 	"ovara.proxy/internal/boxgate"
+	"ovara.proxy/internal/boxseccomp"
 )
 
 // box-init -tier1 enters namespaces and drops credentials on the thread
@@ -56,7 +57,9 @@ func cmdBoxInit(args []string) error {
 	gateOn := fs.Bool("gate", true, "check every exec with the host's command gate")
 	tier1 := fs.Bool("tier1", false, "tier 1: become the agent described by the spec on fd 3 (box_tier1.go)")
 	vmSpec := fs.String("vm", "", "inside a VM: run the agent described by this spec file (box_vm_guest.go)")
-	vmExec := fs.Bool("vm-exec", false, "inside a VM: the shim that becomes the agent (box_vm_guest.go)")
+	execShim := fs.Bool("exec-shim", false, "the shim that installs the seccomp filter and becomes the agent (box_shim_linux.go)")
+	allowUserNS := fs.Bool("allow-userns", false, "seccomp opt-out: let the agent create namespaces and use the mount calls")
+	allowDebuggers := fs.Bool("allow-debuggers", false, "seccomp opt-out: let the agent use ptrace, process_vm_* and perf_event_open")
 	vmStop := fs.String("vm-stop", "", "inside a VM: stop the run started with this spec file, keeping its workspace")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -64,8 +67,9 @@ func cmdBoxInit(args []string) error {
 	if *tier1 {
 		return runTier1Init()
 	}
-	if *vmExec {
-		return runVMExec(fs.Args())
+	seccompOpts := boxseccomp.Options{AllowUserNamespaces: *allowUserNS, AllowDebuggers: *allowDebuggers}
+	if *execShim {
+		return runExecShim(fs.Args(), seccompOpts)
 	}
 	if *vmStop != "" {
 		return runVMStop(*vmStop)
@@ -92,7 +96,16 @@ func cmdBoxInit(args []string) error {
 	}
 	go relayTo(ln, func() (net.Conn, error) { return net.Dial("unix", filepath.Join(boxSockDir, boxProxySock)) })
 
-	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // the agent command is what the person asked `ovara box` to run
+	// The agent starts through the exec shim, as the agent's user, so that it
+	// is the one under the box's seccomp filter and this process, the gate's
+	// tracer, is not (box_shim_linux.go). It is the same binary, mounted
+	// read-only at the path box-init itself runs from.
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("box-init: %w", err)
+	}
+	shim := shimArgv(self, seccompOpts, argv)
+	cmd := exec.Command(shim[0], shim[1:]...) //nolint:gosec // our own binary, then the agent command the person asked `ovara box` to run
 	cmd.Env = os.Environ()
 	cmd.Dir = "/work"
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -121,7 +134,7 @@ func cmdBoxInit(args []string) error {
 			return fmt.Errorf("box-init: command gate: %w (refusing to start the agent without it)", err)
 		}
 		g := &remoteGate{enc: json.NewEncoder(gc), dec: json.NewDecoder(gc)}
-		tr := &boxgate.Tracer{Decide: g.decide}
+		tr := &boxgate.Tracer{Decide: g.decide, Skip: shimSkipper()}
 		code, err = tr.Run(cmd)
 		if err != nil {
 			return fmt.Errorf("box-init: %w", err)

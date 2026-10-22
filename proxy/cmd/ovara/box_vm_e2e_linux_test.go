@@ -34,6 +34,7 @@ func TestVMBox_EndToEnd(t *testing.T) {
 		"curl -s -o /dev/null -w 'pastebin=%{http_code}\\n' https://pastebin.com/ > net.txt",
 		"(curl -s --noproxy '*' -m 3 -o /dev/null https://1.1.1.1/ && echo direct=open || echo direct=blocked) >> net.txt",
 		"sudo -n true 2>/dev/null && echo sudo=yes >> net.txt || echo sudo=no >> net.txt",
+		"python3 -c '" + seccompProbePy + "' > seccomp.txt",
 		"exit 4",
 	}, "\n")
 	cmd := exec.Command(bin, "box", "-vm", "netns-test", "-dir", dir, "-ui", "off", "-no-commit-back", "-keep", project, "--", "sh", "-c", script) //nolint:gosec // the binary under test
@@ -72,6 +73,12 @@ func TestVMBox_EndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(work, ".env")); err == nil {
 		t.Error("the secret went into the guest and came back")
+	}
+	// the box's seccomp filter is on the agent: ptrace and a namespace
+	// request are refused with EPERM where the kernel itself would say ESRCH
+	// and EINVAL (see seccompProbePy)
+	if sc := read("seccomp.txt"); sc != "ptrace=1 unshare=1" {
+		t.Errorf("seccomp probe = %q, want the filter's EPERM for both (ptrace=1 unshare=1)", sc)
 	}
 	net := read("net.txt")
 	for _, want := range []string{"pastebin=403", "direct=blocked", "sudo=no"} {
@@ -170,7 +177,7 @@ func vmE2E(t *testing.T) (bin, dir, project string) {
 	if os.Geteuid() != 0 {
 		skip("needs root")
 	}
-	for _, tool := range []string{"ip", "nft", "git", "curl", "useradd"} {
+	for _, tool := range []string{"ip", "nft", "git", "curl", "useradd", "python3"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			skip("needs %s", tool)
 		}
@@ -216,5 +223,55 @@ func noVMLeft(t *testing.T) {
 	t.Helper()
 	if out, _ := exec.Command("ip", "netns", "list").CombinedOutput(); strings.Contains(string(out), "ovara-box-") {
 		t.Errorf("the VM's namespace was left behind:\n%s", out)
+	}
+}
+
+// seccompProbePy prints two kernel answers as raw system calls, so they do
+// not depend on libc wrappers or on host policy such as AppArmor's limit on
+// unprivileged user namespaces. ptrace(PEEKDATA) on a process that does not
+// exist is ESRCH (3) natively and EPERM (1) under the box's filter;
+// unshare(CLONE_NEWUSER with garbage in the flag word's high half) is EINVAL
+// (22) natively and EPERM (1) under it (the filter reads only the low word).
+const seccompProbePy = `import ctypes, os, platform
+libc = ctypes.CDLL(None, use_errno=True)
+nr = {"x86_64": (101, 272), "aarch64": (117, 97)}[platform.machine()]
+def call(n, *a):
+    ctypes.set_errno(0)
+    libc.syscall(ctypes.c_long(n), *[ctypes.c_long(x) for x in a])
+    return ctypes.get_errno()
+print("ptrace=%d unshare=%d" % (call(nr[0], 2, 1 << 22, 0, 0), call(nr[1], 0x10000000 | (1 << 40))))`
+
+// TestVMBox_SeccompOptOuts runs the same probe with each opt-out: the answer
+// has to move to the kernel's own, and only for the opt-out that was given.
+func TestVMBox_SeccompOptOuts(t *testing.T) {
+	cases := []struct {
+		name  string
+		flags []string
+		want  string
+	}{
+		{"default", nil, "ptrace=1 unshare=1"},
+		{"allow-debuggers", []string{"-allow-debuggers"}, "ptrace=3 unshare=1"},
+		{"allow-user-namespaces", []string{"-allow-user-namespaces"}, "ptrace=1 unshare=22"},
+		{"both", []string{"-allow-debuggers", "-allow-user-namespaces"}, "ptrace=3 unshare=22"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			bin, dir, project := vmE2E(t)
+			script := "python3 -c '" + seccompProbePy + "' > seccomp.txt"
+			args := append([]string{"box", "-vm", "netns-test", "-dir", dir, "-ui", "off", "-no-commit-back", "-keep"}, c.flags...)
+			args = append(args, project, "--", "sh", "-c", script)
+			cmd := exec.Command(bin, args...) //nolint:gosec // the binary under test
+			cmd.Env = append(os.Environ(), "OVARA_BOX_VM_NETNS_TEST=1")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("ovara box -vm: %v\n%s", err, out)
+			}
+			work := keptWorkspace(t, dir, string(out))
+			b, _ := os.ReadFile(filepath.Join(work, "seccomp.txt")) //nolint:gosec // test output
+			if got := strings.TrimSpace(string(b)); got != c.want {
+				t.Errorf("probe = %q, want %q\n%s", got, c.want, out)
+			}
+			noVMLeft(t)
+		})
 	}
 }

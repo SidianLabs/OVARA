@@ -271,8 +271,8 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 
 ### 6.4 Every command the agent runs is seen and checked
 - **Holds in:** box tier 1, box tier 2 (unless `-no-command-gate`).
-- **What it covers:** every exec, by any route, is stopped before its first instruction and checked against `shell:` rules on a normalised command line; denied commands are killed, paused ones wait for a person. The agent cannot shed the tracer. In tier 1 the agent also runs under a seccomp filter that refuses the cross-process memory syscalls, so a sibling cannot rewrite a checked command's arguments after the check (see Limitations).
-- **Tests:** `proxy/internal/boxgate`: `TestTracer_SeesEveryExecAndKillsDenied`, `TestPolicyLine`; `proxy/cmd/ovara`: `TestCommandGate_PolicyLineAndLaunch`, `TestDefaultPolicy_ShellRulesSeeThroughRespelling`, `TestBoxSeccompBlocksCrossProcessMemory`; `tests/box/box.sh`.
+- **What it covers:** every exec, by any route, is stopped before its first instruction and checked against `shell:` rules on a normalised command line; denied commands are killed, paused ones wait for a person. The agent cannot shed the tracer. In every tier the agent also runs under a seccomp filter (§6.8) that refuses the ptrace-class syscalls; that narrows how one process of the agent can interfere with another, and is not claimed to make a checked command's arguments unchangeable (see Limitations).
+- **Tests:** `proxy/internal/boxgate`: `TestTracer_SeesEveryExecAndKillsDenied`, `TestPolicyLine`; `proxy/cmd/ovara`: `TestCommandGate_PolicyLineAndLaunch`, `TestDefaultPolicy_ShellRulesSeeThroughRespelling`; `proxy/internal/boxseccomp`: `TestInstalledFilterAnswersTheKernel`; `tests/box/box.sh`.
 
 ### 6.5 Only the reviewed tree comes back
 - **Holds in:** box tier 1, box tier 2.
@@ -289,6 +289,12 @@ is not covered at all (see [Not guaranteed](#not-guaranteed)).
 - **Holds in:** box tier 2.
 - **What it covers:** no network interface but loopback; no capabilities for the agent; read-only root; no-new-privileges; Ovara's sockets closed to the agent; the box's PID 1 cannot be killed by the agent; no box container left after a run.
 - **Tests:** `tests/box/host.sh box` (CI job `box-tier2`), `tests/box/host.sh redteam`, `tests/agents` in a tier 2 box (CI job `agents-tier2`).
+
+### 6.8 The agent cannot reach the kernel's less-used attack surface
+- **Holds in:** box tier 1, box tier 2, the VM box (Linux hosts; `-allow-user-namespaces` and `-allow-debuggers` lift part of it).
+- **What it covers:** the agent and its whole process tree run under a seccomp filter, installed after `no_new_privs` so nothing in the tree can shed it, that refuses: new user, network, mount, pid, uts, ipc, cgroup and time namespaces and the mount family (`EPERM`); `clone3` and `io_uring_*` (`ENOSYS`, so libc and libuv fall back); `bpf`, `userfaultfd`, the key store, `perf_event_open`, kexec, module loading, handle-based opens and the capability-gated administration calls (`EPERM`); sockets of the families `AF_ALG`, `AF_RDS`, `AF_KEY`, `AF_PACKET`, `AF_TIPC`, `AF_VSOCK` and of the netlink protocols `XFRM`, `AUDIT`, `NETFILTER`, `CRYPTO`; the ptrace-class calls; and any foreign ABI (the 32-bit one on amd64) and the x32 range. If the filter cannot be installed or is not in force the agent is not started. Docker's own profile stays in force in tier 2 and this one adds to it. The full list, the reasons and the two opt-outs are in `docs/box.md` §8.3.
+- **Limits:** this removes entry points; tiers 1 and 2 still share the host's kernel and a bug in what stays reachable leaves the box. `-allow-user-namespaces` reopens the namespace surface (not in tier 2, where Docker's profile still refuses it); `-allow-debuggers` reopens the ptrace-class routes. A tool that needs a refused facility fails with the errno above (a browser's own sandbox, a debugger, AddressSanitizer's leak check). The host's own settings (user namespace limits, `io_uring_disabled`, kernel and container-engine patch level) are not checked by Ovara yet. The CVE numbers motivating the list are from secondary sources.
+- **Tests:** `proxy/internal/boxseccomp`: `TestSpecBothArchesAllOptions`, `TestEveryRuleAndClauseIsLoadBearing`, `TestArchAndX32AndSweep`, `TestTableMatchesXSys`, `TestBuildScalesToTheKernelLimit`, `TestAssemblerAgreesWithAPlainReading`, `TestInstalledFilterAnswersTheKernel`, `TestFilterBindsEveryThread`, `TestFilterSurvivesExec`; `proxy/cmd/ovara`: `TestVMBox_EndToEnd`, `TestVMBox_SeccompOptOuts`.
 
 ---
 
@@ -462,21 +468,20 @@ These are real limits. Some are design limits, some are not built yet.
   defined in a config file is not caught by the `rm` or `git push` rules.
   The network and file boundaries do not depend on these rules.
 - **Arguments rewritten after the check.** The gate reads a command's
-  arguments from the stopped process; another process of the same agent
-  would have to reach into that memory to change them. In **tier 1** this is
-  closed: a seccomp filter the agent runs under refuses the syscalls one
-  process uses to read or write another's memory (`process_vm_writev`,
-  `process_vm_readv`, `ptrace`), so a sibling cannot (a debugger inside the
-  box gets `EPERM` too). In **tier 2** the container runtime's default
-  seccomp profile still permits them between the container's processes; a
-  box-specific profile is pending. The program image itself cannot change in
-  either tier.
+  arguments from the stopped process, and another process of the same agent
+  could try to change them before the program uses them. In every tier the
+  box's seccomp filter (§6.8) refuses the ptrace-class syscalls, which
+  closes those routes (a debugger inside the box gets `EPERM`; `-allow-debuggers`
+  lifts it), but Ovara does not claim that a checked command's arguments
+  cannot be changed: closing the rest is on the roadmap (Stage 3). The
+  program image itself cannot change.
 - **Restarting without client tokens.** Client authentication cannot be
   relaxed while Ovara runs, but a proxy started with no `agent_token` and
   no agents on a loopback or boundary address runs without it, as it
   always has.
 - **Shared kernel.** Tiers 1 and 2 share the host's kernel; a kernel
-  exploit leaves the box. Tier 1 has no PID namespace: the agent can
+  exploit leaves the box. The seccomp filter (§6.8) removes the entry points
+  the 2025-2026 escalations used, not the rest of the kernel. Tier 1 has no PID namespace: the agent can
   signal host processes of its own user. A microVM tier is not built.
 - **`-tier1-fs host`** turns tier 1's file-system isolation off. With it,
   6.2 does not hold.

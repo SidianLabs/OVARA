@@ -180,6 +180,7 @@ func runVM(a *boxAgent, drv vm.Driver, binary string) (int, error) {
 		Argv: a.cmd, Env: env, Dir: gWork, User: boxDefaultUser,
 		Gate: !a.noGate, GateAddr: net.JoinHostPort(drv.HostName(), strconv.Itoa(gatePort)), GateToken: token,
 		TreeIn: g + "/tree-in.tar", TreeOut: g + "/tree-out.tar",
+		AllowUserNS: a.allowUserNS, AllowDebuggers: a.allowDebuggers,
 	}
 	sb, err := json.Marshal(gspec)
 	if err != nil {
