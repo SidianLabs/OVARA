@@ -150,7 +150,7 @@ func TestWatcher_PollReportsReplacedFile(t *testing.T) {
 	mustWrite(t, path, fmt.Sprintf(doc, "v1"))
 	w := &Watcher{base: "policy.json", path: path, events: make(chan fsnotify.Event, 4), done: make(chan struct{})}
 	w.wg.Add(1)
-	go w.poll()
+	go w.poll(snapshot(path))
 	defer func() { close(w.done); w.wg.Wait() }()
 
 	tmp := filepath.Join(dir, ".policy.tmp")

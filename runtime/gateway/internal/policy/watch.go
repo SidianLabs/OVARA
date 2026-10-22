@@ -65,8 +65,11 @@ func (w *Watcher) Watch(filePath string) error {
 		return err
 	}
 	w.pollOnce.Do(func() {
+		// the first look is taken now, not in the goroutine: a change made
+		// right after Watch returns must differ from it
+		first := snapshot(filePath)
 		w.wg.Add(1)
-		go w.poll()
+		go w.poll(first)
 	})
 	return nil
 }
@@ -118,9 +121,8 @@ func (w *Watcher) forward() {
 	}
 }
 
-func (w *Watcher) poll() {
+func (w *Watcher) poll(last fileState) {
 	defer w.wg.Done()
-	last := snapshot(w.path)
 	t := time.NewTicker(pollInterval)
 	defer t.Stop()
 	for {
