@@ -3,7 +3,7 @@ module ovara.proxy
 go 1.26.0
 
 require (
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	ovara.runtime.gateway v0.0.0
 )
 
