@@ -1,0 +1,63 @@
+{
+    "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+    "version": "v1.1.0",
+    "entity": {
+        "type": "organisation",
+        "role": "owner",
+        "name": "Sidian Labs Private Limited",
+        "email": "hello@sidianlabs.com",
+        "phone": "",
+        "description": "Sidian Labs is a small AI-safety lab in India, incorporated in December 2025. It builds OVARA, an open-source gateway that controls what AI agents are allowed to do, and publishes its evaluations in the open, including null and negative results. The lab has one engineer and no outside funding.",
+        "webpageUrl": {
+            "url": "https://sidianlabs.com"
+        }
+    },
+    "projects": [
+        {
+            "guid": "ovara",
+            "name": "OVARA",
+            "description": "OVARA is an Apache-2.0 gateway, written in Go, that sits between an AI agent and its tools. The agent never holds a real credential: keys are injected at the gateway for a specific host, path and method. Every action is allowed, held for a person, or blocked against a policy, an approval is bound to the exact bytes of the request, and each decision is written to a signed, hash-chained receipt before anything is sent upstream. On Linux the agent process runs in a sandbox with a gate on every command. The code is pre-release (v0.9) and has 1,912 test functions and 21 fuzz targets, and four coding agents run behind it in continuous integration. Funding pays for one engineer to release the evaluation harness, build a held-out attack set, and close the gaps our own evaluations have measured.",
+            "webpageUrl": {
+                "url": "https://github.com/SidianLabs/OVARA"
+            },
+            "repositoryUrl": {
+                "url": "https://github.com/SidianLabs/OVARA",
+                "wellKnown": "https://github.com/SidianLabs/OVARA/blob/main/.well-known/funding-manifest-urls"
+            },
+            "licenses": ["spdx:Apache-2.0"],
+            "tags": ["security", "ai", "agents", "proxy", "sandbox", "developer-tools", "golang"]
+        }
+    ],
+    "funding": {
+        "channels": [
+            {
+                "guid": "bank",
+                "type": "bank",
+                "address": "",
+                "description": "Bank transfer to Sidian Labs Private Limited, India. Details shared by email on request."
+            }
+        ],
+        "plans": [
+            {
+                "guid": "maintenance-6-months",
+                "status": "active",
+                "name": "Six months of full-time maintenance",
+                "description": "One engineer full time for six months, plus compute for the sandboxed evaluation environments. Deliverables: the evaluation harness released for anyone to rerun, a held-out attack set of at least 150 attacks, and fixes for the measured gaps, each with the test that failed before it.",
+                "amount": 25000,
+                "currency": "USD",
+                "frequency": "one-time",
+                "channels": ["bank"]
+            },
+            {
+                "guid": "any-amount",
+                "status": "active",
+                "name": "General support",
+                "description": "Any amount towards compute and maintenance.",
+                "amount": 0,
+                "currency": "USD",
+                "frequency": "one-time",
+                "channels": ["bank"]
+            }
+        ]
+    }
+}
